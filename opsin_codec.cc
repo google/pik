@@ -423,7 +423,6 @@ std::string EncodeACFast(const Image3W& coeffs, PikImageSizeInfo* info) {
   size_t num_extra_bits = 0;
   for (int y = 0; y < coeffs.ysize(); ++y) {
     auto row = coeffs.Row(y);
-    int prev_num_nzeros[3] = { 0 };
     for (int x = 0; x < coeffs.xsize(); x += 64) {
       for (int c = 0; c < 3; ++c) {
         const int16_t* coeffs = &row[c][x];
@@ -432,7 +431,6 @@ std::string EncodeACFast(const Image3W& coeffs, PikImageSizeInfo* info) {
           if (coeffs[k] != 0) ++num_nzeros;
         }
         tokens.push_back(MakeToken(c, num_nzeros, 0, 0));
-        prev_num_nzeros[c] = num_nzeros;
         if (num_nzeros == 0) continue;
         int r = 0;
         const int histo_offset = 48 + c * 120;

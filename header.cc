@@ -223,10 +223,10 @@ class Magic {
   }
 
  private:
-  static constexpr const char* String() {
+  static const unsigned char* String() {
     // \n causes files opened in text mode to be rejected, and \xCC detects
     // 7-bit transfers (it is also an uppercase I with accent in ISO-8859-1).
-    return "P\xCCK\n";
+    return reinterpret_cast<const unsigned char*>("P\xCCK\n");
   }
 };
 
