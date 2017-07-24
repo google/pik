@@ -70,7 +70,7 @@ int Compress(const char* pathname_in, const char* distance,
 
 int main(int argc, char** argv) {
   if (argc != 4) {
-    fprintf(stderr, "Usage: %s rgb_8bit.png distance[0.5 .. 3.0] out.pik\n",
+    fprintf(stderr, "Usage: %s in_rgb_8bit.png maxError[0.5 .. 3.0] out.pik\n",
             argv[0]);
     return 1;
   }

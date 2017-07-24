@@ -73,7 +73,7 @@ int Decompress(const char* pathname_in, const char* pathname_out) {
 
 int main(int argc, char** argv) {
   if (argc != 3) {
-    fprintf(stderr, "Usage: %s rgb_8bit.png out.pik\n", argv[0]);
+    fprintf(stderr, "Usage: %s in.pik out_rgb_8bit.png\n", argv[0]);
     return 1;
   }
 

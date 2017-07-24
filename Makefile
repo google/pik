@@ -32,10 +32,10 @@ PIK_OBJS := $(addprefix obj/, \
 	yuv_convert.o \
 )
 
+all: $(addprefix bin/, cpik dpik)
+
 bin/cpik: $(PIK_OBJS) obj/cpik.o
 bin/dpik: $(PIK_OBJS) obj/dpik.o
-
-all: $(addprefix bin/, cpik, dpik)
 
 obj/%.o: %.cc
 	@mkdir -p -- $(dir $@)
