@@ -19,7 +19,6 @@ PIK_OBJS := $(addprefix obj/, \
 	gamma_correct.o \
 	header.o \
 	pik.o \
-	pik_main.o \
 	huffman_decode.o \
 	huffman_encode.o \
 	histogram_decode.o \
@@ -33,10 +32,10 @@ PIK_OBJS := $(addprefix obj/, \
 	yuv_convert.o \
 )
 
-all: $(addprefix bin/, \
-	pik)
+bin/cpik: $(PIK_OBJS) obj/cpik.o
+bin/dpik: $(PIK_OBJS) obj/dpik.o
 
-bin/pik: $(PIK_OBJS)
+all: $(addprefix bin/, cpik, dpik)
 
 obj/%.o: %.cc
 	@mkdir -p -- $(dir $@)
