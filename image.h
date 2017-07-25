@@ -19,6 +19,7 @@
 
 #include <stdint.h>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <complex>
 #include <limits>
