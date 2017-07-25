@@ -37,6 +37,45 @@
 #define PIK_TZCNT64 NumZeroBitsBelowLSB64
 #endif
 
+/* builtins for MSVC */
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+
+uint32_t __inline __builtin_ctz(uint32_t value) {
+	unsigned long trailing_zero = 0;
+	if (_BitScanForward(&trailing_zero, value))
+		return trailing_zero;
+	else
+		return 32;
+}
+
+uint32_t __inline __builtin_ctzl(uint64_t value) {
+	unsigned long trailing_zero = 0;
+	if (_BitScanForward64(&trailing_zero, value))
+		return 63 - trailing_zero;
+	else
+		return 64;
+}
+
+uint32_t __inline __builtin_clz(uint32_t value) {
+	unsigned long leading_zero = 0;
+	if (_BitScanReverse(&leading_zero, value))
+		return 31 - leading_zero;
+	else
+		return 32;
+}
+
+uint32_t __inline __builtin_clzl(uint64_t value) {
+	unsigned long leading_zero = 0;
+	if (_BitScanReverse64(&leading_zero, value))
+		return 63 - leading_zero;
+	else
+		return 64;
+}
+
+#endif
+
+
 // The underlying instructions are actually undefined for x == 0.
 // These functions are also used in AVX2 builds to verify PIK_LZCNT32 etc.
 static PIK_INLINE int NumZeroBitsAboveMSB32(const uint32_t x) {

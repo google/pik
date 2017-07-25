@@ -20,6 +20,7 @@
 #include <cstring>
 #include <vector>
 
+#include "bits.h"
 #include "huffman_encode.h"
 #include "status.h"
 #include "write_bits.h"
