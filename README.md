@@ -1,4 +1,4 @@
-Pik is a new lossy image format for the internet. This directory contains
+Dick is a new lossy image format for the internet. This directory contains
 an encoder and a decoder for the format.
 
 This project is in the initial research stage, please don't use it for any
