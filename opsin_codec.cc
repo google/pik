@@ -46,7 +46,7 @@ static inline int SignedIntFromSymbol(int symbol) {
   return symbol % 2 == 0 ? symbol / 2 : (-symbol - 1) / 2;
 }
 
-void PredictDCBlock(size_t x, size_t y, size_t xsize, size_t row_stride,
+void PredictDCBlock(size_t x, size_t y, size_t xsize, int row_stride,
                     std::array<const int16_t* PIK_RESTRICT, 3> row_in,
                     std::array<int16_t* PIK_RESTRICT, 3> row_out) {
   const int x_in = x * 64;
