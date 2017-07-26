@@ -16,6 +16,7 @@
 
 #include "compiler_specific.h"
 #include "vector256.h"
+#include "vector128.h"
 
 namespace pik {
 
@@ -57,9 +58,15 @@ PIK_INLINE void TransposeBlock(float block[64]) {
 }
 
 PIK_INLINE void ColumnIDCT(float block[64]) {
-  // TODO(user) Add non-AVX2 fallback.
+  // TODO(user) Add non-AVX fallback.
   using namespace PIK_TARGET_NAME;
+  int i;
+#if defined __AVX__
   using V = V8x32F;
+#else
+  using V = V4x32F;
+  for (i = 0; i<2; ++i) {
+#endif
   const V i0 = Load<V>(&block[0]);
   const V i1 = Load<V>(&block[8]);
   const V i2 = Load<V>(&block[16]);
@@ -86,13 +93,26 @@ PIK_INLINE void ColumnIDCT(float block[64]) {
   const V t11 = t00 - t02;
   const V t12 = t05 + t07;
   const V t13 = c2 * t12;
+#if defined __AVX__
   const V t14(_mm256_fmsub_ps(c1, t03, t02));
+#else
+  const V t14(_mm_sub_ps(_mm_mul_ps(c1, t03), t02));
+#endif
   const V t15 = t01 + t14;
   const V t16 = t01 - t14;
+#if defined __AVX__
   const V t17(_mm256_fmsub_ps(c3, t05, t13));
   const V t18(_mm256_fmadd_ps(c4, t07, t13));
+#else
+  const V t17(_mm_sub_ps(_mm_mul_ps(c3, t05), t13));
+  const V t18(_mm_add_ps(_mm_mul_ps(c4, t07), t13));
+#endif
   const V t19 = t17 - t08;
+#if defined __AVX__
   const V t20(_mm256_fmsub_ps(c1, t09, t19));
+#else
+  const V t20(_mm_sub_ps(_mm_mul_ps(c1, t09), t19));
+#endif
   const V t21 = t18 - t20;
   Store(t10 + t08, &block[ 0]);
   Store(t15 + t19, &block[ 8]);
@@ -102,12 +122,23 @@ PIK_INLINE void ColumnIDCT(float block[64]) {
   Store(t16 - t20, &block[40]);
   Store(t15 - t19, &block[48]);
   Store(t10 - t08, &block[56]);
+#if defined __AVX__
+#else
+  block += 4;
+  }
+#endif
 }
 
 PIK_INLINE void ColumnDCT(float block[64]) {
-  // TODO(user) Add non-AVX2 fallback.
+  // TODO(user) Add non-AVX fallback.
   using namespace PIK_TARGET_NAME;
+  int i;
+#if defined __AVX__
   using V = V8x32F;
+#else
+  using V = V4x32F;
+  for(i=0;i<2;++i) {
+#endif
   const V i0 = Load<V>(&block[0]);
   const V i1 = Load<V>(&block[8]);
   const V i2 = Load<V>(&block[16]);
@@ -142,8 +173,13 @@ PIK_INLINE void ColumnDCT(float block[64]) {
   const V t19 = c2 * t16;
   const V t20 = t01 + t18;
   const V t21 = t01 - t18;
+#if defined __AVX__
   const V t22(_mm256_fmsub_ps(c3, t13, t19));
   const V t23(_mm256_fmsub_ps(c4, t14, t19));
+#else
+  const V t22(_mm_sub_ps(_mm_mul_ps(c3, t13), t19));
+  const V t23(_mm_sub_ps(_mm_mul_ps(c4, t14), t19));
+#endif
   Store(t08 + t10, &block[ 0]);
   Store(t20 + t22, &block[ 8]);
   Store(t09 + t17, &block[16]);
@@ -152,6 +188,11 @@ PIK_INLINE void ColumnDCT(float block[64]) {
   Store(t21 + t23, &block[40]);
   Store(t09 - t17, &block[48]);
   Store(t20 - t22, &block[56]);
+#if defined __AVX__
+#else
+  block += 4;
+  }
+#endif
 }
 
 void ComputeTransposedScaledBlockDCTFloat(float block[64]) {

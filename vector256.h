@@ -44,6 +44,14 @@
 // other system headers - see vector128.h)
 #include <immintrin.h>
 
+// Use FMA or fallback to AVX
+#ifdef __FMA__
+#  include <fmaintrin.h>
+#else
+#  define _mm256_fmadd_ps(a, b, c) _mm256_add_ps(_mm256_mul_ps(a, b), c)
+#  define _mm256_fmsub_ps(a, b, c) _mm256_sub_ps(_mm256_mul_ps(a, b), c)
+#endif
+
 namespace pik {
 // To prevent ODR violations when including this from multiple translation
 // units (TU) that are compiled with different flags, the contents must reside
