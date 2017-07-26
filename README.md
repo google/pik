@@ -16,6 +16,12 @@ http://github.com/google/butteraugli), which indicates the largest acceptable
 error. Larger values lead to smaller files and lower quality. Try 1.0 for a
 visually lossless result.
 
+### Example Usage
+
+Encoding an image to pik ```cpik in_rgb_8bit.png maxError[0.5 .. 3.0] out.pik```
+
+Decoding a pik to an image ```dpik in.pik out_rgb_8bit.png```
+
 ### Related projects
 
 *   Butteraugli (HVS-aware image differences)
