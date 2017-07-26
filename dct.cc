@@ -21,8 +21,8 @@
 namespace pik {
 
 PIK_INLINE void TransposeBlock(float block[64]) {
-	// TODO(user) Add non-AVX fallback.
-	using namespace PIK_TARGET_NAME;
+  // TODO(user) Add non-AVX fallback.
+  using namespace PIK_TARGET_NAME;
   using V = V8x32F;
   const V p0 = Load<V>(&block[0]);
   const V p1 = Load<V>(&block[8]);
