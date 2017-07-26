@@ -947,13 +947,13 @@ ImageF DiffPrecompute(const ImageF& xyb0, const ImageF& xyb1) {
         x2 = x;
       }
       double minDir =           fabs(row0_in[x] -  row0_in[x2]);
-      minDir = std::min(minDir, fabs(row0_in[x] -  row0_in2[x]));
-      minDir = std::min(minDir, fabs(row0_in[x] -  row0_in2[x2]));
-      minDir = std::min(minDir, fabs(row0_in[x2] - row0_in2[x]));
-      minDir = std::min(minDir, fabs(row1_in[x] -  row1_in[x2]));
-      minDir = std::min(minDir, fabs(row1_in[x] -  row1_in2[x]));
-      minDir = std::min(minDir, fabs(row1_in[x] -  row1_in2[x2]));
-      minDir = std::min(minDir, fabs(row1_in[x2] - row1_in2[x]));
+      minDir = std::min<double>(minDir, fabs(row0_in[x] -  row0_in2[x]));
+      minDir = std::min<double>(minDir, fabs(row0_in[x] -  row0_in2[x2]));
+      minDir = std::min<double>(minDir, fabs(row0_in[x2] - row0_in2[x]));
+      minDir = std::min<double>(minDir, fabs(row1_in[x] -  row1_in[x2]));
+      minDir = std::min<double>(minDir, fabs(row1_in[x] -  row1_in2[x]));
+      minDir = std::min<double>(minDir, fabs(row1_in[x] -  row1_in2[x2]));
+      minDir = std::min<double>(minDir, fabs(row1_in[x2] - row1_in2[x]));
       double sup0 = (fabs(row0_in[x] - row0_in[x2]) +
                      fabs(row0_in[x] - row0_in2[x]));
       double sup1 = (fabs(row1_in[x] - row1_in[x2]) +
