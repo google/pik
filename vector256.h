@@ -50,6 +50,131 @@
 #else
 #  define _mm256_fmadd_ps(a, b, c) _mm256_add_ps(_mm256_mul_ps(a, b), c)
 #  define _mm256_fmsub_ps(a, b, c) _mm256_sub_ps(_mm256_mul_ps(a, b), c)
+__m128i inline permutevar4x32_epi32(__m128i a, __m128i idx) {
+	__m128i dst = { 0 };
+	for (int j = 0; j < 3 + 1; ++j) {
+		int i = j;
+		int id = idx.m128i_i32[i];// + 2
+		dst.m128i_i32[i] = a.m128i_i32[id];
+	}
+	return dst;
+}
+#define _mm_permutevar4x32_epi32 permutevar4x32_epi32
+__m256i inline permutevar8x32_epi32(__m256i a, __m256i idx) {
+	__m256i dst = { 0 };
+	for(int j = 0 ; j < 7+1;++j) {
+		int i = j;
+		int id = idx.m256i_i32[i];// + 2
+		dst.m256i_i32[i] = a.m256i_i32[id];
+	}
+	return dst;
+}
+#define _mm256_permutevar8x32_epi32 permutevar8x32_epi32
+__m128i inline mm_blend_epi32(__m128i a, __m128i b, const int imm8) {
+	__m128i dst = { 0 };
+	for (int j = 0; j < 3 + 1; ++j) {
+		int i = j;
+		int j_ = (imm8 >> i) & 1;
+		if (j_ % 8) {
+			dst.m128i_i32[i] = b.m128i_i32[i];
+		}
+		else {
+			dst.m128i_i32[i] = a.m128i_i32[i];
+		}
+	}
+	return dst;
+}
+#define _mm_blend_epi32 mm_blend_epi32
+__m256i inline mm256_blend_epi32(__m256i a, __m256i b, const int imm8) {
+	__m256i dst = { 0 };
+	for (int j = 0; j < 7 + 1; ++j) {
+		int i = j;
+		int j_ = (imm8 >> i) & 1;
+		if(j_ % 8) {
+		dst.m256i_i32[i] = b.m256i_i32[i];
+		} else {
+		dst.m256i_i32[i] = a.m256i_i32[i];
+		}
+	}
+	return dst;
+}
+#define _mm256_blend_epi32 mm256_blend_epi32
+__m256i inline mm256_packus_epi32(__m256i a, __m256i b) {
+	__m128i a1 = _mm256_extractf128_si256(a, 0);
+	__m128i a2 = _mm256_extractf128_si256(a, 1);
+	__m128i b1 = _mm256_extractf128_si256(b, 0);
+	__m128i b2 = _mm256_extractf128_si256(b, 1);
+	return _mm256_set_m128i(_mm_packus_epi32(a2, b2), _mm_packus_epi32(a1, b1));
+}
+#define _mm256_packus_epi32 mm256_packus_epi32
+__m256i inline mm256_unpacklo_epi32(__m256i a, __m256i b){
+	__m128i a1 = _mm256_extractf128_si256(a, 0);
+	__m128i a2 = _mm256_extractf128_si256(a, 1);
+	__m128i b1 = _mm256_extractf128_si256(b, 0);
+	__m128i b2 = _mm256_extractf128_si256(b, 1);
+	return _mm256_set_m128i(_mm_unpacklo_epi32(a2, b2), _mm_unpacklo_epi32(a1, b1));
+}
+#define _mm256_unpacklo_epi32 mm256_unpacklo_epi32
+__m256i inline mm256_broadcastd_epi32(__m128i a) {
+	__m256i dst = { 0 };
+	for (int j = 0; j < 7 + 1; ++j) {
+		int i = j;
+		dst.m256i_i32[i] = a.m128i_i32[0];
+	}
+	return dst;
+}
+#define _mm256_broadcastd_epi32 mm256_broadcastd_epi32
+__m256i inline mm256_add_epi32(__m256i a, __m256i b) {
+	__m128i a1 = _mm256_extractf128_si256(a, 0);
+	__m128i a2 = _mm256_extractf128_si256(a, 1);
+	__m128i b1 = _mm256_extractf128_si256(b, 0);
+	__m128i b2 = _mm256_extractf128_si256(b, 1);
+	return _mm256_set_m128i(_mm_add_epi32(a2, b2), _mm_add_epi32(a1, b1));
+}
+#define _mm256_add_epi32 mm256_add_epi32
+__m256i inline mm256_sub_epi32(__m256i a, __m256i b) {
+	__m128i a1 = _mm256_extractf128_si256(a, 0);
+	__m128i a2 = _mm256_extractf128_si256(a, 1);
+	__m128i b1 = _mm256_extractf128_si256(b, 0);
+	__m128i b2 = _mm256_extractf128_si256(b, 1);
+	return _mm256_set_m128i(_mm_sub_epi32(a2, b2), _mm_sub_epi32(a1, b1));
+}
+#define _mm256_sub_epi32 mm256_sub_epi32
+__m256i inline mm256_min_epi32(__m256i a, __m256i b) {
+	__m128i a1 = _mm256_extractf128_si256(a, 0);
+	__m128i a2 = _mm256_extractf128_si256(a, 1);
+	__m128i b1 = _mm256_extractf128_si256(b, 0);
+	__m128i b2 = _mm256_extractf128_si256(b, 1);
+	return _mm256_set_m128i(_mm_min_epi32(a2, b2), _mm_min_epi32(a1, b1));
+}
+#define _mm256_min_epi32 mm256_min_epi32
+__m256i inline mm256_max_epi32(__m256i a, __m256i b) {
+	__m128i a1 = _mm256_extractf128_si256(a, 0);
+	__m128i a2 = _mm256_extractf128_si256(a, 1);
+	__m128i b1 = _mm256_extractf128_si256(b, 0);
+	__m128i b2 = _mm256_extractf128_si256(b, 1);
+	return _mm256_set_m128i(_mm_max_epi32(a2, b2), _mm_max_epi32(a1, b1));
+}
+#define _mm256_max_epi32 mm256_max_epi32
+__m256i inline mm256_srai_epi32(__m256i a, int imm8) {
+	__m128i a1 = _mm256_extractf128_si256(a, 0);
+	__m128i a2 = _mm256_extractf128_si256(a, 1);
+	return _mm256_set_m128i(_mm_srai_epi32(a2, imm8), _mm_srai_epi32(a1, imm8));
+}
+#define _mm256_srai_epi32 mm256_srai_epi32
+__m256i inline mm256_srli_epi32(__m256i a, int imm8) {
+	__m128i a1 = _mm256_extractf128_si256(a, 0);
+	__m128i a2 = _mm256_extractf128_si256(a, 1);
+	return _mm256_set_m128i(_mm_srli_epi32(a2, imm8), _mm_srli_epi32(a1, imm8));
+}
+#define _mm256_srli_epi32 mm256_srli_epi32
+__m256i inline mm256_abs_epi32(__m256i a) {
+	__m128i a1 = _mm256_extractf128_si256(a, 0);
+	__m128i a2 = _mm256_extractf128_si256(a, 1);
+	return _mm256_set_m128i(_mm_abs_epi32(a2), _mm_abs_epi32(a1));
+}
+#define _mm256_abs_epi32 mm256_abs_epi32
+#define _mm256_extracti128_si256 _mm256_extractf128_si256
 #endif
 
 namespace pik {
