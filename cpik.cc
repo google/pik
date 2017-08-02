@@ -25,7 +25,25 @@ namespace {
 int Compress(const char* pathname_in, const char* distance,
              const char* pathname_out) {
   Image3B in;
-  if (!ReadImage(ImageFormatPNG(), pathname_in, &in)) {
+  bool failed = false;
+
+  if (ImageFormatPNM::IsExtension(pathname_in)) {
+	  failed = ReadImage(ImageFormatPNM(), pathname_in, &in);
+  } else
+  if (ImageFormatPNG::IsExtension(pathname_in)) {
+	  failed = ReadImage(ImageFormatPNG(), pathname_in, &in);
+  } else
+  if (ImageFormatY4M::IsExtension(pathname_in)) {
+	  failed = ReadImage(ImageFormatY4M(), pathname_in, &in);
+  } else
+  if (ImageFormatJPG::IsExtension(pathname_in)) {
+	  failed = ReadImage(ImageFormatJPG(), pathname_in, &in);
+  } else
+  if (ImageFormatPlanes::IsExtension(pathname_in)) {
+	  failed = ReadImage(ImageFormatPlanes(), pathname_in, &in);
+  }
+
+  if (!failed) {
     fprintf(stderr, "Failed to open %s.\n", pathname_in);
     return 1;
   }

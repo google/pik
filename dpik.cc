@@ -48,6 +48,8 @@ bool LoadFile(const char* pathname, Bytes* compressed) {
 // main() function, within namespace for convenience.
 int Decompress(const char* pathname_in, const char* pathname_out) {
   Bytes compressed;
+  bool failed = false;
+
   if (!LoadFile(pathname_in, &compressed)) {
     return 1;
   }
@@ -61,7 +63,23 @@ int Decompress(const char* pathname_in, const char* pathname_out) {
   }
   printf("Decompressed %zu x %zu pixels.\n", planes.xsize(), planes.ysize());
 
-  if (!WriteImage(ImageFormatPNG(), planes, pathname_out)) {
+  if (ImageFormatPNM::IsExtension(pathname_out)) {
+	  failed = WriteImage(ImageFormatPNM(), planes, pathname_out);
+  } else
+  if (ImageFormatPNG::IsExtension(pathname_out)) {
+	  failed = WriteImage(ImageFormatPNG(), planes, pathname_out);
+  } else
+  if (ImageFormatY4M::IsExtension(pathname_out)) {
+	  failed = WriteImage(ImageFormatY4M(), planes, pathname_out);
+  } else
+  /*if (ImageFormatJPG::IsExtension(pathname_out)) {
+	  failed = WriteImage(ImageFormatJPG(), planes, pathname_out);
+  } else*/
+  if (ImageFormatPlanes::IsExtension(pathname_out)) {
+	  failed = WriteImage(ImageFormatPlanes(), planes, pathname_out);
+  }
+
+  if (!failed) {
     fprintf(stderr, "Failed to write %s.\n", pathname_out);
     return 1;
   }
