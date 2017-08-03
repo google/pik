@@ -399,7 +399,7 @@ bool ReadPNGImage3(const std::string& pathname, const int bias,
   if (!reader.ReadHeader(&xsize, &ysize, &num_planes, &bit_depth)) {
     return false;
   }
-  if (num_planes != 1 && num_planes != 3) {
+  if (num_planes < 1 || num_planes > 4) {
     PIK_NOTIFY_ERROR("Wrong #planes");
     return false;
   }
@@ -423,13 +423,37 @@ bool ReadPNGImage3(const std::string& pathname, const int bias,
         }
       } else {
         for (size_t x = 0; x < xsize; ++x) {
-          rows[0][x] = ReadFromU16<T>(&interleaved_row[stride * x], bias);
-          rows[1][x] = ReadFromU16<T>(&interleaved_row[stride * x], bias);
-          rows[2][x] = ReadFromU16<T>(&interleaved_row[stride * x], bias);
+          rows[0][x] = rows[1][x] = rows[2][x] =
+              ReadFromU16<T>(&interleaved_row[stride * x], bias);
         }
       }
     }
-  } else {
+  } else if (num_planes == 2) {
+    for (size_t y = 0; y < ysize; ++y) {
+      const uint8_t* const PIK_RESTRICT interleaved_row = interleaved_rows[y];
+      auto rows = image->Row(y);
+      if (stride == 1) {
+        for (size_t x = 0; x < xsize; ++x) {
+          rows[0][x] = rows[1][x] = rows[2][x] =
+              ReadFromU8<T>(&interleaved_row[2 * x + 0], bias);
+          if (ReadFromU8<T>(&interleaved_row[2 * x + 1], bias) != 255) {
+            PIK_NOTIFY_ERROR("Translucent PNG not supported");
+            return false;
+          }
+        }
+      } else {
+        for (size_t x = 0; x < xsize; ++x) {
+          rows[0][x] = rows[1][x] = rows[2][x] =
+              ReadFromU16<T>(&interleaved_row[stride * (2 * x + 0)], bias);
+          if (ReadFromU16<uint16_t>(
+              &interleaved_row[stride * (2 * x + 1)], bias) != 65535) {
+            PIK_NOTIFY_ERROR("Translucent PNG not supported");
+            return false;
+          }
+        }
+      }
+    }
+  } else if (num_planes == 3) {
     for (size_t y = 0; y < ysize; ++y) {
       const uint8_t* const PIK_RESTRICT interleaved_row = interleaved_rows[y];
       auto rows = image->Row(y);
@@ -447,6 +471,36 @@ bool ReadPNGImage3(const std::string& pathname, const int bias,
               ReadFromU16<T>(&interleaved_row[stride * (3 * x + 1)], bias);
           rows[2][x] =
               ReadFromU16<T>(&interleaved_row[stride * (3 * x + 2)], bias);
+        }
+      }
+    }
+  } else /* if (num_planes == 4) */ {
+    for (size_t y = 0; y < ysize; ++y) {
+      const uint8_t* const PIK_RESTRICT interleaved_row = interleaved_rows[y];
+      auto rows = image->Row(y);
+      if (stride == 1) {
+        for (size_t x = 0; x < xsize; ++x) {
+          rows[0][x] = ReadFromU8<T>(&interleaved_row[4 * x + 0], bias);
+          rows[1][x] = ReadFromU8<T>(&interleaved_row[4 * x + 1], bias);
+          rows[2][x] = ReadFromU8<T>(&interleaved_row[4 * x + 2], bias);
+          if (ReadFromU8<T>(&interleaved_row[4 * x + 3], bias) != 255) {
+            PIK_NOTIFY_ERROR("Translucent PNG not supported");
+            return false;
+          }
+        }
+      } else {
+        for (size_t x = 0; x < xsize; ++x) {
+          rows[0][x] =
+              ReadFromU16<T>(&interleaved_row[stride * (4 * x + 0)], bias);
+          rows[1][x] =
+              ReadFromU16<T>(&interleaved_row[stride * (4 * x + 1)], bias);
+          rows[2][x] =
+              ReadFromU16<T>(&interleaved_row[stride * (4 * x + 2)], bias);
+          if (ReadFromU16<uint16_t>(
+              &interleaved_row[stride * (4 * x + 3)], bias) != 65535) {
+            PIK_NOTIFY_ERROR("Translucent PNG not supported");
+            return false;
+          }
         }
       }
     }
