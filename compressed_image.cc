@@ -308,7 +308,7 @@ void CompressedImage::QuantizeBlock(int block_x, int block_y,
     for (int k = 0; k < kBlockSize; ++k) {
       block[kBlockSize2 + k] -= ytob_ac * block[kBlockSize + k];
     }
-    block[kBlockSize2] += (YToBDC() - ytob_ac) * block[kBlockSize];
+    block[kBlockSize2] -= (YToBDC() - ytob_ac) * block[kBlockSize];
   }
   for (int c = 0; c < 3; ++c) {
     if (c == 1) {
