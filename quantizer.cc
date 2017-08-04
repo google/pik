@@ -133,16 +133,20 @@ size_t Quantizer::EncodedSize() const {
   return (3 + EncodedPlaneSize(quant_img_ac_, 1, kQuantMax));
 }
 
-size_t Quantizer::Decode(const uint8_t* data, size_t len) {
+bool Quantizer::Decode(const uint8_t* data, size_t len,
+                       size_t* total_bytes_read) {
   size_t pos = 0;
   global_scale_ = data[pos++] << 8;
   global_scale_ += data[pos++];
   quant_dc_ = data[pos++] + 1;
-  pos += DecodePlane(data + pos, len - pos, 1, kQuantMax, &quant_img_ac_);
+  if (!DecodePlane(data + pos, len - pos, &pos, 1, kQuantMax, &quant_img_ac_)) {
+    return false;
+  }
   inv_global_scale_ = kGlobalScaleDenom * 1.0 / global_scale_;
   inv_quant_dc_ = inv_global_scale_ / quant_dc_;
   initialized_ = true;
-  return pos;
+  *total_bytes_read += pos;
+  return true;
 }
 
 void Quantizer::DumpQuantizationMap() const {

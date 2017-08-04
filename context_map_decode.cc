@@ -76,7 +76,7 @@ bool DecodeContextMap(std::vector<uint8_t>* context_map,
   std::vector<HuffmanCode> table(kMaxHuffmanTableSize);
   HuffmanDecodingData entropy;
   if (!entropy.ReadFromBitStream(input)) {
-    return false;
+    return PIK_FAILURE("Invalid histogram data.");
   }
   HuffmanDecoder decoder;
   int i;
@@ -90,7 +90,7 @@ bool DecodeContextMap(std::vector<uint8_t>* context_map,
       int reps = 1 + (1 << code) + input->ReadBits(code);
       while (--reps) {
         if (i >= context_map->size()) {
-          return false;
+          return PIK_FAILURE("Invalid context map data.");
         }
         (*context_map)[i] = 0;
         ++i;

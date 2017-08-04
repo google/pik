@@ -662,7 +662,7 @@ class HuffmanSymbolReader {
 
 class ANSSymbolReader {
  public:
-  void DecodeHistograms(const size_t num_histograms,
+  bool DecodeHistograms(const size_t num_histograms,
                         const uint8_t* symbol_lut, size_t symbol_lut_size,
                         BitReader* in) {
     map_.resize(num_histograms << ANS_LOG_TAB_SIZE);
@@ -680,11 +680,15 @@ class ANSSymbolReader {
         info_[(c << 8) + symbol].offset_ = offset;
         info_[(c << 8) + symbol].freq_ = counts[i];
         offset += counts[i];
+        if (offset > ANS_TAB_SIZE) {
+          return PIK_FAILURE("Invalid ANS histogram data.");
+        }
         for (int j = 0; j < counts[i]; ++j, ++pos) {
           map_[(c << ANS_LOG_TAB_SIZE) + pos] = symbol;
         }
       }
     }
+    return true;
   }
 
   int ReadSymbol(const int histo_idx, BitReader* const PIK_RESTRICT br) {
@@ -719,26 +723,32 @@ class ANSSymbolReader {
   std::vector<ANSSymbolInfo> info_;
 };
 
-size_t DecodeHistograms(const uint8_t* data, size_t len,
-                        const size_t num_contexts,
-                        const uint8_t* symbol_lut, size_t symbol_lut_size,
-                        ANSSymbolReader* decoder,
-                        std::vector<uint8_t>* context_map) {
+bool DecodeHistograms(const uint8_t* data, size_t len,
+                      size_t* total_bytes_read,
+                      const size_t num_contexts,
+                      const uint8_t* symbol_lut, size_t symbol_lut_size,
+                      ANSSymbolReader* decoder,
+                      std::vector<uint8_t>* context_map) {
   BitReader in(data, len);
   size_t num_histograms = 1;
   context_map->resize(num_contexts);
   if (num_contexts > 1) {
-    DecodeContextMap(context_map, &num_histograms, &in);
+    if (!DecodeContextMap(context_map, &num_histograms, &in)) return false;
   }
-  decoder->DecodeHistograms(num_histograms, symbol_lut, symbol_lut_size, &in);
-  return in.Position();
+  if (!decoder->DecodeHistograms(num_histograms, symbol_lut, symbol_lut_size,
+                                 &in)) {
+    return false;
+  }
+  *total_bytes_read += in.Position();
+  return true;
 }
 
-size_t DecodeImageData(const uint8_t* const PIK_RESTRICT data, const size_t len,
-                       const std::vector<uint8_t>& context_map,
-                       const int stride,
-                       ANSSymbolReader* const PIK_RESTRICT decoder,
-                       Image3W* const PIK_RESTRICT img) {
+bool DecodeImageData(const uint8_t* const PIK_RESTRICT data, const size_t len,
+                     size_t* const PIK_RESTRICT total_bytes_read,
+                     const std::vector<uint8_t>& context_map,
+                     const int stride,
+                     ANSSymbolReader* const PIK_RESTRICT decoder,
+                     Image3W* const PIK_RESTRICT img) {
   uint8_t dummy_buffer[4] = { 0 };
   PIK_CHECK(len >= 4 || len == 0);
   BitReader br(len == 0 ? dummy_buffer : data, len);
@@ -758,7 +768,8 @@ size_t DecodeImageData(const uint8_t* const PIK_RESTRICT data, const size_t len,
       }
     }
   }
-  return br.Position();
+  *total_bytes_read += br.Position();
+  return true;
 }
 
 bool DecodeCoeffOrder(int* order, BitReader* br) {
@@ -796,10 +807,11 @@ bool DecodeCoeffOrder(int* order, BitReader* br) {
   return true;
 }
 
-size_t DecodeACData(const uint8_t* const PIK_RESTRICT data, const size_t len,
-                    const std::vector<uint8_t>& context_map,
-                    ANSSymbolReader* const PIK_RESTRICT decoder,
-                    Image3W* const PIK_RESTRICT coeffs) {
+bool DecodeACData(const uint8_t* const PIK_RESTRICT data, const size_t len,
+                  size_t* const PIK_RESTRICT total_bytes_read,
+                  const std::vector<uint8_t>& context_map,
+                  ANSSymbolReader* const PIK_RESTRICT decoder,
+                  Image3W* const PIK_RESTRICT coeffs) {
   uint8_t dummy_buffer[4] = { 0 };
   PIK_CHECK(len >= 4 || len == 0);
   BitReader br(len == 0 ? dummy_buffer : data, len);
@@ -841,7 +853,8 @@ size_t DecodeACData(const uint8_t* const PIK_RESTRICT data, const size_t len,
       }
     }
   }
-  return br.Position();
+  *total_bytes_read += br.Position();
+  return true;
 }
 
 size_t DecodeNonZeroValsData(
@@ -874,28 +887,43 @@ size_t DecodeNonZeroValsData(
   return br.Position();
 }
 
-size_t DecodeImage(const uint8_t* data, size_t len, int stride,
-                   Image3W* coeffs) {
+bool DecodeImage(const uint8_t* data, size_t len,
+                 size_t* total_bytes_read,
+                 int stride,
+                 Image3W* coeffs) {
   size_t pos = 0;
   std::vector<uint8_t> context_map;
   ANSSymbolReader decoder;
-  pos += DecodeHistograms(data, len, CoeffProcessor::num_contexts(), nullptr, 0,
-                          &decoder, &context_map);
-  pos += DecodeImageData(data + pos, len - pos, context_map, stride,
-                         &decoder, coeffs);
-  PIK_CHECK(decoder.CheckANSFinalState());
-  return pos;
+  if (!DecodeHistograms(data, len, &pos, CoeffProcessor::num_contexts(),
+                        nullptr, 0, &decoder, &context_map) ||
+      !DecodeImageData(data + pos, len - pos, &pos, context_map, stride,
+                       &decoder, coeffs)) {
+    return false;
+  }
+  if (!decoder.CheckANSFinalState()) {
+    return PIK_FAILURE("ANS cheksum failure.");
+  }
+  *total_bytes_read += pos;
+  return true;
 }
 
-size_t DecodeAC(const uint8_t* data, size_t len, Image3W* coeffs) {
+bool DecodeAC(const uint8_t* data, size_t len, size_t* total_bytes_read,
+              Image3W* coeffs) {
   size_t pos = 0;
   std::vector<uint8_t> context_map;
   ANSSymbolReader decoder;
-  pos += DecodeHistograms(data, len, ACBlockProcessor::num_contexts(),
-                          kSymbolLut, sizeof(kSymbolLut),
-                          &decoder, &context_map);
-  pos += DecodeACData(data + pos, len - pos, context_map, &decoder, coeffs);
-  return pos;
+  if (!DecodeHistograms(data, len, &pos, ACBlockProcessor::num_contexts(),
+                        kSymbolLut, sizeof(kSymbolLut),
+                        &decoder, &context_map) ||
+      !DecodeACData(data + pos, len - pos, &pos, context_map,
+                    &decoder, coeffs)) {
+    return false;
+  }
+  if (!decoder.CheckANSFinalState()) {
+    return PIK_FAILURE("ANS cheksum failure.");
+  }
+  *total_bytes_read += pos;
+  return true;
 }
 
 size_t DecodeNonZeroVals(const  uint8_t* data, size_t len,
@@ -906,8 +934,8 @@ size_t DecodeNonZeroVals(const  uint8_t* data, size_t len,
   size_t pos = 0;
   std::vector<uint8_t> context_map;
   ANSSymbolReader decoder;
-  pos += DecodeHistograms(data, len, 6 * absvals->size(), nullptr, 0,
-                          &decoder, &context_map);
+  DecodeHistograms(data, len, &pos, 6 * absvals->size(), nullptr, 0,
+                   &decoder, &context_map);
   pos += DecodeNonZeroValsData(data + pos, len - pos, context_map,
                                &decoder, absvals, phases);
   PIK_CHECK(decoder.CheckANSFinalState());
@@ -985,11 +1013,14 @@ size_t EncodedPlaneSize(const Image<int>& img, int minval, int maxval) {
   return builder.EncodedSize(-1, 2);
 }
 
-size_t DecodePlane(const uint8_t* data, size_t len, int minval, int maxval,
-                   Image<int>* img) {
+bool DecodePlane(const uint8_t* data, size_t len, size_t* total_bytes_read,
+                 int minval, int maxval,
+                 Image<int>* img) {
   BitReader in(data, len);
   HuffmanDecodingData huff;
-  huff.ReadFromBitStream(&in);
+  if (!huff.ReadFromBitStream(&in)) {
+    return PIK_FAILURE("Failed to decode histogram.");
+  }
   HuffmanDecoder decoder;
   DeltaCodingProcessor processor(minval, maxval, img->xsize());
   for (int y = 0; y < img->ysize(); ++y) {
@@ -1001,7 +1032,8 @@ size_t DecodePlane(const uint8_t* data, size_t len, int minval, int maxval,
       processor.SetVal(x, y, 0, row[x]);
     }
   }
-  return in.Position();
+  *total_bytes_read += in.Position();
+  return true;
 }
 
 }  // namespace pik

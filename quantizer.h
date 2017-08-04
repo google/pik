@@ -77,7 +77,7 @@ class Quantizer {
   std::string Encode() const;
   size_t EncodedSize() const;
 
-  size_t Decode(const uint8_t* data, size_t len);
+  bool Decode(const uint8_t* data, size_t len, size_t* total_bytes_read);
 
   void DumpQuantizationMap() const;
 

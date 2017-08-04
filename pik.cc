@@ -542,6 +542,9 @@ bool PikToPixels(const DecompressParams& params, const Bytes& compressed,
     {
       CompressedImage img = CompressedImage::Decode(
           header.xsize, header.ysize, encoded_img, aux_out);
+      if (img.xsize() == 0 || img.ysize() == 0) {
+        return PIK_FAILURE("Pik decoding failed.");
+      }
       *planes = img.MoveSRGB();
     }
   }

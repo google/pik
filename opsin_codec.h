@@ -394,17 +394,18 @@ size_t DecodeNonZeroVals(const uint8_t* data, size_t len,
                          std::vector<Image3W>* absvals,
                          std::vector<Image3W>* phases);
 
-size_t DecodeImage(const uint8_t* data, size_t len, int stride,
-                   Image3W* coeffs);
+bool DecodeImage(const uint8_t* data, size_t len, size_t* total_bytes_read,
+                 int stride, Image3W* coeffs);
 
-size_t DecodeAC(const uint8_t* data, size_t len, Image3W* coeffs);
+bool DecodeAC(const uint8_t* data, size_t len, size_t* total_bytes_read,
+              Image3W* coeffs);
 
 std::string EncodePlane(const Image<int>& img, int minval, int maxval);
 
 size_t EncodedPlaneSize(const Image<int>& img, int minval, int maxval);
 
-size_t DecodePlane(const uint8_t* data, size_t len, int minval, int maxval,
-                   Image<int>* img);
+bool DecodePlane(const uint8_t* data, size_t len, size_t* total_bytes_read,
+                 int minval, int maxval, Image<int>* img);
 
 }  // namespace pik
 

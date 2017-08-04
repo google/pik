@@ -376,10 +376,6 @@ std::string CompressedImage::EncodeFast() const {
   return ytob_code + quant_code + dc_code + ac_code;
 }
 
-size_t CompressedImage::DecodeQuantization(const uint8_t* data, size_t len) {
-  return quantizer_.Decode(data, len);
-}
-
 // static
 CompressedImage CompressedImage::Decode(int xsize, int ysize,
                                         const std::string& data,
@@ -389,11 +385,17 @@ CompressedImage CompressedImage::Decode(int xsize, int ysize,
   const size_t len = data.size();
   size_t pos = 0;
   img.ytob_dc_ = input[pos++];
-  pos += DecodePlane(input + pos, len - pos, 0, 255, &img.ytob_ac_);
-  pos += img.DecodeQuantization(input + pos, len - pos);
-  pos += DecodeImage(input + pos, len - pos, kBlockSize, &img.dct_coeffs_);
-  pos += DecodeAC(input + pos, len - pos, &img.dct_coeffs_);
-  PIK_CHECK(pos == len);
+  if (!DecodePlane(input + pos, len - pos, &pos, 0, 255, &img.ytob_ac_) ||
+      !img.quantizer_.Decode(input + pos, len - pos, &pos) ||
+      !DecodeImage(input + pos, len - pos, &pos, kBlockSize,
+                   &img.dct_coeffs_) ||
+      !DecodeAC(input + pos, len - pos, &pos, &img.dct_coeffs_)) {
+    return CompressedImage(0, 0, nullptr);
+  }
+  if (pos != len) {
+    PIK_NOTIFY_ERROR("Pik compressed data size mismatch.");
+    return CompressedImage(0, 0, nullptr);
+  }
   if (!FLAGS_predict_pixels) {
     UnpredictDC(&img.dct_coeffs_);
   }

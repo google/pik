@@ -95,8 +95,6 @@ class CompressedImage {
 
   std::string EncodeQuantization() const;
 
-  size_t DecodeQuantization(const uint8_t* data, size_t len);
-
   void UpdateBlock(const int block_x, const int block_y,
                    float* const PIK_RESTRICT block);
   void UpdateSRGB(const float* const PIK_RESTRICT block,
