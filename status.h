@@ -20,23 +20,6 @@
 
 namespace pik {
 
-// Should be broad categories - we rely on the ability to crash/dump stack
-// at the moment of failure via PIK_FAIL .
-enum class Status {
-  OK = 0,
-  // TODO(user) Add some hierarchy to these error codes.
-  INVALID_JPEG_INPUT = 1,
-  NOT_IMPLEMENTED = 2,
-  EMPTY_IMAGE = 3,
-  INVALID_PIK_INPUT = 4,
-  EMPTY_INPUT = 5,
-  JPEG_DECODING_ERROR = 6,
-  INVALID_FORMAT_CODE = 7,
-  GUETZLI_FAILED = 8,
-  WRONG_MAGIC = 9,
-  RANGE_EXCEEEDED = 10,
-};
-
 #ifdef PIK_ENABLE_ASSERT
 #define PIK_ASSERT(condition)                                   \
   while (!(condition)) {                                        \
@@ -53,28 +36,24 @@ enum class Status {
     abort();                                                   \
   }
 
-// Evaluates an expression (typically function call) returning a Status;
-// if the value is not OK, returns that value from the current function.
-#define PIK_RETURN_IF_ERROR(expression) \
-  for (;;) {                            \
-    const Status status = (expression); \
-    if (status != Status::OK) {         \
-      return status;                    \
-    }                                   \
-    break;                              \
-  }
-
 // Annotation for the location where an error condition is first noticed.
 // Error codes are too unspecific to pinpoint the exact location, so we
-// add a build flag crashes and dumps stack at the actual error source.
+// add a build flag that crashes and dumps stack at the actual error source.
 #ifdef PIK_CRASH_ON_ERROR
-#define PIK_NOTIFY_ERROR(message_string)                                    \
-  for (;;) {                                                                \
-    printf("Pik failure at %s:%d: %s", __FILE__, __LINE__, message_string); \
-    abort();                                                                \
+inline bool PikFailure(const char* f, int l, const char* msg) {
+  for (;;) {
+    printf("Pik failure at %s:%d: %s", f, l, msg);
+    abort();
   }
+  return false;
+}
+#define PIK_NOTIFY_ERROR(message_string)                                \
+  PikFailure(__FILE__, __LINE__, message_string);
+#define PIK_FAILURE(message_string)                        \
+  PikFailure(__FILE__, __LINE__, message_string);
 #else
 #define PIK_NOTIFY_ERROR(message_string)
+#define PIK_FAILURE(message_string) false
 #endif
 
 }  // namespace pik

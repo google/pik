@@ -43,7 +43,7 @@ int Compress(const char* pathname_in, const char* distance,
   params.butteraugli_distance = butteraugli_distance;
   Bytes compressed;
   PikInfo aux_out;
-  if (PixelsToPik(params, in, &compressed, &aux_out) != Status::OK) {
+  if (!PixelsToPik(params, in, &compressed, &aux_out)) {
     fprintf(stderr, "Failed to compress.\n");
     return 1;
   }

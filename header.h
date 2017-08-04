@@ -79,10 +79,10 @@ struct Header {
 // Returns an upper bound on the number of bytes needed to store a Header.
 size_t MaxCompressedHeaderSize();
 
-Status LoadHeader(BitSource* const PIK_RESTRICT source,
-                  Header* const PIK_RESTRICT header);
+bool LoadHeader(BitSource* const PIK_RESTRICT source,
+                Header* const PIK_RESTRICT header);
 
-Status StoreHeader(const Header& header, BitSink* const PIK_RESTRICT sink);
+bool StoreHeader(const Header& header, BitSink* const PIK_RESTRICT sink);
 
 // A "section" is optional metadata that is only read from/written to the
 // compressed stream if needed. Adding sections is the only way to extend
