@@ -469,18 +469,18 @@ std::string CompressToTargetSize(const Image3F& opsin_orig,
 
 }  // namespace
 
-Status PixelsToPik(const CompressParams& params, const Image3B& planes,
-                   Bytes* compressed, PikInfo* aux_out) {
+bool PixelsToPik(const CompressParams& params, const Image3B& planes,
+                 Bytes* compressed, PikInfo* aux_out) {
   if (planes.xsize() == 0 || planes.ysize() == 0) {
-    return Status::EMPTY_IMAGE;
+    return PIK_FAILURE("Empty image");
   }
   return OpsinToPik(params, OpsinDynamicsImage(planes), compressed, aux_out);
 }
 
-Status OpsinToPik(const CompressParams& params, const Image3F& opsin,
-                  Bytes* compressed, PikInfo* aux_out) {
+bool OpsinToPik(const CompressParams& params, const Image3F& opsin,
+                Bytes* compressed, PikInfo* aux_out) {
   if (opsin.xsize() == 0 || opsin.ysize() == 0) {
-    return Status::EMPTY_IMAGE;
+    return PIK_FAILURE("Empty image");
   }
   const size_t xsize = opsin.xsize();
   const size_t ysize = opsin.ysize();
@@ -503,7 +503,7 @@ Status OpsinToPik(const CompressParams& params, const Image3F& opsin,
   } else if (params.fast_mode) {
     compressed_data = CompressFast(opsin, params, aux_out);
   } else {
-    return Status::NOT_IMPLEMENTED;
+    return PIK_FAILURE("Not implemented");
   }
 
   Header header;
@@ -511,29 +511,29 @@ Status OpsinToPik(const CompressParams& params, const Image3F& opsin,
   header.ysize = ysize;
   compressed->resize(MaxCompressedHeaderSize());
   BitSink sink(compressed->data());
-  PIK_RETURN_IF_ERROR(StoreHeader(header, &sink));
+  if (!StoreHeader(header, &sink)) return false;
   const size_t header_size = sink.Finalize() - compressed->data();
   compressed->resize(header_size);
 
   compressed->insert(compressed->end(), compressed_data.begin(),
                      compressed_data.end());
-  return Status::OK;
+  return true;
 }
 
 
-Status PikToPixels(const DecompressParams& params, const Bytes& compressed,
-                   Image3B* planes, PikInfo* aux_out) {
+bool PikToPixels(const DecompressParams& params, const Bytes& compressed,
+                 Image3B* planes, PikInfo* aux_out) {
   if (compressed.empty()) {
-    return Status::EMPTY_INPUT;
+    return PIK_FAILURE("Empty input.");
   }
   Header header;
   Bytes padded(std::max(MaxCompressedHeaderSize(), compressed.size()));
   memcpy(padded.data(), compressed.data(), compressed.size());
   BitSource source(padded.data());
-  PIK_RETURN_IF_ERROR(LoadHeader(&source, &header));
+  if (!LoadHeader(&source, &header)) return false;
   const uint8_t* const PIK_RESTRICT end = source.Finalize();
   if (header.flags & Header::kWebPLossless) {
-    return Status::INVALID_FORMAT_CODE;
+    return PIK_FAILURE("Invalid format code");
   } else {  // Pik
     std::string encoded_img;
     encoded_img.assign(
@@ -545,22 +545,22 @@ Status PikToPixels(const DecompressParams& params, const Bytes& compressed,
       *planes = img.MoveSRGB();
     }
   }
-  return Status::OK;
+  return true;
 }
 
-Status PikToOpsin(const DecompressParams& params, const Bytes& compressed,
-                  Image3F* opsin, PikInfo* aux_out) {
+bool PikToOpsin(const DecompressParams& params, const Bytes& compressed,
+                Image3F* opsin, PikInfo* aux_out) {
   if (compressed.empty()) {
-    return Status::EMPTY_INPUT;
+    return PIK_FAILURE("Empty input.");
   }
   Header header;
   Bytes padded(std::max(MaxCompressedHeaderSize(), compressed.size()));
   memcpy(padded.data(), compressed.data(), compressed.size());
   BitSource source(padded.data());
-  PIK_RETURN_IF_ERROR(LoadHeader(&source, &header));
+  if (!LoadHeader(&source, &header)) return false;
   const uint8_t* const PIK_RESTRICT end = source.Finalize();
   if (header.flags != 0) {
-    return Status::NOT_IMPLEMENTED;
+    return PIK_FAILURE("Not implemented.");
   }
   std::string encoded_img;
   encoded_img.assign(
@@ -568,7 +568,7 @@ Status PikToOpsin(const DecompressParams& params, const Bytes& compressed,
   CompressedImage img = CompressedImage::Decode(
       header.xsize, header.ysize, encoded_img, aux_out);
   *opsin = img.ToOpsinImage();
-  return Status::OK;
+  return true;
 }
 
 }  // namespace pik

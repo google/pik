@@ -48,21 +48,19 @@ struct DecompressParams {
 
 // TODO(janwas): add 16-bit input path.
 // The input image is an 8-bit SRGB image.
-Status PixelsToPik(const CompressParams& params, const Image3B& planes,
-                   Bytes* compressed, PikInfo* aux_out);
+bool PixelsToPik(const CompressParams& params, const Image3B& planes,
+                 Bytes* compressed, PikInfo* aux_out);
 
 // The input image is an opsin dynamics image.
-Status OpsinToPik(const CompressParams& params, const Image3F& opsin,
-                  Bytes* compressed, PikInfo* aux_out);
+bool OpsinToPik(const CompressParams& params, const Image3F& opsin,
+                Bytes* compressed, PikInfo* aux_out);
 
 
-Status PikToPixels(const DecompressParams& params, const Bytes& compressed,
-                   Image3B* planes, PikInfo* aux_out);
+bool PikToPixels(const DecompressParams& params, const Bytes& compressed,
+                 Image3B* planes, PikInfo* aux_out);
 
-Status PikToOpsin(const DecompressParams& params, const Bytes& compressed,
-                  Image3F* opsin, PikInfo* aux_out);
-
-Status AnalyzePik(const Bytes& compressed, PikInfo* info);
+bool PikToOpsin(const DecompressParams& params, const Bytes& compressed,
+                Image3F* opsin, PikInfo* aux_out);
 
 }  // namespace pik
 

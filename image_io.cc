@@ -55,8 +55,7 @@ class FileWrapper {
 bool ReadImage(ImageFormatPNM, const std::string& pathname, ImageB* image) {
   FileWrapper f(pathname, "rb");
   if (f == nullptr) {
-    PIK_NOTIFY_ERROR("File open");
-    return false;
+    return PIK_FAILURE("File open");
   }
 
   int mode;
@@ -64,12 +63,10 @@ bool ReadImage(ImageFormatPNM, const std::string& pathname, ImageB* image) {
   const int num_fields =
       fscanf(f, "P%d\n%zu %zu\n255\n", &mode, &xsize, &ysize);
   if (num_fields != 3) {
-    PIK_NOTIFY_ERROR("Read header");
-    return false;
+    return PIK_FAILURE("Read header");
   }
   if (mode != 5) {
-    PIK_NOTIFY_ERROR("Not grayscale");
-    return false;
+    return PIK_FAILURE("Not grayscale");
   }
 
   *image = ImageB(xsize, ysize);
@@ -84,8 +81,7 @@ bool ReadImage(ImageFormatPNM, const std::string& pathname, ImageB* image) {
 bool ReadImage(ImageFormatPNM, const std::string& pathname, Image3B* image) {
   FileWrapper f(pathname, "rb");
   if (f == nullptr) {
-    PIK_NOTIFY_ERROR("File open");
-    return false;
+    return PIK_FAILURE("File open");
   }
 
   int mode;
@@ -93,12 +89,10 @@ bool ReadImage(ImageFormatPNM, const std::string& pathname, Image3B* image) {
   const int num_fields =
       fscanf(f, "P%d\n%zu %zu\n255\n", &mode, &xsize, &ysize);
   if (num_fields != 3) {
-    PIK_NOTIFY_ERROR("Read header");
-    return false;
+    return PIK_FAILURE("Read header");
   }
   if (mode != 6) {
-    PIK_NOTIFY_ERROR("Not RGB");
-    return false;
+    return PIK_FAILURE("Not RGB");
   }
 
   const size_t bytes_per_row = xsize * 3;
@@ -115,8 +109,7 @@ bool WriteImage(ImageFormatPNM, const ImageB& image,
                 const std::string& pathname) {
   FileWrapper f(pathname, "wb");
   if (f == nullptr) {
-    PIK_NOTIFY_ERROR("File open");
-    return false;
+    return PIK_FAILURE("File open");
   }
 
   const int ret =
@@ -134,8 +127,7 @@ bool WriteImage(ImageFormatPNM, const Image3B& image3,
                 const std::string& pathname) {
   FileWrapper f(pathname, "wb");
   if (f == nullptr) {
-    PIK_NOTIFY_ERROR("File open");
-    return false;
+    return PIK_FAILURE("File open");
   }
 
   const int ret =
@@ -235,8 +227,7 @@ class Y4MReader {
 bool ReadImage(ImageFormatY4M, const std::string& pathname, Image3B* image) {
   FileWrapper f(pathname, "rb");
   if (f == nullptr) {
-    PIK_NOTIFY_ERROR("File open");
-    return false;
+    return PIK_FAILURE("File open");
   }
   Y4MReader reader(f);
   if (!reader.ReadHeader()) {
@@ -250,8 +241,7 @@ bool WriteImage(ImageFormatY4M, const Image3B& image3,
                 const std::string& pathname) {
   FileWrapper f(pathname, "wb");
   if (f == nullptr) {
-    PIK_NOTIFY_ERROR("File open");
-    return false;
+    return PIK_FAILURE("File open");
   }
 
   const int ret =
@@ -285,20 +275,17 @@ class PngReader {
                   size_t* PIK_RESTRICT num_planes,
                   size_t* PIK_RESTRICT bit_depth) {
     if (png_ == nullptr || info_ == nullptr) {
-      PIK_NOTIFY_ERROR("PNG");
-      return false;
+      return PIK_FAILURE("PNG");
     }
 
 #if PIK_PORTABLE_IO
     if (file_ == nullptr) {
-      PIK_NOTIFY_ERROR("File open");
-      return false;
+      return PIK_FAILURE("File open");
     }
 #endif
 
     if (setjmp(png_jmpbuf(png_)) != 0) {
-      PIK_NOTIFY_ERROR("PNG");
-      return false;
+      return PIK_FAILURE("PNG");
     }
 
 #if PIK_PORTABLE_IO
@@ -363,12 +350,10 @@ bool ReadPNGImage(const std::string& pathname, const int bias,
     return false;
   }
   if (num_planes != 1) {
-    PIK_NOTIFY_ERROR("Wrong #planes");
-    return false;
+    return PIK_FAILURE("Wrong #planes");
   }
   if (bit_depth != 8 && bit_depth != 16) {
-    PIK_NOTIFY_ERROR("Wrong bit-depth");
-    return false;
+    return PIK_FAILURE("Wrong bit-depth");
   }
   *image = Image<T>(xsize, ysize);
   png_bytep* const interleaved_rows = reader.Rows();
@@ -399,13 +384,11 @@ bool ReadPNGImage3(const std::string& pathname, const int bias,
   if (!reader.ReadHeader(&xsize, &ysize, &num_planes, &bit_depth)) {
     return false;
   }
-  if (num_planes != 1 && num_planes != 3) {
-    PIK_NOTIFY_ERROR("Wrong #planes");
-    return false;
+  if (num_planes < 1 || num_planes > 4) {
+    return PIK_FAILURE("Wrong #planes");
   }
   if (bit_depth != 8 && bit_depth != 16) {
-    PIK_NOTIFY_ERROR("Wrong bit-depth");
-    return false;
+    return PIK_FAILURE("Wrong bit-depth");
   }
   *image = Image3<T>(xsize, ysize);
   png_bytep* const interleaved_rows = reader.Rows();
@@ -423,13 +406,35 @@ bool ReadPNGImage3(const std::string& pathname, const int bias,
         }
       } else {
         for (size_t x = 0; x < xsize; ++x) {
-          rows[0][x] = ReadFromU16<T>(&interleaved_row[stride * x], bias);
-          rows[1][x] = ReadFromU16<T>(&interleaved_row[stride * x], bias);
-          rows[2][x] = ReadFromU16<T>(&interleaved_row[stride * x], bias);
+          rows[0][x] = rows[1][x] = rows[2][x] =
+              ReadFromU16<T>(&interleaved_row[stride * x], bias);
         }
       }
     }
-  } else {
+  } else if (num_planes == 2) {
+    for (size_t y = 0; y < ysize; ++y) {
+      const uint8_t* const PIK_RESTRICT interleaved_row = interleaved_rows[y];
+      auto rows = image->Row(y);
+      if (stride == 1) {
+        for (size_t x = 0; x < xsize; ++x) {
+          rows[0][x] = rows[1][x] = rows[2][x] =
+              ReadFromU8<T>(&interleaved_row[2 * x + 0], bias);
+          if (ReadFromU8<T>(&interleaved_row[2 * x + 1], bias) != 255) {
+            return PIK_FAILURE("Translucent PNG not supported");
+          }
+        }
+      } else {
+        for (size_t x = 0; x < xsize; ++x) {
+          rows[0][x] = rows[1][x] = rows[2][x] =
+              ReadFromU16<T>(&interleaved_row[stride * (2 * x + 0)], bias);
+          if (ReadFromU16<uint16_t>(
+              &interleaved_row[stride * (2 * x + 1)], bias) != 65535) {
+            return PIK_FAILURE("Translucent PNG not supported");
+          }
+        }
+      }
+    }
+  } else if (num_planes == 3) {
     for (size_t y = 0; y < ysize; ++y) {
       const uint8_t* const PIK_RESTRICT interleaved_row = interleaved_rows[y];
       auto rows = image->Row(y);
@@ -447,6 +452,34 @@ bool ReadPNGImage3(const std::string& pathname, const int bias,
               ReadFromU16<T>(&interleaved_row[stride * (3 * x + 1)], bias);
           rows[2][x] =
               ReadFromU16<T>(&interleaved_row[stride * (3 * x + 2)], bias);
+        }
+      }
+    }
+  } else /* if (num_planes == 4) */ {
+    for (size_t y = 0; y < ysize; ++y) {
+      const uint8_t* const PIK_RESTRICT interleaved_row = interleaved_rows[y];
+      auto rows = image->Row(y);
+      if (stride == 1) {
+        for (size_t x = 0; x < xsize; ++x) {
+          rows[0][x] = ReadFromU8<T>(&interleaved_row[4 * x + 0], bias);
+          rows[1][x] = ReadFromU8<T>(&interleaved_row[4 * x + 1], bias);
+          rows[2][x] = ReadFromU8<T>(&interleaved_row[4 * x + 2], bias);
+          if (ReadFromU8<T>(&interleaved_row[4 * x + 3], bias) != 255) {
+            return PIK_FAILURE("Translucent PNG not supported");
+          }
+        }
+      } else {
+        for (size_t x = 0; x < xsize; ++x) {
+          rows[0][x] =
+              ReadFromU16<T>(&interleaved_row[stride * (4 * x + 0)], bias);
+          rows[1][x] =
+              ReadFromU16<T>(&interleaved_row[stride * (4 * x + 1)], bias);
+          rows[2][x] =
+              ReadFromU16<T>(&interleaved_row[stride * (4 * x + 2)], bias);
+          if (ReadFromU16<uint16_t>(
+              &interleaved_row[stride * (4 * x + 3)], bias) != 65535) {
+            return PIK_FAILURE("Translucent PNG not supported");
+          }
         }
       }
     }
@@ -501,20 +534,17 @@ class PngWriter {
 
     xsize_ = image.xsize();
     if (png_ == nullptr || info_ == nullptr) {
-      PIK_NOTIFY_ERROR("PNG");
-      return false;
+      return PIK_FAILURE("PNG");
     }
 
 #if PIK_PORTABLE_IO
     if (file_ == nullptr) {
-      PIK_NOTIFY_ERROR("File open");
-      return false;
+      return PIK_FAILURE("File open");
     }
 #endif
 
     if (setjmp(png_jmpbuf(png_)) != 0) {
-      PIK_NOTIFY_ERROR("PNG");
-      return false;
+      return PIK_FAILURE("PNG");
     }
 
     if (sizeof(T) != 1 || Image::kNumPlanes != 1) {
@@ -537,8 +567,7 @@ class PngWriter {
         color_type = PNG_COLOR_TYPE_RGBA;
         break;
       default:
-        PIK_NOTIFY_ERROR("Wrong #planes");
-        return false;
+        return PIK_FAILURE("Wrong #planes");
     }
 
     png_set_IHDR(png_, info_, xsize_, image.ysize(), sizeof(T) * 8, color_type,
@@ -683,8 +712,7 @@ void jpeg_catch_error(j_common_ptr cinfo) {
 bool ReadImage(ImageFormatJPG, const std::string& pathname, Image3B* rgb) {
   FileWrapper f(pathname, "rb");
   if (f == nullptr) {
-    PIK_NOTIFY_ERROR("File open");
-    return false;
+    return PIK_FAILURE("File open");
   }
 
   jpeg_decompress_struct cinfo;
@@ -744,8 +772,7 @@ bool ReadImage(ImageFormatJPG, const std::string& pathname, Image3B* rgb) {
       break;
 
     default:
-      PIK_NOTIFY_ERROR("Unsupported color space");
-      return false;
+      return PIK_FAILURE("Unsupported color space");
   }
 
   jpeg_finish_decompress(&cinfo);
@@ -794,12 +821,10 @@ class FieldCoder {
     char buf[kMaxChars];
     const int bytes_written = snprintf(buf, sizeof(buf), "%zu ", field);
     if (bytes_written <= 0) {
-      PIK_NOTIFY_ERROR("Encoding failed");
-      return false;
+      return PIK_FAILURE("Encoding failed");
     }
     if (bytes_written > kMaxChars) {
-      PIK_NOTIFY_ERROR("Length exceeded");
-      return false;
+      return PIK_FAILURE("Length exceeded");
     }
     memcpy(*pos, buf, bytes_written + 1);  // includes null terminator
     *pos += bytes_written;
@@ -810,13 +835,11 @@ class FieldCoder {
     int bytes_read = 0;
     const int num_FieldCoder = sscanf(*pos, "%30zu %n", field, &bytes_read);
     if (num_FieldCoder != 1) {
-      PIK_NOTIFY_ERROR("Decoding failed");
-      return false;
+      return PIK_FAILURE("Decoding failed");
     }
     PIK_CHECK(bytes_read > 0);
     if (bytes_read > kMaxChars) {
-      PIK_NOTIFY_ERROR("Length exceeded");
-      return false;
+      return PIK_FAILURE("Length exceeded");
     }
     *pos += bytes_read;
     return true;
@@ -832,20 +855,17 @@ class HeaderIO {
  public:
   static bool Read(const FileWrapper& f, PlanesHeader* header) {
     if (f == nullptr) {
-      PIK_NOTIFY_ERROR("File open");
-      return false;
+      return PIK_FAILURE("File open");
     }
 
     char storage[kPaddedSize] = {0};
     const size_t bytes_read = fread(storage, 1, kSize, f);
     if (bytes_read != kSize) {
-      PIK_NOTIFY_ERROR("Read header");
-      return false;
+      return PIK_FAILURE("Read header");
     }
 
     if (memcmp(storage, Signature(), 4) != 0) {
-      PIK_NOTIFY_ERROR("Signature mismatch");
-      return false;
+      return PIK_FAILURE("Signature mismatch");
     }
     header->type = storage[4];
     char* pos = storage + 5;
@@ -856,8 +876,7 @@ class HeaderIO {
       return false;
     }
     if (pos > storage + kSize) {
-      PIK_NOTIFY_ERROR("Header size exceeded");
-      return false;
+      return PIK_FAILURE("Header size exceeded");
     }
     if (!SanityCheck(*header)) {
       return false;
@@ -869,8 +888,7 @@ class HeaderIO {
     PIK_CHECK(SanityCheck(header));
 
     if (f == nullptr) {
-      PIK_NOTIFY_ERROR("File open");
-      return false;
+      return PIK_FAILURE("File open");
     }
 
     char storage[kPaddedSize] = {0};
@@ -884,14 +902,12 @@ class HeaderIO {
       return false;
     }
     if (pos > storage + kSize) {
-      PIK_NOTIFY_ERROR("Header size exceeded");
-      return false;
+      return PIK_FAILURE("Header size exceeded");
     }
 
     const size_t bytes_written = fwrite(storage, 1, kSize, *f);
     if (bytes_written != kSize) {
-      PIK_NOTIFY_ERROR("Write header");
-      return false;
+      return PIK_FAILURE("Write header");
     }
     return true;
   }
@@ -906,17 +922,14 @@ class HeaderIO {
   // Returns false if "header" is definitely invalid.
   static bool SanityCheck(const PlanesHeader& header) {
     if (header.xsize == 0 || header.ysize == 0 || header.num_planes == 0) {
-      PIK_NOTIFY_ERROR("Zero dimension");
-      return false;
+      return PIK_FAILURE("Zero dimension");
     }
     const size_t component_size = header.ComponentSize();
     if (component_size == 0) {
-      PIK_NOTIFY_ERROR("Invalid type");
-      return false;
+      return PIK_FAILURE("Invalid type");
     }
     if (header.bytes_per_row < header.xsize * component_size) {
-      PIK_NOTIFY_ERROR("Insufficient row size");
-      return false;
+      return PIK_FAILURE("Insufficient row size");
     }
     return true;
   }
@@ -960,8 +973,7 @@ bool StorePlanes(const PlanesHeader& header,
   for (const uint8_t* plane : planes) {
     const size_t bytes_written = fwrite(plane, 1, plane_size, f);
     if (bytes_written != plane_size) {
-      PIK_NOTIFY_ERROR("Write planes");
-      return false;
+      return PIK_FAILURE("Write planes");
     }
   }
 
@@ -979,8 +991,7 @@ bool ReadImage(ImageFormatPlanes, const std::string& pathname,
   }
 
   if (header.type != PlanesHeader::CharFromType(T())) {
-    PIK_NOTIFY_ERROR("Type mismatch");
-    return false;
+    return PIK_FAILURE("Type mismatch");
   }
 
   // Takes ownership.
@@ -999,8 +1010,7 @@ bool ReadImage(ImageFormatPlanes, const std::string& pathname,
   }
 
   if (header.type != PlanesHeader::CharFromType(T())) {
-    PIK_NOTIFY_ERROR("Type mismatch");
-    return false;
+    return PIK_FAILURE("Type mismatch");
   }
 
   // All but the first plane refer to the same storage.

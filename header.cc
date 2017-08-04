@@ -91,8 +91,7 @@ class U32Coder {
       return true;
     }
 
-    PIK_NOTIFY_ERROR("No feasible selector found");
-    return false;
+    return PIK_FAILURE("No feasible selector found");
   }
 
  private:
@@ -241,19 +240,19 @@ size_t MaxCompressedHeaderSize() {
   return size + 8;  // plus BitSink safety margin.
 }
 
-Status LoadHeader(BitSource* const PIK_RESTRICT source,
-                  Header* const PIK_RESTRICT header) {
+bool LoadHeader(BitSource* const PIK_RESTRICT source,
+                Header* const PIK_RESTRICT header) {
   if (!Magic::Verify(source)) {
-    return Status::WRONG_MAGIC;
+    return PIK_FAILURE("Wrong magic bytes.");
   }
 
   FieldReader reader(source);
   header->VisitFields(&reader);
-  return Status::OK;
+  return true;
 }
 
-Status StoreHeader(const Header& header_const,
-                   BitSink* const PIK_RESTRICT sink) {
+bool StoreHeader(const Header& header_const,
+                 BitSink* const PIK_RESTRICT sink) {
   // VisitFields requires a non-const pointer, but we do not actually
   // modify the underlying memory.
   Header* const PIK_RESTRICT header = const_cast<Header*>(&header_const);
@@ -262,7 +261,7 @@ Status StoreHeader(const Header& header_const,
 
   FieldWriter writer(sink);
   header->VisitFields(&writer);
-  return writer.OK() ? Status::OK : Status::RANGE_EXCEEEDED;
+  return writer.OK() ? true : PIK_FAILURE("Range exceeded.");
 }
 
 // Indicates which sections are present in the stream. This is required for

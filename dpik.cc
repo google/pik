@@ -55,7 +55,7 @@ int Decompress(const char* pathname_in, const char* pathname_out) {
   DecompressParams params;
   Image3B planes;
   PikInfo info;
-  if (PikToPixels(params, compressed, &planes, &info) != Status::OK) {
+  if (!PikToPixels(params, compressed, &planes, &info)) {
     fprintf(stderr, "Failed to decompress.\n");
     return 1;
   }
