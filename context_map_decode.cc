@@ -73,7 +73,6 @@ bool DecodeContextMap(std::vector<uint8_t>* context_map,
   if (use_rle_for_zeros) {
     max_run_length_prefix = input->ReadBits(4) + 1;
   }
-  std::vector<HuffmanCode> table(kMaxHuffmanTableSize);
   HuffmanDecodingData entropy;
   if (!entropy.ReadFromBitStream(input)) {
     return PIK_FAILURE("Invalid histogram data.");

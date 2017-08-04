@@ -16,6 +16,7 @@
 
 #include <stdint.h>
 #include <cstring>
+#include <vector>
 
 namespace pik {
 
@@ -63,15 +64,15 @@ static PIK_INLINE int NextTableBitSize(const uint16_t* const count, int len,
 
 /* Builds Huffman lookup table assuming code lengths are in symbol order. */
 /* Returns false in case of error (invalid tree or memory error). */
-int BuildHuffmanTable(HuffmanCode* root_table,
-                      int root_bits,
-                      const uint8_t* const code_lengths,
-                      int code_lengths_size,
-                      uint16_t *count) {
+void BuildHuffmanTable(std::vector<HuffmanCode>* table,
+                       int root_bits,
+                       const uint8_t* const code_lengths,
+                       int code_lengths_size,
+                       uint16_t *count) {
   HuffmanCode code;    /* current table entry */
-  HuffmanCode* table;  /* next available space in table */
+  int next;            /* next available space in table */
   int len;             /* current code length */
-  int symbol;     /* symbol index in original or sorted table */
+  int symbol;          /* symbol index in original or sorted table */
   int key;             /* reversed prefix code */
   int step;            /* step size to replicate values in current table */
   int low;             /* low bits for current root entry */
@@ -104,19 +105,20 @@ int BuildHuffmanTable(HuffmanCode* root_table,
     }
   }
 
-  table = root_table;
+  next = 0;
   table_bits = root_bits;
   table_size = 1 << table_bits;
   total_size = table_size;
+  table->resize(total_size);
 
   /* special case code with only one value */
   if (offset[kHuffmanMaxLength] == 1) {
     code.bits = 0;
     code.value = static_cast<uint16_t>(sorted[0]);
     for (key = 0; key < total_size; ++key) {
-      table[key] = code;
+      (*table)[key] = code;
     }
-    return total_size;
+    return;
   }
 
   /* fill in root table */
@@ -133,7 +135,7 @@ int BuildHuffmanTable(HuffmanCode* root_table,
   do {
     for (; count[code.bits] != 0; --count[code.bits]) {
       code.value = static_cast<uint16_t>(sorted[symbol++]);
-      ReplicateValue(&table[key], step, table_size, code);
+      ReplicateValue(&(*table)[key], step, table_size, code);
       key = GetNextKey(key, code.bits);
     }
     step <<= 1;
@@ -142,7 +144,8 @@ int BuildHuffmanTable(HuffmanCode* root_table,
   /* if root_bits != table_bits we only created one fraction of the */
   /* table, and we need to replicate it now. */
   while (total_size != table_size) {
-    memcpy(&table[table_size], &table[0], table_size * sizeof(table[0]));
+    memcpy(&(*table)[table_size], &(*table)[0],
+           table_size * sizeof((*table)[0]));
     table_size <<= 1;
   }
 
@@ -152,23 +155,22 @@ int BuildHuffmanTable(HuffmanCode* root_table,
   for (len = root_bits + 1, step = 2; len <= max_length; ++len, step <<= 1) {
     for (; count[len] != 0; --count[len]) {
       if ((key & mask) != low) {
-        table += table_size;
+        next += table_size;
         table_bits = NextTableBitSize(count, len, root_bits);
         table_size = 1 << table_bits;
         total_size += table_size;
+        table->resize(total_size);
         low = key & mask;
-        root_table[low].bits = static_cast<uint8_t>(table_bits + root_bits);
-        root_table[low].value =
-            static_cast<uint16_t>((table - root_table) - low);
+        (*table)[low].bits = static_cast<uint8_t>(table_bits + root_bits);
+        (*table)[low].value = static_cast<uint16_t>(next - low);
       }
       code.bits = static_cast<uint8_t>(len - root_bits);
       code.value = static_cast<uint16_t>(sorted[symbol++]);
-      ReplicateValue(&table[key >> root_bits], step, table_size, code);
+      ReplicateValue(&(*table)[next + (key >> root_bits)],
+                     step, table_size, code);
       key = GetNextKey(key, len);
     }
   }
-
-  return total_size;
 }
 
 // Decodes a number in the range [0..65535], by reading 1 - 20 bits.
@@ -192,22 +194,20 @@ int ReadHuffmanCodeLengths(
   int repeat = 0;
   uint8_t repeat_code_len = 0;
   int space = 32768;
-  HuffmanCode table[32];
+  std::vector<HuffmanCode> table;
 
   uint16_t counts[16] = { 0 };
   for (int i = 0; i < kCodeLengthCodes; ++i) {
     ++counts[code_length_code_lengths[i]];
   }
-  if (!BuildHuffmanTable(table, 5,
-                         code_length_code_lengths,
-                         kCodeLengthCodes, &counts[0])) {
-    return 0;
-  }
+  BuildHuffmanTable(&table, 5,
+                    code_length_code_lengths,
+                    kCodeLengthCodes, &counts[0]);
 
   const int max_num_symbols = 1 << 16;
   code_lengths->reserve(256);
   while (code_lengths->size() < max_num_symbols && space > 0) {
-    const HuffmanCode* p = table;
+    const HuffmanCode* p = &table[0];
     uint8_t code_len;
     input->FillBitBuffer();
     p += input->PeekFixedBits<5>();
@@ -259,7 +259,6 @@ int ReadHuffmanCodeLengths(
 
 bool HuffmanDecodingData::ReadFromBitStream(BitReader* input) {
   int ok = 1;
-  int table_size = 0;
   int simple_code_or_skip;
 
   std::vector<uint8_t> code_lengths;
@@ -337,17 +336,17 @@ bool HuffmanDecodingData::ReadFromBitStream(BitReader* input) {
         ReadHuffmanCodeLengths(code_length_code_lengths,
                                &code_lengths, input);
   }
+  if (!ok) {
+    return false;
+  }
   uint16_t counts[16] = { 0 };
   for (int i = 0; i < code_lengths.size(); ++i) {
     ++counts[code_lengths[i]];
   }
-  if (ok) {
-    table_size = BuildHuffmanTable(&table_[0], kHuffmanTableBits,
-                                   &code_lengths[0], code_lengths.size(),
-                                   &counts[0]);
-    table_.resize(table_size);
-  }
-  return (table_size > 0);
+  BuildHuffmanTable(&table_, kHuffmanTableBits,
+                    &code_lengths[0], code_lengths.size(),
+                    &counts[0]);
+  return true;
 }
 
 }  // namespace pik

@@ -27,7 +27,6 @@ namespace pik {
 static const int kHuffmanMaxLength = 15;
 static const int kHuffmanTableMask = 0xff;
 static const int kHuffmanTableBits = 8;
-static const int kMaxHuffmanTableSize = 2048;
 
 typedef struct {
   uint8_t bits;     /* number of bits used for this symbol */
@@ -35,7 +34,9 @@ typedef struct {
 } HuffmanCode;
 
 struct HuffmanDecodingData {
-  HuffmanDecodingData() : table_(kMaxHuffmanTableSize) {}
+  HuffmanDecodingData() {
+    table_.reserve(2048);
+  }
 
   // Decodes the Huffman code lengths from the bit-stream and fills in the
   // pre-allocated table with the corresponding 2-level Huffman decoding table.
