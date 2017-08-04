@@ -784,8 +784,7 @@ bool ReadImage(ImageFormatJPG, const std::string& pathname, Image3B* rgb) {
 bool WriteImage(ImageFormatJPG, const Image3B& rgb, const std::string& pathname) {
   FileWrapper f(pathname, "wb");
   if (f == nullptr) {
-    PIK_FAILURE("File open");
-    return false;
+    return PIK_FAILURE("File open");
   }
 
   jpeg_compress_struct cinfo;
