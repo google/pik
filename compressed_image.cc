@@ -21,6 +21,7 @@
 #include <limits>
 #include <vector>
 
+#include "bit_reader.h"
 #include "compiler_specific.h"
 #include "dc_predictor.h"
 #include "dct.h"
@@ -354,7 +355,7 @@ std::string CompressedImage::Encode() const {
     pik_info_->ytob_image_size = ytob_code.size();
     pik_info_->quant_image_size = quant_code.size();
   }
-  return ytob_code + quant_code + dc_code + ac_code;
+  return PadTo4Bytes(ytob_code + quant_code + dc_code + ac_code);
 }
 
 std::string CompressedImage::EncodeFast() const {
@@ -373,7 +374,7 @@ std::string CompressedImage::EncodeFast() const {
     pik_info_->ytob_image_size = ytob_code.size();
     pik_info_->quant_image_size = quant_code.size();
   }
-  return ytob_code + quant_code + dc_code + ac_code;
+  return PadTo4Bytes(ytob_code + quant_code + dc_code + ac_code);
 }
 
 // static
@@ -383,16 +384,23 @@ CompressedImage CompressedImage::Decode(int xsize, int ysize,
   CompressedImage img(xsize, ysize, info);
   const uint8_t* input = reinterpret_cast<const uint8_t*>(data.data());
   const size_t len = data.size();
-  size_t pos = 0;
-  img.ytob_dc_ = input[pos++];
-  if (!DecodePlane(input + pos, len - pos, &pos, 0, 255, &img.ytob_ac_) ||
-      !img.quantizer_.Decode(input + pos, len - pos, &pos) ||
-      !DecodeImage(input + pos, len - pos, &pos, kBlockSize,
-                   &img.dct_coeffs_) ||
-      !DecodeAC(input + pos, len - pos, &pos, &img.dct_coeffs_)) {
+  if (len == 0) {
+    PIK_NOTIFY_ERROR("Empty compressed data.");
     return CompressedImage(0, 0, nullptr);
   }
-  if (pos != len) {
+  if (len % 4 != 0) {
+    PIK_NOTIFY_ERROR("Invalid padding.");
+    return CompressedImage(0, 0, nullptr);
+  }
+  BitReader br(input, len);
+  img.ytob_dc_ = br.ReadBits(8);
+  if (!DecodePlane(&br, 0, 255, &img.ytob_ac_) ||
+      !img.quantizer_.Decode(&br) ||
+      !DecodeImage(&br, kBlockSize, &img.dct_coeffs_) ||
+      !DecodeAC(&br, &img.dct_coeffs_)) {
+    return CompressedImage(0, 0, nullptr);
+  }
+  if (br.Position() != len) {
     PIK_NOTIFY_ERROR("Pik compressed data size mismatch.");
     return CompressedImage(0, 0, nullptr);
   }

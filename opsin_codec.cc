@@ -338,16 +338,16 @@ struct EncodeImageInternal {
     builder.BuildAndStoreEntropyCodes(
         &codes, &context_map, &storage_ix, storage);
     // Close the histogram bit stream.
-    size_t jump_bits = ((storage_ix + 31) & ~31) - storage_ix;
+    size_t jump_bits = ((storage_ix + 7) & ~7) - storage_ix;
     WriteBits(jump_bits, 0, &storage_ix, storage);
-    PIK_ASSERT(storage_ix % 32 == 0);
+    PIK_ASSERT(storage_ix % 8 == 0);
     const size_t histo_bytes = storage_ix >> 3;
     // Entropy encode data.
     SymbolWriter symbol_writer(codes, context_map, &storage_ix, storage);
     ProcessImage3(img, processor, &symbol_writer);
     symbol_writer.FlushToBitStream();
     const size_t data_bits = storage_ix - 8 * histo_bytes;
-    const size_t data_bytes = 4 * ((data_bits + 31) >> 5);
+    const size_t data_bytes = (data_bits + 7) >> 3;
     const int out_size = histo_bytes + data_bytes;
     PIK_CHECK(out_size <= max_out_size);
     output.resize(out_size);
@@ -490,9 +490,9 @@ std::string EncodeACFast(const Image3W& coeffs, PikImageSizeInfo* info) {
     codes.emplace_back(std::move(code));
   }
   // Close the histogram bit stream.
-  size_t jump_bits = ((storage_ix + 31) & ~31) - storage_ix;
+  size_t jump_bits = ((storage_ix + 7) & ~7) - storage_ix;
   WriteBits(jump_bits, 0, &storage_ix, storage);
-  PIK_ASSERT(storage_ix % 32 == 0);
+  PIK_ASSERT(storage_ix % 8 == 0);
   const size_t histo_bytes = storage_ix >> 3;
   // Entropy encode data.
   WriteBits(12, 0, &storage_ix, storage);  // zig-zag coefficient order
@@ -531,7 +531,7 @@ std::string EncodeACFast(const Image3W& coeffs, PikImageSizeInfo* info) {
     }
   }
   const size_t data_bits = storage_ix - 8 * histo_bytes;
-  const size_t data_bytes = 4 * ((data_bits + 31) >> 5);
+  const size_t data_bytes = (data_bits + 7) >> 3;
   const int out_size = histo_bytes + data_bytes;
   PIK_CHECK(out_size <= max_out_size);
   output.resize(out_size);
@@ -723,52 +723,46 @@ class ANSSymbolReader {
   std::vector<ANSSymbolInfo> info_;
 };
 
-bool DecodeHistograms(const uint8_t* data, size_t len,
-                      size_t* total_bytes_read,
+bool DecodeHistograms(BitReader* br,
                       const size_t num_contexts,
                       const uint8_t* symbol_lut, size_t symbol_lut_size,
                       ANSSymbolReader* decoder,
                       std::vector<uint8_t>* context_map) {
-  BitReader in(data, len);
   size_t num_histograms = 1;
   context_map->resize(num_contexts);
   if (num_contexts > 1) {
-    if (!DecodeContextMap(context_map, &num_histograms, &in)) return false;
+    if (!DecodeContextMap(context_map, &num_histograms, br)) return false;
   }
   if (!decoder->DecodeHistograms(num_histograms, symbol_lut, symbol_lut_size,
-                                 &in)) {
+                                 br)) {
     return false;
   }
-  *total_bytes_read += in.Position();
+  br->JumpToByteBoundary();
   return true;
 }
 
-bool DecodeImageData(const uint8_t* const PIK_RESTRICT data, const size_t len,
-                     size_t* const PIK_RESTRICT total_bytes_read,
+bool DecodeImageData(BitReader* const PIK_RESTRICT br,
                      const std::vector<uint8_t>& context_map,
                      const int stride,
                      ANSSymbolReader* const PIK_RESTRICT decoder,
                      Image3W* const PIK_RESTRICT img) {
-  uint8_t dummy_buffer[4] = { 0 };
-  PIK_CHECK(len >= 4 || len == 0);
-  BitReader br(len == 0 ? dummy_buffer : data, len);
   for (int y = 0; y < img->ysize(); ++y) {
     auto row = img->Row(y);
     for (int x = 0; x < img->xsize(); x += stride) {
       for (int c = 0; c < 3; ++c) {
-        br.FillBitBuffer();
+        br->FillBitBuffer();
         int histo_idx = context_map[c];
-        int s = decoder->ReadSymbol(histo_idx, &br);
+        int s = decoder->ReadSymbol(histo_idx, br);
         if (s > 0) {
-          int bits = br.PeekBits(s);
-          br.Advance(s);
+          int bits = br->PeekBits(s);
+          br->Advance(s);
           s = bits < (1 << (s - 1)) ? bits + ((~0U) << s ) + 1 : bits;
         }
         row[c][x] = s;
       }
     }
   }
-  *total_bytes_read += br.Position();
+  br->JumpToByteBoundary();
   return true;
 }
 
@@ -807,17 +801,13 @@ bool DecodeCoeffOrder(int* order, BitReader* br) {
   return true;
 }
 
-bool DecodeACData(const uint8_t* const PIK_RESTRICT data, const size_t len,
-                  size_t* const PIK_RESTRICT total_bytes_read,
+bool DecodeACData(BitReader* const PIK_RESTRICT br,
                   const std::vector<uint8_t>& context_map,
                   ANSSymbolReader* const PIK_RESTRICT decoder,
                   Image3W* const PIK_RESTRICT coeffs) {
-  uint8_t dummy_buffer[4] = { 0 };
-  PIK_CHECK(len >= 4 || len == 0);
-  BitReader br(len == 0 ? dummy_buffer : data, len);
   int coeff_order[192];
   for (int c = 0; c < 3; ++c) {
-    DecodeCoeffOrder(&coeff_order[c * 64], &br);
+    DecodeCoeffOrder(&coeff_order[c * 64], br);
   }
   for (int y = 0; y < coeffs->ysize(); ++y) {
     auto row = coeffs->Row(y);
@@ -825,23 +815,23 @@ bool DecodeACData(const uint8_t* const PIK_RESTRICT data, const size_t len,
     for (int x = 0; x < coeffs->xsize(); x += 64) {
       for (int c = 0; c < 3; ++c) {
         memset(&row[c][x + 1], 0, 63 * sizeof(row[0][0]));
-        br.FillBitBuffer();
+        br->FillBitBuffer();
         const int context1 = c * 16 + (prev_num_nzeros[c] >> 2);
         int num_nzeros =
-            kIndexLut[decoder->ReadSymbol(context_map[context1], &br)];
+            kIndexLut[decoder->ReadSymbol(context_map[context1], br)];
         prev_num_nzeros[c] = num_nzeros;
         if (num_nzeros == 0) continue;
         const int histo_offset = 48 + c * 120;
         const int context2 = ZeroDensityContext(num_nzeros - 1, 0, 4);
         int histo_idx = context_map[histo_offset + context2];
         for (int k = 1; k < 64 && num_nzeros > 0; ++k) {
-          br.FillBitBuffer();
-          int s = decoder->ReadSymbol(histo_idx, &br);
+          br->FillBitBuffer();
+          int s = decoder->ReadSymbol(histo_idx, br);
           k += (s >> 4);
           s &= 15;
           if (s > 0) {
-            int bits = br.PeekBits(s);
-            br.Advance(s);
+            int bits = br->PeekBits(s);
+            br->Advance(s);
             s = bits < (1 << (s - 1)) ? bits + ((~0U) << s ) + 1 : bits;
             const int context = ZeroDensityContext(num_nzeros - 1, k, 4);
             histo_idx = context_map[histo_offset + context];
@@ -853,19 +843,16 @@ bool DecodeACData(const uint8_t* const PIK_RESTRICT data, const size_t len,
       }
     }
   }
-  *total_bytes_read += br.Position();
+  br->JumpToByteBoundary();
   return true;
 }
 
-size_t DecodeNonZeroValsData(
-    const uint8_t* const PIK_RESTRICT data, const size_t len,
+bool DecodeNonZeroValsData(
+    BitReader* br,
     const std::vector<uint8_t>& context_map,
     ANSSymbolReader* const PIK_RESTRICT decoder,
     std::vector<Image3W>* const PIK_RESTRICT absvals,
     std::vector<Image3W>* const PIK_RESTRICT phases) {
-  uint8_t dummy_buffer[4] = { 0 };
-  PIK_CHECK(len >= 4 || len == 0);
-  BitReader br(len == 0 ? dummy_buffer : data, len);
   for (int i = 0; i < absvals->size(); ++i) {
     for (int y = 0; y < (*absvals)[i].ysize(); ++y) {
       auto row_absvals = (*absvals)[i].Row(y);
@@ -873,73 +860,63 @@ size_t DecodeNonZeroValsData(
       for (int x = 0; x < (*absvals)[i].xsize(); ++x) {
         for (int c = 0; c < 3; ++c) {
           if (row_absvals[c][x] != 0) {
-            br.FillBitBuffer();
+            br->FillBitBuffer();
             int histo_idx1 = context_map[c * absvals->size() + i];
-            row_absvals[c][x] = decoder->ReadSymbol(histo_idx1, &br) + 1;
+            row_absvals[c][x] = decoder->ReadSymbol(histo_idx1, br) + 1;
             int histo_idx2 = context_map[(c + 3) * absvals->size() + i];
             row_phases[c][x] = SignedIntFromSymbol(
-                decoder->ReadSymbol(histo_idx2, &br));
+                decoder->ReadSymbol(histo_idx2, br));
           }
         }
       }
     }
   }
-  return br.Position();
+  br->JumpToByteBoundary();
+  return true;
 }
 
-bool DecodeImage(const uint8_t* data, size_t len,
-                 size_t* total_bytes_read,
-                 int stride,
-                 Image3W* coeffs) {
-  size_t pos = 0;
+bool DecodeImage(BitReader* br, int stride,  Image3W* coeffs) {
   std::vector<uint8_t> context_map;
   ANSSymbolReader decoder;
-  if (!DecodeHistograms(data, len, &pos, CoeffProcessor::num_contexts(),
+  if (!DecodeHistograms(br, CoeffProcessor::num_contexts(),
                         nullptr, 0, &decoder, &context_map) ||
-      !DecodeImageData(data + pos, len - pos, &pos, context_map, stride,
+      !DecodeImageData(br, context_map, stride,
                        &decoder, coeffs)) {
     return false;
   }
   if (!decoder.CheckANSFinalState()) {
     return PIK_FAILURE("ANS cheksum failure.");
   }
-  *total_bytes_read += pos;
   return true;
 }
 
-bool DecodeAC(const uint8_t* data, size_t len, size_t* total_bytes_read,
-              Image3W* coeffs) {
-  size_t pos = 0;
+bool DecodeAC(BitReader* br, Image3W* coeffs) {
   std::vector<uint8_t> context_map;
   ANSSymbolReader decoder;
-  if (!DecodeHistograms(data, len, &pos, ACBlockProcessor::num_contexts(),
+  if (!DecodeHistograms(br, ACBlockProcessor::num_contexts(),
                         kSymbolLut, sizeof(kSymbolLut),
                         &decoder, &context_map) ||
-      !DecodeACData(data + pos, len - pos, &pos, context_map,
-                    &decoder, coeffs)) {
+      !DecodeACData(br, context_map, &decoder, coeffs)) {
     return false;
   }
   if (!decoder.CheckANSFinalState()) {
     return PIK_FAILURE("ANS cheksum failure.");
   }
-  *total_bytes_read += pos;
   return true;
 }
 
-size_t DecodeNonZeroVals(const  uint8_t* data, size_t len,
-                         const size_t num_nonzeros,
-                         std::vector<Image3W>* absvals,
-                         std::vector<Image3W>* phases) {
+bool DecodeNonZeroVals(BitReader* br,
+                       const size_t num_nonzeros,
+                       std::vector<Image3W>* absvals,
+                       std::vector<Image3W>* phases) {
   if (num_nonzeros == 0) return 0;
-  size_t pos = 0;
   std::vector<uint8_t> context_map;
   ANSSymbolReader decoder;
-  DecodeHistograms(data, len, &pos, 6 * absvals->size(), nullptr, 0,
+  DecodeHistograms(br, 6 * absvals->size(), nullptr, 0,
                    &decoder, &context_map);
-  pos += DecodeNonZeroValsData(data + pos, len - pos, context_map,
-                               &decoder, absvals, phases);
+  DecodeNonZeroValsData(br, context_map, &decoder, absvals, phases);
   PIK_CHECK(decoder.CheckANSFinalState());
-  return pos;
+  return true;
 }
 
 class DeltaCodingProcessor {
@@ -1000,7 +977,7 @@ std::string EncodePlane(const Image<int>& img, int minval, int maxval) {
   HuffmanSymbolWriter symbol_writer(codes, context_map, &storage_ix, storage);
   ProcessImage(img, &processor, &symbol_writer);
   symbol_writer.FlushToBitStream();
-  const int out_size = 4 * ((storage_ix + 31) >> 5);
+  const int out_size = (storage_ix + 7) >> 3;
   PIK_CHECK(out_size <= max_out_size);
   output.resize(out_size);
   return output;
@@ -1010,15 +987,12 @@ size_t EncodedPlaneSize(const Image<int>& img, int minval, int maxval) {
   DeltaCodingProcessor processor(minval, maxval, img.xsize());
   HistogramBuilder builder(processor.num_contexts());
   ProcessImage(img, &processor, &builder);
-  return builder.EncodedSize(-1, 2);
+  return builder.EncodedSize(-1, 0);
 }
 
-bool DecodePlane(const uint8_t* data, size_t len, size_t* total_bytes_read,
-                 int minval, int maxval,
-                 Image<int>* img) {
-  BitReader in(data, len);
+bool DecodePlane(BitReader* br, int minval, int maxval, Image<int>* img) {
   HuffmanDecodingData huff;
-  if (!huff.ReadFromBitStream(&in)) {
+  if (!huff.ReadFromBitStream(br)) {
     return PIK_FAILURE("Failed to decode histogram.");
   }
   HuffmanDecoder decoder;
@@ -1026,13 +1000,13 @@ bool DecodePlane(const uint8_t* data, size_t len, size_t* total_bytes_read,
   for (int y = 0; y < img->ysize(); ++y) {
     auto row = img->Row(y);
     for (int x = 0; x < img->xsize(); ++x) {
-      int symbol = decoder.ReadSymbol(huff, &in);
+      int symbol = decoder.ReadSymbol(huff, br);
       int diff = SignedIntFromSymbol(symbol);
       row[x] = diff + processor.PredictVal(x, y, 0);
       processor.SetVal(x, y, 0, row[x]);
     }
   }
-  *total_bytes_read += in.Position();
+  br->JumpToByteBoundary();
   return true;
 }
 

@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include "bit_reader.h"
 #include "ans_encode.h"
 #include "context.h"
 #include "cluster.h"
@@ -49,6 +50,11 @@ const int kNaturalCoeffOrder[80] = {
   63, 63, 63, 63, 63, 63, 63, 63,
   63, 63, 63, 63, 63, 63, 63, 63
 };
+
+PIK_INLINE std::string PadTo4Bytes(const std::string& s) {
+  size_t rem = s.size() % 4;
+  return rem == 0 ? s : s + std::string(4 - rem, 0);
+}
 
 PIK_INLINE void EncodeCoeff(int coeff, int* nbits, int* bits) {
   int coeff_bits = coeff;
@@ -385,27 +391,24 @@ std::string EncodeNonZeroLocations(const std::vector<Image3W>& vals);
 std::string EncodeNonZeroVals(const std::vector<Image3W>& absvals,
                          const std::vector<Image3W>& phases);
 
-size_t DecodeNonZeroLocations(const uint8_t* data, size_t len,
-                              size_t* num_nonzeros,
-                              std::vector<Image3W>* vals);
+bool DecodeNonZeroLocations(BitReader* br,
+                            size_t* num_nzeros,
+                            std::vector<Image3W>* vals);
 
-size_t DecodeNonZeroVals(const uint8_t* data, size_t len,
-                         const size_t num_nonzeros,
-                         std::vector<Image3W>* absvals,
-                         std::vector<Image3W>* phases);
+bool DecodeNonZeroVals(BitReader* br,
+                       const size_t num_nonzeros,
+                       std::vector<Image3W>* absvals,
+                       std::vector<Image3W>* phases);
 
-bool DecodeImage(const uint8_t* data, size_t len, size_t* total_bytes_read,
-                 int stride, Image3W* coeffs);
+bool DecodeImage(BitReader* br, int stride, Image3W* coeffs);
 
-bool DecodeAC(const uint8_t* data, size_t len, size_t* total_bytes_read,
-              Image3W* coeffs);
+bool DecodeAC(BitReader* br,Image3W* coeffs);
 
 std::string EncodePlane(const Image<int>& img, int minval, int maxval);
 
 size_t EncodedPlaneSize(const Image<int>& img, int minval, int maxval);
 
-bool DecodePlane(const uint8_t* data, size_t len, size_t* total_bytes_read,
-                 int minval, int maxval, Image<int>* img);
+bool DecodePlane(BitReader* br, int minval, int maxval, Image<int>* img);
 
 }  // namespace pik
 

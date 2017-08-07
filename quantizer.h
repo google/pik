@@ -22,6 +22,7 @@
 #include <string>
 #include <vector>
 
+#include "bit_reader.h"
 #include "compiler_specific.h"
 #include "image.h"
 
@@ -77,7 +78,7 @@ class Quantizer {
   std::string Encode() const;
   size_t EncodedSize() const;
 
-  bool Decode(const uint8_t* data, size_t len, size_t* total_bytes_read);
+  bool Decode(BitReader* br);
 
   void DumpQuantizationMap() const;
 

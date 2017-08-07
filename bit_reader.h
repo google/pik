@@ -36,7 +36,7 @@ class BitReader {
         val_(static_cast<uint64_t>(data32_[0]) << 32),
         pos32_(1),
         bit_pos_(32) {
-    PIK_ASSERT(len % 32 == 0);
+    PIK_ASSERT(len % 4 == 0);
   }
 
   void FillBitBuffer() {
@@ -69,6 +69,15 @@ class BitReader {
     int bits = PeekBits(nbits);
     bit_pos_ += nbits;
     return bits;
+  }
+
+  uint16_t GetNextWord() {
+    return static_cast<uint16_t>(ReadBits(16));
+  }
+
+  void JumpToByteBoundary() {
+    int rem = bit_pos_ % 8;
+    if (rem > 0) ReadBits(8 - rem);
   }
 
   // Returns the byte position, aligned to 4 bytes, where the next chunk of
