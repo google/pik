@@ -24,9 +24,9 @@ namespace {
 // main() function, within namespace for convenience.
 int Compress(const char* pathname_in, const char* distance,
              const char* pathname_out) {
-  Image3B in;
-  if (!ReadImage(ImageFormatPNG(), pathname_in, &in)) {
-    fprintf(stderr, "Failed to open %s.\n", pathname_in);
+  Image3F in = ReadImage3Linear(pathname_in);
+  if (in.xsize() == 0 || in.ysize() == 0) {
+    fprintf(stderr, "Failed to open image %s.\n", pathname_in);
     return 1;
   }
 

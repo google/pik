@@ -46,9 +46,12 @@ struct CompressParams {
 struct DecompressParams {
 };
 
-// TODO(janwas): add 16-bit input path.
 // The input image is an 8-bit SRGB image.
 bool PixelsToPik(const CompressParams& params, const Image3B& planes,
+                 Bytes* compressed, PikInfo* aux_out);
+
+// The input image is a linear (gamma expanded) sRGB image.
+bool PixelsToPik(const CompressParams& params, const Image3F& linear,
                  Bytes* compressed, PikInfo* aux_out);
 
 // The input image is an opsin dynamics image.

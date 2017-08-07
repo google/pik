@@ -51,6 +51,8 @@ static constexpr float kXybMax[3] = {
     kXybCenter[2] + kXybRange[2],
 };
 
+// sRGB color space initial cut off, initial slope, offset
+// and power values as specified in IEC 61966-2-1:1999.
 static constexpr float kGammaInitialCutoff = 10.31475f;
 static constexpr float kGammaInitialSlope = 12.92f;
 static constexpr float kGammaOffset = 0.055f;

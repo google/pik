@@ -36,6 +36,8 @@ PIK_INLINE void OpsinAbsorbance(const float in[3], float out[3]) {
 // Returns the opsin dynamics image corresponding to the given SRGB input image.
 Image3F OpsinDynamicsImage(const Image3B& srgb);
 
+Image3F OpsinDynamicsImage(const Image3F& linear);
+
 void RgbToXyb(uint8_t r, uint8_t g, uint8_t b, float *valx, float *valy,
               float *valz);
 

@@ -76,8 +76,8 @@ struct ImageFormatPlanes {
 
 // Wrappers
 
-// Generic image reader with type auto-detection, the output is linear RGB.
-// NOTE: For PNGs, we assume sRGB color space.
+// Generic image reader with type auto-detection, the output is linear sRGB.
+// NOTE: For PNGs, we assume sRGB color space. 16-bit PNGs are also supported.
 Image3F ReadImage3Linear(const std::string& pathname);
 
 // Writes after linear rescaling to 0-255.

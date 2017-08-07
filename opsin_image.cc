@@ -23,24 +23,24 @@ namespace pik {
 
 namespace {
 
-float Srgb8ToOpsinDirect(float val) {
-  if (val <= 0.0) {
+float LinearFromSrgb8(float srgb) {
+  if (srgb <= 0.0) {
     return 0.0;
   }
-  if (val >= 255.0) {
+  if (srgb >= 255.0) {
     return 255.0;
   }
-  if (val <= kGammaInitialCutoff) {
-    return val / kGammaInitialSlope;
+  if (srgb <= kGammaInitialCutoff) {
+    return srgb / kGammaInitialSlope;
   }
-  return 255.0 * std::pow(((val / 255.0) + kGammaOffset) /
+  return 255.0 * std::pow(((srgb / 255.0) + kGammaOffset) /
                           (1.0 + kGammaOffset), kGammaPower);
 }
 
 const float* NewSrgb8ToOpsinTable() {
   float* table = new float[256];
   for (int i = 0; i < 256; ++i) {
-    table[i] = Srgb8ToOpsinDirect(i);
+    table[i] = LinearFromSrgb8(i);
   }
   return table;
 }
@@ -56,6 +56,16 @@ void LinearXybTransform(float r, float g, float b, float* PIK_RESTRICT valx,
   *valz = b;
 }
 
+void LinearToXyb(const float rgb[3], float* PIK_RESTRICT valx,
+                 float* PIK_RESTRICT valy, float* PIK_RESTRICT valz) {
+  float mixed[3];
+  OpsinAbsorbance(rgb, mixed);
+  mixed[0] = SimpleGamma(mixed[0]);
+  mixed[1] = SimpleGamma(mixed[1]);
+  mixed[2] = SimpleGamma(mixed[2]);
+  LinearXybTransform(mixed[0], mixed[1], mixed[2], valx, valy, valz);
+}
+
 }  // namespace
 
 const float* Srgb8ToOpsinTable() {
@@ -68,12 +78,7 @@ void RgbToXyb(uint8_t r, uint8_t g, uint8_t b, float* PIK_RESTRICT valx,
   // TODO(janwas): replace with polynomial to enable vectorization.
   const float* lut = Srgb8ToOpsinTable();
   const float rgb[3] = {lut[r], lut[g], lut[b]};
-  float mixed[3];
-  OpsinAbsorbance(rgb, mixed);
-  mixed[0] = SimpleGamma(mixed[0]);
-  mixed[1] = SimpleGamma(mixed[1]);
-  mixed[2] = SimpleGamma(mixed[2]);
-  LinearXybTransform(mixed[0], mixed[1], mixed[2], valx, valy, valz);
+  LinearToXyb(rgb, valx, valy, valz);
 }
 
 Image3F OpsinDynamicsImage(const Image3B& srgb) {
@@ -88,6 +93,23 @@ Image3F OpsinDynamicsImage(const Image3B& srgb) {
     for (size_t ix = 0; ix < xsize; ix++) {
       RgbToXyb(row_in[0][ix], row_in[1][ix], row_in[2][ix], &row_out[0][ix],
                &row_out[1][ix], &row_out[2][ix]);
+    }
+  }
+  return opsin;
+}
+
+Image3F OpsinDynamicsImage(const Image3F& linear) {
+  // This is different from butteraugli::OpsinDynamicsImage() in the sense that
+  // it does not contain a sensitivity multiplier based on the blurred image.
+  const size_t xsize = linear.xsize();
+  const size_t ysize = linear.ysize();
+  Image3F opsin(xsize, ysize);
+  for (size_t iy = 0; iy < ysize; iy++) {
+    const auto row_in = linear.ConstRow(iy);
+    auto row_out = opsin.Row(iy);
+    for (size_t ix = 0; ix < xsize; ix++) {
+      const float rgb[3] = {row_in[0][ix], row_in[1][ix], row_in[2][ix]};
+      LinearToXyb(rgb, &row_out[0][ix], &row_out[1][ix], &row_out[2][ix]);
     }
   }
   return opsin;

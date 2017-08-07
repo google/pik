@@ -477,6 +477,15 @@ bool PixelsToPik(const CompressParams& params, const Image3B& planes,
   return OpsinToPik(params, OpsinDynamicsImage(planes), compressed, aux_out);
 }
 
+bool PixelsToPik(const CompressParams& params, const Image3F& linear,
+                 Bytes* compressed, PikInfo* aux_out) {
+  if (linear.xsize() == 0 || linear.ysize() == 0) {
+    return PIK_FAILURE("Empty image");
+  }
+  Image3F opsin = OpsinDynamicsImage(linear);
+  return OpsinToPik(params, opsin, compressed, aux_out);
+}
+
 bool OpsinToPik(const CompressParams& params, const Image3F& opsin,
                 Bytes* compressed, PikInfo* aux_out) {
   if (opsin.xsize() == 0 || opsin.ysize() == 0) {
