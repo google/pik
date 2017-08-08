@@ -101,17 +101,17 @@
 //
 // The assignment semantics are required by GCC/Clang. ICC provides an in-place
 // __assume_aligned, whereas MSVC's __assume appears unsuitable.
-#if PIK_COMPILER_GCC
+#if PIK_COMPILER_CLANG
+  #if __has_builtin(__builtin_assume_aligned)
     #define PIK_ASSUME_ALIGNED(ptr, align) __builtin_assume_aligned((ptr), (align))
-#elif PIK_COMPILER_CLANG
-    #if __has_builtin(__builtin_assume_aligned)
-        #define PIK_ASSUME_ALIGNED(ptr, align) __builtin_assume_aligned((ptr), (align))
-    #else
-        // Early versions of Clang did not support __builtin_assume_aligned.
-        #define PIK_ASSUME_ALIGNED(ptr, align) ptr
-    #endif // __has_builtin(__builtin_assume_aligned)
+  #else
+    // Older versions of Clang did not support __builtin_assume_aligned yet.
+    #define PIK_ASSUME_ALIGNED(ptr, align) (ptr)
+  #endif
+#elif PIK_COMPILER_GCC
+  #define PIK_ASSUME_ALIGNED(ptr, align) __builtin_assume_aligned((ptr), (align))
 #else
-    #define PIK_ASSUME_ALIGNED(ptr, align) ptr /* not supported */
+  #define PIK_ASSUME_ALIGNED(ptr, align) (ptr) /* not supported */
 #endif
 
 #endif  // COMPILER_SPECIFIC_H_
