@@ -25,6 +25,7 @@
 #include "compiler_specific.h"
 #include "dc_predictor.h"
 #include "dct.h"
+#include "gamma_correct.h"
 #include "image_io.h"
 #include "opsin_codec.h"
 #include "opsin_image.h"
@@ -467,8 +468,8 @@ void CompressedImage::UpdateBlock(const int block_x, const int block_y,
 void CompressedImage::UpdateSRGB(const float* const PIK_RESTRICT block,
                                  int block_x, int block_y) {
   using namespace PIK_TARGET_NAME;
-  const uint8_t* lut_plus = OpsinToSrgb8TablePlusQuarter();
-  const uint8_t* lut_minus = OpsinToSrgb8TableMinusQuarter();
+  const uint8_t* lut_plus = LinearToSrgb8TablePlusQuarter();
+  const uint8_t* lut_minus = LinearToSrgb8TableMinusQuarter();
   // TODO(user) Combine these two for loops and get rid of rgb[].
   alignas(32) int rgb[kBlockSize3];
   using V = V8x32F;

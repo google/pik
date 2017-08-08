@@ -24,8 +24,6 @@
 
 namespace pik {
 
-const float* Srgb8ToOpsinTable();
-
 PIK_INLINE void OpsinAbsorbance(const float in[3], float out[3]) {
   const float* mix = &kOpsinAbsorbanceMatrix[0];
   out[0] = mix[0] * in[0] + mix[1] * in[1] + mix[2] * in[2];

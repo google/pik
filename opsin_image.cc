@@ -18,32 +18,11 @@
 #include <cmath>
 
 #include "approx_cube_root.h"
+#include "gamma_correct.h"
 
 namespace pik {
 
 namespace {
-
-float LinearFromSrgb8(float srgb) {
-  if (srgb <= 0.0) {
-    return 0.0;
-  }
-  if (srgb >= 255.0) {
-    return 255.0;
-  }
-  if (srgb <= kGammaInitialCutoff) {
-    return srgb / kGammaInitialSlope;
-  }
-  return 255.0 * std::pow(((srgb / 255.0) + kGammaOffset) /
-                          (1.0 + kGammaOffset), kGammaPower);
-}
-
-const float* NewSrgb8ToOpsinTable() {
-  float* table = new float[256];
-  for (int i = 0; i < 256; ++i) {
-    table[i] = LinearFromSrgb8(i);
-  }
-  return table;
-}
 
 PIK_INLINE float SimpleGamma(float v) {
   return ApproxCubeRoot(v);
@@ -68,15 +47,10 @@ void LinearToXyb(const float rgb[3], float* PIK_RESTRICT valx,
 
 }  // namespace
 
-const float* Srgb8ToOpsinTable() {
-  static const float* const kSrgb8ToOpsinTable = NewSrgb8ToOpsinTable();
-  return kSrgb8ToOpsinTable;
-}
-
 void RgbToXyb(uint8_t r, uint8_t g, uint8_t b, float* PIK_RESTRICT valx,
               float* PIK_RESTRICT valy, float* PIK_RESTRICT valz) {
   // TODO(janwas): replace with polynomial to enable vectorization.
-  const float* lut = Srgb8ToOpsinTable();
+  const float* lut = Srgb8ToLinearTable();
   const float rgb[3] = {lut[r], lut[g], lut[b]};
   LinearToXyb(rgb, valx, valy, valz);
 }

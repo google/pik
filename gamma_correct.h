@@ -27,6 +27,8 @@ namespace pik {
 const float* Srgb8ToLinearTable();
 
 const uint8_t* LinearToSrgb8Table();
+const uint8_t* LinearToSrgb8TablePlusQuarter();
+const uint8_t* LinearToSrgb8TableMinusQuarter();
 
 PIK_INLINE uint8_t LinearToSrgb8(const uint8_t* lut, float val) {
   val = std::min(255.0f, std::max(0.0f, val));
@@ -42,7 +44,7 @@ PIK_INLINE float Srgb8ToLinearDirect(float val) {
 }
 
 // Naive/direct computation used to initialize lookup table. In/out: 0-255.
-PIK_INLINE double LinearToSrgb8Direct(double val) {
+PIK_INLINE float LinearToSrgb8Direct(float val) {
   if (val < 0.0) return 0.0;
   if (val >= 255.0) return 255.0;
   if (val <= 10.31475 / 12.92) return val * 12.92;

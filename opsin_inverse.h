@@ -26,24 +26,6 @@
 
 namespace pik {
 
-// Naive/direct computation used to initialize lookup table.
-PIK_INLINE float OpsinToSrgb8Direct(float val) {
-  if (val <= 0.0) {
-    return 0.0;
-  }
-  if (val >= 255.0) {
-    return 255.0;
-  }
-  if (val <= kGammaInitialCutoff / kGammaInitialSlope) {
-    return val * kGammaInitialSlope;
-  }
-  return 255.0 * (std::pow(val / 255.0, 1.0 / kGammaPower) *
-                  (1.0 + kGammaOffset) - kGammaOffset);
-}
-
-const uint8_t* OpsinToSrgb8TablePlusQuarter();
-const uint8_t* OpsinToSrgb8TableMinusQuarter();
-
 // V is either float or V8x32F; in most cases the code is identical.
 
 template <typename V>

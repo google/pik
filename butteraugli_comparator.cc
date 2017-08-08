@@ -59,32 +59,13 @@ std::vector<butteraugli::ImageF> OpsinToLinearRgb(
   PIK_ASSERT(ysize <= opsin.ysize());
   std::vector<butteraugli::ImageF> planes =
       butteraugli::CreatePlanes<float>(xsize, ysize, 3);
-  if (kGammaPower == 2.4f && kGammaOffset == 0.055f &&
-      kGammaInitialCutoff == 10.31475f && kGammaInitialSlope == 12.92f) {
-    // Fast code-path if srgb->linear and srgb->opsin non-linearity is the same.
-    for (size_t y = 0; y < ysize; ++y) {
-      auto row_in = opsin.Row(y);
-      std::array<float*, 3> row_out{{
-          planes[0].Row(y), planes[1].Row(y), planes[2].Row(y) }};
-      for (int x = 0; x < xsize; ++x) {
-        XybToRgb(row_in[0][x], row_in[1][x], row_in[2][x],
-                 &row_out[0][x], &row_out[1][x], &row_out[2][x]);
-      }
-    }
-  } else {
-    // Slow code-path that allows experimenting with different srgb->linear and
-    // srgb->opsin non-linearities.
-    for (size_t y = 0; y < ysize; ++y) {
-      auto row_in = opsin.Row(y);
-      std::array<float*, 3> row_out{{
-          planes[0].Row(y), planes[1].Row(y), planes[2].Row(y) }};
-      for (int x = 0; x < xsize; ++x) {
-        float r, g, b;
-        XybToRgb(row_in[0][x], row_in[1][x], row_in[2][x], &r, &g, &b);
-        row_out[0][x] = Srgb8ToLinearDirect(OpsinToSrgb8Direct(r));
-        row_out[1][x] = Srgb8ToLinearDirect(OpsinToSrgb8Direct(g));
-        row_out[2][x] = Srgb8ToLinearDirect(OpsinToSrgb8Direct(b));
-      }
+  for (size_t y = 0; y < ysize; ++y) {
+    auto row_in = opsin.Row(y);
+    std::array<float*, 3> row_out{{
+        planes[0].Row(y), planes[1].Row(y), planes[2].Row(y) }};
+    for (int x = 0; x < xsize; ++x) {
+      XybToRgb(row_in[0][x], row_in[1][x], row_in[2][x],
+               &row_out[0][x], &row_out[1][x], &row_out[2][x]);
     }
   }
   return planes;
