@@ -39,6 +39,8 @@ class Predictors {
  public:
   static const size_t kNum = 8;
   struct Y {
+    Y() {}
+
     PIK_INLINE void operator()(const V* const PIK_RESTRICT pos,
                                const intptr_t neg_col_stride,
                                const intptr_t neg_row_stride,
@@ -59,6 +61,8 @@ class Predictors {
   };
 
   struct UV {
+    UV() {}
+
     PIK_INLINE void operator()(const V* const PIK_RESTRICT pos,
                                const intptr_t neg_col_stride,
                                const intptr_t neg_row_stride,
