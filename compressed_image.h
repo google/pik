@@ -49,8 +49,8 @@ class CompressedImage {
   Quantizer& quantizer() { return quantizer_; }
   const Quantizer& quantizer() const { return quantizer_; }
 
-  void QuantizeBlock(int block_x, int block_y, bool update_output);
-  void Quantize(bool update_output);
+  void QuantizeBlock(int block_x, int block_y);
+  void Quantize();
 
   AdaptiveQuantParams adaptive_quant_params() const {
     AdaptiveQuantParams p;
@@ -59,24 +59,9 @@ class CompressedImage {
     return p;
   }
 
-  // Returns the SRGB image based on the quantization value and the quantized
+  // Returns the SRGB image based on the quantization values and the quantized
   // coefficients.
-  // NOTE: The dimensions of the returned image are always a multiple of 8,
-  // which can be bigger than the dimensions of the original image.
-  const Image3B& ToSRGB() const { return srgb_; }
-
-  // Same as above, but the image is cropped to the specified window.
-  // The window's upper-left corner, (xmin, ymin) must be within the image, but
-  // the window may extend past the image. In that case the edge pixels are
-  // duplicated.
-  Image3B ToSRGB(int xmin, int ymin, int xsize, int ysize) const;
-
-  Image3B&& MoveSRGB() {
-    srgb_.ShrinkTo(xsize_, ysize_);
-    return std::move(srgb_);
-  }
-
-  Image3F ToOpsinImage();
+  Image3B ToSRGB() const;
 
   const Image3W& coeffs() const { return dct_coeffs_; }
 
@@ -93,12 +78,11 @@ class CompressedImage {
  private:
   CompressedImage(int xsize, int ysize, PikInfo* info);
 
-  std::string EncodeQuantization() const;
-
   void UpdateBlock(const int block_x, const int block_y,
-                   float* const PIK_RESTRICT block);
+                   float* const PIK_RESTRICT block) const;
   void UpdateSRGB(const float* const PIK_RESTRICT block,
-                  int block_x, int block_y);
+                  int block_x, int block_y,
+                  Image3B* const PIK_RESTRICT srgb) const;
 
   const int xsize_;
   const int ysize_;
@@ -109,10 +93,6 @@ class CompressedImage {
   const int num_blocks_;
   Quantizer quantizer_;
   Image3W dct_coeffs_;
-  // The opsin dynamics image as seen by the decoder, kept for prediction
-  // context.
-  Image3F opsin_recon_;
-  Image3B srgb_;
   // Transformed version of the original image, only present if the image
   // was constructed with FromOpsinImage().
   std::unique_ptr<Image3F> opsin_image_;

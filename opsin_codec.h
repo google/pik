@@ -369,11 +369,6 @@ class HistogramBuilder {
 Image3W PredictDC(const Image3W& coeffs);
 void UnpredictDC(Image3W* coeffs);
 
-void UpdateDCPrediction(const Image3W& coeffs,
-                        const int block_x, const int block_y,
-                        Image3W* dc_residuals,
-                        HistogramBuilder* builder);
-
 std::string EncodeImage(const Image3W& img, int stride,
                         PikImageSizeInfo* info);
 

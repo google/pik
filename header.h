@@ -50,7 +50,6 @@ struct Header {
 
     // A palette precedes the image data (indices, possibly more than 8 bits).
     kPalette = 8,
-
   };
 
   // For loading/storing fields from/to the compressed stream. Accepts Bytes or

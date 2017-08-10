@@ -43,7 +43,6 @@ struct PikInfo {
     dc_image.Assimilate(victim.dc_image);
     ac_image.Assimilate(victim.ac_image);
     num_butteraugli_iters += victim.num_butteraugli_iters;
-    num_gabor_iters += victim.num_gabor_iters;
   }
   PikImageSizeInfo TotalImageSize() const {
     PikImageSizeInfo total;
@@ -56,7 +55,6 @@ struct PikInfo {
   PikImageSizeInfo dc_image;
   PikImageSizeInfo ac_image;
   int num_butteraugli_iters = 0;
-  int num_gabor_iters = 0;
   // If not empty, additional debugging information (e.g. debug images) is
   // saved in files with this prefix.
   std::string debug_prefix;

@@ -36,9 +36,6 @@
 #include "opsin_image.h"
 #include "quantizer.h"
 
-// Defined in compressed_image.cc
-extern bool FLAGS_predict_pixels;
-
 // If true, prints the quantization maps at each iteration.
 bool FLAGS_dump_quant_state = false;
 
@@ -203,8 +200,9 @@ void FindBestQuantization(const Image3F& opsin_orig,
   int iter = 0;
   for (;;) {
     if (img->quantizer().SetQuantField(kInitialQuantDC, quant_field)) {
-      img->Quantize(/* update_output = */ true);
-      comparator.Compare(img->ToSRGB());
+      img->Quantize();
+      Image3B srgb = img->ToSRGB();
+      comparator.Compare(srgb);
       tile_distmap = TileDistMap(comparator.distmap(), qres);
       if (aux_out) {
         DumpHeatmaps(aux_out, opsin_orig.xsize(), opsin_orig.ysize(), qres,
@@ -213,9 +211,7 @@ void FindBestQuantization(const Image3F& opsin_orig,
           char pathname[200];
           snprintf(pathname, 200, "%s%s%05d.png", aux_out->debug_prefix.c_str(),
                    "rgb_out", aux_out->num_butteraugli_iters);
-          WriteImage(ImageFormatPNG(),
-                     img->ToSRGB(0, 0, opsin_orig.xsize(), opsin_orig.ysize()),
-                     pathname);
+          WriteImage(ImageFormatPNG(), srgb, pathname);
         }
         ++aux_out->num_butteraugli_iters;
       }
@@ -262,7 +258,7 @@ struct EvalGlobalYToB {
         img->SetYToBAC(tilex, tiley, ytob);
       }
     }
-    img->Quantize(/* update_output = */ false);
+    img->Quantize();
   }
   size_t operator()(int ytob) const {
     SetVal(ytob);
@@ -307,15 +303,13 @@ struct EvalLocalYToB {
           ac_processor.ProcessBlock(&img->coeffs().Row(block_y)[c][offset],
                                     block_x, block_y, c, &ac_histo);
         }
-        img->QuantizeBlock(block_x, block_y, /* update_output = */ false);
+        img->QuantizeBlock(block_x, block_y);
         ac_processor.Reset();
         ac_histo.set_weight(1);
         for (int c = 0; c < 3; ++c) {
           ac_processor.ProcessBlock(&img->coeffs().Row(block_y)[c][offset],
                                     block_x, block_y, c, &ac_histo);
         }
-        UpdateDCPrediction(img->coeffs(), block_x, block_y,
-                           &dc_residuals, &dc_histo);
       }
     }
   }
@@ -367,14 +361,12 @@ void FindBestYToBCorrelation(CompressedImage* img) {
   }
 }
 
-
 std::string CompressToButteraugliDistance(const Image3F& opsin_orig,
                                           const CompressParams& params,
                                           PikInfo* info) {
-  // DCT code-path
   CompressedImage img = CompressedImage::FromOpsinImage(opsin_orig, info);
   img.quantizer().SetQuant(1.0);
-  img.Quantize(/* update_output = */ true);
+  img.Quantize();
   FindBestYToBCorrelation(&img);
   FindBestQuantization(opsin_orig, params.butteraugli_distance, &img, info);
   return img.Encode();
@@ -389,7 +381,7 @@ std::string CompressFast(const Image3F& opsin_orig,
   int qres = img.quant_tile_size();
   ImageF qf = AdaptiveQuantizationMap(opsin_orig.plane(1), qres);
   img.quantizer().SetQuantField(kQuantDC, ScaleImage(kQuantAC, qf));
-  img.Quantize(/* update_output = */ false);
+  img.Quantize();
   return img.EncodeFast();
 }
 
@@ -405,7 +397,7 @@ bool ScaleQuantizationMap(const float quant_dc,
     printf("\nScaling quantization map with scale %f\n", scale);
     img->quantizer().DumpQuantizationMap();
   }
-  img->Quantize(/* update_output = */ true);
+  img->Quantize();
   return changed;
 }
 
@@ -457,10 +449,9 @@ std::string CompressToTargetSize(const Image3F& opsin_orig, size_t target_size,
 std::string CompressToTargetSize(const Image3F& opsin_orig,
                                  const CompressParams& params,
                                  size_t target_size, PikInfo* aux_out) {
-  // DCT code-path.
   CompressedImage img = CompressedImage::FromOpsinImage(opsin_orig, aux_out);
   img.quantizer().SetQuant(1.0);
-  img.Quantize(/* update_output = */ true);
+  img.Quantize();
   FindBestYToBCorrelation(&img);
   FindBestQuantization(opsin_orig, 1.0, &img, aux_out);
   return CompressToTargetSize(opsin_orig, target_size, &img, aux_out);
@@ -503,12 +494,10 @@ bool OpsinToPik(const CompressParams& params, const Image3F& opsin,
     compressed_data = CompressToTargetSize(opsin, params, target_size,
                                            aux_out);
   } else if (params.uniform_quant > 0.0) {
-    {
-      CompressedImage img = CompressedImage::FromOpsinImage(opsin, aux_out);
-      img.quantizer().SetQuant(params.uniform_quant);
-      img.Quantize(/* update_output = */ false);
-      compressed_data = img.Encode();
-    }
+    CompressedImage img = CompressedImage::FromOpsinImage(opsin, aux_out);
+    img.quantizer().SetQuant(params.uniform_quant);
+    img.Quantize();
+    compressed_data = img.Encode();
   } else if (params.fast_mode) {
     compressed_data = CompressFast(opsin, params, aux_out);
   } else {
@@ -541,45 +530,28 @@ bool PikToPixels(const DecompressParams& params, const Bytes& compressed,
   BitSource source(padded.data());
   if (!LoadHeader(&source, &header)) return false;
   const uint8_t* const PIK_RESTRICT end = source.Finalize();
+  if (end > padded.data() + compressed.size()) {
+    return PIK_FAILURE("Invalid header.");
+  }
   if (header.flags & Header::kWebPLossless) {
     return PIK_FAILURE("Invalid format code");
   } else {  // Pik
+    static const uint64_t kMaxPixels = 1 << 30;
+    uint64_t num_pixels = static_cast<uint64_t>(header.xsize) * header.ysize;
+    if (num_pixels > kMaxPixels) {
+      return PIK_FAILURE("Image too big.");
+    }
     std::string encoded_img;
     encoded_img.assign(
         end,
         reinterpret_cast<const uint8_t*>(padded.data()) + compressed.size());
-    {
-      CompressedImage img = CompressedImage::Decode(
-          header.xsize, header.ysize, encoded_img, aux_out);
-      if (img.xsize() == 0 || img.ysize() == 0) {
-        return PIK_FAILURE("Pik decoding failed.");
-      }
-      *planes = img.MoveSRGB();
+    CompressedImage img = CompressedImage::Decode(
+        header.xsize, header.ysize, encoded_img, aux_out);
+    if (img.xsize() == 0 || img.ysize() == 0) {
+      return PIK_FAILURE("Pik decoding failed.");
     }
+    *planes = img.ToSRGB();
   }
-  return true;
-}
-
-bool PikToOpsin(const DecompressParams& params, const Bytes& compressed,
-                Image3F* opsin, PikInfo* aux_out) {
-  if (compressed.empty()) {
-    return PIK_FAILURE("Empty input.");
-  }
-  Header header;
-  Bytes padded(std::max(MaxCompressedHeaderSize(), compressed.size()));
-  memcpy(padded.data(), compressed.data(), compressed.size());
-  BitSource source(padded.data());
-  if (!LoadHeader(&source, &header)) return false;
-  const uint8_t* const PIK_RESTRICT end = source.Finalize();
-  if (header.flags != 0) {
-    return PIK_FAILURE("Not implemented.");
-  }
-  std::string encoded_img;
-  encoded_img.assign(
-      end, reinterpret_cast<const uint8_t*>(padded.data()) + compressed.size());
-  CompressedImage img = CompressedImage::Decode(
-      header.xsize, header.ysize, encoded_img, aux_out);
-  *opsin = img.ToOpsinImage();
   return true;
 }
 

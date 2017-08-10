@@ -39,6 +39,9 @@
 #ifdef __clang__
 // For reasons unknown, Forge currently explicitly defines these to 0.0.
 #define PIK_COMPILER_CLANG 1  // (__clang_major__ * 100 + __clang_minor__)
+// Clang pretends to be GCC for compatibility.
+#undef PIK_COMPILER_GCC
+#define PIK_COMPILER_GCC 0
 #else
 #define PIK_COMPILER_CLANG 0
 #endif
@@ -98,10 +101,19 @@
 //
 // The assignment semantics are required by GCC/Clang. ICC provides an in-place
 // __assume_aligned, whereas MSVC's __assume appears unsuitable.
-#if PIK_COMPILER_GCC || PIK_COMPILER_CLANG
+#if PIK_COMPILER_CLANG
+// Early versions of Clang did not support __builtin_assume_aligned.
+#define PIK_HAS_ASSUME_ALIGNED __has_builtin(__builtin_assume_aligned)
+#elif PIK_COMPILER_GCC
+#define PIK_HAS_ASSUME_ALIGNED 1
+#else
+#define PIK_HAS_ASSUME_ALIGNED 0
+#endif
+
+#if PIK_HAS_ASSUME_ALIGNED
 #define PIK_ASSUME_ALIGNED(ptr, align) __builtin_assume_aligned((ptr), (align))
 #else
-#define PIK_ASSUME_ALIGNED(ptr, align) ptr /* not supported */
-#endif
+#define PIK_ASSUME_ALIGNED(ptr, align) (ptr) /* not supported */
+#endif  // PIK_HAS_ASSUME_ALIGNED
 
 #endif  // COMPILER_SPECIFIC_H_

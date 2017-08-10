@@ -62,9 +62,6 @@ bool OpsinToPik(const CompressParams& params, const Image3F& opsin,
 bool PikToPixels(const DecompressParams& params, const Bytes& compressed,
                  Image3B* planes, PikInfo* aux_out);
 
-bool PikToOpsin(const DecompressParams& params, const Bytes& compressed,
-                Image3F* opsin, PikInfo* aux_out);
-
 }  // namespace pik
 
 #endif  // PIK_H_

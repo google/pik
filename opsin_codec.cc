@@ -75,32 +75,6 @@ Image3W PredictDC(const Image3W& coeffs) {
   return out;
 }
 
-void UpdateDCPrediction(const Image3W& coeffs,
-                        const int block_x, const int block_y,
-                        Image3W* dc_residuals,
-                        HistogramBuilder* builder) {
-  const size_t row_stride = coeffs.plane(0).bytes_per_row() / sizeof(int16_t);
-  const int block_x0 = std::max(0, block_x - 1);
-  const int block_y0 = block_y;
-  const int block_x1 = std::min<int>(dc_residuals->xsize(), block_x + 3);
-  const int block_y1 = std::min<int>(dc_residuals->ysize(), block_y + 3);
-  for (int y = block_y0; y < block_y1; ++y) {
-    auto row_in = coeffs.Row(y);
-    auto row_out = dc_residuals->Row(y);
-    for (int x = block_x0; x < block_x1; ++x) {
-      builder->set_weight(-1);
-      for (int c = 0; c < 3; ++c) {
-        VisitCoefficient(row_out[c][x], c, builder);
-      }
-      PredictDCBlock(x, y, dc_residuals->xsize(), row_stride, row_in, row_out);
-      builder->set_weight(1);
-      for (int c = 0; c < 3; ++c) {
-        VisitCoefficient(row_out[c][x], c, builder);
-      }
-    }
-  }
-}
-
 void UnpredictDC(Image3W* coeffs) {
   Image<int32_t> dc_y(coeffs->xsize() / 64, coeffs->ysize());
   Image<int32_t> dc_xz(coeffs->xsize() / 64 * 2, coeffs->ysize());
@@ -669,8 +643,12 @@ class ANSSymbolReader {
     info_.resize(num_histograms << 8);
     for (int c = 0; c < num_histograms; ++c) {
       std::vector<int> counts;
-      ReadHistogram(ANS_LOG_TAB_SIZE, &counts, in);
-      PIK_CHECK(counts.size() <= 256);
+      if (!ReadHistogram(ANS_LOG_TAB_SIZE, &counts, in)) {
+        return PIK_FAILURE("Invalid histogram bitstream.");
+      }
+      if (counts.size() > 256) {
+        return PIK_FAILURE("Alphabet size is too long.");
+      }
       int offset = 0;
       for (int i = 0, pos = 0; i < counts.size(); ++i) {
         int symbol = i;
@@ -839,7 +817,9 @@ bool DecodeACData(BitReader* const PIK_RESTRICT br,
           }
           row[c][x + coeff_order[c * 64 + k]] = s;
         }
-        PIK_CHECK(num_nzeros == 0);
+        if (num_nzeros != 0) {
+          return PIK_FAILURE("Invalid AC data.");
+        }
       }
     }
   }
@@ -885,7 +865,7 @@ bool DecodeImage(BitReader* br, int stride,  Image3W* coeffs) {
     return false;
   }
   if (!decoder.CheckANSFinalState()) {
-    return PIK_FAILURE("ANS cheksum failure.");
+    return PIK_FAILURE("ANS checksum failure.");
   }
   return true;
 }
@@ -900,7 +880,7 @@ bool DecodeAC(BitReader* br, Image3W* coeffs) {
     return false;
   }
   if (!decoder.CheckANSFinalState()) {
-    return PIK_FAILURE("ANS cheksum failure.");
+    return PIK_FAILURE("ANS checksum failure.");
   }
   return true;
 }
@@ -915,7 +895,9 @@ bool DecodeNonZeroVals(BitReader* br,
   DecodeHistograms(br, 6 * absvals->size(), nullptr, 0,
                    &decoder, &context_map);
   DecodeNonZeroValsData(br, context_map, &decoder, absvals, phases);
-  PIK_CHECK(decoder.CheckANSFinalState());
+  if (!decoder.CheckANSFinalState()) {
+    return PIK_FAILURE("ANS checksum failure.");
+  }
   return true;
 }
 

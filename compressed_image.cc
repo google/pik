@@ -33,10 +33,6 @@
 #include "status.h"
 #include "vector256.h"
 
-// If true, does the prediction on the pixels of the opsin dynamics image and
-// performs the integral transform on the prediction residuals.
-bool FLAGS_predict_pixels = false;
-
 namespace pik {
 
 namespace {
@@ -137,9 +133,9 @@ static const float kQuantizeMul[3] = { 2.631f, 0.780f, 0.125f };
 // (in the zig-zag order) in component c. Higher weights correspond to finer
 // quantization intervals and more bits spent in encoding.
 static const float kQuantWeights[kBlockSize3] = {
-  3.0406127f, 1.9428079f, 3.7470236f, 2.1412505f, 1.5562126f, 2.0441338f,
-  2.0713710f, 1.6664879f, 2.0016495f, 1.4308078f, 1.5208181f, 1.2703535f,
-  1.6697885f, 1.6883024f, 1.4859944f, 1.3013033f, 1.5966423f, 1.2529299f,
+  3.0000000f, 1.9500000f, 3.7000000f, 2.0000000f, 1.4000000f, 2.0000000f,
+  2.0000000f, 1.4000000f, 2.0000000f, 1.4000000f, 1.4000000f, 1.2000000f,
+  1.6000000f, 1.4000000f, 1.4000000f, 1.3000000f, 1.4000000f, 1.2000000f,
   1.0000000f, 1.0000000f, 1.0000000f, 1.0000000f, 1.0000000f, 1.0000000f,
   1.0000000f, 1.0000000f, 1.0000000f, 1.0000000f, 1.0000000f, 1.0000000f,
   0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f,
@@ -215,8 +211,6 @@ CompressedImage::CompressedImage(int xsize, int ysize, PikInfo* info)
       num_blocks_(block_xsize_ * block_ysize_),
       quantizer_(quant_xsize_, quant_ysize_, kCoeffsPerBlock, DequantMatrix()),
       dct_coeffs_(block_xsize_ * kBlockSize, block_ysize_),
-      opsin_recon_(block_xsize_ * kBlockSize, block_ysize_),
-      srgb_(block_xsize_ * kBlockEdge, block_ysize_ * kBlockEdge),
       ytob_dc_(120),
       ytob_ac_(DivCeil(xsize, kYToBRes), DivCeil(ysize, kYToBRes), 120),
       pik_info_(info) {
@@ -263,8 +257,13 @@ CompressedImage CompressedImage::FromOpsinImage(
   return img;
 }
 
-void CompressedImage::QuantizeBlock(int block_x, int block_y,
-                                    bool update_output) {
+// We modify the standard DCT of the intensity channel by further decorrelating
+// the 1st and 3rd AC coefficients in the first row and first column. The
+// unscaled prediction coefficient corresponds to the 1-d DCT of a linear slope.
+static const float kACPredScale = 0.25f;
+static const float kACPred31 = kACPredScale * 0.104536f;
+
+void CompressedImage::QuantizeBlock(int block_x, int block_y) {
   const int quant_x = block_x / kQuantBlockRes;
   const int quant_y = block_y / kQuantBlockRes;
   const int offsetx = block_x * kBlockEdge;
@@ -278,18 +277,13 @@ void CompressedImage::QuantizeBlock(int block_x, int block_y,
              kBlockEdge * sizeof(cblock[0]));
     }
   }
-  if (FLAGS_predict_pixels && block_x > 0 && block_y > 0) {
-    for (int c = 0; c < 3; ++c) {
-      alignas(32) float prediction[kBlockSize];
-      PredictBlock(&opsin_recon_.Row(block_y)[c][(block_x - 1) * kBlockSize],
-                   &opsin_recon_.Row(block_y - 1)[c][block_x * kBlockSize],
-                   prediction);
-      SubtractBlock(prediction, &block[kBlockSize * c]);
-    }
-  }
   for (int c = 0; c < 3; ++c) {
     ComputeTransposedScaledBlockDCTFloat(&block[kBlockSize * c]);
   }
+  // Remove some correlation between the 1st and 3rd AC coefficients in the
+  // first column and first row.
+  block[kBlockSize + 3] -= kACPred31 * block[kBlockSize + 1];
+  block[kBlockSize + 24] -= kACPred31 * block[kBlockSize + 8];
   auto row_out = dct_coeffs_.Row(block_y);
   const int offset = block_x * kBlockSize;
   int16_t* const PIK_RESTRICT iblocky = &row_out[1][offset];
@@ -321,23 +315,27 @@ void CompressedImage::QuantizeBlock(int block_x, int block_y,
         quant_x, quant_y, c, 0, kBlockSize,
         &block[c * kBlockSize], &row_out[c][offset]);
   }
-  if (update_output) {
-    alignas(32) float block_out[kBlockSize3];
-    UpdateBlock(block_x, block_y, block_out);
-    UpdateSRGB(block_out, block_x, block_y);
-  }
 }
 
-void CompressedImage::Quantize(bool update_output) {
+void CompressedImage::Quantize() {
   for (int block_y = 0; block_y < block_ysize_; ++block_y) {
     for (int block_x = 0; block_x < block_xsize_; ++block_x) {
-      QuantizeBlock(block_x, block_y, update_output);
+      QuantizeBlock(block_x, block_y);
     }
   }
 }
 
-std::string CompressedImage::EncodeQuantization() const {
-  return quantizer_.Encode();
+Image3B CompressedImage::ToSRGB() const {
+  Image3B out(block_xsize_ * kBlockEdge, block_ysize_ * kBlockEdge);
+  alignas(32) float block_out[kBlockSize3];
+  for (int block_y = 0; block_y < block_ysize_; ++block_y) {
+    for (int block_x = 0; block_x < block_xsize_; ++block_x) {
+      UpdateBlock(block_x, block_y, block_out);
+      UpdateSRGB(block_out, block_x, block_y, &out);
+    }
+  }
+  out.ShrinkTo(xsize_, ysize_);
+  return out;
 }
 
 std::string CompressedImage::Encode() const {
@@ -345,12 +343,10 @@ std::string CompressedImage::Encode() const {
   PIK_CHECK(ytob_dc_ < 256);
   std::string ytob_code =
       std::string(1, ytob_dc_) + EncodePlane(ytob_ac_, 0, 255);
-  std::string quant_code = EncodeQuantization();
+  std::string quant_code = quantizer_.Encode();
   PikImageSizeInfo* dc_info = pik_info_ ? &pik_info_->dc_image : nullptr;
   PikImageSizeInfo* ac_info = pik_info_ ? &pik_info_->ac_image : nullptr;
-  std::string dc_code = FLAGS_predict_pixels ?
-      EncodeImage(dct_coeffs_, kBlockSize, dc_info) :
-      EncodeImage(PredictDC(dct_coeffs_), 1, dc_info);
+  std::string dc_code = EncodeImage(PredictDC(dct_coeffs_), 1, dc_info);
   std::string ac_code = EncodeAC(dct_coeffs_, ac_info);
   if (pik_info_) {
     pik_info_->ytob_image_size = ytob_code.size();
@@ -364,12 +360,10 @@ std::string CompressedImage::EncodeFast() const {
   PIK_CHECK(ytob_dc_ < 256);
   std::string ytob_code =
       std::string(1, ytob_dc_) + EncodePlane(ytob_ac_, 0, 255);
-  std::string quant_code = EncodeQuantization();
+  std::string quant_code = quantizer_.Encode();
   PikImageSizeInfo* dc_info = pik_info_ ? &pik_info_->dc_image : nullptr;
   PikImageSizeInfo* ac_info = pik_info_ ? &pik_info_->ac_image : nullptr;
-  std::string dc_code = FLAGS_predict_pixels ?
-      EncodeImage(dct_coeffs_, kBlockSize, dc_info) :
-      EncodeImage(PredictDC(dct_coeffs_), 1, dc_info);
+  std::string dc_code = EncodeImage(PredictDC(dct_coeffs_), 1, dc_info);
   std::string ac_code = EncodeACFast(dct_coeffs_, ac_info);
   if (pik_info_) {
     pik_info_->ytob_image_size = ytob_code.size();
@@ -405,21 +399,12 @@ CompressedImage CompressedImage::Decode(int xsize, int ysize,
     PIK_NOTIFY_ERROR("Pik compressed data size mismatch.");
     return CompressedImage(0, 0, nullptr);
   }
-  if (!FLAGS_predict_pixels) {
-    UnpredictDC(&img.dct_coeffs_);
-  }
-  alignas(32) float block[kBlockSize3];
-  for (int block_y = 0; block_y < img.block_ysize_; ++block_y) {
-    for (int block_x = 0; block_x < img.block_xsize_; ++block_x) {
-      img.UpdateBlock(block_x, block_y, block);
-      img.UpdateSRGB(block, block_x, block_y);
-    }
-  }
+  UnpredictDC(&img.dct_coeffs_);
   return img;
 }
 
 void CompressedImage::UpdateBlock(const int block_x, const int block_y,
-                                  float* const PIK_RESTRICT block) {
+                                  float* const PIK_RESTRICT block) const {
   using namespace PIK_TARGET_NAME;
   const int quant_y = block_y / kQuantBlockRes;
   const int tile_y = block_y * kBlockEdge / kYToBRes;
@@ -447,26 +432,16 @@ void CompressedImage::UpdateBlock(const int block_x, const int block_y,
     Store(b, block + k + kBlockSize2);
   }
   block[kBlockSize2] += (YToBDC() - kYToBAC) * block[kBlockSize];
+  block[kBlockSize + 3] += kACPred31 * block[kBlockSize + 1];
+  block[kBlockSize + 24] += kACPred31 * block[kBlockSize + 8];
   for (int c = 0; c < 3; ++c) {
     ComputeTransposedScaledBlockIDCTFloat(&block[kBlockSize * c]);
-  }
-  if (FLAGS_predict_pixels) {
-    for (int c = 0; c < 3; ++c) {
-      if (block_x > 0 && block_y > 0) {
-        alignas(32) float prediction[kBlockSize];
-        PredictBlock(&opsin_recon_.Row(block_y)[c][offset - kBlockSize],
-                     &opsin_recon_.Row(block_y - 1)[c][offset],
-                     prediction);
-        AddBlock(prediction, &block[kBlockSize * c]);
-      }
-      memcpy(&opsin_recon_.Row(block_y)[c][offset], &block[c * kBlockSize],
-             kBlockSize * sizeof(block[0]));
-    }
   }
 }
 
 void CompressedImage::UpdateSRGB(const float* const PIK_RESTRICT block,
-                                 int block_x, int block_y) {
+                                 int block_x, int block_y,
+                                 Image3B* const PIK_RESTRICT srgb) const {
   using namespace PIK_TARGET_NAME;
   const uint8_t* lut_plus = LinearToSrgb8TablePlusQuarter();
   const uint8_t* lut_minus = LinearToSrgb8TableMinusQuarter();
@@ -487,7 +462,7 @@ void CompressedImage::UpdateSRGB(const float* const PIK_RESTRICT block,
   const int yoff = kBlockEdge * block_y;
   const int xoff = kBlockEdge * block_x;
   for (int iy = 0; iy < kBlockEdge; ++iy) {
-    auto row = srgb_.Row(iy + yoff);
+    auto row = srgb->Row(iy + yoff);
     for (int ix = 0; ix < kBlockEdge; ++ix) {
       const int px = ix + xoff;
       const int k = kBlockEdge * iy + ix;
@@ -497,47 +472,6 @@ void CompressedImage::UpdateSRGB(const float* const PIK_RESTRICT block,
       row[2][px] = lut[rgb[k + kBlockSize2]];
     }
   }
-}
-
-Image3B CompressedImage::ToSRGB(int xmin, int ymin,
-                                int xsize, int ysize) const {
-  Image3B srgb(xsize, ysize);
-  for (int y = 0; y < ysize; ++y) {
-    int iy = std::min(kBlockEdge * block_ysize_ - 1, ymin + y);
-    auto row_in = srgb_.Row(iy);
-    auto row_out = srgb.Row(y);
-    for (int x = 0; x < xsize; ++x) {
-      int ix = std::min(kBlockEdge * block_xsize_ - 1, xmin + x);
-      for (int c = 0; c < 3; ++c) {
-        row_out[c][x] = row_in[c][ix];
-      }
-    }
-  }
-  return srgb;
-}
-
-Image3F CompressedImage::ToOpsinImage() {
-  Image3F out(block_xsize_ * kBlockEdge, block_ysize_ * kBlockEdge);
-  for (int block_y = 0; block_y < block_ysize_; ++block_y) {
-    for (int block_x = 0; block_x < block_xsize_; ++block_x) {
-      alignas(32) float block[kBlockSize3];
-      UpdateBlock(block_x, block_y, block);
-      const int yoff = kBlockEdge * block_y;
-      const int xoff = kBlockEdge * block_x;
-      for (int iy = 0; iy < kBlockEdge; ++iy) {
-        auto row = out.Row(iy + yoff);
-        for (int ix = 0; ix < kBlockEdge; ++ix) {
-          const int px = ix + xoff;
-          const int k = kBlockEdge * iy + ix;
-          row[0][px] = block[k + 0] + kXybCenter[0];
-          row[1][px] = block[k + kBlockSize] + kXybCenter[1];
-          row[2][px] = block[k + kBlockSize2] + kXybCenter[2];
-        }
-      }
-    }
-  }
-  out.ShrinkTo(xsize_, ysize_);
-  return out;
 }
 
 }  // namespace pik

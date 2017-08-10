@@ -22,11 +22,16 @@
 // target-specific namespaces (see arch_specific.h).
 
 #ifdef __LZCNT__
-#define PIK_LZCNT32 _lzcnt_u32
-#define PIK_LZCNT64 _lzcnt_u64
+  #if PIK_COMPILER_CLANG
+    #define PIK_LZCNT32 __lzcnt32
+    #define PIK_LZCNT64 __lzcnt64
+  #else
+    #define PIK_LZCNT32 _lzcnt_u32
+    #define PIK_LZCNT64 _lzcnt_u64
+  #endif
 #else
-#define PIK_LZCNT32 NumZeroBitsAboveMSB32
-#define PIK_LZCNT64 NumZeroBitsAboveMSB64
+  #define PIK_LZCNT32 NumZeroBitsAboveMSB32
+  #define PIK_LZCNT64 NumZeroBitsAboveMSB64
 #endif
 
 #ifdef __BMI__
