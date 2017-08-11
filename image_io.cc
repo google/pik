@@ -18,6 +18,7 @@
 #include <array>
 #include <cstdio>
 #include <memory>
+#include <vector>
 
 #include "cache_aligned.h"
 #include "compiler_specific.h"
@@ -777,6 +778,56 @@ bool ReadImage(ImageFormatJPG, const std::string& pathname, Image3B* rgb) {
 
   jpeg_finish_decompress(&cinfo);
   jpeg_destroy_decompress(&cinfo);
+  return true;
+}
+
+bool WriteImage(ImageFormatJPG, const Image3B& rgb, const std::string& pathname) {
+  FileWrapper f(pathname, "wb");
+  if (f == nullptr) {
+    return PIK_FAILURE("File open");
+  }
+
+  jpeg_compress_struct cinfo;
+  jpeg_error_mgr jerr;
+  cinfo.err = jpeg_std_error(&jerr);
+
+  jmp_buf jpeg_jmpbuf;
+  cinfo.client_data = &jpeg_jmpbuf;
+  jerr.error_exit = jpeg_catch_error;
+  if (setjmp(jpeg_jmpbuf)) {
+    return false;
+  }
+
+  jpeg_create_compress(&cinfo);
+
+  jpeg_stdio_dest(&cinfo, f);
+  cinfo.image_width = rgb.xsize();
+  cinfo.image_height = rgb.ysize();
+  cinfo.input_components = 3;
+  cinfo.in_color_space = JCS_RGB;
+  jpeg_set_defaults(&cinfo);
+  int quality = 100;
+  jpeg_set_quality(&cinfo, quality, TRUE);
+  jpeg_start_compress(&cinfo, TRUE);
+
+  int row_stride = cinfo.image_width * cinfo.input_components;
+
+  JSAMPROW row_pointer[1];
+  std::vector<uint8_t> row(row_stride);
+  row_pointer[0] = &row[0];
+
+  while (cinfo.next_scanline < cinfo.image_height) {
+    auto rows = rgb.Row(cinfo.next_scanline);
+    for (int x = 0; x < cinfo.image_width; x++) {
+      row[3 * x + 0] = rows[0][x];
+      row[3 * x + 1] = rows[1][x];
+      row[3 * x + 2] = rows[2][x];
+    }
+    (void) jpeg_write_scanlines(&cinfo, row_pointer, 1);
+  }
+
+  jpeg_finish_compress(&cinfo);
+  jpeg_destroy_compress(&cinfo);
   return true;
 }
 
