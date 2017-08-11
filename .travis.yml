@@ -1,0 +1,14 @@
+language: cpp
+
+compiler:
+  - clang
+  - gcc
+
+addons:
+  apt:
+    packages:
+      - libpng-dev
+      - libjpeg-dev
+
+script:
+  - make

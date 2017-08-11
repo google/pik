@@ -84,7 +84,7 @@ Image3F LinearFromSrgb(const Image3B& srgb) {
                  LinearFromSrgb(srgb.plane(2)));
 }
 
-ImageB SrgbFromLinear(const ImageF& linear) {
+ImageB Srgb8FromLinear(const ImageF& linear) {
   PROFILER_FUNC;
   const size_t xsize = linear.xsize();
   const size_t ysize = linear.ysize();
@@ -100,10 +100,34 @@ ImageB SrgbFromLinear(const ImageF& linear) {
   return srgb;
 }
 
-Image3B SrgbFromLinear(const Image3F& linear) {
-  return Image3B(SrgbFromLinear(linear.plane(0)),
-                 SrgbFromLinear(linear.plane(1)),
-                 SrgbFromLinear(linear.plane(2)));
+Image3B Srgb8FromLinear(const Image3F& linear) {
+  return Image3B(Srgb8FromLinear(linear.plane(0)),
+                 Srgb8FromLinear(linear.plane(1)),
+                 Srgb8FromLinear(linear.plane(2)));
+}
+
+ImageU Srgb16FromLinear(const ImageF& linear) {
+  PROFILER_FUNC;
+  const size_t xsize = linear.xsize();
+  const size_t ysize = linear.ysize();
+  ImageU srgb(xsize, ysize);
+  for (size_t y = 0; y < ysize; ++y) {
+    const float* const PIK_RESTRICT row_linear = linear.Row(y);
+    uint16_t* const PIK_RESTRICT row = srgb.Row(y);
+    for (size_t x = 0; x < xsize; ++x) {
+      // Multiply by 257.0 to convert range 0-255.0 into 0-65535.0
+      // The Linear to sRGB conversion uses floating point math.
+      row[x] = static_cast<uint16_t>(
+          std::round(LinearToSrgb8Direct(row_linear[x]) * 257.0));
+    }
+  }
+  return srgb;
+}
+
+Image3U Srgb16FromLinear(const Image3F& linear) {
+  return Image3U(Srgb16FromLinear(linear.plane(0)),
+                 Srgb16FromLinear(linear.plane(1)),
+                 Srgb16FromLinear(linear.plane(2)));
 }
 
 ImageF SrgbFFromLinear(const ImageF& linear) {

@@ -63,6 +63,9 @@ class CompressedImage {
   // coefficients.
   Image3B ToSRGB() const;
 
+  // Returns the image as linear (gamma expanded) sRGB
+  Image3F ToLinear() const;
+
   const Image3W& coeffs() const { return dct_coeffs_; }
 
   // Returns a lossless encoding of the quantized coefficients.

@@ -474,4 +474,29 @@ void CompressedImage::UpdateSRGB(const float* const PIK_RESTRICT block,
   }
 }
 
+Image3F CompressedImage::ToLinear() const {
+  Image3F out(block_xsize_ * kBlockEdge, block_ysize_ * kBlockEdge);
+  for (int block_y = 0; block_y < block_ysize_; ++block_y) {
+    for (int block_x = 0; block_x < block_xsize_; ++block_x) {
+      alignas(32) float block[kBlockSize3];
+      UpdateBlock(block_x, block_y, block);
+      const int yoff = kBlockEdge * block_y;
+      const int xoff = kBlockEdge * block_x;
+      for (int iy = 0; iy < kBlockEdge; ++iy) {
+        auto row = out.Row(iy + yoff);
+        for (int ix = 0; ix < kBlockEdge; ++ix) {
+          const int px = ix + xoff;
+          const int k = kBlockEdge * iy + ix;
+          float x = block[k + 0] + kXybCenter[0];
+          float y = block[k + kBlockSize] + kXybCenter[1];
+          float z = block[k + kBlockSize2] + kXybCenter[2];
+          XybToRgb(x, y, z, &row[0][px], &row[1][px], &row[2][px]);
+        }
+      }
+    }
+  }
+  out.ShrinkTo(xsize_, ysize_);
+  return out;
+}
+
 }  // namespace pik

@@ -46,7 +46,7 @@ struct CompressParams {
 struct DecompressParams {
 };
 
-// The input image is an 8-bit SRGB image.
+// The input image is an 8-bit sRGB image.
 bool PixelsToPik(const CompressParams& params, const Image3B& planes,
                  Bytes* compressed, PikInfo* aux_out);
 
@@ -59,9 +59,13 @@ bool OpsinToPik(const CompressParams& params, const Image3F& opsin,
                 Bytes* compressed, PikInfo* aux_out);
 
 
+// The output image is an 8-bit sRGB image.
 bool PikToPixels(const DecompressParams& params, const Bytes& compressed,
                  Image3B* planes, PikInfo* aux_out);
 
+// The output image is a linear (gamma expanded) sRGB image.
+bool PikToPixels(const DecompressParams& params, const Bytes& compressed,
+                 Image3F* planes, PikInfo* aux_out);
 }  // namespace pik
 
 #endif  // PIK_H_

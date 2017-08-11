@@ -458,6 +458,17 @@ std::string CompressToTargetSize(const Image3F& opsin_orig,
 }
 
 
+
+
+void ToLinearFloatOrSrgb8Byte(
+    const CompressedImage& compressed, Image3B* image) {
+  *image = compressed.ToSRGB();
+}
+
+void ToLinearFloatOrSrgb8Byte(
+    const CompressedImage& compressed, Image3F* image) {
+  *image = compressed.ToLinear();
+}
 }  // namespace
 
 bool PixelsToPik(const CompressParams& params, const Image3B& planes,
@@ -519,8 +530,9 @@ bool OpsinToPik(const CompressParams& params, const Image3F& opsin,
 }
 
 
-bool PikToPixels(const DecompressParams& params, const Bytes& compressed,
-                 Image3B* planes, PikInfo* aux_out) {
+template<typename Image>
+bool PikToPixelsT(const DecompressParams& params, const Bytes& compressed,
+                  Image* planes, PikInfo* aux_out) {
   if (compressed.empty()) {
     return PIK_FAILURE("Empty input.");
   }
@@ -550,9 +562,19 @@ bool PikToPixels(const DecompressParams& params, const Bytes& compressed,
     if (img.xsize() == 0 || img.ysize() == 0) {
       return PIK_FAILURE("Pik decoding failed.");
     }
-    *planes = img.ToSRGB();
+    ToLinearFloatOrSrgb8Byte(img, planes);
   }
   return true;
+}
+
+bool PikToPixels(const DecompressParams& params, const Bytes& compressed,
+                 Image3B* planes, PikInfo* aux_out) {
+  return PikToPixelsT(params, compressed, planes, aux_out);
+}
+
+bool PikToPixels(const DecompressParams& params, const Bytes& compressed,
+                 Image3F* planes, PikInfo* aux_out) {
+  return PikToPixelsT(params, compressed, planes, aux_out);
 }
 
 }  // namespace pik

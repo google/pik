@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "gamma_correct.h"
 #include "image_io.h"
 #include "pik.h"
 
@@ -45,7 +46,22 @@ bool LoadFile(const char* pathname, Bytes* compressed) {
   return true;
 }
 
-// main() function, within namespace for convenience.
+bool PikDecode(const DecompressParams& params, const Bytes& compressed,
+    Image3B* planes, PikInfo* info) {
+  return PikToPixels(params, compressed, planes, info);
+}
+
+bool PikDecode(const DecompressParams& params, const Bytes& compressed,
+    Image3U* planes, PikInfo* info) {
+  Image3F linear;
+  if (!PikToPixels(params, compressed, &linear, info)) {
+    return false;
+  }
+  *planes = Srgb16FromLinear(linear);
+  return true;
+}
+
+template<typename Image>
 int Decompress(const char* pathname_in, const char* pathname_out) {
   Bytes compressed;
   if (!LoadFile(pathname_in, &compressed)) {
@@ -53,9 +69,9 @@ int Decompress(const char* pathname_in, const char* pathname_out) {
   }
 
   DecompressParams params;
-  Image3B planes;
+  Image planes;
   PikInfo info;
-  if (!PikToPixels(params, compressed, &planes, &info)) {
+  if (!PikDecode(params, compressed, &planes, &info)) {
     fprintf(stderr, "Failed to decompress.\n");
     return 1;
   }
@@ -65,6 +81,7 @@ int Decompress(const char* pathname_in, const char* pathname_out) {
     fprintf(stderr, "Failed to write %s.\n", pathname_out);
     return 1;
   }
+
   return 0;
 }
 
@@ -72,10 +89,39 @@ int Decompress(const char* pathname_in, const char* pathname_out) {
 }  // namespace pik
 
 int main(int argc, char** argv) {
-  if (argc != 3) {
-    fprintf(stderr, "Usage: %s in.pik out_rgb_8bit.png\n", argv[0]);
+  const char* file_in = 0;
+  const char* file_out = 0;
+  bool arg_error = false;
+  bool sixteen_bit = false;
+
+  for (int i = 1; i < argc; i++) {
+    if (argv[i][0] == '-') {
+      if (strcmp(argv[i], "--16bit") == 0) {
+        sixteen_bit = true;
+      } else {
+        arg_error = true;
+        break;
+      }
+    } else {
+      if (!file_in) {
+        file_in = argv[i];
+      } else if (!file_out) {
+        file_out = argv[i];
+      } else {
+        arg_error = true;
+        break;
+      }
+    }
+  }
+
+  if (!file_in || !file_out || arg_error) {
+    fprintf(stderr, "Usage: %s [--16bit] in.pik out_rgb_8bit.png\n", argv[0]);
     return 1;
   }
 
-  return pik::Decompress(argv[1], argv[2]);
+  if (sixteen_bit) {
+    return pik::Decompress<pik::Image3U>(file_in, file_out);
+  } else {
+    return pik::Decompress<pik::Image3B>(file_in, file_out);
+  }
 }
