@@ -52,26 +52,16 @@ class Quantizer {
   }
 
   void QuantizeBlock(int quant_x, int quant_y,
-                     int c, int coeff_offset, int num_coeffs,
+                     int c, int k_start, int k_end,
                      const float* PIK_RESTRICT block_in,
                      int16_t* PIK_RESTRICT block_out) const {
     const float* const PIK_RESTRICT scale =
-        &scale_.Row(quant_y)[c][quant_x * coeffs_per_block_ + coeff_offset];
-    for (int k = 0; k < num_coeffs; ++k) {
+        &scale_.Row(quant_y)[c][quant_x * coeffs_per_block_];
+    for (int k = k_start; k < k_end; ++k) {
       const float val = block_in[k] * scale[k];
       static const float kZeroBias[3] = { 0.65f, 0.6f, 0.7f };
       const float thres = kZeroBias[c];
       block_out[k] = (k > 0 && std::abs(val) < thres) ? 0 : std::round(val);
-    }
-  }
-
-  void QuantizeBlock(int quant_x, int quant_y,
-                     int coeff_offset, int num_coeffs,
-                     std::array<const float * PIK_RESTRICT, 3> block_in,
-                     std::array<int16_t * PIK_RESTRICT, 3> block_out) const {
-    for (int c = 0; c < 3; ++c) {
-      QuantizeBlock(quant_x, quant_y, c, coeff_offset, num_coeffs,
-                    block_in[c], block_out[c]);
     }
   }
 

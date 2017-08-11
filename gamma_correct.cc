@@ -23,6 +23,28 @@
 #include "profiler.h"
 
 namespace pik {
+namespace {
+float LinearToSrgb8Poly(float z) {
+  if (z <= 0.0) return 0.0;
+  if (z >= 255) return 255;
+  if (z <= 10.31475 / 12.92) return z * 12.92;
+  // The approximation requires double precision to work.
+  double r1, r2, r3, r4, r5, r6, num, den;
+  z = (z - (255.77) * 0.5) / (254.23 * 0.5);
+  r6 = -0.0109341700384508 + 2 * z * 0.00131133595817393;
+  r5 = 0.285747961922774 + 2 * z * r6 - 0.00131133595817393;
+  r4 = 7.99170966186712 + 2 * z * r5 - r6;
+  r3 = 55.9346675991248 + 2 * z * r4 - r5;
+  r2 = 192.043847048084 + 2 * z * r3 - r4;
+  r1 = 385.048686956293 + 2 * z * r2 - r3;
+  num = 241.245857093411 + z * r1 - r2;
+  r3 = 0.175381684697298 + 2 * z * 0.0175634104108948;
+  r2 = 0.712908802449088 + 2 * z * r3 - 0.0175634104108948;
+  r1 = 1.55508391793947 + 2 * z * r2 - r3;
+  den = 1 + z * r1 - r2;
+  return num / den;
+}
+}  // namespace
 
 const float* NewSrgb8ToLinearTable() {
   float* table = new float[256];
@@ -118,7 +140,7 @@ ImageU Srgb16FromLinear(const ImageF& linear) {
       // Multiply by 257.0 to convert range 0-255.0 into 0-65535.0
       // The Linear to sRGB conversion uses floating point math.
       row[x] = static_cast<uint16_t>(
-          std::round(LinearToSrgb8Direct(row_linear[x]) * 257.0));
+          std::round(LinearToSrgb8Poly(row_linear[x]) * 257.0));
     }
   }
   return srgb;

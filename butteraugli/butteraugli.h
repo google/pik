@@ -1,4 +1,4 @@
-// Copyright 2016 Google Inc. All Rights Reserved.
+// Copyright 2017 Google Inc. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,8 +16,8 @@
 //
 // Author: Jyrki Alakuijala (jyrki.alakuijala@gmail.com)
 
-#ifndef BUTTERAUGLI_BUTTERAUGLI_H_
-#define BUTTERAUGLI_BUTTERAUGLI_H_
+#ifndef THIRD_PARTY_BUTTERAUGLI_BUTTERAUGLI_H_
+#define THIRD_PARTY_BUTTERAUGLI_BUTTERAUGLI_H_
 
 #include <cassert>
 #include <cmath>
@@ -120,20 +120,17 @@ bool ButteraugliAdaptiveQuantization(size_t xsize, size_t ysize,
 #define BUTTERAUGLI_INLINE inline
 #endif
 
-#ifdef __clang__
-// Early versions of Clang did not support __builtin_assume_aligned.
-#define BUTTERAUGLI_HAS_ASSUME_ALIGNED __has_builtin(__builtin_assume_aligned)
-#elif defined(__GNUC__)
-#define BUTTERAUGLI_HAS_ASSUME_ALIGNED 1
+// Returns a void* pointer which the compiler then assumes is N-byte aligned.
+// Example: float* PIK_RESTRICT aligned = (float*)PIK_ASSUME_ALIGNED(in, 32);
+//
+// The assignment semantics are required by GCC/Clang. ICC provides an in-place
+// __assume_aligned, whereas MSVC's __assume appears unsuitable.
+#if PIK_COMPILER_GCC || PIK_COMPILER_CLANG
+#define BUTTERAUGLI_ASSUME_ALIGNED(ptr, align) \
+  __builtin_assume_aligned((ptr), (align))
 #else
-#define BUTTERAUGLI_HAS_ASSUME_ALIGNED 0
+#define BUTTERAUGLI_ASSUME_ALIGNED(ptr, align) ptr /* not supported */
 #endif
-
-#if BUTTERAUGLI_HAS_ASSUME_ALIGNED
-#define BUTTERAUGLI_ASSUME_ALIGNED(ptr, align) __builtin_assume_aligned((ptr), (align))
-#else
-#define BUTTERAUGLI_ASSUME_ALIGNED(ptr, align) (ptr)
-#endif  // BUTTERAUGLI_HAS_ASSUME_ALIGNED
 
 // Functions that depend on the cache line size.
 class CacheAligned {
@@ -439,6 +436,7 @@ class ButteraugliComparator {
   void MaltaDiffMap(const ImageF& y0,
                     const ImageF& y1,
                     double w,
+                    double normalization,
                     ImageF* BUTTERAUGLI_RESTRICT block_diff_ac) const;
 
   ImageF CombineChannels(const std::vector<ImageF>& scale_xyb,
@@ -457,6 +455,12 @@ void ButteraugliDiffmap(const std::vector<ImageF> &rgb0,
                         ImageF &diffmap);
 
 double ButteraugliScoreFromDiffmap(const ImageF& distmap);
+
+// Generate rgb-representation of the distance between two images.
+void CreateHeatMapImage(const std::vector<float> &distmap,
+                        double good_threshold, double bad_threshold,
+                        size_t xsize, size_t ysize,
+                        std::vector<uint8_t> *heatmap);
 
 // Compute values of local frequency and dc masking based on the activity
 // in the two images.
@@ -482,18 +486,18 @@ BUTTERAUGLI_INLINE void OpsinAbsorbance(const V &in0, const V &in1,
                                         V *BUTTERAUGLI_RESTRICT out1,
                                         V *BUTTERAUGLI_RESTRICT out2) {
   // https://en.wikipedia.org/wiki/Photopsin absorbance modeling.
-  static const double mixi0 = 0.250905679992;
-  static const double mixi1 = 0.488965540518;
-  static const double mixi2 = 0.0530785078966;
-  static const double mixi3 = 0.308084088212;
-  static const double mixi4 = 0.223289013867;
-  static const double mixi5 = 0.59034493489;
-  static const double mixi6 = 0.0415531577398;
-  static const double mixi7 = 0.882511005937;
-  static const double mixi8 = 0.355971649662;
-  static const double mixi9 = 1.50255105839;
-  static const double mixi10 = 0.809888530515;
-  static const double mixi11 = 5.75310545951;
+  static const double mixi0 = 0.262805861774;
+  static const double mixi1 = 0.447726163795;
+  static const double mixi2 = 0.0669350599301;
+  static const double mixi3 = 0.70582780208;
+  static const double mixi4 = 0.242970172936;
+  static const double mixi5 = 0.557086443066;
+  static const double mixi6 = mixi2;
+  static const double mixi7 = mixi3;
+  static const double mixi8 = 0.443262270088;
+  static const double mixi9 = 1.22484933589;
+  static const double mixi10 = 0.610100334382;
+  static const double mixi11 = 5.95035078154;
 
   const V mix0(mixi0);
   const V mix1(mixi1);
@@ -594,12 +598,7 @@ static inline double GammaPolynomial(double value) {
   return r(value);
 }
 
-void CreateHeatMapImage(const std::vector<float> &distmap,
-                        double good_threshold, double bad_threshold,
-                        size_t xsize, size_t ysize,
-                        std::vector<uint8_t> *heatmap);
-
 }  // namespace butteraugli
 }  // namespace pik
 
-#endif  // BUTTERAUGLI_BUTTERAUGLI_H_
+#endif  // THIRD_PARTY_BUTTERAUGLI_BUTTERAUGLI_H_
