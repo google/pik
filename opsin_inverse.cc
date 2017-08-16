@@ -14,8 +14,7 @@
 
 #include "opsin_inverse.h"
 
-#include <stdint.h>
-#include <cmath>
+#include <array>
 
 #include "gamma_correct.h"
 

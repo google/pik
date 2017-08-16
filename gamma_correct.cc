@@ -15,9 +15,7 @@
 #include "gamma_correct.h"
 
 #include <stddef.h>
-#include <array>
 #include <cmath>
-#include <utility>
 
 #include "compiler_specific.h"
 #include "profiler.h"

@@ -76,6 +76,8 @@ namespace pik {
 #define PIK_TARGET_NAME AVX2
 #elif defined(__SSE4_1__)
 #define PIK_TARGET_NAME SSE41
+#elif defined(__VSX__)
+#define PIK_TARGET_NAME VSX
 #else
 #define PIK_TARGET_NAME Portable
 #endif
@@ -89,7 +91,7 @@ namespace pik {
 #define PIK_ADD_TARGET_SUFFIX(identifier_prefix) \
   PIK_EXPAND_CONCAT(identifier_prefix, PIK_TARGET_NAME)
 
-// PIK_TARGET expands to an integer constant (template argument).
+// PIK_TARGET expands to an integer constant.
 // This ensures your code will work correctly when compiler flags are changed,
 // and benefit from subsequently added targets/specializations.
 #define PIK_TARGET PIK_ADD_TARGET_SUFFIX(PIK_TARGET_)
@@ -97,11 +99,12 @@ namespace pik {
 // Associate targets with integer literals so the preprocessor can compare them
 // with PIK_TARGET. Do not instantiate templates with these values - use
 // PIK_TARGET instead. Must be unique powers of two, see TargetBits. Always
-// defined even if unavailable on this PIK_ARCH_* to allow calling TargetName.
+// defined even if unavailable on this PIK_ARCH to allow calling TargetName.
 // The suffixes must match the PIK_TARGET_NAME identifiers.
 #define PIK_TARGET_Portable 1
 #define PIK_TARGET_SSE41 2
 #define PIK_TARGET_AVX2 4
+#define PIK_TARGET_VSX 8
 
 // Bit array for one or more PIK_TARGET_*. Used to indicate which target(s) are
 // supported or were called by InstructionSets::RunAll.
@@ -125,6 +128,15 @@ void ForeachTarget(TargetBits bits, const Func& func) {
 // bits, or nullptr if zero, multiple, or unknown bits are set.
 const char* TargetName(const TargetBits target_bit);
 
+// Returns the nominal (without Turbo Boost) CPU clock rate [Hertz]. Useful for
+// (roughly) characterizing the CPU speed.
+double NominalClockRate();
+
+// Returns tsc_timer frequency, useful for converting ticks to seconds. This is
+// unaffected by CPU throttling ("invariant"). Thread-safe. Returns timebase
+// frequency on PPC and NominalClockRate on all other platforms.
+double InvariantTicksPerSecond();
+
 #if PIK_ARCH_X64
 
 // This constant avoids image.h depending on vector256.h.
@@ -137,10 +149,6 @@ void Cpuid(const uint32_t level, const uint32_t count,
 
 // Returns the APIC ID of the CPU on which we're currently running.
 uint32_t ApicId();
-
-// Returns nominal CPU clock frequency for converting tsc_timer cycles to
-// seconds. This is unaffected by CPU throttling ("invariant"). Thread-safe.
-double InvariantCyclesPerSecond();
 
 float X64_Reciprocal12(const float x);
 

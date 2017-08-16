@@ -120,17 +120,25 @@ bool ButteraugliAdaptiveQuantization(size_t xsize, size_t ysize,
 #define BUTTERAUGLI_INLINE inline
 #endif
 
+#ifdef __clang__
+// Early versions of Clang did not support __builtin_assume_aligned.
+#define BUTTERAUGLI_HAS_ASSUME_ALIGNED __has_builtin(__builtin_assume_aligned)
+#elif defined(__GNUC__)
+#define BUTTERAUGLI_HAS_ASSUME_ALIGNED 1
+#else
+#define BUTTERAUGLI_HAS_ASSUME_ALIGNED 0
+#endif
+
 // Returns a void* pointer which the compiler then assumes is N-byte aligned.
 // Example: float* PIK_RESTRICT aligned = (float*)PIK_ASSUME_ALIGNED(in, 32);
 //
 // The assignment semantics are required by GCC/Clang. ICC provides an in-place
 // __assume_aligned, whereas MSVC's __assume appears unsuitable.
-#if PIK_COMPILER_GCC || PIK_COMPILER_CLANG
-#define BUTTERAUGLI_ASSUME_ALIGNED(ptr, align) \
-  __builtin_assume_aligned((ptr), (align))
+#if BUTTERAUGLI_HAS_ASSUME_ALIGNED
+#define BUTTERAUGLI_ASSUME_ALIGNED(ptr, align) __builtin_assume_aligned((ptr), (align))
 #else
-#define BUTTERAUGLI_ASSUME_ALIGNED(ptr, align) ptr /* not supported */
-#endif
+#define BUTTERAUGLI_ASSUME_ALIGNED(ptr, align) (ptr)
+#endif  // BUTTERAUGLI_HAS_ASSUME_ALIGNED
 
 // Functions that depend on the cache line size.
 class CacheAligned {

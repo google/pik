@@ -17,20 +17,27 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
+#include <sys/types.h>
+#include <cstdint>
 #include <cstdlib>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
-#include "bit_reader.h"
 #include "ans_encode.h"
-#include "context.h"
+#include "bit_reader.h"
 #include "cluster.h"
+#include "compiler_specific.h"
+#include "context.h"
 #include "context_map_encode.h"
+#include "fast_log.h"
 #include "histogram_encode.h"
 #include "image.h"
-#include "fast_log.h"
 #include "lehmer_code.h"
 #include "pik_info.h"
+#include "status.h"
 
 namespace pik {
 

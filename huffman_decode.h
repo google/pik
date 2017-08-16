@@ -18,6 +18,9 @@
 #ifndef HUFFMAN_DECODE_H_
 #define HUFFMAN_DECODE_H_
 
+#include <stddef.h>
+#include <stdint.h>
+#include <memory>
 #include <vector>
 
 #include "bit_reader.h"

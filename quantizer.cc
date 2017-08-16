@@ -14,7 +14,8 @@
 
 #include "quantizer.h"
 
-#include <stdlib.h>
+#include <stdio.h>
+#include <algorithm>
 #include <vector>
 
 #include "arch_specific.h"

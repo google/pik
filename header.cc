@@ -18,6 +18,7 @@
 #include <string.h>
 #include <algorithm>
 #include <array>
+#include <cstdint>
 
 #include "arch_specific.h"
 #include "bits.h"

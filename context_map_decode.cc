@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "huffman_decode.h"
+#include "status.h"
 
 namespace pik {
 

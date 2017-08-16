@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "arch_specific.h"
 #include "compiler_specific.h"
 #include "image.h"
 

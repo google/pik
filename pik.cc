@@ -15,11 +15,12 @@
 #include "pik.h"
 
 #include <stddef.h>
-#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <algorithm>
-#include <cmath>
-#include <limits>
+#include <array>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -472,7 +473,7 @@ void ToLinearFloatOrSrgb8Byte(
 }  // namespace
 
 bool PixelsToPik(const CompressParams& params, const Image3B& planes,
-                 Bytes* compressed, PikInfo* aux_out) {
+                 PaddedBytes* compressed, PikInfo* aux_out) {
   if (planes.xsize() == 0 || planes.ysize() == 0) {
     return PIK_FAILURE("Empty image");
   }
@@ -480,7 +481,7 @@ bool PixelsToPik(const CompressParams& params, const Image3B& planes,
 }
 
 bool PixelsToPik(const CompressParams& params, const Image3F& linear,
-                 Bytes* compressed, PikInfo* aux_out) {
+                 PaddedBytes* compressed, PikInfo* aux_out) {
   if (linear.xsize() == 0 || linear.ysize() == 0) {
     return PIK_FAILURE("Empty image");
   }
@@ -489,7 +490,7 @@ bool PixelsToPik(const CompressParams& params, const Image3F& linear,
 }
 
 bool OpsinToPik(const CompressParams& params, const Image3F& opsin,
-                Bytes* compressed, PikInfo* aux_out) {
+                PaddedBytes* compressed, PikInfo* aux_out) {
   if (opsin.xsize() == 0 || opsin.ysize() == 0) {
     return PIK_FAILURE("Empty image");
   }
@@ -518,33 +519,33 @@ bool OpsinToPik(const CompressParams& params, const Image3F& opsin,
   Header header;
   header.xsize = xsize;
   header.ysize = ysize;
-  compressed->resize(MaxCompressedHeaderSize());
+  compressed->resize(MaxCompressedHeaderSize() + compressed_data.size());
   BitSink sink(compressed->data());
   if (!StoreHeader(header, &sink)) return false;
   const size_t header_size = sink.Finalize() - compressed->data();
-  compressed->resize(header_size);
-
-  compressed->insert(compressed->end(), compressed_data.begin(),
-                     compressed_data.end());
+  compressed->resize(header_size + compressed_data.size());  // no copy!
+  memcpy(compressed->data() + header_size, compressed_data.data(),
+         compressed_data.size());
   return true;
 }
 
 
-template<typename Image>
-bool PikToPixelsT(const DecompressParams& params, const Bytes& compressed,
+template <typename Image>
+bool PikToPixelsT(const DecompressParams& params, const PaddedBytes& compressed,
                   Image* planes, PikInfo* aux_out) {
-  if (compressed.empty()) {
+  if (compressed.size() == 0) {
     return PIK_FAILURE("Empty input.");
   }
+  const uint8_t* compressed_end = compressed.data() + compressed.size();
+
   Header header;
-  Bytes padded(std::max(MaxCompressedHeaderSize(), compressed.size()));
-  memcpy(padded.data(), compressed.data(), compressed.size());
-  BitSource source(padded.data());
+  BitSource source(compressed.data());
   if (!LoadHeader(&source, &header)) return false;
-  const uint8_t* const PIK_RESTRICT end = source.Finalize();
-  if (end > padded.data() + compressed.size()) {
-    return PIK_FAILURE("Invalid header.");
+  const uint8_t* const PIK_RESTRICT header_end = source.Finalize();
+  if (header_end > compressed_end) {
+    return PIK_FAILURE("Truncated header.");
   }
+
   if (header.flags & Header::kWebPLossless) {
     return PIK_FAILURE("Invalid format code");
   } else {  // Pik
@@ -553,13 +554,8 @@ bool PikToPixelsT(const DecompressParams& params, const Bytes& compressed,
     if (num_pixels > kMaxPixels) {
       return PIK_FAILURE("Image too big.");
     }
-    std::string encoded_img;
-    encoded_img.assign(
-        end,
-        reinterpret_cast<const uint8_t*>(padded.data()) + compressed.size());
-    CompressedImage img = CompressedImage::Decode(
-        header.xsize, header.ysize, encoded_img, aux_out);
-    if (img.xsize() == 0 || img.ysize() == 0) {
+    CompressedImage img(header.xsize, header.ysize, aux_out);
+    if (!img.Decode(header_end, compressed_end - header_end)) {
       return PIK_FAILURE("Pik decoding failed.");
     }
     ToLinearFloatOrSrgb8Byte(img, planes);
@@ -567,12 +563,12 @@ bool PikToPixelsT(const DecompressParams& params, const Bytes& compressed,
   return true;
 }
 
-bool PikToPixels(const DecompressParams& params, const Bytes& compressed,
+bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
                  Image3B* planes, PikInfo* aux_out) {
   return PikToPixelsT(params, compressed, planes, aux_out);
 }
 
-bool PikToPixels(const DecompressParams& params, const Bytes& compressed,
+bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
                  Image3F* planes, PikInfo* aux_out) {
   return PikToPixelsT(params, compressed, planes, aux_out);
 }

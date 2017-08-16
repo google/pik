@@ -13,11 +13,16 @@
 // limitations under the License.
 
 #include "image_io.h"
+
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/types.h>
 #include <array>
-#include <cstdio>
 #include <memory>
+#include <utility>
+#include <vector>
 
 #include "cache_aligned.h"
 #include "compiler_specific.h"

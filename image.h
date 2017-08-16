@@ -17,13 +17,20 @@
 #ifndef IMAGE_H_
 #define IMAGE_H_
 
+#include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/types.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <complex>
 #include <limits>
+#include <string>
+#include <utility>
 #include <vector>
+
 #include "arch_specific.h"  // kVectorSize
 #include "cache_aligned.h"
 #include "compiler_specific.h"

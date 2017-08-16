@@ -28,6 +28,7 @@ PIK_OBJS := $(addprefix obj/, \
 	opsin_codec.o \
 	opsin_inverse.o \
 	opsin_image.o \
+	padded_bytes.o \
 	quantizer.o \
 	yuv_convert.o \
 )

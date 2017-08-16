@@ -14,9 +14,12 @@
 
 #include "yuv_convert.h"
 
-#include <type_traits>
 #include <stdint.h>
+#include <algorithm>
+#include <array>
+#include <type_traits>
 
+#include "compiler_specific.h"
 #include "gamma_correct.h"
 
 namespace pik {

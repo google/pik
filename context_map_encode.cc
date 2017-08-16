@@ -17,9 +17,11 @@
 #include "context_map_encode.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <vector>
 
+#include "compiler_specific.h"
 #include "huffman_encode.h"
 #include "status.h"
 #include "write_bits.h"

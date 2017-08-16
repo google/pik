@@ -15,6 +15,7 @@
 #ifndef CONTEXT_MAP_DECODE_H_
 #define CONTEXT_MAP_DECODE_H_
 
+#include <stddef.h>
 #include <stdint.h>
 #include <vector>
 

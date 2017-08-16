@@ -14,6 +14,9 @@
 
 #include "adaptive_quantization.h"
 
+#include <string.h>
+#include <algorithm>
+#include <cmath>
 #include <vector>
 
 #include "compiler_specific.h"

@@ -14,14 +14,14 @@
 
 #include "compressed_image.h"
 
-#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <algorithm>
 #include <array>
-#include <limits>
-#include <vector>
 
 #include "bit_reader.h"
+#include "cache_aligned.h"
 #include "compiler_specific.h"
 #include "dc_predictor.h"
 #include "dct.h"
@@ -30,6 +30,7 @@
 #include "opsin_codec.h"
 #include "opsin_image.h"
 #include "opsin_inverse.h"
+#include "opsin_params.h"
 #include "status.h"
 #include "vector256.h"
 
@@ -372,35 +373,33 @@ std::string CompressedImage::EncodeFast() const {
   return PadTo4Bytes(ytob_code + quant_code + dc_code + ac_code);
 }
 
-// static
-CompressedImage CompressedImage::Decode(int xsize, int ysize,
-                                        const std::string& data,
-                                        PikInfo* info) {
-  CompressedImage img(xsize, ysize, info);
-  const uint8_t* input = reinterpret_cast<const uint8_t*>(data.data());
-  const size_t len = data.size();
-  if (len == 0) {
-    PIK_NOTIFY_ERROR("Empty compressed data.");
-    return CompressedImage(0, 0, nullptr);
+bool CompressedImage::Decode(const uint8_t* compressed,
+                             const size_t compressed_size) {
+  if (compressed_size == 0) {
+    return PIK_FAILURE("Empty compressed data.");
   }
-  if (len % 4 != 0) {
-    PIK_NOTIFY_ERROR("Invalid padding.");
-    return CompressedImage(0, 0, nullptr);
+  if (compressed_size % 4 != 0) {
+    return PIK_FAILURE("Invalid padding.");
   }
-  BitReader br(input, len);
-  img.ytob_dc_ = br.ReadBits(8);
-  if (!DecodePlane(&br, 0, 255, &img.ytob_ac_) ||
-      !img.quantizer_.Decode(&br) ||
-      !DecodeImage(&br, kBlockSize, &img.dct_coeffs_) ||
-      !DecodeAC(&br, &img.dct_coeffs_)) {
-    return CompressedImage(0, 0, nullptr);
+  BitReader br(compressed, compressed_size);
+  ytob_dc_ = br.ReadBits(8);
+  if (!DecodePlane(&br, 0, 255, &ytob_ac_)) {
+    return PIK_FAILURE("DecodePlane failed.");
   }
-  if (br.Position() != len) {
-    PIK_NOTIFY_ERROR("Pik compressed data size mismatch.");
-    return CompressedImage(0, 0, nullptr);
+  if (!quantizer_.Decode(&br)) {
+    return PIK_FAILURE("quantizer Decode failed.");
   }
-  UnpredictDC(&img.dct_coeffs_);
-  return img;
+  if (!DecodeImage(&br, kBlockSize, &dct_coeffs_)) {
+    return PIK_FAILURE("DecodeImage failed.");
+  }
+  if (!DecodeAC(&br, &dct_coeffs_)) {
+    return PIK_FAILURE("DecodeAC failed.");
+  }
+  if (br.Position() != compressed_size) {
+    return PIK_FAILURE("Pik compressed data size mismatch.");
+  }
+  UnpredictDC(&dct_coeffs_);
+  return true;
 }
 
 void CompressedImage::UpdateBlock(const int block_x, const int block_y,

@@ -21,6 +21,7 @@
 #include <string>
 #include <utility>
 
+#include "compiler_specific.h"
 #include "image.h"
 #include "opsin_codec.h"
 #include "pik_info.h"
@@ -34,13 +35,15 @@ static const int kYToBRes = 48;
 // This class is used in both the encoder and decoder.
 class CompressedImage {
  public:
+  // The image is in an undefined state until Decode or Quantize are called.
+  CompressedImage(int xsize, int ysize, PikInfo* info);
+
   // Creates a compressed image from an opsin-dynamics image original.
   // The compressed image is in an undefined state until Quantize() is called.
   static CompressedImage FromOpsinImage(const Image3F& opsin, PikInfo* info);
 
-  // Creates a compressed image from the bitstream.
-  static CompressedImage Decode(int xsize, int ysize, const std::string& data,
-                                PikInfo* info);
+  // Replaces *this with a compressed image from the bitstream.
+  bool Decode(const uint8_t* compressed, const size_t compressed_size);
 
   int xsize() const { return xsize_; }
   int ysize() const { return ysize_; }
@@ -79,8 +82,6 @@ class CompressedImage {
   void SetYToBAC(int tx, int ty, int val) { ytob_ac_.Row(ty)[tx] = val; }
 
  private:
-  CompressedImage(int xsize, int ysize, PikInfo* info);
-
   void UpdateBlock(const int block_x, const int block_y,
                    float* const PIK_RESTRICT block) const;
   void UpdateSRGB(const float* const PIK_RESTRICT block,

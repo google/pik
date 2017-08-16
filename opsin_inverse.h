@@ -16,6 +16,7 @@
 #define OPSIN_INVERSE_H_
 
 #include <stdint.h>
+#include <algorithm>
 #include <cstdlib>
 #include <vector>
 

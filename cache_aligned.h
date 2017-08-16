@@ -15,9 +15,14 @@
 #ifndef CACHE_ALIGNED_H_
 #define CACHE_ALIGNED_H_
 
+#include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <string.h>  // memcpy
-#include <emmintrin.h>
+#include <algorithm>
 #include <memory>
+#include <new>
+
 #include "compiler_specific.h"
 #include "status.h"
 

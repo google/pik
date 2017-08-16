@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <vector>
 
+#include "compiler_specific.h"
 #include "image.h"
 #include "opsin_params.h"
 

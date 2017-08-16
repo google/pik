@@ -18,6 +18,8 @@
 #include <cstring>
 #include <vector>
 
+#include "compiler_specific.h"
+
 namespace pik {
 
 static const int kCodeLengthCodes = 18;

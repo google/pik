@@ -15,9 +15,13 @@
 #include "huffman_encode.h"
 
 #include <algorithm>
+#include <cstdint>
+#include <limits>
+#include <memory>
 #include <vector>
 
 #include "fast_log.h"
+#include "status.h"
 #include "write_bits.h"
 
 namespace pik {

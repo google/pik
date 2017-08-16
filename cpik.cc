@@ -12,11 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "image_io.h"
-#include "pik.h"
-
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+#include "image.h"
+#include "image_io.h"
+#include "padded_bytes.h"
+#include "pik.h"
+#include "pik_info.h"
 
 namespace pik {
 namespace {
@@ -41,7 +45,7 @@ int Compress(const char* pathname_in, const char* distance,
 
   CompressParams params;
   params.butteraugli_distance = butteraugli_distance;
-  Bytes compressed;
+  PaddedBytes compressed;
   PikInfo aux_out;
   if (!PixelsToPik(params, in, &compressed, &aux_out)) {
     fprintf(stderr, "Failed to compress.\n");

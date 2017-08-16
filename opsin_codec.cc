@@ -14,14 +14,16 @@
 
 #include "opsin_codec.h"
 
+#include <stdint.h>
 #include <string.h>
+#include <algorithm>
 #include <array>
 #include <cmath>
-#include <limits>
 #include <memory>
 #include <utility>
 #include <vector>
 
+#include "ans_params.h"
 #include "bit_reader.h"
 #include "compiler_specific.h"
 #include "context_map_decode.h"
@@ -121,13 +123,15 @@ size_t HistogramBuilder::EncodedSize(
   size_t total_histogram_bits = 0;
   size_t total_data_bits = num_extra_bits_;
   for (int c = 0; c < histograms_.size(); ++c) {
-    size_t histogram_bits;
-    size_t data_bits;
-    BuildHuffmanTreeAndCountBits(histograms_[c].data_.data(),
-                                 histograms_[c].data_.size(),
-                                 &histogram_bits, &data_bits);
-    total_histogram_bits += histogram_bits;
-    total_data_bits += data_bits;
+    if (!histograms_[c].data_.empty()) {
+      size_t histogram_bits;
+      size_t data_bits;
+      BuildHuffmanTreeAndCountBits(histograms_[c].data_.data(),
+                                   histograms_[c].data_.size(),
+                                   &histogram_bits, &data_bits);
+      total_histogram_bits += histogram_bits;
+      total_data_bits += data_bits;
+    }
   }
   if (lg2_histo_align >= 0) {
     return (RoundToBytes(total_histogram_bits, lg2_histo_align) +

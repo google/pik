@@ -21,11 +21,11 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <memory>
+#include <vector>
 
 #include "bit_buffer.h"
 #include "compiler_specific.h"
 #include "status.h"
-#include "types.h"
 
 namespace pik {
 
@@ -33,6 +33,8 @@ namespace pik {
 
 // U32Coder selector_bits for a uniform distribution over the 32-bit range.
 constexpr uint32_t kU32Selectors = 0x20181008;
+
+using Bytes = std::vector<uint8_t>;
 
 // Header applicable to all image types. Only minimally extensible via flags;
 // use Sections to add additional functionality in future.

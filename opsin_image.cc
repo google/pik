@@ -14,10 +14,11 @@
 
 #include "opsin_image.h"
 
+#include <stddef.h>
 #include <array>
-#include <cmath>
 
 #include "approx_cube_root.h"
+#include "compiler_specific.h"
 #include "gamma_correct.h"
 
 namespace pik {

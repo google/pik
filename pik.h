@@ -15,12 +15,12 @@
 #ifndef PIK_H_
 #define PIK_H_
 
-#include <vector>
+#include <string>
 
 #include "image.h"
 #include "pik_info.h"
 #include "status.h"
-#include "types.h"
+#include "padded_bytes.h"
 
 namespace pik {
 
@@ -48,23 +48,23 @@ struct DecompressParams {
 
 // The input image is an 8-bit sRGB image.
 bool PixelsToPik(const CompressParams& params, const Image3B& planes,
-                 Bytes* compressed, PikInfo* aux_out);
+                 PaddedBytes* compressed, PikInfo* aux_out);
 
 // The input image is a linear (gamma expanded) sRGB image.
 bool PixelsToPik(const CompressParams& params, const Image3F& linear,
-                 Bytes* compressed, PikInfo* aux_out);
+                 PaddedBytes* compressed, PikInfo* aux_out);
 
 // The input image is an opsin dynamics image.
 bool OpsinToPik(const CompressParams& params, const Image3F& opsin,
-                Bytes* compressed, PikInfo* aux_out);
+                PaddedBytes* compressed, PikInfo* aux_out);
 
 
 // The output image is an 8-bit sRGB image.
-bool PikToPixels(const DecompressParams& params, const Bytes& compressed,
+bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
                  Image3B* planes, PikInfo* aux_out);
 
 // The output image is a linear (gamma expanded) sRGB image.
-bool PikToPixels(const DecompressParams& params, const Bytes& compressed,
+bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
                  Image3F* planes, PikInfo* aux_out);
 }  // namespace pik
 

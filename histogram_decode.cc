@@ -14,9 +14,6 @@
 
 #include "histogram_decode.h"
 
-#include <stdint.h>
-#include <string.h>
-
 #include "ans_params.h"
 #include "fast_log.h"
 #include "histogram.h"

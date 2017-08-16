@@ -14,12 +14,10 @@
 
 #include "butteraugli_comparator.h"
 
-#include <math.h>
 #include <stddef.h>
-#include <stdlib.h>
-#include <algorithm>
 #include <array>
 #include <memory>
+#include <vector>
 
 #include "compiler_specific.h"
 #include "gamma_correct.h"

@@ -15,6 +15,8 @@
 #ifndef ADAPTIVE_QUANTIZATION_H_
 #define ADAPTIVE_QUANTIZATION_H_
 
+#include <stddef.h>
+
 #include "image.h"
 
 namespace pik {

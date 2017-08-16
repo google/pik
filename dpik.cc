@@ -12,14 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+
 #include "gamma_correct.h"
+#include "image.h"
 #include "image_io.h"
+#include "padded_bytes.h"
 #include "pik.h"
+#include "pik_info.h"
 
 namespace pik {
 namespace {
 
-bool LoadFile(const char* pathname, Bytes* compressed) {
+bool LoadFile(const char* pathname, PaddedBytes* compressed) {
   FILE* f = fopen(pathname, "rb");
   if (f == nullptr) {
     fprintf(stderr, "Failed to open %s.\n", pathname);
@@ -46,13 +53,13 @@ bool LoadFile(const char* pathname, Bytes* compressed) {
   return true;
 }
 
-bool PikDecode(const DecompressParams& params, const Bytes& compressed,
-    Image3B* planes, PikInfo* info) {
+bool PikDecode(const DecompressParams& params, const PaddedBytes& compressed,
+               Image3B* planes, PikInfo* info) {
   return PikToPixels(params, compressed, planes, info);
 }
 
-bool PikDecode(const DecompressParams& params, const Bytes& compressed,
-    Image3U* planes, PikInfo* info) {
+bool PikDecode(const DecompressParams& params, const PaddedBytes& compressed,
+               Image3U* planes, PikInfo* info) {
   Image3F linear;
   if (!PikToPixels(params, compressed, &linear, info)) {
     return false;
@@ -63,7 +70,7 @@ bool PikDecode(const DecompressParams& params, const Bytes& compressed,
 
 template<typename Image>
 int Decompress(const char* pathname_in, const char* pathname_out) {
-  Bytes compressed;
+  PaddedBytes compressed;
   if (!LoadFile(pathname_in, &compressed)) {
     return 1;
   }
