@@ -277,6 +277,16 @@ void CompressedImage::QuantizeBlock(int block_x, int block_y) {
              &opsin_image_->Row(offsety + iy)[c][offsetx],
              kBlockEdge * sizeof(cblock[0]));
     }
+    if (opsin_overlay_.get() != nullptr) {
+      for (int iy = 0; iy < kBlockEdge; ++iy) {
+        const float* const PIK_RESTRICT row_overlay =
+            &opsin_overlay_->Row(offsety + iy)[c][offsetx];
+        float* const PIK_RESTRICT row = &cblock[iy * kBlockEdge];
+        for (int ix = 0; ix < kBlockEdge; ++ix) {
+          row[ix] -= row_overlay[ix];
+        }
+      }
+    }
   }
   for (int c = 0; c < 3; ++c) {
     ComputeTransposedScaledBlockDCTFloat(&block[kBlockSize * c]);
@@ -318,7 +328,175 @@ void CompressedImage::QuantizeBlock(int block_x, int block_y) {
   }
 }
 
+void CompressedImage::QuantizeDC() {
+  const float inv_quant_dc = 64.0f * quantizer_.inv_quant_dc();
+  const float* PIK_RESTRICT kDequantMatrix = DequantMatrix();
+  const float inv_scale[3] = {
+    kDequantMatrix[0] * inv_quant_dc,
+    kDequantMatrix[kBlockSize] * inv_quant_dc,
+    kDequantMatrix[kBlockSize2] * inv_quant_dc
+  };
+  const float scale[3] = {
+    1.0f / inv_scale[0], 1.0f / inv_scale[1], 1.0f / inv_scale[2]
+  };
+  for (int block_y = 0; block_y < block_ysize_; ++block_y) {
+    for (int block_x = 0; block_x < block_xsize_; ++block_x) {
+      const int offsetx = block_x * kBlockEdge;
+      const int offsety = block_y * kBlockEdge;
+      float dc[3] = { 0 };
+      for (int c = 0; c < 3; ++c) {
+        for (int ix = 0; ix < kBlockEdge; ++ix) {
+          for (int iy = 0; iy < kBlockEdge; ++iy) {
+            dc[c] += opsin_image_->Row(offsety + iy)[c][offsetx + ix];
+          }
+        }
+      }
+      auto row_out = dct_coeffs_.Row(block_y);
+      const int offset = block_x * kBlockSize;
+      row_out[0][offset] = std::round(dc[0] * scale[0]);
+      row_out[1][offset] = std::round(dc[1] * scale[1]);
+      dc[2] -= YToBDC() * row_out[1][offset] * inv_scale[1];
+      row_out[2][offset] = std::round(dc[2] * scale[2]);
+    }
+  }
+}
+
+namespace {
+
+std::vector<float> GaussianKernel(int radius, float sigma) {
+  std::vector<float> kernel(2 * radius + 1);
+  const float scaler = -1.0 / (2 * sigma * sigma);
+  for (int i = -radius; i <= radius; ++i) {
+    kernel[i + radius] = std::exp(scaler * i * i);
+  }
+  return kernel;
+}
+
+// Extrapolates row_in at both ends by mirroring values.
+// E.g. row_in = [a, b, c, d, e, f], radius = 3
+//      row_out = [d, c, b, a, b, c, d, e, f, e, d, c].
+inline void ExtrapolateBorders(const float* const PIK_RESTRICT row_in,
+                               float* const PIK_RESTRICT row_out,
+                               const int xsize,
+                               const int radius) {
+  const int lastcol = xsize - 1;
+  for (int x = 1; x <= radius; ++x) {
+    row_out[-x] = row_in[std::min(x, xsize - 1)];
+  }
+  memcpy(row_out, row_in, xsize * sizeof(row_out[0]));
+  for (int x = 1; x <= radius; ++x) {
+    row_out[lastcol + x] = row_in[std::max(0, lastcol - x)];
+  }
+}
+
+// Upsamples 'in' by factor kBlockEdge in x direction, then applies convolution
+// with kernel in x direction, and finally transposes the result.
+ImageF ConvolveXUpsampleAndTranspose(const ImageF& in,
+                                     const std::vector<float>& kernel) {
+  PIK_ASSERT(kernel.size() == 2 * kBlockEdge + 1);
+  ImageF out(in.ysize(), kBlockEdge * in.xsize());
+  float weight = 0.0f;
+  for (int i = 0; i < kernel.size(); ++i) {
+    weight += kernel[i];
+  }
+  float scale = 1.0f / weight;
+  float w[kBlockEdge] = { 0.0f };
+  float u[kBlockEdge] = { 0.0f };
+  float v[kBlockEdge] = { 0.0f };
+  for (int k = 0; k < kBlockEdge; ++k) {
+    const int split0 = kBlockEdge - k;
+    const int split1 = 2 * kBlockEdge - k;
+    for (int j = 0; j < split0; ++j) {
+      w[k] += kernel[j];
+    }
+    for (int j = split0; j < split1; ++j) {
+      u[k] += kernel[j];
+    }
+    for (int j = split1; j < kernel.size(); ++j) {
+      v[k] += kernel[j];
+    }
+    w[k] *= scale;
+    u[k] *= scale;
+    v[k] *= scale;
+  }
+  std::vector<float> row_tmp(in.xsize() + 2);
+  float* const PIK_RESTRICT rowp = &row_tmp[1];
+  for (int y = 0; y < in.ysize(); ++y) {
+    ExtrapolateBorders(in.Row(y), rowp, in.xsize(), 1);
+    for (int x = 0; x < in.xsize(); ++x) {
+      for (int k = 0; k < kBlockEdge; ++k) {
+        out.Row(kBlockEdge * x + k)[y] = (w[k] * rowp[x - 1] +
+                                          u[k] * rowp[x] +
+                                          v[k] * rowp[x + 1]);
+      }
+    }
+  }
+  return out;
+}
+
+void ZeroAverages(ImageF* img) {
+  int block_xsize = img->xsize() / kBlockEdge;
+  int block_ysize = img->ysize() / kBlockEdge;
+  for (int block_y = 0; block_y < block_ysize; ++block_y) {
+    for (int block_x = 0; block_x < block_xsize; ++block_x) {
+      const int yoff = kBlockEdge * block_y;
+      const int xoff = kBlockEdge * block_x;
+      float sum = 0.0f;
+      for (int iy = 0; iy < kBlockEdge; ++iy) {
+        auto row = img->Row(iy + yoff);
+        for (int ix = 0; ix < kBlockEdge; ++ix) {
+          sum += row[ix + xoff];
+        }
+      }
+      float adj = -sum / 64.0f;
+      for (int iy = 0; iy < kBlockEdge; ++iy) {
+        auto row = img->Row(iy + yoff);
+        for (int ix = 0; ix < kBlockEdge; ++ix) {
+          row[ix + xoff] += adj;
+        }
+      }
+    }
+  }
+}
+
+}  // namespace
+
+void CompressedImage::ComputeOpsinOverlay() {
+  const float inv_quant_dc = quantizer_.inv_quant_dc();
+  const float* PIK_RESTRICT kDequantMatrix = DequantMatrix();
+  const float inv_scale[3] = {
+    kDequantMatrix[0] * inv_quant_dc,
+    kDequantMatrix[kBlockSize] * inv_quant_dc,
+    kDequantMatrix[kBlockSize2] * inv_quant_dc
+  };
+  std::vector<float> kernel = GaussianKernel(kBlockEdge, 2.0f);
+  std::array<ImageF, 3> planes;
+  for (int c = 0; c < 3; ++c) {
+    ImageF plane(block_xsize_, block_ysize_);
+    for (int block_y = 0; block_y < block_ysize_; ++block_y) {
+      auto row_dc = dct_coeffs_.Row(block_y);
+      for (int block_x = 0; block_x < block_xsize_; ++block_x) {
+        const int offset = block_x * kBlockSize;
+        float dc = row_dc[c][offset] * inv_scale[c];
+        if (c == 2) {
+          dc += row_dc[1][offset] * inv_scale[1] * YToBDC();
+        }
+        plane.Row(block_y)[block_x] = dc;
+      }
+    }
+    plane = ConvolveXUpsampleAndTranspose(plane, kernel);
+    plane = ConvolveXUpsampleAndTranspose(plane, kernel);
+    ZeroAverages(&plane);
+    planes[c] = std::move(plane);
+  }
+  opsin_overlay_.reset(new Image3F(planes));
+}
+
 void CompressedImage::Quantize() {
+#if PIK_SMOOTH_DC
+  QuantizeDC();
+  ComputeOpsinOverlay();
+#endif
   for (int block_y = 0; block_y < block_ysize_; ++block_y) {
     for (int block_x = 0; block_x < block_xsize_; ++block_x) {
       QuantizeBlock(block_x, block_y);
@@ -399,6 +577,9 @@ bool CompressedImage::Decode(const uint8_t* compressed,
     return PIK_FAILURE("Pik compressed data size mismatch.");
   }
   UnpredictDC(&dct_coeffs_);
+#if PIK_SMOOTH_DC
+  ComputeOpsinOverlay();
+#endif
   return true;
 }
 
@@ -435,6 +616,21 @@ void CompressedImage::UpdateBlock(const int block_x, const int block_y,
   block[kBlockSize + 24] += kACPred31 * block[kBlockSize + 8];
   for (int c = 0; c < 3; ++c) {
     ComputeTransposedScaledBlockIDCTFloat(&block[kBlockSize * c]);
+  }
+  if (opsin_overlay_.get() != nullptr) {
+    const int offsetx = block_x * kBlockEdge;
+    const int offsety = block_y * kBlockEdge;
+    for (int c = 0; c < 3; ++c) {
+      float* const PIK_RESTRICT cblock = &block[kBlockSize * c];
+      for (int iy = 0; iy < kBlockEdge; ++iy) {
+        const float* const PIK_RESTRICT row_overlay =
+            &opsin_overlay_->Row(offsety + iy)[c][offsetx];
+        float* const PIK_RESTRICT row = &cblock[iy * kBlockEdge];
+        for (int ix = 0; ix < kBlockEdge; ++ix) {
+          row[ix] += row_overlay[ix];
+        }
+      }
+    }
   }
 }
 

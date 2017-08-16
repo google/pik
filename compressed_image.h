@@ -82,6 +82,9 @@ class CompressedImage {
   void SetYToBAC(int tx, int ty, int val) { ytob_ac_.Row(ty)[tx] = val; }
 
  private:
+  void QuantizeDC();
+  void ComputeOpsinOverlay();
+
   void UpdateBlock(const int block_x, const int block_y,
                    float* const PIK_RESTRICT block) const;
   void UpdateSRGB(const float* const PIK_RESTRICT block,
@@ -100,6 +103,9 @@ class CompressedImage {
   // Transformed version of the original image, only present if the image
   // was constructed with FromOpsinImage().
   std::unique_ptr<Image3F> opsin_image_;
+  // Pixel space overlay image computed from quantized dct coefficients in
+  // both the encoder and the decoder.
+  std::unique_ptr<Image3F> opsin_overlay_;
   int ytob_dc_;
   Image<int> ytob_ac_;
   // Not owned, used to report additional statistics to the callers of
