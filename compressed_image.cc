@@ -201,6 +201,114 @@ const float* DequantMatrix() {
   return kDequantMatrix;
 }
 
+std::vector<float> GaussianKernel(int radius, float sigma) {
+  std::vector<float> kernel(2 * radius + 1);
+  const float scaler = -1.0 / (2 * sigma * sigma);
+  for (int i = -radius; i <= radius; ++i) {
+    kernel[i + radius] = std::exp(scaler * i * i);
+  }
+  return kernel;
+}
+
+void ComputeBlockBlurWeights(const float sigma,
+                             float* const PIK_RESTRICT w0,
+                             float* const PIK_RESTRICT w1,
+                             float* const PIK_RESTRICT w2) {
+  std::vector<float> kernel = GaussianKernel(kBlockEdge, sigma);
+  float weight = 0.0f;
+  for (int i = 0; i < kernel.size(); ++i) {
+    weight += kernel[i];
+  }
+  float scale = 1.0f / weight;
+  for (int k = 0; k < kBlockEdge; ++k) {
+    const int split0 = kBlockEdge - k;
+    const int split1 = 2 * kBlockEdge - k;
+    for (int j = 0; j < split0; ++j) {
+      w0[k] += kernel[j];
+    }
+    for (int j = split0; j < split1; ++j) {
+      w1[k] += kernel[j];
+    }
+    for (int j = split1; j < kernel.size(); ++j) {
+      w2[k] += kernel[j];
+    }
+    w0[k] *= scale;
+    w1[k] *= scale;
+    w2[k] *= scale;
+  }
+}
+
+Image3F ComputeDCBlurX(const Image3W& dct_coeffs,
+                       const float sigma,
+                       const float inv_quant_dc,
+                       const float ytob_dc,
+                       const float* const PIK_RESTRICT dequant_matrix) {
+  float w_prev[kBlockEdge] = { 0.0f };
+  float w_cur[kBlockEdge] = { 0.0f };
+  float w_next[kBlockEdge] = { 0.0f };
+  ComputeBlockBlurWeights(sigma, w_prev, w_cur, w_next);
+  const float inv_scale[3] = {
+    dequant_matrix[0] * inv_quant_dc,
+    dequant_matrix[kBlockSize] * inv_quant_dc,
+    dequant_matrix[kBlockSize2] * inv_quant_dc
+  };
+  const int block_xsize = dct_coeffs.xsize() / kBlockSize;
+  const int block_ysize = dct_coeffs.ysize();
+  Image3F out(block_xsize * kBlockEdge, block_ysize);
+  for (int by = 0; by < block_ysize; ++by) {
+    auto row_dc = dct_coeffs.Row(by);
+    for (int c = 0; c < 3; ++c) {
+      std::vector<float> row_tmp(block_xsize + 2);
+      for (int bx = 0; bx < block_xsize; ++bx) {
+        const int offset = bx * kBlockSize;
+        float dc = row_dc[c][offset] * inv_scale[c];
+        if (c == 2) {
+          dc += row_dc[1][offset] * inv_scale[1] * ytob_dc;
+        }
+        row_tmp[bx + 1] = dc;
+      }
+      row_tmp[0] = row_tmp[1 + std::min(1, block_xsize - 1)];
+      row_tmp[block_xsize + 1] = row_tmp[1 + std::max(0, block_xsize - 2)];
+      float* const PIK_RESTRICT row_out = out.Row(by)[c];
+      for (int bx = 0; bx < block_xsize; ++bx) {
+        const float dc0 = row_tmp[bx];
+        const float dc1 = row_tmp[bx + 1];
+        const float dc2 = row_tmp[bx + 2];
+        const int offset = bx * kBlockEdge;
+        for (int ix = 0; ix < kBlockEdge; ++ix) {
+          row_out[offset + ix] =
+              dc0 * w_prev[ix] + dc1 * w_cur[ix] + dc2 * w_next[ix];
+        }
+      }
+    }
+  }
+  return out;
+}
+
+PIK_INLINE float ComputeBlurredBlock(const Image3F& blur_x, int c, int offsetx,
+                                     int y_up, int y_cur, int y_down,
+                                     const float* const PIK_RESTRICT w_up,
+                                     const float* const PIK_RESTRICT w_cur,
+                                     const float* const PIK_RESTRICT w_down,
+                                     float* const PIK_RESTRICT out) {
+  const float* const PIK_RESTRICT row0 = &blur_x.Row(y_up)[c][offsetx];
+  const float* const PIK_RESTRICT row1 = &blur_x.Row(y_cur)[c][offsetx];
+  const float* const PIK_RESTRICT row2 = &blur_x.Row(y_down)[c][offsetx];
+  float avg = 0.0f;
+  for (int ix = 0; ix < kBlockEdge; ++ix) {
+    const float val0 = row0[ix];
+    const float val1 = row1[ix];
+    const float val2 = row2[ix];
+    for (int iy = 0; iy < kBlockEdge; ++iy) {
+      const float val = val0 * w_up[iy] + val1 * w_cur[iy] + val2 * w_down[iy];
+      out[iy * kBlockEdge + ix] = val;
+      avg += val;
+    }
+  }
+  avg /= 64.0f;
+  return avg;
+}
+
 }  // namespace
 
 CompressedImage::CompressedImage(int xsize, int ysize, PikInfo* info)
@@ -277,15 +385,12 @@ void CompressedImage::QuantizeBlock(int block_x, int block_y) {
              &opsin_image_->Row(offsety + iy)[c][offsetx],
              kBlockEdge * sizeof(cblock[0]));
     }
-    if (opsin_overlay_.get() != nullptr) {
-      for (int iy = 0; iy < kBlockEdge; ++iy) {
-        const float* const PIK_RESTRICT row_overlay =
-            &opsin_overlay_->Row(offsety + iy)[c][offsetx];
-        float* const PIK_RESTRICT row = &cblock[iy * kBlockEdge];
-        for (int ix = 0; ix < kBlockEdge; ++ix) {
-          row[ix] -= row_overlay[ix];
-        }
-      }
+  }
+  if (opsin_overlay_.get() != nullptr) {
+    const float* const PIK_RESTRICT overlay =
+        &opsin_overlay_->Row(block_y)[3 * block_x * kBlockSize];
+    for (int k = 0; k < kBlockSize3; ++k) {
+      block[k] -= overlay[k];
     }
   }
   for (int c = 0; c < 3; ++c) {
@@ -361,142 +466,36 @@ void CompressedImage::QuantizeDC() {
   }
 }
 
-namespace {
-
-std::vector<float> GaussianKernel(int radius, float sigma) {
-  std::vector<float> kernel(2 * radius + 1);
-  const float scaler = -1.0 / (2 * sigma * sigma);
-  for (int i = -radius; i <= radius; ++i) {
-    kernel[i + radius] = std::exp(scaler * i * i);
-  }
-  return kernel;
-}
-
-// Extrapolates row_in at both ends by mirroring values.
-// E.g. row_in = [a, b, c, d, e, f], radius = 3
-//      row_out = [d, c, b, a, b, c, d, e, f, e, d, c].
-inline void ExtrapolateBorders(const float* const PIK_RESTRICT row_in,
-                               float* const PIK_RESTRICT row_out,
-                               const int xsize,
-                               const int radius) {
-  const int lastcol = xsize - 1;
-  for (int x = 1; x <= radius; ++x) {
-    row_out[-x] = row_in[std::min(x, xsize - 1)];
-  }
-  memcpy(row_out, row_in, xsize * sizeof(row_out[0]));
-  for (int x = 1; x <= radius; ++x) {
-    row_out[lastcol + x] = row_in[std::max(0, lastcol - x)];
-  }
-}
-
-// Upsamples 'in' by factor kBlockEdge in x direction, then applies convolution
-// with kernel in x direction, and finally transposes the result.
-ImageF ConvolveXUpsampleAndTranspose(const ImageF& in,
-                                     const std::vector<float>& kernel) {
-  PIK_ASSERT(kernel.size() == 2 * kBlockEdge + 1);
-  ImageF out(in.ysize(), kBlockEdge * in.xsize());
-  float weight = 0.0f;
-  for (int i = 0; i < kernel.size(); ++i) {
-    weight += kernel[i];
-  }
-  float scale = 1.0f / weight;
-  float w[kBlockEdge] = { 0.0f };
-  float u[kBlockEdge] = { 0.0f };
-  float v[kBlockEdge] = { 0.0f };
-  for (int k = 0; k < kBlockEdge; ++k) {
-    const int split0 = kBlockEdge - k;
-    const int split1 = 2 * kBlockEdge - k;
-    for (int j = 0; j < split0; ++j) {
-      w[k] += kernel[j];
-    }
-    for (int j = split0; j < split1; ++j) {
-      u[k] += kernel[j];
-    }
-    for (int j = split1; j < kernel.size(); ++j) {
-      v[k] += kernel[j];
-    }
-    w[k] *= scale;
-    u[k] *= scale;
-    v[k] *= scale;
-  }
-  std::vector<float> row_tmp(in.xsize() + 2);
-  float* const PIK_RESTRICT rowp = &row_tmp[1];
-  for (int y = 0; y < in.ysize(); ++y) {
-    ExtrapolateBorders(in.Row(y), rowp, in.xsize(), 1);
-    for (int x = 0; x < in.xsize(); ++x) {
-      for (int k = 0; k < kBlockEdge; ++k) {
-        out.Row(kBlockEdge * x + k)[y] = (w[k] * rowp[x - 1] +
-                                          u[k] * rowp[x] +
-                                          v[k] * rowp[x + 1]);
-      }
-    }
-  }
-  return out;
-}
-
-void ZeroAverages(ImageF* img) {
-  int block_xsize = img->xsize() / kBlockEdge;
-  int block_ysize = img->ysize() / kBlockEdge;
-  for (int block_y = 0; block_y < block_ysize; ++block_y) {
-    for (int block_x = 0; block_x < block_xsize; ++block_x) {
-      const int yoff = kBlockEdge * block_y;
-      const int xoff = kBlockEdge * block_x;
-      float sum = 0.0f;
-      for (int iy = 0; iy < kBlockEdge; ++iy) {
-        auto row = img->Row(iy + yoff);
-        for (int ix = 0; ix < kBlockEdge; ++ix) {
-          sum += row[ix + xoff];
-        }
-      }
-      float adj = -sum / 64.0f;
-      for (int iy = 0; iy < kBlockEdge; ++iy) {
-        auto row = img->Row(iy + yoff);
-        for (int ix = 0; ix < kBlockEdge; ++ix) {
-          row[ix + xoff] += adj;
-        }
-      }
-    }
-  }
-}
-
-}  // namespace
-
 void CompressedImage::ComputeOpsinOverlay() {
+  opsin_overlay_.reset(new ImageF(block_xsize_ * kBlockSize3, block_ysize_));
+  const float kSigma = 2.0f;
   const float inv_quant_dc = quantizer_.inv_quant_dc();
-  const float* PIK_RESTRICT kDequantMatrix = DequantMatrix();
-  const float inv_scale[3] = {
-    kDequantMatrix[0] * inv_quant_dc,
-    kDequantMatrix[kBlockSize] * inv_quant_dc,
-    kDequantMatrix[kBlockSize2] * inv_quant_dc
-  };
-  std::vector<float> kernel = GaussianKernel(kBlockEdge, 2.0f);
-  std::array<ImageF, 3> planes;
-  for (int c = 0; c < 3; ++c) {
-    ImageF plane(block_xsize_, block_ysize_);
-    for (int block_y = 0; block_y < block_ysize_; ++block_y) {
-      auto row_dc = dct_coeffs_.Row(block_y);
-      for (int block_x = 0; block_x < block_xsize_; ++block_x) {
-        const int offset = block_x * kBlockSize;
-        float dc = row_dc[c][offset] * inv_scale[c];
-        if (c == 2) {
-          dc += row_dc[1][offset] * inv_scale[1] * YToBDC();
+  Image3F dc_blur_x = ComputeDCBlurX(coeffs(), kSigma, inv_quant_dc,
+                                     YToBDC(), DequantMatrix());
+  float w_up[kBlockSize] = { 0.0f };
+  float w_cur[kBlockSize] = { 0.0f };
+  float w_down[kBlockSize] = { 0.0f };
+  ComputeBlockBlurWeights(kSigma, w_up, w_cur, w_down);
+  for (int by = 0; by < block_ysize_; ++by) {
+    int by_u = block_ysize_ == 1 ? 0 : by == 0 ? 1 : by - 1;
+    int by_d = block_ysize_ == 1 ? 0 : by + 1 < block_ysize_ ? by + 1 : by - 1;
+    float* const PIK_RESTRICT row = opsin_overlay_->Row(by);
+    for (int bx = 0, i = 0; bx < block_xsize_; ++bx) {
+      const int offsetx = bx * kBlockEdge;
+      for (int c = 0; c < 3; ++c, i += kBlockSize) {
+        float avg = ComputeBlurredBlock(dc_blur_x, c, offsetx, by_u, by, by_d,
+                                        w_up, w_cur, w_down, &row[i]);
+        for (int k = 0; k < kBlockSize; ++k) {
+          row[i + k] -= avg;
         }
-        plane.Row(block_y)[block_x] = dc;
       }
     }
-    plane = ConvolveXUpsampleAndTranspose(plane, kernel);
-    plane = ConvolveXUpsampleAndTranspose(plane, kernel);
-    ZeroAverages(&plane);
-    planes[c] = std::move(plane);
   }
-  opsin_overlay_.reset(new Image3F(planes));
 }
 
 void CompressedImage::Quantize() {
-#if PIK_SMOOTH_DC
   QuantizeDC();
   ComputeOpsinOverlay();
-#endif
   for (int block_y = 0; block_y < block_ysize_; ++block_y) {
     for (int block_x = 0; block_x < block_xsize_; ++block_x) {
       QuantizeBlock(block_x, block_y);
@@ -506,11 +505,31 @@ void CompressedImage::Quantize() {
 
 Image3B CompressedImage::ToSRGB() const {
   Image3B out(block_xsize_ * kBlockEdge, block_ysize_ * kBlockEdge);
+  const float kSigma = 2.0f;
+  const float inv_quant_dc = quantizer_.inv_quant_dc();
+  Image3F dc_blur_x = ComputeDCBlurX(coeffs(), kSigma, inv_quant_dc,
+                                     YToBDC(), DequantMatrix());
+  float w_up[kBlockSize] = { 0.0f };
+  float w_cur[kBlockSize] = { 0.0f };
+  float w_down[kBlockSize] = { 0.0f };
+  ComputeBlockBlurWeights(kSigma, w_up, w_cur, w_down);
   alignas(32) float block_out[kBlockSize3];
-  for (int block_y = 0; block_y < block_ysize_; ++block_y) {
-    for (int block_x = 0; block_x < block_xsize_; ++block_x) {
-      UpdateBlock(block_x, block_y, block_out);
-      UpdateSRGB(block_out, block_x, block_y, &out);
+  for (int by = 0; by < block_ysize_; ++by) {
+    int by_u = block_ysize_ == 1 ? 0 : by == 0 ? 1 : by - 1;
+    int by_d = block_ysize_ == 1 ? 0 : by + 1 < block_ysize_ ? by + 1 : by - 1;
+    for (int bx = 0; bx < block_xsize_; ++bx) {
+      DequantizeBlock(bx, by, block_out);
+      const int offsetx = bx * kBlockEdge;
+      for (int c = 0; c < 3; ++c) {
+        ComputeTransposedScaledBlockIDCTFloat(&block_out[kBlockSize * c]);
+        alignas(32) float dc_blur[kBlockSize];
+        float avg = ComputeBlurredBlock(dc_blur_x, c, offsetx, by_u, by, by_d,
+                                        w_up, w_cur, w_down, dc_blur);
+        for (int k = 0; k < kBlockSize; ++k) {
+          block_out[kBlockSize * c + k] += dc_blur[k] - avg;
+        }
+      }
+      UpdateSRGB(block_out, bx, by, &out);
     }
   }
   out.ShrinkTo(xsize_, ysize_);
@@ -577,14 +596,12 @@ bool CompressedImage::Decode(const uint8_t* compressed,
     return PIK_FAILURE("Pik compressed data size mismatch.");
   }
   UnpredictDC(&dct_coeffs_);
-#if PIK_SMOOTH_DC
-  ComputeOpsinOverlay();
-#endif
   return true;
 }
 
-void CompressedImage::UpdateBlock(const int block_x, const int block_y,
-                                  float* const PIK_RESTRICT block) const {
+void CompressedImage::DequantizeBlock(const int block_x, const int block_y,
+                                      float* const PIK_RESTRICT block) const {
+
   using namespace PIK_TARGET_NAME;
   const int quant_y = block_y / kQuantBlockRes;
   const int tile_y = block_y * kBlockEdge / kYToBRes;
@@ -614,24 +631,6 @@ void CompressedImage::UpdateBlock(const int block_x, const int block_y,
   block[kBlockSize2] += (YToBDC() - kYToBAC) * block[kBlockSize];
   block[kBlockSize + 3] += kACPred31 * block[kBlockSize + 1];
   block[kBlockSize + 24] += kACPred31 * block[kBlockSize + 8];
-  for (int c = 0; c < 3; ++c) {
-    ComputeTransposedScaledBlockIDCTFloat(&block[kBlockSize * c]);
-  }
-  if (opsin_overlay_.get() != nullptr) {
-    const int offsetx = block_x * kBlockEdge;
-    const int offsety = block_y * kBlockEdge;
-    for (int c = 0; c < 3; ++c) {
-      float* const PIK_RESTRICT cblock = &block[kBlockSize * c];
-      for (int iy = 0; iy < kBlockEdge; ++iy) {
-        const float* const PIK_RESTRICT row_overlay =
-            &opsin_overlay_->Row(offsety + iy)[c][offsetx];
-        float* const PIK_RESTRICT row = &cblock[iy * kBlockEdge];
-        for (int ix = 0; ix < kBlockEdge; ++ix) {
-          row[ix] += row_overlay[ix];
-        }
-      }
-    }
-  }
 }
 
 void CompressedImage::UpdateSRGB(const float* const PIK_RESTRICT block,
@@ -671,20 +670,40 @@ void CompressedImage::UpdateSRGB(const float* const PIK_RESTRICT block,
 
 Image3F CompressedImage::ToLinear() const {
   Image3F out(block_xsize_ * kBlockEdge, block_ysize_ * kBlockEdge);
-  for (int block_y = 0; block_y < block_ysize_; ++block_y) {
-    for (int block_x = 0; block_x < block_xsize_; ++block_x) {
-      alignas(32) float block[kBlockSize3];
-      UpdateBlock(block_x, block_y, block);
-      const int yoff = kBlockEdge * block_y;
-      const int xoff = kBlockEdge * block_x;
+  const float kSigma = 2.0f;
+  const float inv_quant_dc = quantizer_.inv_quant_dc();
+  Image3F dc_blur_x = ComputeDCBlurX(coeffs(), kSigma, inv_quant_dc,
+                                     YToBDC(), DequantMatrix());
+  float w_up[kBlockSize] = { 0.0f };
+  float w_cur[kBlockSize] = { 0.0f };
+  float w_down[kBlockSize] = { 0.0f };
+  ComputeBlockBlurWeights(kSigma, w_up, w_cur, w_down);
+  for (int by = 0; by < block_ysize_; ++by) {
+    int by_u = block_ysize_ == 1 ? 0 : by == 0 ? 1 : by - 1;
+    int by_d = block_ysize_ == 1 ? 0 : by + 1 < block_ysize_ ? by + 1 : by - 1;
+    for (int bx = 0; bx < block_xsize_; ++bx) {
+      alignas(32) float block_out[kBlockSize3];
+      DequantizeBlock(bx, by, block_out);
+      const int offsetx = bx * kBlockEdge;
+      for (int c = 0; c < 3; ++c) {
+        ComputeTransposedScaledBlockIDCTFloat(&block_out[kBlockSize * c]);
+        alignas(32) float dc_blur[kBlockSize];
+        float avg = ComputeBlurredBlock(dc_blur_x, c, offsetx, by_u, by, by_d,
+                                        w_up, w_cur, w_down, dc_blur);
+        for (int k = 0; k < kBlockSize; ++k) {
+          block_out[kBlockSize * c + k] += dc_blur[k] - avg;
+        }
+      }
+      const int yoff = kBlockEdge * by;
+      const int xoff = kBlockEdge * bx;
       for (int iy = 0; iy < kBlockEdge; ++iy) {
         auto row = out.Row(iy + yoff);
         for (int ix = 0; ix < kBlockEdge; ++ix) {
           const int px = ix + xoff;
           const int k = kBlockEdge * iy + ix;
-          float x = block[k + 0] + kXybCenter[0];
-          float y = block[k + kBlockSize] + kXybCenter[1];
-          float z = block[k + kBlockSize2] + kXybCenter[2];
+          float x = block_out[k + 0] + kXybCenter[0];
+          float y = block_out[k + kBlockSize] + kXybCenter[1];
+          float z = block_out[k + kBlockSize2] + kXybCenter[2];
           XybToRgb(x, y, z, &row[0][px], &row[1][px], &row[2][px]);
         }
       }

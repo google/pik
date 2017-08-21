@@ -598,7 +598,7 @@ void BuildHuffmanTreeAndCountBits(const uint32_t *histogram,
                                   size_t* data_bits) {
   BitCounter bit_counter;
   std::vector<uint8_t> depths(length);
-  BuildAndVisitHuffmanTree(histogram, length, &depths[0], nullptr,
+  BuildAndVisitHuffmanTree(histogram, length, depths.data(), nullptr,
                            &bit_counter);
   *histogram_bits = bit_counter.num_bits;
   *data_bits = 0;

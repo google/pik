@@ -55,6 +55,9 @@ class CompressedImage {
   void QuantizeBlock(int block_x, int block_y);
   void Quantize();
 
+  void DequantizeBlock(const int block_x, const int block_y,
+                       float* const PIK_RESTRICT block) const;
+
   AdaptiveQuantParams adaptive_quant_params() const {
     AdaptiveQuantParams p;
     p.initial_quant_val_dc = 1.0625;
@@ -85,8 +88,6 @@ class CompressedImage {
   void QuantizeDC();
   void ComputeOpsinOverlay();
 
-  void UpdateBlock(const int block_x, const int block_y,
-                   float* const PIK_RESTRICT block) const;
   void UpdateSRGB(const float* const PIK_RESTRICT block,
                   int block_x, int block_y,
                   Image3B* const PIK_RESTRICT srgb) const;
@@ -105,7 +106,7 @@ class CompressedImage {
   std::unique_ptr<Image3F> opsin_image_;
   // Pixel space overlay image computed from quantized dct coefficients in
   // both the encoder and the decoder.
-  std::unique_ptr<Image3F> opsin_overlay_;
+  std::unique_ptr<ImageF> opsin_overlay_;
   int ytob_dc_;
   Image<int> ytob_ac_;
   // Not owned, used to report additional statistics to the callers of
