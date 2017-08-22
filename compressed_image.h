@@ -88,10 +88,6 @@ class CompressedImage {
   void QuantizeDC();
   void ComputeOpsinOverlay();
 
-  void UpdateSRGB(const float* const PIK_RESTRICT block,
-                  int block_x, int block_y,
-                  Image3B* const PIK_RESTRICT srgb) const;
-
   const int xsize_;
   const int ysize_;
   const int block_xsize_;

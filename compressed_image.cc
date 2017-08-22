@@ -47,44 +47,10 @@ static const int kLastRow = kLastCol * kBlockEdge;
 static const int kCoeffsPerBlock = kBlockSize;
 static const int kQuantBlockRes = 1;
 
+static const float kDCBlurSigma = 3.0f;
+
 int DivCeil(int a, int b) {
   return (a + b - 1) / b;
-}
-
-PIK_INLINE void PredictBlock(const float* const PIK_RESTRICT prev_block,
-                             const float* const PIK_RESTRICT top_block,
-                             float* const PIK_RESTRICT prediction) {
-  float sum = 0.0;
-  for (int i = 0; i < kBlockEdge; ++i) {
-    sum += top_block[kLastRow + i];
-    sum += prev_block[kBlockEdge * i + kLastCol];
-  }
-  sum /= (2 * kBlockEdge);
-  for (int k = 0; k < kBlockSize; ++k) {
-    prediction[k] = sum;
-  }
-}
-
-PIK_INLINE void AddBlock(const float* const PIK_RESTRICT a,
-                         float* const PIK_RESTRICT b) {
-  for (int i = 0; i < kBlockSize; ++i) b[i] += a[i];
-}
-
-PIK_INLINE void SubtractBlock(const float* const PIK_RESTRICT a,
-                              float* const PIK_RESTRICT b) {
-  for (int i = 0; i < kBlockSize; ++i) b[i] -= a[i];
-}
-
-Image3F Subtract(const Image3F& in, const float centers[3]) {
-  Image3F out(in.xsize(), in.ysize());
-  for (int y = 0; y < in.ysize(); ++y) {
-    for (int c = 0; c < 3; ++c) {
-      for (int x = 0; x < in.xsize(); ++x) {
-        out.Row(y)[c][x] = in.Row(y)[c][x] - centers[c];
-      }
-    }
-  }
-  return out;
 }
 
 // Expects that values are in the interval [-range, range].
@@ -115,16 +81,6 @@ void DumpOpsin(const PikInfo* info, const Image3F& in,
              Image3B(NormalizeAndClip(in.plane(0), 1.25f * kXybRange[0]),
                      NormalizeAndClip(in.plane(1), 1.50f * kXybRange[1]),
                      NormalizeAndClip(in.plane(2), 1.50f * kXybRange[2])),
-             info->debug_prefix + label + ".png");
-}
-
-void DumpOpsinDiff(const PikInfo* info, const Image3F& in,
-                   const std::string& label) {
-  if (!info || info->debug_prefix.empty()) return;
-  WriteImage(ImageFormatPNG(),
-             Image3B(NormalizeAndClip(in.plane(0), 2.0f * kXybRange[0]),
-                     NormalizeAndClip(in.plane(1), 2.0f * kXybRange[1]),
-                     NormalizeAndClip(in.plane(2), 2.0f * kXybRange[2])),
              info->debug_prefix + label + ".png");
 }
 
@@ -468,14 +424,13 @@ void CompressedImage::QuantizeDC() {
 
 void CompressedImage::ComputeOpsinOverlay() {
   opsin_overlay_.reset(new ImageF(block_xsize_ * kBlockSize3, block_ysize_));
-  const float kSigma = 2.0f;
   const float inv_quant_dc = quantizer_.inv_quant_dc();
-  Image3F dc_blur_x = ComputeDCBlurX(coeffs(), kSigma, inv_quant_dc,
+  Image3F dc_blur_x = ComputeDCBlurX(coeffs(), kDCBlurSigma, inv_quant_dc,
                                      YToBDC(), DequantMatrix());
   float w_up[kBlockSize] = { 0.0f };
   float w_cur[kBlockSize] = { 0.0f };
   float w_down[kBlockSize] = { 0.0f };
-  ComputeBlockBlurWeights(kSigma, w_up, w_cur, w_down);
+  ComputeBlockBlurWeights(kDCBlurSigma, w_up, w_cur, w_down);
   for (int by = 0; by < block_ysize_; ++by) {
     int by_u = block_ysize_ == 1 ? 0 : by == 0 ? 1 : by - 1;
     int by_d = block_ysize_ == 1 ? 0 : by + 1 < block_ysize_ ? by + 1 : by - 1;
@@ -501,39 +456,6 @@ void CompressedImage::Quantize() {
       QuantizeBlock(block_x, block_y);
     }
   }
-}
-
-Image3B CompressedImage::ToSRGB() const {
-  Image3B out(block_xsize_ * kBlockEdge, block_ysize_ * kBlockEdge);
-  const float kSigma = 2.0f;
-  const float inv_quant_dc = quantizer_.inv_quant_dc();
-  Image3F dc_blur_x = ComputeDCBlurX(coeffs(), kSigma, inv_quant_dc,
-                                     YToBDC(), DequantMatrix());
-  float w_up[kBlockSize] = { 0.0f };
-  float w_cur[kBlockSize] = { 0.0f };
-  float w_down[kBlockSize] = { 0.0f };
-  ComputeBlockBlurWeights(kSigma, w_up, w_cur, w_down);
-  alignas(32) float block_out[kBlockSize3];
-  for (int by = 0; by < block_ysize_; ++by) {
-    int by_u = block_ysize_ == 1 ? 0 : by == 0 ? 1 : by - 1;
-    int by_d = block_ysize_ == 1 ? 0 : by + 1 < block_ysize_ ? by + 1 : by - 1;
-    for (int bx = 0; bx < block_xsize_; ++bx) {
-      DequantizeBlock(bx, by, block_out);
-      const int offsetx = bx * kBlockEdge;
-      for (int c = 0; c < 3; ++c) {
-        ComputeTransposedScaledBlockIDCTFloat(&block_out[kBlockSize * c]);
-        alignas(32) float dc_blur[kBlockSize];
-        float avg = ComputeBlurredBlock(dc_blur_x, c, offsetx, by_u, by, by_d,
-                                        w_up, w_cur, w_down, dc_blur);
-        for (int k = 0; k < kBlockSize; ++k) {
-          block_out[kBlockSize * c + k] += dc_blur[k] - avg;
-        }
-      }
-      UpdateSRGB(block_out, bx, by, &out);
-    }
-  }
-  out.ShrinkTo(xsize_, ysize_);
-  return out;
 }
 
 std::string CompressedImage::Encode() const {
@@ -633,9 +555,11 @@ void CompressedImage::DequantizeBlock(const int block_x, const int block_y,
   block[kBlockSize + 24] += kACPred31 * block[kBlockSize + 8];
 }
 
-void CompressedImage::UpdateSRGB(const float* const PIK_RESTRICT block,
-                                 int block_x, int block_y,
-                                 Image3B* const PIK_RESTRICT srgb) const {
+namespace {
+
+void ColorTransformOpsinToSrgb(const float* const PIK_RESTRICT block,
+                               int block_x, int block_y,
+                               Image3B* const PIK_RESTRICT srgb) {
   using namespace PIK_TARGET_NAME;
   const uint8_t* lut_plus = LinearToSrgb8TablePlusQuarter();
   const uint8_t* lut_minus = LinearToSrgb8TableMinusQuarter();
@@ -668,22 +592,44 @@ void CompressedImage::UpdateSRGB(const float* const PIK_RESTRICT block,
   }
 }
 
-Image3F CompressedImage::ToLinear() const {
-  Image3F out(block_xsize_ * kBlockEdge, block_ysize_ * kBlockEdge);
-  const float kSigma = 2.0f;
-  const float inv_quant_dc = quantizer_.inv_quant_dc();
-  Image3F dc_blur_x = ComputeDCBlurX(coeffs(), kSigma, inv_quant_dc,
-                                     YToBDC(), DequantMatrix());
+void ColorTransformOpsinToSrgb(const float* const PIK_RESTRICT block,
+                               int block_x, int block_y,
+                               Image3F* const PIK_RESTRICT srgb) {
+  const int yoff = kBlockEdge * block_y;
+  const int xoff = kBlockEdge * block_x;
+  for (int iy = 0; iy < kBlockEdge; ++iy) {
+    auto row = srgb->Row(iy + yoff);
+    for (int ix = 0; ix < kBlockEdge; ++ix) {
+      const int px = ix + xoff;
+      const int k = kBlockEdge * iy + ix;
+      float x = block[k + 0] + kXybCenter[0];
+      float y = block[k + kBlockSize] + kXybCenter[1];
+      float z = block[k + kBlockSize2] + kXybCenter[2];
+      XybToRgb(x, y, z, &row[0][px], &row[1][px], &row[2][px]);
+    }
+  }
+}
+
+}  // namespace
+
+template <class Image3T>
+Image3T GetPixels(const CompressedImage& img) {
+  const int block_xsize = DivCeil(img.xsize(), kBlockEdge);
+  const int block_ysize = DivCeil(img.ysize(), kBlockEdge);
+  Image3T out(block_xsize * kBlockEdge, block_ysize * kBlockEdge);
+  const float inv_quant_dc = img.quantizer().inv_quant_dc();
+  Image3F dc_blur_x = ComputeDCBlurX(img.coeffs(), kDCBlurSigma, inv_quant_dc,
+                                     img.YToBDC(), DequantMatrix());
   float w_up[kBlockSize] = { 0.0f };
   float w_cur[kBlockSize] = { 0.0f };
   float w_down[kBlockSize] = { 0.0f };
-  ComputeBlockBlurWeights(kSigma, w_up, w_cur, w_down);
-  for (int by = 0; by < block_ysize_; ++by) {
-    int by_u = block_ysize_ == 1 ? 0 : by == 0 ? 1 : by - 1;
-    int by_d = block_ysize_ == 1 ? 0 : by + 1 < block_ysize_ ? by + 1 : by - 1;
-    for (int bx = 0; bx < block_xsize_; ++bx) {
-      alignas(32) float block_out[kBlockSize3];
-      DequantizeBlock(bx, by, block_out);
+  ComputeBlockBlurWeights(kDCBlurSigma, w_up, w_cur, w_down);
+  alignas(32) float block_out[kBlockSize3];
+  for (int by = 0; by < block_ysize; ++by) {
+    int by_u = block_ysize == 1 ? 0 : by == 0 ? 1 : by - 1;
+    int by_d = block_ysize == 1 ? 0 : by + 1 < block_ysize ? by + 1 : by - 1;
+    for (int bx = 0; bx < block_xsize; ++bx) {
+      img.DequantizeBlock(bx, by, block_out);
       const int offsetx = bx * kBlockEdge;
       for (int c = 0; c < 3; ++c) {
         ComputeTransposedScaledBlockIDCTFloat(&block_out[kBlockSize * c]);
@@ -694,23 +640,19 @@ Image3F CompressedImage::ToLinear() const {
           block_out[kBlockSize * c + k] += dc_blur[k] - avg;
         }
       }
-      const int yoff = kBlockEdge * by;
-      const int xoff = kBlockEdge * bx;
-      for (int iy = 0; iy < kBlockEdge; ++iy) {
-        auto row = out.Row(iy + yoff);
-        for (int ix = 0; ix < kBlockEdge; ++ix) {
-          const int px = ix + xoff;
-          const int k = kBlockEdge * iy + ix;
-          float x = block_out[k + 0] + kXybCenter[0];
-          float y = block_out[k + kBlockSize] + kXybCenter[1];
-          float z = block_out[k + kBlockSize2] + kXybCenter[2];
-          XybToRgb(x, y, z, &row[0][px], &row[1][px], &row[2][px]);
-        }
-      }
+      ColorTransformOpsinToSrgb(block_out, bx, by, &out);
     }
   }
-  out.ShrinkTo(xsize_, ysize_);
+  out.ShrinkTo(img.xsize(), img.ysize());
   return out;
+}
+
+Image3B CompressedImage::ToSRGB() const {
+  return GetPixels<Image3B>(*this);
+}
+
+Image3F CompressedImage::ToLinear() const {
+  return GetPixels<Image3F>(*this);
 }
 
 }  // namespace pik
