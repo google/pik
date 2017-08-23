@@ -53,21 +53,6 @@ bool LoadFile(const char* pathname, PaddedBytes* compressed) {
   return true;
 }
 
-bool PikDecode(const DecompressParams& params, const PaddedBytes& compressed,
-               Image3B* planes, PikInfo* info) {
-  return PikToPixels(params, compressed, planes, info);
-}
-
-bool PikDecode(const DecompressParams& params, const PaddedBytes& compressed,
-               Image3U* planes, PikInfo* info) {
-  Image3F linear;
-  if (!PikToPixels(params, compressed, &linear, info)) {
-    return false;
-  }
-  *planes = Srgb16FromLinear(linear);
-  return true;
-}
-
 template<typename Image>
 int Decompress(const char* pathname_in, const char* pathname_out) {
   PaddedBytes compressed;
@@ -78,7 +63,7 @@ int Decompress(const char* pathname_in, const char* pathname_out) {
   DecompressParams params;
   Image planes;
   PikInfo info;
-  if (!PikDecode(params, compressed, &planes, &info)) {
+  if (!PikToPixels(params, compressed, &planes, &info)) {
     fprintf(stderr, "Failed to decompress.\n");
     return 1;
   }

@@ -58,8 +58,9 @@ Image3F LinearFromSrgb(const Image3B& srgb);
 ImageB Srgb8FromLinear(const ImageF& linear);
 Image3B Srgb8FromLinear(const Image3F& linear);
 
-ImageU Srgb16FromLinear(const ImageF& linear);
-Image3U Srgb16FromLinear(const Image3F& linear);
+// Good enough approximation for 16-bit precision in floating point range 0-255.
+template<typename V>
+V LinearToSrgbPoly(V z);
 
 // Returns sRGB as floating-point (same range but not rounded to integer).
 ImageF SrgbFFromLinear(const ImageF& linear);

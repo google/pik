@@ -63,6 +63,10 @@ bool OpsinToPik(const CompressParams& params, const Image3F& opsin,
 bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
                  Image3B* planes, PikInfo* aux_out);
 
+// The output image is a 16-bit sRGB image.
+bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
+                 Image3U* planes, PikInfo* aux_out);
+
 // The output image is a linear (gamma expanded) sRGB image.
 bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
                  Image3F* planes, PikInfo* aux_out);

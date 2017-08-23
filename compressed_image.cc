@@ -38,14 +38,11 @@ namespace pik {
 
 namespace {
 
-static const int kBlockEdge = 8;
-static const int kBlockSize = kBlockEdge * kBlockEdge;
 static const int kBlockSize2 = 2 * kBlockSize;
 static const int kBlockSize3 = 3 * kBlockSize;
 static const int kLastCol = kBlockEdge - 1;
 static const int kLastRow = kLastCol * kBlockEdge;
 static const int kCoeffsPerBlock = kBlockSize;
-static const int kQuantBlockRes = 1;
 
 static const float kDCBlurSigma = 3.0f;
 
@@ -271,18 +268,14 @@ CompressedImage::CompressedImage(int xsize, int ysize, PikInfo* info)
     : xsize_(xsize), ysize_(ysize),
       block_xsize_(DivCeil(xsize, kBlockEdge)),
       block_ysize_(DivCeil(ysize, kBlockEdge)),
-      quant_xsize_(DivCeil(block_xsize_, kQuantBlockRes)),
-      quant_ysize_(DivCeil(block_ysize_, kQuantBlockRes)),
+      tile_xsize_(DivCeil(xsize, kTileEdge)),
+      tile_ysize_(DivCeil(ysize, kTileEdge)),
       num_blocks_(block_xsize_ * block_ysize_),
-      quantizer_(quant_xsize_, quant_ysize_, kCoeffsPerBlock, DequantMatrix()),
+      quantizer_(block_xsize_, block_ysize_, kCoeffsPerBlock, DequantMatrix()),
       dct_coeffs_(block_xsize_ * kBlockSize, block_ysize_),
       ytob_dc_(120),
-      ytob_ac_(DivCeil(xsize, kYToBRes), DivCeil(ysize, kYToBRes), 120),
+      ytob_ac_(tile_xsize_, tile_ysize_, 120),
       pik_info_(info) {
-}
-
-int CompressedImage::quant_tile_size() const {
-  return kQuantBlockRes * kBlockEdge;
 }
 
 // static
@@ -329,8 +322,6 @@ static const float kACPredScale = 0.25f;
 static const float kACPred31 = kACPredScale * 0.104536f;
 
 void CompressedImage::QuantizeBlock(int block_x, int block_y) {
-  const int quant_x = block_x / kQuantBlockRes;
-  const int quant_y = block_y / kQuantBlockRes;
   const int offsetx = block_x * kBlockEdge;
   const int offsety = block_y * kBlockEdge;
   alignas(32) float block[kBlockSize3];
@@ -360,9 +351,9 @@ void CompressedImage::QuantizeBlock(int block_x, int block_y) {
   const int offset = block_x * kBlockSize;
   int16_t* const PIK_RESTRICT iblocky = &row_out[1][offset];
   const float inv_quant_dc = 64.0f * quantizer_.inv_quant_dc();
-  const float inv_quant_ac = 64.0f * quantizer_.inv_quant_ac(quant_x, quant_y);
+  const float inv_quant_ac = 64.0f * quantizer_.inv_quant_ac(block_x, block_y);
   const float* PIK_RESTRICT kDequantMatrix = DequantMatrix();
-  quantizer_.QuantizeBlock(quant_x, quant_y, 1, 0, kBlockSize,
+  quantizer_.QuantizeBlock(block_x, block_y, 1, 0, kBlockSize,
                            &block[kBlockSize], iblocky);
   for (int k = 0; k < kBlockSize; ++k) {
     block[kBlockSize + k] = iblocky[k] * kDequantMatrix[kBlockSize + k] *
@@ -370,8 +361,8 @@ void CompressedImage::QuantizeBlock(int block_x, int block_y) {
   }
   block[kBlockSize] = iblocky[0] * kDequantMatrix[kBlockSize] * inv_quant_dc;
   {
-    const int tile_x = block_x * kBlockEdge / kYToBRes;
-    const int tile_y = block_y * kBlockEdge / kYToBRes;
+    const int tile_x = block_x / kTileToBlockRatio;
+    const int tile_y = block_y / kTileToBlockRatio;
     const float ytob_ac = YToBAC(tile_x, tile_y);
     for (int k = 0; k < kBlockSize; ++k) {
       block[kBlockSize2 + k] -= ytob_ac * block[kBlockSize + k];
@@ -384,7 +375,7 @@ void CompressedImage::QuantizeBlock(int block_x, int block_y) {
       continue;
     }
     quantizer_.QuantizeBlock(
-        quant_x, quant_y, c, 0, kBlockSize,
+        block_x, block_y, c, 0, kBlockSize,
         &block[c * kBlockSize], &row_out[c][offset]);
   }
 }
@@ -525,14 +516,12 @@ void CompressedImage::DequantizeBlock(const int block_x, const int block_y,
                                       float* const PIK_RESTRICT block) const {
 
   using namespace PIK_TARGET_NAME;
-  const int quant_y = block_y / kQuantBlockRes;
-  const int tile_y = block_y * kBlockEdge / kYToBRes;
+  const int tile_y = block_y / kTileToBlockRatio;
   auto row = dct_coeffs_.Row(block_y);
-  const int quant_x = block_x / kQuantBlockRes;
-  const int tile_x = block_x * kBlockEdge / kYToBRes;
+  const int tile_x = block_x / kTileToBlockRatio;
   const int offset = block_x * kBlockSize;
   const float inv_quant_dc = quantizer_.inv_quant_dc();
-  const float inv_quant_ac = quantizer_.inv_quant_ac(quant_x, quant_y);
+  const float inv_quant_ac = quantizer_.inv_quant_ac(block_x, block_y);
   const float* PIK_RESTRICT kDequantMatrix = DequantMatrix();
   for (int c = 0; c < 3; ++c) {
     const int16_t* const PIK_RESTRICT iblock = &row[c][offset];
@@ -594,7 +583,28 @@ void ColorTransformOpsinToSrgb(const float* const PIK_RESTRICT block,
 
 void ColorTransformOpsinToSrgb(const float* const PIK_RESTRICT block,
                                int block_x, int block_y,
-                               Image3F* const PIK_RESTRICT srgb) {
+                               Image3U* const PIK_RESTRICT srgb) {
+  using namespace PIK_TARGET_NAME;
+  // TODO(user) Combine these two for loops and get rid of rgb[].
+  alignas(32) int rgb[kBlockSize3];
+  using V = V8x32F;
+  for (int k = 0; k < kBlockSize; k += V::N) {
+    const V x = Load<V>(block + k) + V(kXybCenter[0]);
+    const V y = Load<V>(block + k + kBlockSize) + V(kXybCenter[1]);
+    const V b = Load<V>(block + k + kBlockSize2) + V(kXybCenter[2]);
+    const V scale_to_16bit(257.0f);
+    V out_r, out_g, out_b;
+    XybToRgb(x, y, b, &out_r, &out_g, &out_b);
+
+    out_r = LinearToSrgbPoly(out_r) * scale_to_16bit;
+    out_g = LinearToSrgbPoly(out_g) * scale_to_16bit;
+    out_b = LinearToSrgbPoly(out_b) * scale_to_16bit;
+
+    Store(RoundToInt(out_r), rgb + k);
+    Store(RoundToInt(out_g), rgb + k + kBlockSize);
+    Store(RoundToInt(out_b), rgb + k + kBlockSize2);
+  }
+
   const int yoff = kBlockEdge * block_y;
   const int xoff = kBlockEdge * block_x;
   for (int iy = 0; iy < kBlockEdge; ++iy) {
@@ -602,10 +612,40 @@ void ColorTransformOpsinToSrgb(const float* const PIK_RESTRICT block,
     for (int ix = 0; ix < kBlockEdge; ++ix) {
       const int px = ix + xoff;
       const int k = kBlockEdge * iy + ix;
-      float x = block[k + 0] + kXybCenter[0];
-      float y = block[k + kBlockSize] + kXybCenter[1];
-      float z = block[k + kBlockSize2] + kXybCenter[2];
-      XybToRgb(x, y, z, &row[0][px], &row[1][px], &row[2][px]);
+      row[0][px] = rgb[k + 0];
+      row[1][px] = rgb[k + kBlockSize];
+      row[2][px] = rgb[k + kBlockSize2];
+    }
+  }
+}
+
+void ColorTransformOpsinToSrgb(const float* const PIK_RESTRICT block,
+                               int block_x, int block_y,
+                               Image3F* const PIK_RESTRICT srgb) {
+  using namespace PIK_TARGET_NAME;
+  // TODO(user) Combine these two for loops and get rid of rgb[].
+  alignas(32) float rgb[kBlockSize3];
+  using V = V8x32F;
+  for (int k = 0; k < kBlockSize; k += V::N) {
+    const V x = Load<V>(block + k) + V(kXybCenter[0]);
+    const V y = Load<V>(block + k + kBlockSize) + V(kXybCenter[1]);
+    const V b = Load<V>(block + k + kBlockSize2) + V(kXybCenter[2]);
+    V out_r, out_g, out_b;
+    XybToRgb(x, y, b, &out_r, &out_g, &out_b);
+    Store(out_r, rgb + k);
+    Store(out_g, rgb + k + kBlockSize);
+    Store(out_b, rgb + k + kBlockSize2);
+  }
+  const int yoff = kBlockEdge * block_y;
+  const int xoff = kBlockEdge * block_x;
+  for (int iy = 0; iy < kBlockEdge; ++iy) {
+    auto row = srgb->Row(iy + yoff);
+    for (int ix = 0; ix < kBlockEdge; ++ix) {
+      const int px = ix + xoff;
+      const int k = kBlockEdge * iy + ix;
+      row[0][px] = rgb[k + 0];
+      row[1][px] = rgb[k + kBlockSize];
+      row[2][px] = rgb[k + kBlockSize2];
     }
   }
 }
@@ -614,8 +654,8 @@ void ColorTransformOpsinToSrgb(const float* const PIK_RESTRICT block,
 
 template <class Image3T>
 Image3T GetPixels(const CompressedImage& img) {
-  const int block_xsize = DivCeil(img.xsize(), kBlockEdge);
-  const int block_ysize = DivCeil(img.ysize(), kBlockEdge);
+  const int block_xsize = img.block_xsize();
+  const int block_ysize = img.block_ysize();
   Image3T out(block_xsize * kBlockEdge, block_ysize * kBlockEdge);
   const float inv_quant_dc = img.quantizer().inv_quant_dc();
   Image3F dc_blur_x = ComputeDCBlurX(img.coeffs(), kDCBlurSigma, inv_quant_dc,
@@ -649,6 +689,10 @@ Image3T GetPixels(const CompressedImage& img) {
 
 Image3B CompressedImage::ToSRGB() const {
   return GetPixels<Image3B>(*this);
+}
+
+Image3U CompressedImage::ToSRGB16() const {
+  return GetPixels<Image3U>(*this);
 }
 
 Image3F CompressedImage::ToLinear() const {

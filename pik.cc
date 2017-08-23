@@ -186,16 +186,13 @@ void FindBestQuantization(const Image3F& opsin_orig,
                           float butteraugli_target,
                           CompressedImageT* img,
                           PikInfo* aux_out) {
-  int qres = img->quant_tile_size();
-  int quant_xsize = (opsin_orig.xsize() + qres - 1) / qres;
-  int quant_ysize = (opsin_orig.ysize() + qres - 1) / qres;
   ButteraugliComparator comparator(opsin_orig);
   AdaptiveQuantParams quant_params = img->adaptive_quant_params();
   const float kInitialQuantDC =
       quant_params.initial_quant_val_dc / butteraugli_target;
   const float kInitialQuantAC =
       quant_params.initial_quant_val_ac / butteraugli_target;
-  ImageF quant_field(quant_xsize, quant_ysize, kInitialQuantAC);
+  ImageF quant_field(img->block_xsize(), img->block_ysize(), kInitialQuantAC);
   ImageF tile_distmap;
   static const int kMaxIters = 3;
   int iter = 0;
@@ -204,10 +201,10 @@ void FindBestQuantization(const Image3F& opsin_orig,
       img->Quantize();
       Image3B srgb = img->ToSRGB();
       comparator.Compare(srgb);
-      tile_distmap = TileDistMap(comparator.distmap(), qres);
+      tile_distmap = TileDistMap(comparator.distmap(), kBlockEdge);
       if (aux_out) {
-        DumpHeatmaps(aux_out, opsin_orig.xsize(), opsin_orig.ysize(), qres,
-                     butteraugli_target, quant_field, tile_distmap);
+        DumpHeatmaps(aux_out, opsin_orig.xsize(), opsin_orig.ysize(),
+                     kBlockEdge, butteraugli_target, quant_field, tile_distmap);
         if (!aux_out->debug_prefix.empty()) {
           char pathname[200];
           snprintf(pathname, 200, "%s%s%05d.png", aux_out->debug_prefix.c_str(),
@@ -225,10 +222,10 @@ void FindBestQuantization(const Image3F& opsin_orig,
     for (int local_radius = 1; local_radius <= 4 && !changed; ++local_radius) {
       ImageF dist_to_peak_map = DistToPeakMap(tile_distmap, butteraugli_target,
                                               local_radius, 0.65);
-      for (int y = 0; y < quant_ysize; ++y) {
+      for (int y = 0; y < img->block_ysize(); ++y) {
         float* const PIK_RESTRICT row_q = quant_field.Row(y);
         const float* const PIK_RESTRICT row_dist = dist_to_peak_map.Row(y);
-        for (int x = 0; x < quant_xsize; ++x) {
+        for (int x = 0; x < img->block_xsize(); ++x) {
           if (row_dist[x] >= 0.0f) {
             static const float kAdjSpeed[kMaxIters] = { 0.1, 0.05, 0.025 };
             const float factor = kAdjSpeed[iter] * tile_distmap.Row(y)[x];
@@ -242,8 +239,8 @@ void FindBestQuantization(const Image3F& opsin_orig,
     if (!changed) {
       if (++iter == kMaxIters) break;
       static const float kQuantScale[kMaxIters] = { 0.0, 0.8, 0.9 };
-      for (int y = 0; y < quant_ysize; ++y) {
-        for (int x = 0; x < quant_xsize; ++x) {
+      for (int y = 0; y < img->block_ysize(); ++y) {
+        for (int x = 0; x < img->block_xsize(); ++x) {
           quant_field.Row(y)[x] *= kQuantScale[iter];
         }
       }
@@ -254,8 +251,8 @@ void FindBestQuantization(const Image3F& opsin_orig,
 struct EvalGlobalYToB {
   void SetVal(int ytob) const {
     img->SetYToBDC(ytob);
-    for (int tiley = 0; kYToBRes * tiley < img->ysize(); ++tiley) {
-      for (int tilex = 0; kYToBRes * tilex < img->xsize(); ++tilex) {
+    for (int tiley = 0; tiley < img->tile_ysize(); ++tiley) {
+      for (int tilex = 0; tilex < img->tile_xsize(); ++tilex) {
         img->SetYToBAC(tilex, tiley, ytob);
       }
     }
@@ -289,14 +286,14 @@ struct EvalLocalYToB {
   }
   void SetVal(int ytob) {
     img->SetYToBAC(tilex, tiley, ytob);
-    const int factor = kYToBRes / 8;
+    const int factor = kTileToBlockRatio;
     for (int iy = 0; iy < factor; ++iy) {
       for (int ix = 0; ix < factor; ++ix) {
         int block_y = factor * tiley + iy;
         int block_x = factor * tilex + ix;
-        int offset = block_x * 64;
-        int xmin = 8 * block_x;
-        int ymin = 8 * block_y;
+        int offset = block_x * kBlockSize;
+        int xmin = kBlockEdge * block_x;
+        int ymin = kBlockEdge * block_y;
         if (xmin >= img->xsize() || ymin >= img->ysize()) continue;
         ac_processor.Reset();
         ac_histo.set_weight(-1);
@@ -354,8 +351,8 @@ void FindBestYToBCorrelation(CompressedImage* img) {
   size_t best_size = eval_global(kStartYToB);
   int global_ytob = Optimize(&eval_global, 0, 255, kStartYToB, &best_size);
   EvalLocalYToB eval_local(img);
-  for (int tiley = 0; tiley * kYToBRes < img->ysize(); ++tiley) {
-    for (int tilex = 0; tilex * kYToBRes < img->xsize(); ++tilex) {
+  for (int tiley = 0; tiley < img->tile_ysize(); ++tiley) {
+    for (int tilex = 0; tilex < img->tile_xsize(); ++tilex) {
       eval_local.SetTile(tilex, tiley);
       Optimize(&eval_local, 0, 255, global_ytob, &best_size);
     }
@@ -379,8 +376,7 @@ std::string CompressFast(const Image3F& opsin_orig,
   const float kQuantDC = 0.80f;
   const float kQuantAC = 1.52f;
   CompressedImage img = CompressedImage::FromOpsinImage(opsin_orig, info);
-  int qres = img.quant_tile_size();
-  ImageF qf = AdaptiveQuantizationMap(opsin_orig.plane(1), qres);
+  ImageF qf = AdaptiveQuantizationMap(opsin_orig.plane(1), kBlockEdge);
   img.quantizer().SetQuantField(kQuantDC, ScaleImage(kQuantAC, qf));
   img.Quantize();
   return img.EncodeFast();
@@ -461,13 +457,15 @@ std::string CompressToTargetSize(const Image3F& opsin_orig,
 
 
 
-void ToLinearFloatOrSrgb8Byte(
-    const CompressedImage& compressed, Image3B* image) {
+void ToImage3(const CompressedImage& compressed, Image3B* image) {
   *image = compressed.ToSRGB();
 }
 
-void ToLinearFloatOrSrgb8Byte(
-    const CompressedImage& compressed, Image3F* image) {
+void ToImage3(const CompressedImage& compressed, Image3U* image) {
+  *image = compressed.ToSRGB16();
+}
+
+void ToImage3(const CompressedImage& compressed, Image3F* image) {
   *image = compressed.ToLinear();
 }
 }  // namespace
@@ -558,13 +556,18 @@ bool PikToPixelsT(const DecompressParams& params, const PaddedBytes& compressed,
     if (!img.Decode(header_end, compressed_end - header_end)) {
       return PIK_FAILURE("Pik decoding failed.");
     }
-    ToLinearFloatOrSrgb8Byte(img, planes);
+    ToImage3(img, planes);
   }
   return true;
 }
 
 bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
                  Image3B* planes, PikInfo* aux_out) {
+  return PikToPixelsT(params, compressed, planes, aux_out);
+}
+
+bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
+                 Image3U* planes, PikInfo* aux_out) {
   return PikToPixelsT(params, compressed, planes, aux_out);
 }
 

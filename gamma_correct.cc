@@ -19,22 +19,47 @@
 
 #include "compiler_specific.h"
 #include "profiler.h"
+#include "vector256.h"
 
 namespace pik {
 namespace {
-float LinearToSrgb8Poly(float z) {
+template<typename V>
+V Pow24Poly(V z) {
+  // Max error: 0.0033, just enough for 16-bit precision in range 0.05-255.0
+  return
+      (((((((V(-4.68139386898368e-16f) * z + V(4.90086432807652e-13f)) * z +
+      V(-2.47340675718632e-10f)) * z + V(1.19290078259837e-07f)) * z +
+      V(2.52620611718157e-05f)) * z + V(0.000444842939032242f)) * z +
+      V(0.000799090310465544f)) * z + V(-0.000163653719937429f)) /
+      (((V(1.56013541641187e-07f) * z + V(7.53337144487887e-06f)) * z +
+      V(4.70604936708696e-05f)) * z + V(3.22659288940486e-05f));
+}
+
+float LinearToSrgbPolyImpl(float z) {
   if (z <= 0.0f) return 0.0f;
   if (z >= 255) return 255;
   if (z <= 10.31475f / 12.92f) return z * 12.92f;
-  // Max error: 0.0033, just enough for 16-bit precision in range 0.0-255.0
-  return (((((((-4.68139386898368e-16f * z + 4.90086432807652e-13f) * z +
-      -2.47340675718632e-10f) * z + 1.19290078259837e-07f) * z +
-      2.52620611718157e-05f) * z + 0.000444842939032242f) * z +
-      0.000799090310465544f) * z + -0.000163653719937429f) /
-      (((1.56013541641187e-07f * z + 7.53337144487887e-06f) * z +
-      4.70604936708696e-05f) * z + 3.22659288940486e-05f);
+  return Pow24Poly(z);
+}
+
+template<typename V>
+V LinearToSrgbPolyImpl(V z) {
+  // When needed, z should be clamped in 0-255. Not done so far for extra speed.
+  const V linear = z * V(12.92f);
+  const V poly = Pow24Poly(z);
+  return Select(linear, poly, z > V(10.31475f / 12.92f));
 }
 }  // namespace
+
+template<typename V>
+V LinearToSrgbPoly(V z) {
+  return LinearToSrgbPolyImpl(z);
+}
+
+template float LinearToSrgbPoly(float z);
+
+template PIK_TARGET_NAME::V8x32F LinearToSrgbPoly(PIK_TARGET_NAME::V8x32F z);
+
 
 const float* NewSrgb8ToLinearTable() {
   float* table = new float[256];
@@ -116,30 +141,6 @@ Image3B Srgb8FromLinear(const Image3F& linear) {
   return Image3B(Srgb8FromLinear(linear.plane(0)),
                  Srgb8FromLinear(linear.plane(1)),
                  Srgb8FromLinear(linear.plane(2)));
-}
-
-ImageU Srgb16FromLinear(const ImageF& linear) {
-  PROFILER_FUNC;
-  const size_t xsize = linear.xsize();
-  const size_t ysize = linear.ysize();
-  ImageU srgb(xsize, ysize);
-  for (size_t y = 0; y < ysize; ++y) {
-    const float* const PIK_RESTRICT row_linear = linear.Row(y);
-    uint16_t* const PIK_RESTRICT row = srgb.Row(y);
-    for (size_t x = 0; x < xsize; ++x) {
-      // Multiply by 257.0 to convert range 0-255.0 into 0-65535.0
-      // The Linear to sRGB conversion uses floating point math.
-      row[x] = static_cast<uint16_t>(
-          std::round(LinearToSrgb8Poly(row_linear[x]) * 257.0));
-    }
-  }
-  return srgb;
-}
-
-Image3U Srgb16FromLinear(const Image3F& linear) {
-  return Image3U(Srgb16FromLinear(linear.plane(0)),
-                 Srgb16FromLinear(linear.plane(1)),
-                 Srgb16FromLinear(linear.plane(2)));
 }
 
 ImageF SrgbFFromLinear(const ImageF& linear) {

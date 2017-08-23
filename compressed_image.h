@@ -29,7 +29,10 @@
 
 namespace pik {
 
-static const int kYToBRes = 48;
+static const int kBlockEdge = 8;
+static const int kTileToBlockRatio = 8;
+static const int kBlockSize = kBlockEdge * kBlockEdge;
+static const int kTileEdge = kBlockEdge * kTileToBlockRatio;
 
 // Represents both the quantized and transformed original version of an image.
 // This class is used in both the encoder and decoder.
@@ -47,7 +50,10 @@ class CompressedImage {
 
   int xsize() const { return xsize_; }
   int ysize() const { return ysize_; }
-  int quant_tile_size() const;
+  int block_xsize() const { return block_xsize_; }
+  int block_ysize() const { return block_ysize_; }
+  int tile_xsize() const { return tile_xsize_; }
+  int tile_ysize() const { return tile_ysize_; }
 
   Quantizer& quantizer() { return quantizer_; }
   const Quantizer& quantizer() const { return quantizer_; }
@@ -68,6 +74,7 @@ class CompressedImage {
   // Returns the SRGB image based on the quantization values and the quantized
   // coefficients.
   Image3B ToSRGB() const;
+  Image3U ToSRGB16() const;
 
   // Returns the image as linear (gamma expanded) sRGB
   Image3F ToLinear() const;
@@ -92,8 +99,8 @@ class CompressedImage {
   const int ysize_;
   const int block_xsize_;
   const int block_ysize_;
-  const int quant_xsize_;
-  const int quant_ysize_;
+  const int tile_xsize_;
+  const int tile_ysize_;
   const int num_blocks_;
   Quantizer quantizer_;
   Image3W dct_coeffs_;
