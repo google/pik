@@ -639,6 +639,7 @@ class HuffmanSymbolReader {
 class ANSSymbolReader {
  public:
   bool DecodeHistograms(const size_t num_histograms,
+                        const size_t max_alphabet_size,
                         const uint8_t* symbol_lut, size_t symbol_lut_size,
                         BitReader* in) {
     map_.resize(num_histograms << ANS_LOG_TAB_SIZE);
@@ -648,7 +649,7 @@ class ANSSymbolReader {
       if (!ReadHistogram(ANS_LOG_TAB_SIZE, &counts, in)) {
         return PIK_FAILURE("Invalid histogram bitstream.");
       }
-      if (counts.size() > 256) {
+      if (counts.size() > max_alphabet_size) {
         return PIK_FAILURE("Alphabet size is too long.");
       }
       int offset = 0;
@@ -705,6 +706,7 @@ class ANSSymbolReader {
 
 bool DecodeHistograms(BitReader* br,
                       const size_t num_contexts,
+                      const size_t max_alphabet_size,
                       const uint8_t* symbol_lut, size_t symbol_lut_size,
                       ANSSymbolReader* decoder,
                       std::vector<uint8_t>* context_map) {
@@ -713,7 +715,8 @@ bool DecodeHistograms(BitReader* br,
   if (num_contexts > 1) {
     if (!DecodeContextMap(context_map, &num_histograms, br)) return false;
   }
-  if (!decoder->DecodeHistograms(num_histograms, symbol_lut, symbol_lut_size,
+  if (!decoder->DecodeHistograms(num_histograms, max_alphabet_size,
+                                 symbol_lut, symbol_lut_size,
                                  br)) {
     return false;
   }
@@ -829,38 +832,10 @@ bool DecodeACData(BitReader* const PIK_RESTRICT br,
   return true;
 }
 
-bool DecodeNonZeroValsData(
-    BitReader* br,
-    const std::vector<uint8_t>& context_map,
-    ANSSymbolReader* const PIK_RESTRICT decoder,
-    std::vector<Image3W>* const PIK_RESTRICT absvals,
-    std::vector<Image3W>* const PIK_RESTRICT phases) {
-  for (int i = 0; i < absvals->size(); ++i) {
-    for (int y = 0; y < (*absvals)[i].ysize(); ++y) {
-      auto row_absvals = (*absvals)[i].Row(y);
-      auto row_phases = (*phases)[i].Row(y);
-      for (int x = 0; x < (*absvals)[i].xsize(); ++x) {
-        for (int c = 0; c < 3; ++c) {
-          if (row_absvals[c][x] != 0) {
-            br->FillBitBuffer();
-            int histo_idx1 = context_map[c * absvals->size() + i];
-            row_absvals[c][x] = decoder->ReadSymbol(histo_idx1, br) + 1;
-            int histo_idx2 = context_map[(c + 3) * absvals->size() + i];
-            row_phases[c][x] = SignedIntFromSymbol(
-                decoder->ReadSymbol(histo_idx2, br));
-          }
-        }
-      }
-    }
-  }
-  br->JumpToByteBoundary();
-  return true;
-}
-
 bool DecodeImage(BitReader* br, int stride,  Image3W* coeffs) {
   std::vector<uint8_t> context_map;
   ANSSymbolReader decoder;
-  if (!DecodeHistograms(br, CoeffProcessor::num_contexts(),
+  if (!DecodeHistograms(br, CoeffProcessor::num_contexts(), 16,
                         nullptr, 0, &decoder, &context_map) ||
       !DecodeImageData(br, context_map, stride,
                        &decoder, coeffs)) {
@@ -875,28 +850,12 @@ bool DecodeImage(BitReader* br, int stride,  Image3W* coeffs) {
 bool DecodeAC(BitReader* br, Image3W* coeffs) {
   std::vector<uint8_t> context_map;
   ANSSymbolReader decoder;
-  if (!DecodeHistograms(br, ACBlockProcessor::num_contexts(),
+  if (!DecodeHistograms(br, ACBlockProcessor::num_contexts(), 256,
                         kSymbolLut, sizeof(kSymbolLut),
                         &decoder, &context_map) ||
       !DecodeACData(br, context_map, &decoder, coeffs)) {
     return false;
   }
-  if (!decoder.CheckANSFinalState()) {
-    return PIK_FAILURE("ANS checksum failure.");
-  }
-  return true;
-}
-
-bool DecodeNonZeroVals(BitReader* br,
-                       const size_t num_nonzeros,
-                       std::vector<Image3W>* absvals,
-                       std::vector<Image3W>* phases) {
-  if (num_nonzeros == 0) return 0;
-  std::vector<uint8_t> context_map;
-  ANSSymbolReader decoder;
-  DecodeHistograms(br, 6 * absvals->size(), nullptr, 0,
-                   &decoder, &context_map);
-  DecodeNonZeroValsData(br, context_map, &decoder, absvals, phases);
   if (!decoder.CheckANSFinalState()) {
     return PIK_FAILURE("ANS checksum failure.");
   }

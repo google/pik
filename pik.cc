@@ -547,6 +547,10 @@ bool PikToPixelsT(const DecompressParams& params, const PaddedBytes& compressed,
   if (header.flags & Header::kWebPLossless) {
     return PIK_FAILURE("Invalid format code");
   } else {  // Pik
+    static const uint32_t kMaxWidth = (1 << 25) - 1;
+    if (header.xsize > kMaxWidth) {
+      return PIK_FAILURE("Image too wide.");
+    }
     static const uint64_t kMaxPixels = 1 << 30;
     uint64_t num_pixels = static_cast<uint64_t>(header.xsize) * header.ysize;
     if (num_pixels > kMaxPixels) {

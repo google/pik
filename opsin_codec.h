@@ -393,15 +393,6 @@ std::string EncodeNonZeroLocations(const std::vector<Image3W>& vals);
 std::string EncodeNonZeroVals(const std::vector<Image3W>& absvals,
                          const std::vector<Image3W>& phases);
 
-bool DecodeNonZeroLocations(BitReader* br,
-                            size_t* num_nzeros,
-                            std::vector<Image3W>* vals);
-
-bool DecodeNonZeroVals(BitReader* br,
-                       const size_t num_nonzeros,
-                       std::vector<Image3W>* absvals,
-                       std::vector<Image3W>* phases);
-
 bool DecodeImage(BitReader* br, int stride, Image3W* coeffs);
 
 bool DecodeAC(BitReader* br,Image3W* coeffs);
