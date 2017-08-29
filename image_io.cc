@@ -424,7 +424,7 @@ bool ReadPNGImage3(const std::string& pathname, const int bias,
         for (size_t x = 0; x < xsize; ++x) {
           rows[0][x] = rows[1][x] = rows[2][x] =
               ReadFromU8<T>(&interleaved_row[2 * x + 0], bias);
-          if (ReadFromU8<T>(&interleaved_row[2 * x + 1], bias) != 255) {
+          if (interleaved_row[2 * x + 1] != 255) {
             return PIK_FAILURE("Translucent PNG not supported");
           }
         }
@@ -433,7 +433,7 @@ bool ReadPNGImage3(const std::string& pathname, const int bias,
           rows[0][x] = rows[1][x] = rows[2][x] =
               ReadFromU16<T>(&interleaved_row[stride * (2 * x + 0)], bias);
           if (ReadFromU16<uint16_t>(
-              &interleaved_row[stride * (2 * x + 1)], bias) != 65535) {
+              &interleaved_row[stride * (2 * x + 1)], 0) != 65535) {
             return PIK_FAILURE("Translucent PNG not supported");
           }
         }
@@ -469,7 +469,7 @@ bool ReadPNGImage3(const std::string& pathname, const int bias,
           rows[0][x] = ReadFromU8<T>(&interleaved_row[4 * x + 0], bias);
           rows[1][x] = ReadFromU8<T>(&interleaved_row[4 * x + 1], bias);
           rows[2][x] = ReadFromU8<T>(&interleaved_row[4 * x + 2], bias);
-          if (ReadFromU8<T>(&interleaved_row[4 * x + 3], bias) != 255) {
+          if (interleaved_row[4 * x + 3] != 255) {
             return PIK_FAILURE("Translucent PNG not supported");
           }
         }
@@ -482,7 +482,7 @@ bool ReadPNGImage3(const std::string& pathname, const int bias,
           rows[2][x] =
               ReadFromU16<T>(&interleaved_row[stride * (4 * x + 2)], bias);
           if (ReadFromU16<uint16_t>(
-              &interleaved_row[stride * (4 * x + 3)], bias) != 65535) {
+              &interleaved_row[stride * (4 * x + 3)], 0) != 65535) {
             return PIK_FAILURE("Translucent PNG not supported");
           }
         }
@@ -714,10 +714,24 @@ void jpeg_catch_error(j_common_ptr cinfo) {
   longjmp(*jpeg_jmpbuf, 1);
 }
 
-bool ReadImage(ImageFormatJPG, const std::string& pathname, Image3B* rgb) {
-  FileWrapper f(pathname, "rb");
-  if (f == nullptr) {
-    return PIK_FAILURE("File open");
+// Can be either a filename or a memory buffer.
+struct JpegInput {
+  explicit JpegInput(const std::string& fn) : filename(fn) {}
+  JpegInput(const uint8_t* buf, size_t len) : inbuffer(buf), insize(len) {}
+  std::string filename;
+  const uint8_t* inbuffer = nullptr;
+  size_t insize = 0;
+};
+
+bool ReadJpegImage(const JpegInput& input, Image3B* rgb) {
+  std::unique_ptr<FileWrapper> input_file;
+  if (!input.filename.empty()) {
+    input_file.reset(new FileWrapper(input.filename, "rb"));
+    if (input_file.get() == nullptr) {
+      return PIK_FAILURE("File open");
+    }
+  } else if (input.inbuffer == nullptr) {
+    return PIK_FAILURE("Invalid JpegInput.");
   }
 
   jpeg_decompress_struct cinfo;
@@ -734,26 +748,36 @@ bool ReadImage(ImageFormatJPG, const std::string& pathname, Image3B* rgb) {
 
   jpeg_create_decompress(&cinfo);
 
-  jpeg_stdio_src(&cinfo, f);
+  if (input_file.get() != nullptr) {
+    jpeg_stdio_src(&cinfo, *input_file);
+  } else {
+    // Libjpeg versions before 9b used a non-const buffer here.
+    jpeg_mem_src(&cinfo, const_cast<uint8_t*>(input.inbuffer), input.insize);
+  }
+
   jpeg_read_header(&cinfo, TRUE);
   jpeg_start_decompress(&cinfo);
 
-  const int row_stride = cinfo.output_width * cinfo.output_components;
-  JSAMPARRAY buffer = (*cinfo.mem->alloc_sarray)((j_common_ptr)&cinfo,
-                                                 JPOOL_IMAGE, row_stride, 1);
-
   const size_t xsize = cinfo.output_width;
   const size_t ysize = cinfo.output_height;
+  const size_t row_stride = xsize * cinfo.output_components;
+  const size_t buf_size = row_stride * ysize;
+  CacheAlignedUniquePtr buffer = AllocateArray(buf_size);
+  uint8_t* const imagep = buffer.get();
+  JSAMPLE* output_line = static_cast<JSAMPLE*>(imagep);
 
   *rgb = Image3B(xsize, ysize);
 
   switch (cinfo.out_color_space) {
     case JCS_GRAYSCALE:
       while (cinfo.output_scanline < cinfo.output_height) {
-        jpeg_read_scanlines(&cinfo, buffer, 1);
+        jpeg_read_scanlines(&cinfo, &output_line, 1);
+        output_line += row_stride;
+      }
 
-        const uint8_t* const PIK_RESTRICT row = buffer[0];
-        auto rows = rgb->Row(cinfo.output_scanline - 1);
+      for (int y = 0; y < ysize; ++y) {
+        const uint8_t* const PIK_RESTRICT row = &imagep[y * row_stride];
+        auto rows = rgb->Row(y);
 
         for (int x = 0; x < xsize; x++) {
           const uint8_t gray = row[x];
@@ -764,10 +788,13 @@ bool ReadImage(ImageFormatJPG, const std::string& pathname, Image3B* rgb) {
 
     case JCS_RGB:
       while (cinfo.output_scanline < cinfo.output_height) {
-        jpeg_read_scanlines(&cinfo, buffer, 1);
+        jpeg_read_scanlines(&cinfo, &output_line, 1);
+        output_line += row_stride;
+      }
 
-        const uint8_t* const PIK_RESTRICT row = buffer[0];
-        auto rows = rgb->Row(cinfo.output_scanline - 1);
+      for (int y = 0; y < ysize; ++y) {
+        const uint8_t* const PIK_RESTRICT row = &imagep[y * row_stride];
+        auto rows = rgb->Row(y);
         for (int x = 0; x < xsize; x++) {
           rows[0][x] = row[3 * x + 0];
           rows[1][x] = row[3 * x + 1];
@@ -783,6 +810,16 @@ bool ReadImage(ImageFormatJPG, const std::string& pathname, Image3B* rgb) {
   jpeg_finish_decompress(&cinfo);
   jpeg_destroy_decompress(&cinfo);
   return true;
+}
+
+bool ReadImage(ImageFormatJPG, const std::string& pathname, Image3B* rgb) {
+  JpegInput input(pathname);
+  return ReadJpegImage(input, rgb);
+}
+
+bool ReadImage(ImageFormatJPG, const uint8_t* buf, size_t size, Image3B* rgb) {
+  JpegInput input(buf, size);
+  return ReadJpegImage(input, rgb);
 }
 
 // Planes

@@ -27,7 +27,7 @@ namespace {
 
 // main() function, within namespace for convenience.
 int Compress(const char* pathname_in, const char* distance,
-             const char* pathname_out) {
+             const char* pathname_out, bool fast_mode) {
   Image3F in = ReadImage3Linear(pathname_in);
   if (in.xsize() == 0 || in.ysize() == 0) {
     fprintf(stderr, "Failed to open image %s.\n", pathname_in);
@@ -35,7 +35,8 @@ int Compress(const char* pathname_in, const char* distance,
   }
 
   const float butteraugli_distance = strtod(distance, nullptr);
-  if (!(0.5f <= butteraugli_distance && butteraugli_distance <= 3.0f)) {
+  if (!fast_mode &&
+      !(0.5f <= butteraugli_distance && butteraugli_distance <= 3.0f)) {
     fprintf(stderr, "Invalid/out of range distance '%s', try 0.5 to 3.\n",
             distance);
     return 1;
@@ -45,6 +46,11 @@ int Compress(const char* pathname_in, const char* distance,
 
   CompressParams params;
   params.butteraugli_distance = butteraugli_distance;
+  if (fast_mode) {
+    params.fast_mode = true;
+    params.butteraugli_distance = -1;
+  }
+
   PaddedBytes compressed;
   PikInfo aux_out;
   if (!PixelsToPik(params, in, &compressed, &aux_out)) {
@@ -72,12 +78,31 @@ int Compress(const char* pathname_in, const char* distance,
 }  // namespace
 }  // namespace pik
 
+void PrintArgHelp(int argc, char** argv) {
+  fprintf(stderr,
+          "Usage: %s in_rgb_8bit.png maxError[0.5 .. 3.0] out.pik [--fast]\n"
+          "  with --fast, maxError is ignored\n",
+          argv[0]);
+}
+
 int main(int argc, char** argv) {
-  if (argc != 4) {
-    fprintf(stderr, "Usage: %s in_rgb_8bit.png maxError[0.5 .. 3.0] out.pik\n",
-            argv[0]);
+  if (argc < 4) {
+    PrintArgHelp(argc, argv);
     return 1;
   }
 
-  return pik::Compress(argv[1], argv[2], argv[3]);
+  bool fast_mode = false;
+  if (argc > 4) {
+    for (int i = 4; i < argc; i++) {
+      std::string arg = argv[i];
+      if (arg == "--fast") {
+        fast_mode = true;
+      } else {
+        PrintArgHelp(argc, argv);
+        return 1;
+      }
+    }
+  }
+
+  return pik::Compress(argv[1], argv[2], argv[3], fast_mode);
 }

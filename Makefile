@@ -10,6 +10,7 @@ PIK_OBJS := $(addprefix obj/, \
 	arch_specific.o \
 	butteraugli/butteraugli.o \
 	butteraugli_comparator.o \
+	butteraugli_distance.o \
 	cache_aligned.o \
 	compressed_image.o \
 	context_map_encode.o \
@@ -37,6 +38,9 @@ all: $(addprefix bin/, cpik dpik)
 
 bin/cpik: $(PIK_OBJS) obj/cpik.o
 bin/dpik: $(PIK_OBJS) obj/dpik.o
+bin/butteraugli_main: $(PIK_OBJS) obj/butteraugli_main.o
+bin/png2y4m: $(PIK_OBJS) obj/png2y4m.o
+bin/y4m2png: $(PIK_OBJS) obj/y4m2png.o
 
 obj/%.o: %.cc
 	@mkdir -p -- $(dir $@)

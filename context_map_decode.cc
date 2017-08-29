@@ -57,6 +57,26 @@ inline int DecodeVarLenUint8(BitReader* input) {
   return 0;
 }
 
+bool VerifyContextMap(const std::vector<uint8_t>& context_map,
+                      const size_t num_htrees) {
+  std::vector<bool> have_htree(num_htrees);
+  int num_found = 0;
+  for (int i = 0; i < context_map.size(); ++i) {
+    const int htree = context_map[i];
+    if (htree >= num_htrees) {
+      return PIK_FAILURE("Invalid histogram index in context map.");
+    }
+    if (!have_htree[htree]) {
+      have_htree[htree] = true;
+      ++num_found;
+    }
+  }
+  if (num_found != num_htrees) {
+    return PIK_FAILURE("Incomplete context map.");
+  }
+  return true;
+}
+
 }  // namespace
 
 bool DecodeContextMap(std::vector<uint8_t>* context_map,
@@ -103,7 +123,7 @@ bool DecodeContextMap(std::vector<uint8_t>* context_map,
   if (input->ReadBits(1)) {
     InverseMoveToFrontTransform(&(*context_map)[0], context_map->size());
   }
-  return true;
+  return VerifyContextMap(*context_map, *num_htrees);
 }
 
 }  // namespace pik

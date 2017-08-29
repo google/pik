@@ -134,6 +134,8 @@ bool WriteImage(ImageFormatY4M, const Image3B&, const std::string&);
 
 bool ReadImage(ImageFormatJPG, const std::string&, Image3B*);
 
+bool ReadImage(ImageFormatJPG, const uint8_t* buf, size_t size, Image3B*);
+
 // Planes - text header, raw (linear) 2D array[s] with padding
 
 template <typename T>
