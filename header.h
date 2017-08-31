@@ -54,8 +54,9 @@ struct Header {
     kPalette = 8,
   };
 
-  // For loading/storing fields from/to the compressed stream. Accepts Bytes or
-  // uint32_t preceded by U32Coder's selector_bits.
+  // For loading/storing fields from/to the compressed stream. Accepts Bytes,
+  // uint32_t preceded by U32Coder's selector_bits, or uint64_t with U32Coder's
+  // for the low and high 32 bits.
   template <class Visitor>
   void VisitFields(Visitor* const PIK_RESTRICT visitor) {
     // Almost all camera images are less than 8K * 8K. We also allow the
@@ -67,6 +68,12 @@ struct Header {
     (*visitor)(0x00100004, &num_components);
     (*visitor)(kU32Selectors, &flags);
 
+    if (flags & Header::kAlpha) {
+      // TODO(user): Remove this again when we make the alpha channel or opsin
+      // encoder/decoder know its size itself
+      (*visitor)(kU32Selectors, &opsin_compressed_size);
+    }
+
     // Do not add other fields - only sections can be added.
   }
 
@@ -74,6 +81,7 @@ struct Header {
   uint32_t ysize = 0;
   uint32_t num_components = 0;
   uint32_t flags = 0;
+  uint32_t opsin_compressed_size = 0;
   // TODO(janwas): hash?
 };
 

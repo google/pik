@@ -1,4 +1,4 @@
-// Copyright 2017 Google Inc. All Rights Reserved.
+// Copyright 2016 Google Inc. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,8 +16,8 @@
 //
 // Author: Jyrki Alakuijala (jyrki.alakuijala@gmail.com)
 
-#ifndef THIRD_PARTY_BUTTERAUGLI_BUTTERAUGLI_H_
-#define THIRD_PARTY_BUTTERAUGLI_BUTTERAUGLI_H_
+#ifndef BUTTERAUGLI_BUTTERAUGLI_H_
+#define BUTTERAUGLI_BUTTERAUGLI_H_
 
 #include <cassert>
 #include <cmath>
@@ -494,18 +494,18 @@ BUTTERAUGLI_INLINE void OpsinAbsorbance(const V &in0, const V &in1,
                                         V *BUTTERAUGLI_RESTRICT out1,
                                         V *BUTTERAUGLI_RESTRICT out2) {
   // https://en.wikipedia.org/wiki/Photopsin absorbance modeling.
-  static const double mixi0 = 0.262805861774;
-  static const double mixi1 = 0.447726163795;
-  static const double mixi2 = 0.0669350599301;
-  static const double mixi3 = 0.70582780208;
-  static const double mixi4 = 0.242970172936;
-  static const double mixi5 = 0.557086443066;
+  static const double mixi0 = 0.254034300884;
+  static const double mixi1 = 0.466691456721;
+  static const double mixi2 = 0.0927013001396;
+  static const double mixi3 = 0.971783366726;
+  static const double mixi4 = 0.231306455359;
+  static const double mixi5 = 0.546409605324;
   static const double mixi6 = mixi2;
   static const double mixi7 = mixi3;
-  static const double mixi8 = 0.443262270088;
-  static const double mixi9 = 1.22484933589;
-  static const double mixi10 = 0.610100334382;
-  static const double mixi11 = 5.95035078154;
+  static const double mixi8 = 0.423139962818;
+  static const double mixi9 = 1.24737070912;
+  static const double mixi10 = 0.61402451409;
+  static const double mixi11 = 7.63242153651;
 
   const V mix0(mixi0);
   const V mix1(mixi1);
@@ -594,14 +594,14 @@ struct RationalPolynomial {
 
 static inline double GammaPolynomial(double value) {
   static const RationalPolynomial r = {
-    0.408723, 938.679805,
+    0.971783, 590.188894,
     {
-      105.140350121709, 174.559976200322, 98.4148768758428,
-      35.8241560745099, 7.49107397809489, 0.662141060076337
+      98.7821300963361, 164.273222212631, 92.948112871376,
+      33.8165311212688, 6.91626704983562, 0.556380877028234
     },
     {
-      1, 1.63871903559554, 0.885120110684469,
-      0.29527196193155, 0.0518807910954246, 0.0030064776933143
+      1, 1.64339473427892, 0.89392405219969, 0.298947051776379,
+      0.0507146002577288, 0.00226495093949756
     }};
   return r(value);
 }
@@ -609,4 +609,4 @@ static inline double GammaPolynomial(double value) {
 }  // namespace butteraugli
 }  // namespace pik
 
-#endif  // THIRD_PARTY_BUTTERAUGLI_BUTTERAUGLI_H_
+#endif  // BUTTERAUGLI_BUTTERAUGLI_H_

@@ -92,6 +92,7 @@ PIK_INLINE void XybToRgb(const V& x, const V& y, const V& b,
 }
 
 Image3B OpsinDynamicsInverse(const Image3F& opsin);
+Image3F LinearFromOpsin(const Image3F& opsin);
 
 }  // namespace pik
 

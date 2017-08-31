@@ -37,4 +37,17 @@ Image3B OpsinDynamicsInverse(const Image3F& opsin) {
   return srgb;
 }
 
+Image3F LinearFromOpsin(const Image3F& opsin) {
+  Image3F srgb(opsin.xsize(), opsin.ysize());
+  for (int y = 0; y < opsin.ysize(); ++y) {
+    auto row_in = opsin.Row(y);
+    auto row_out = srgb.Row(y);
+    for (int x = 0; x < opsin.xsize(); ++x) {
+      XybToRgb(row_in[0][x], row_in[1][x], row_in[2][x],
+               &row_out[0][x], &row_out[1][x], &row_out[2][x]);
+    }
+  }
+  return srgb;
+}
+
 }  // namespace pik

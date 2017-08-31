@@ -53,7 +53,7 @@ bool LoadFile(const char* pathname, PaddedBytes* compressed) {
   return true;
 }
 
-template<typename Image>
+template<typename ComponentType>
 int Decompress(const char* pathname_in, const char* pathname_out) {
   PaddedBytes compressed;
   if (!LoadFile(pathname_in, &compressed)) {
@@ -61,15 +61,15 @@ int Decompress(const char* pathname_in, const char* pathname_out) {
   }
 
   DecompressParams params;
-  Image planes;
+  MetaImage<ComponentType> image;
   PikInfo info;
-  if (!PikToPixels(params, compressed, &planes, &info)) {
+  if (!PikToPixels(params, compressed, &image, &info)) {
     fprintf(stderr, "Failed to decompress.\n");
     return 1;
   }
-  printf("Decompressed %zu x %zu pixels.\n", planes.xsize(), planes.ysize());
+  printf("Decompressed %zu x %zu pixels.\n", image.xsize(), image.ysize());
 
-  if (!WriteImage(ImageFormatPNG(), planes, pathname_out)) {
+  if (!WriteImage(ImageFormatPNG(), image, pathname_out)) {
     fprintf(stderr, "Failed to write %s.\n", pathname_out);
     return 1;
   }
@@ -112,8 +112,8 @@ int main(int argc, char** argv) {
   }
 
   if (sixteen_bit) {
-    return pik::Decompress<pik::Image3U>(file_in, file_out);
+    return pik::Decompress<uint16_t>(file_in, file_out);
   } else {
-    return pik::Decompress<pik::Image3B>(file_in, file_out);
+    return pik::Decompress<uint8_t>(file_in, file_out);
   }
 }

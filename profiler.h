@@ -71,6 +71,7 @@
 #endif
 #endif
 
+#include "robust_statistics.h"
 #include "tsc_timer.h"
 
 namespace pik {

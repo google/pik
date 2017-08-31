@@ -87,7 +87,7 @@ void CreateHuffmanTree(const uint32_t *data,
   // of this loop. Probably all of our block sizes will be smaller than
   // that, so this loop is mostly of academic interest. If we actually
   // would need this, we would be better off with the Katajainen algorithm.
-  for (uint32_t count_limit = 1; ; count_limit *= 2) {
+  for (uint32_t count_limit = 1; ; count_limit = 2 * count_limit + 1) {
     std::vector<HuffmanTree> tree;
     tree.reserve(2 * length + 1);
 

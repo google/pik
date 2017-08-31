@@ -49,7 +49,7 @@ struct ImageFormatPNG {
   static const char* Name() { return "PNG"; }
   static bool IsExtension(const char* filename);
   static constexpr bool kPortableOnly = false;
-  using NativeImage3 = Image3U;
+  using NativeImage3 = MetaImageU;
 };
 
 struct ImageFormatY4M {
@@ -78,7 +78,9 @@ struct ImageFormatPlanes {
 
 // Generic image reader with type auto-detection, the output is linear sRGB.
 // NOTE: For PNGs, we assume sRGB color space. 16-bit PNGs are also supported.
+MetaImageF ReadMetaImageLinear(const std::string& pathname);
 Image3F ReadImage3Linear(const std::string& pathname);
+
 
 // Writes after linear rescaling to 0-255.
 template <class Format>
@@ -123,6 +125,8 @@ bool WriteImage(ImageFormatPNG, const ImageU&, const std::string&);
 bool WriteImage(ImageFormatPNG, const Image3B&, const std::string&);
 bool WriteImage(ImageFormatPNG, const Image3W&, const std::string&);
 bool WriteImage(ImageFormatPNG, const Image3U&, const std::string&);
+bool WriteImage(ImageFormatPNG, const MetaImageB&, const std::string&);
+bool WriteImage(ImageFormatPNG, const MetaImageU&, const std::string&);
 
 // Y4M
 

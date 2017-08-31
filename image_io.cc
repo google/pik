@@ -381,9 +381,10 @@ bool ReadPNGImage(const std::string& pathname, const int bias,
   return true;
 }
 
+// Adds alpha channel to the output image only if a non-opaque pixel is present.
 template <typename T>
-bool ReadPNGImage3(const std::string& pathname, const int bias,
-                   Image3<T>* image) {
+bool ReadPNGMetaImage(const std::string& pathname, const int bias,
+                      MetaImage<T>* image) {
   PngReader reader(pathname);
   size_t xsize, ysize, num_planes, bit_depth;
   if (!reader.ReadHeader(&xsize, &ysize, &num_planes, &bit_depth)) {
@@ -395,7 +396,8 @@ bool ReadPNGImage3(const std::string& pathname, const int bias,
   if (bit_depth != 8 && bit_depth != 16) {
     return PIK_FAILURE("Wrong bit-depth");
   }
-  *image = Image3<T>(xsize, ysize);
+
+  image->SetColor(Image3<T>(xsize, ysize));
   png_bytep* const interleaved_rows = reader.Rows();
   const size_t stride = bit_depth / 8;
 
@@ -403,7 +405,7 @@ bool ReadPNGImage3(const std::string& pathname, const int bias,
   if (num_planes == 1) {
     for (size_t y = 0; y < ysize; ++y) {
       const uint8_t* const PIK_RESTRICT interleaved_row = interleaved_rows[y];
-      auto rows = image->Row(y);
+      auto rows = image->GetColor().Row(y);
       if (stride == 1) {
         for (size_t x = 0; x < xsize; ++x) {
           rows[0][x] = rows[1][x] = rows[2][x] =
@@ -417,24 +419,37 @@ bool ReadPNGImage3(const std::string& pathname, const int bias,
       }
     }
   } else if (num_planes == 2) {
+    uint16_t alpha_masked = 65535;
     for (size_t y = 0; y < ysize; ++y) {
       const uint8_t* const PIK_RESTRICT interleaved_row = interleaved_rows[y];
-      auto rows = image->Row(y);
+      auto rows = image->GetColor().Row(y);
       if (stride == 1) {
         for (size_t x = 0; x < xsize; ++x) {
           rows[0][x] = rows[1][x] = rows[2][x] =
               ReadFromU8<T>(&interleaved_row[2 * x + 0], bias);
-          if (interleaved_row[2 * x + 1] != 255) {
-            return PIK_FAILURE("Translucent PNG not supported");
-          }
+          alpha_masked &= interleaved_row[2 * x + 1];
         }
       } else {
         for (size_t x = 0; x < xsize; ++x) {
           rows[0][x] = rows[1][x] = rows[2][x] =
               ReadFromU16<T>(&interleaved_row[stride * (2 * x + 0)], bias);
-          if (ReadFromU16<uint16_t>(
-              &interleaved_row[stride * (2 * x + 1)], 0) != 65535) {
-            return PIK_FAILURE("Translucent PNG not supported");
+          alpha_masked &= interleaved_row[2 * x + 1];
+        }
+      }
+    }
+    if (alpha_masked != (stride == 1 ? 255 : 65535)) {
+      image->AddAlpha();
+      for (size_t y = 0; y < ysize; ++y) {
+        const uint8_t* const PIK_RESTRICT interleaved_row = interleaved_rows[y];
+        auto rows = image->GetAlpha().Row(y);
+        if (stride == 1) {
+          for (size_t x = 0; x < xsize; ++x) {
+            rows[x] = ReadFromU8<T>(&interleaved_row[2 * x + 1], bias);
+          }
+        } else {
+          for (size_t x = 0; x < xsize; ++x) {
+            rows[x] =
+                ReadFromU16<T>(&interleaved_row[stride * (2 * x + 1)], bias);
           }
         }
       }
@@ -442,7 +457,7 @@ bool ReadPNGImage3(const std::string& pathname, const int bias,
   } else if (num_planes == 3) {
     for (size_t y = 0; y < ysize; ++y) {
       const uint8_t* const PIK_RESTRICT interleaved_row = interleaved_rows[y];
-      auto rows = image->Row(y);
+      auto rows = image->GetColor().Row(y);
       if (stride == 1) {
         for (size_t x = 0; x < xsize; ++x) {
           rows[0][x] = ReadFromU8<T>(&interleaved_row[3 * x + 0], bias);
@@ -461,17 +476,16 @@ bool ReadPNGImage3(const std::string& pathname, const int bias,
       }
     }
   } else /* if (num_planes == 4) */ {
+    uint16_t alpha_masked = 65535;
     for (size_t y = 0; y < ysize; ++y) {
       const uint8_t* const PIK_RESTRICT interleaved_row = interleaved_rows[y];
-      auto rows = image->Row(y);
+      auto rows = image->GetColor().Row(y);
       if (stride == 1) {
         for (size_t x = 0; x < xsize; ++x) {
           rows[0][x] = ReadFromU8<T>(&interleaved_row[4 * x + 0], bias);
           rows[1][x] = ReadFromU8<T>(&interleaved_row[4 * x + 1], bias);
           rows[2][x] = ReadFromU8<T>(&interleaved_row[4 * x + 2], bias);
-          if (interleaved_row[4 * x + 3] != 255) {
-            return PIK_FAILURE("Translucent PNG not supported");
-          }
+          alpha_masked &= interleaved_row[4 * x + 3];
         }
       } else {
         for (size_t x = 0; x < xsize; ++x) {
@@ -481,15 +495,44 @@ bool ReadPNGImage3(const std::string& pathname, const int bias,
               ReadFromU16<T>(&interleaved_row[stride * (4 * x + 1)], bias);
           rows[2][x] =
               ReadFromU16<T>(&interleaved_row[stride * (4 * x + 2)], bias);
-          if (ReadFromU16<uint16_t>(
-              &interleaved_row[stride * (4 * x + 3)], 0) != 65535) {
-            return PIK_FAILURE("Translucent PNG not supported");
+          alpha_masked &=
+              ReadFromU16<T>(&interleaved_row[stride * (4 * x + 3)], bias);
+        }
+      }
+    }
+    if (alpha_masked != (stride == 1 ? 255 : 65535)) {
+      image->AddAlpha();
+      for (size_t y = 0; y < ysize; ++y) {
+        const uint8_t* const PIK_RESTRICT interleaved_row = interleaved_rows[y];
+        auto rows = image->GetAlpha().Row(y);
+        if (stride == 1) {
+          for (size_t x = 0; x < xsize; ++x) {
+            rows[x] = ReadFromU8<T>(&interleaved_row[4 * x + 3], bias);
+          }
+        } else {
+          for (size_t x = 0; x < xsize; ++x) {
+            rows[x] =
+                ReadFromU16<T>(&interleaved_row[stride * (4 * x + 3)], bias);
           }
         }
       }
     }
   }
 
+  return true;
+}
+
+template <typename T>
+bool ReadPNGImage3(const std::string& pathname, const int bias,
+                   Image3<T>* image) {
+  MetaImage<T> meta;
+  if (!ReadPNGMetaImage(pathname, bias, &meta)) {
+    return false;
+  }
+  if (meta.HasAlpha()) {
+    return PIK_FAILURE("Translucent PNG not supported");
+  }
+  *image = std::move(meta.GetColor());
   return true;
 }
 
@@ -515,6 +558,14 @@ bool ReadImage(ImageFormatPNG, const std::string& pathname, Image3W* image) {
 
 bool ReadImage(ImageFormatPNG, const std::string& pathname, Image3U* image) {
   return ReadPNGImage3(pathname, 0, image);
+}
+
+bool ReadImage(ImageFormatPNG, const std::string& pathname, MetaImageB* image) {
+  return ReadPNGMetaImage(pathname, 0, image);
+}
+
+bool ReadImage(ImageFormatPNG, const std::string& pathname, MetaImageU* image) {
+  return ReadPNGMetaImage(pathname, 0, image);
 }
 
 // Allocates an internal buffer for 16-bit pixels in WriteHeader => not
@@ -552,30 +603,29 @@ class PngWriter {
       return PIK_FAILURE("PNG");
     }
 
-    if (sizeof(T) != 1 || Image::kNumPlanes != 1) {
-      row_buffer_.resize(Image::kNumPlanes * xsize_ * sizeof(T));
+    static const size_t num_planes = GetNumColorPlanes(image);
+    if (sizeof(T) != 1 || num_planes != 1 || HasAlpha(image)) {
+      row_buffer_.resize((num_planes + (HasAlpha(image) ? 1 : 0))
+          * xsize_ * sizeof(T));
     }
 
 #if PIK_PORTABLE_IO
     png_init_io(png_, file_);
 #endif
 
-    int color_type;
-    switch (Image::kNumPlanes) {
+    switch (num_planes) {
       case 1:
-        color_type = PNG_COLOR_TYPE_GRAY;
+        color_type_ = PNG_COLOR_TYPE_GRAY;
         break;
       case 3:
-        color_type = PNG_COLOR_TYPE_RGB;
-        break;
-      case 4:
-        color_type = PNG_COLOR_TYPE_RGBA;
+        color_type_ =
+            HasAlpha(image) ? PNG_COLOR_TYPE_RGBA : PNG_COLOR_TYPE_RGB;
         break;
       default:
         return PIK_FAILURE("Wrong #planes");
     }
 
-    png_set_IHDR(png_, info_, xsize_, image.ysize(), sizeof(T) * 8, color_type,
+    png_set_IHDR(png_, info_, xsize_, image.ysize(), sizeof(T) * 8, color_type_,
                  PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT,
                  PNG_FILTER_TYPE_DEFAULT);
     png_write_info(png_, info_);
@@ -594,6 +644,25 @@ class PngWriter {
       row_buffer_[3 * x + 0] = rows[0][x];
       row_buffer_[3 * x + 1] = rows[1][x];
       row_buffer_[3 * x + 2] = rows[2][x];
+    }
+    png_write_row(png_, row_buffer_.data());
+  }
+
+  PIK_INLINE void WriteRow(const MetaImageB& image, const size_t y) {
+    const auto rows = image.GetColor().ConstRow(y);
+    if (color_type_ == PNG_COLOR_TYPE_RGBA) {
+      for (size_t x = 0; x < xsize_; ++x) {
+        row_buffer_[4 * x + 0] = rows[0][x];
+        row_buffer_[4 * x + 1] = rows[1][x];
+        row_buffer_[4 * x + 2] = rows[2][x];
+        row_buffer_[4 * x + 3] = image.GetAlpha().Row(y)[x];
+      }
+    } else {
+      for (size_t x = 0; x < xsize_; ++x) {
+        row_buffer_[3 * x + 0] = rows[0][x];
+        row_buffer_[3 * x + 1] = rows[1][x];
+        row_buffer_[3 * x + 2] = rows[2][x];
+      }
     }
     png_write_row(png_, row_buffer_.data());
   }
@@ -618,6 +687,27 @@ class PngWriter {
     png_write_row(png_, row_buffer_.data());
   }
 
+  void WriteRow(const MetaImageW& image, const size_t y) {
+    const auto row = image.GetColor().ConstRow(y);
+    uint8_t* PIK_RESTRICT bytes = row_buffer_.data();
+    if (color_type_ == PNG_COLOR_TYPE_RGBA) {
+      for (size_t x = 0; x < xsize_; ++x) {
+        StoreUnsignedBigEndian(row[0][x], bytes + 8 * x + 0);
+        StoreUnsignedBigEndian(row[1][x], bytes + 8 * x + 2);
+        StoreUnsignedBigEndian(row[2][x], bytes + 8 * x + 4);
+        StoreUnsignedBigEndian(image.GetAlpha().Row(y)[x],
+                               bytes + 8 * x + 6);
+      }
+    } else {
+      for (size_t x = 0; x < xsize_; ++x) {
+        StoreUnsignedBigEndian(row[0][x], bytes + 6 * x + 0);
+        StoreUnsignedBigEndian(row[1][x], bytes + 6 * x + 2);
+        StoreUnsignedBigEndian(row[2][x], bytes + 6 * x + 4);
+      }
+    }
+    png_write_row(png_, row_buffer_.data());
+  }
+
   void WriteRow(const ImageU& image, const size_t y) {
     const auto row = image.ConstRow(y);
     uint8_t* PIK_RESTRICT bytes = row_buffer_.data();
@@ -638,6 +728,22 @@ class PngWriter {
     png_write_row(png_, row_buffer_.data());
   }
 
+  void WriteRow(const MetaImageU& image, const size_t y) {
+    const auto row = image.GetColor().ConstRow(y);
+    const int stride = color_type_ == PNG_COLOR_TYPE_RGBA ? 8 : 6;
+    uint8_t* PIK_RESTRICT bytes = row_buffer_.data();
+    for (size_t x = 0; x < xsize_; ++x) {
+      StoreUnsignedBigEndian(row[0][x], bytes + stride * x + 0);
+      StoreUnsignedBigEndian(row[1][x], bytes + stride * x + 2);
+      StoreUnsignedBigEndian(row[2][x], bytes + stride * x + 4);
+      if (color_type_ == PNG_COLOR_TYPE_RGBA) {
+        StoreUnsignedBigEndian(
+            image.GetAlpha().Row(y)[x], bytes + stride * x + 6);
+      }
+    }
+    png_write_row(png_, row_buffer_.data());
+  }
+
   // Only call if WriteHeader succeeded.
   void WriteEnd() { png_write_end(png_, nullptr); }
 
@@ -653,12 +759,44 @@ class PngWriter {
     bytes[1] = unsigned_value & 0xFF;
   }
 
+  template<typename T>
+  static bool HasAlpha(const MetaImage<T>& image) {
+    return image.HasAlpha();
+  }
+
+  template<typename T>
+  static bool HasAlpha(const Image<T>& image) {
+    return false;
+  }
+
+  template<typename T>
+  static bool HasAlpha(const Image3<T>& image) {
+    return false;
+  }
+
+  // Excludes the alpha channel in the count.
+  template<typename T>
+  static size_t GetNumColorPlanes(const MetaImage<T>& image) {
+    return Image3<T>::kNumPlanes;
+  }
+
+  template<typename T>
+  static size_t GetNumColorPlanes(const Image<T>& image) {
+    return Image<T>::kNumPlanes;
+  }
+
+  template<typename T>
+  static size_t GetNumColorPlanes(const Image3<T>& image) {
+    return Image3<T>::kNumPlanes;
+  }
+
 #if PIK_PORTABLE_IO
   FileWrapper file_;
 #endif
   size_t xsize_;
   png_structp png_ = nullptr;
   png_infop info_ = nullptr;
+  int color_type_ = 0;
 
   // Buffer for byte-swapping 16-bit pixels, allocated in WriteHeader.
   std::vector<uint8_t> row_buffer_;
@@ -705,6 +843,16 @@ bool WriteImage(ImageFormatPNG, const Image3W& image3,
 bool WriteImage(ImageFormatPNG, const Image3U& image3,
                 const std::string& pathname) {
   return WritePNGImage(image3, pathname);
+}
+
+bool WriteImage(ImageFormatPNG, const MetaImageB& image,
+                const std::string& pathname) {
+  return WritePNGImage(image, pathname);
+}
+
+bool WriteImage(ImageFormatPNG, const MetaImageU& image,
+                const std::string& pathname) {
+  return WritePNGImage(image, pathname);
 }
 
 void jpeg_catch_error(j_common_ptr cinfo) {
@@ -1149,7 +1297,7 @@ bool VisitFormats(Visitor* visitor) {
 // times, we first attempt to detect the format via file extension.
 class LinearLoader {
  public:
-  LinearLoader(const std::string& pathname, Image3F* linear_rgb)
+  LinearLoader(const std::string& pathname, MetaImageF* linear_rgb)
       : pathname_(pathname), linear_rgb_(linear_rgb) {}
 
   void DisregardExtensions() { check_extension_ = false; }
@@ -1173,21 +1321,21 @@ class LinearLoader {
   // Common case: from sRGB bytes
   template <class Format>
   void ConvertToLinearRGB(Format, const Image3B& bytes) {
-    *linear_rgb_ = LinearFromSrgb(bytes);
+    linear_rgb_->SetColor(LinearFromSrgb(bytes));
   }
 
   // From YUV bytes
   void ConvertToLinearRGB(ImageFormatY4M, const Image3B& bytes) {
-    *linear_rgb_ = RGBLinearImageFromYUVRec709(bytes);
+    linear_rgb_->SetColor(RGBLinearImageFromYUVRec709(bytes));
   }
 
   // From 16-bit sRGB
   template <class Format>
   void ConvertToLinearRGB(Format, const Image3U& srgb) {
-    *linear_rgb_ = Image3F(srgb.xsize(), srgb.ysize());
+    linear_rgb_->SetColor(Image3F(srgb.xsize(), srgb.ysize()));
     for (size_t y = 0; y < srgb.ysize(); ++y) {
       auto row_rgb = srgb.Row(y);
-      auto row_lin = linear_rgb_->Row(y);
+      auto row_lin = linear_rgb_->GetColor().Row(y);
       for (size_t x = 0; x < srgb.xsize(); ++x) {
         for (int c = 0; c < 3; ++c) {
           // Dividing the 16 value by 257 scales it to the [0.0, 255.0]
@@ -1201,11 +1349,27 @@ class LinearLoader {
 
   // From 16-bit signed
   template <class Format>
+  void ConvertToLinearRGB(Format format, const MetaImageU& srgb) {
+    ConvertToLinearRGB(format, srgb.GetColor());
+    if (srgb.HasAlpha()) {
+      linear_rgb_->AddAlpha();
+      for (size_t y = 0; y < srgb.ysize(); ++y) {
+        const uint16_t* const PIK_RESTRICT row_from = srgb.GetAlpha().Row(y);
+        float* const PIK_RESTRICT row_to = linear_rgb_->GetAlpha().Row(y);
+        for (size_t x = 0; x < srgb.xsize(); ++x) {
+          row_to[x] = (row_from[x] / 257.0f);
+        }
+      }
+    }
+  }
+
+  // From 16-bit signed
+  template <class Format>
   void ConvertToLinearRGB(Format, const Image3W& srgb) {
-    *linear_rgb_ = Image3F(srgb.xsize(), srgb.ysize());
+    linear_rgb_->SetColor(Image3F(srgb.xsize(), srgb.ysize()));
     for (size_t y = 0; y < srgb.ysize(); ++y) {
       auto row_rgb = srgb.Row(y);
-      auto row_lin = linear_rgb_->Row(y);
+      auto row_lin = linear_rgb_->GetColor().Row(y);
       for (size_t x = 0; x < srgb.xsize(); ++x) {
         for (int c = 0; c < 3; ++c) {
           const int unsigned_value = row_rgb[c][x] + 0x8000;  // [0, 0x10000)
@@ -1215,19 +1379,41 @@ class LinearLoader {
     }
   }
 
+  // From 16-bit signed
+  template <class Format>
+  void ConvertToLinearRGB(Format format, const MetaImageW& srgb) {
+    ConvertToLinearRGB(format, srgb.GetColor());
+    if (srgb.HasAlpha()) {
+      linear_rgb_->AddAlpha();
+      for (size_t y = 0; y < srgb.ysize(); ++y) {
+        const int16_t* const PIK_RESTRICT row_from = srgb.GetAlpha().Row(y);
+        float* const PIK_RESTRICT row_to = linear_rgb_->GetAlpha().Row(y);
+        for (size_t x = 0; x < srgb.xsize(); ++x) {
+          row_to[x] = (static_cast<uint16_t>(row_from[x] / 257.0f));
+        }
+      }
+    }
+  }
+
   // From linear float (zero-copy)
   template <class Format>
   void ConvertToLinearRGB(Format, Image3F&& linear) {
+    linear_rgb_->SetColor(std::move(linear));
+  }
+
+  // From linear float (zero-copy)
+  template <class Format>
+  void ConvertToLinearRGB(Format, MetaImageF&& linear) {
     *linear_rgb_ = std::move(linear);
   }
 
   const std::string pathname_;
-  Image3F* linear_rgb_;
+  MetaImageF* linear_rgb_;
   bool check_extension_ = true;
 };
 
-Image3F ReadImage3Linear(const std::string& pathname) {
-  Image3F linear_rgb;
+MetaImageF ReadMetaImageLinear(const std::string& pathname) {
+  MetaImageF linear_rgb;
   LinearLoader loader(pathname, &linear_rgb);
 
   // First round: only attempt to load if extension matches.
@@ -1243,6 +1429,14 @@ Image3F ReadImage3Linear(const std::string& pathname) {
 
   PIK_NOTIFY_ERROR("Unsupported file format");
   return linear_rgb;
+}
+
+Image3F ReadImage3Linear(const std::string& pathname) {
+  MetaImageF meta = ReadMetaImageLinear(pathname);
+  if (meta.HasAlpha()) {
+    PIK_NOTIFY_ERROR("Alpha channel not supported");
+  }
+  return std::move(meta.GetColor());
 }
 
 template bool ReadImage<uint8_t>(ImageFormatPlanes, const std::string&,

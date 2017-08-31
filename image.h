@@ -649,6 +649,78 @@ using Image3U = Image3<uint16_t>;
 using Image3F = Image3<float>;
 using Image3D = Image3<double>;
 
+// Image data for formats: Image3 for color, optional Image for alpha channel.
+template <typename ComponentType>
+class MetaImage {
+ public:
+  using T = ComponentType;
+  using Plane = Image<T>;
+
+  const Image3<T>& GetColor() const {
+    return color_;
+  }
+
+  Image3<T>& GetColor() {
+    return color_;
+  }
+
+  void SetColor(Image3<T>&& color) {
+    if (has_alpha_) {
+      PIK_CHECK(color.xsize() == alpha_.xsize());
+      PIK_CHECK(color.ysize() == alpha_.ysize());
+    }
+    color_ = std::move(color);
+  }
+
+  PIK_INLINE size_t xsize() const { return color_.xsize(); }
+  PIK_INLINE size_t ysize() const { return color_.ysize(); }
+
+  void AddAlpha() {
+    PIK_CHECK(!has_alpha_);
+    has_alpha_ = true;
+    alpha_ = Plane(color_.xsize(), color_.ysize(), GetOpaqueValue());
+  }
+
+  void SetAlpha(Image<T>&& alpha) {
+    PIK_CHECK(alpha.xsize() == color_.xsize());
+    PIK_CHECK(alpha.ysize() == color_.ysize());
+    has_alpha_ = true;
+    alpha_ = std::move(alpha);
+  }
+
+  bool HasAlpha() const {
+    return has_alpha_;
+  }
+
+  Image<T>& GetAlpha() {
+    return alpha_;
+  }
+
+  const Image<T>& GetAlpha() const {
+    return alpha_;
+  }
+
+  static T GetOpaqueValue() { return GetOpaqueValue(T(0)); }
+
+ private:
+  static uint8_t GetOpaqueValue(uint8_t type) { return 255; }
+  static uint16_t GetOpaqueValue(uint16_t type) { return 65535; }
+  static int16_t GetOpaqueValue(int16_t type) { return -1; }
+  static float GetOpaqueValue(float type) { return 255.0f; }
+  static double GetOpaqueValue(double type) { return 255.0; }
+
+  Image3<T> color_;
+  bool has_alpha_ = false;
+  Image<T> alpha_;
+};
+
+using MetaImageB = MetaImage<uint8_t>;
+// TODO(janwas): rename to MetaImageS (short/signed)
+using MetaImageW = MetaImage<int16_t>;
+using MetaImageU = MetaImage<uint16_t>;
+using MetaImageF = MetaImage<float>;
+using MetaImageD = MetaImage<double>;
+
 template <typename T>
 Image3<T> CopyImage3(const Image3<T>& image3) {
   return Image3<T>(CopyImage(image3.plane(0)), CopyImage(image3.plane(1)),

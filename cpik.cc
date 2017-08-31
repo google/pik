@@ -28,7 +28,7 @@ namespace {
 // main() function, within namespace for convenience.
 int Compress(const char* pathname_in, const char* distance,
              const char* pathname_out, bool fast_mode) {
-  Image3F in = ReadImage3Linear(pathname_in);
+  MetaImageF in = ReadMetaImageLinear(pathname_in);
   if (in.xsize() == 0 || in.ysize() == 0) {
     fprintf(stderr, "Failed to open image %s.\n", pathname_in);
     return 1;
@@ -46,11 +46,11 @@ int Compress(const char* pathname_in, const char* distance,
 
   CompressParams params;
   params.butteraugli_distance = butteraugli_distance;
+  params.alpha_channel = in.HasAlpha();
   if (fast_mode) {
     params.fast_mode = true;
     params.butteraugli_distance = -1;
   }
-
   PaddedBytes compressed;
   PikInfo aux_out;
   if (!PixelsToPik(params, in, &compressed, &aux_out)) {

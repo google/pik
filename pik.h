@@ -21,36 +21,19 @@
 #include "pik_info.h"
 #include "status.h"
 #include "padded_bytes.h"
+#include "pik_params.h"
 
 namespace pik {
 
-struct CompressParams {
-  // Only used for benchmarking (comparing vs libjpeg)
-  int jpeg_quality = 100;
-  bool jpeg_chroma_subsampling = false;
-  bool clear_metadata = false;
-
-  float butteraugli_distance = -1.0f;
-  float target_bitrate = 0.0f;
-  // 0.0 means search for the adaptive quantization map that matches the
-  // butteraugli distance, positive values mean quantize everywhere with that
-  // value.
-  float uniform_quant = 0.0f;
-  // If true, will use a compression method that is reasonably fast and aims to
-  // find a trade-off between quality and file size that optimizes the
-  // quality-adjusted-bits-per-pixel metric.
-  bool fast_mode = false;
-
-};
-
-struct DecompressParams {
-};
-
 // The input image is an 8-bit sRGB image.
-bool PixelsToPik(const CompressParams& params, const Image3B& planes,
+bool PixelsToPik(const CompressParams& params, const MetaImageB& image,
+                 PaddedBytes* compressed, PikInfo* aux_out);
+bool PixelsToPik(const CompressParams& params, const Image3B& image,
                  PaddedBytes* compressed, PikInfo* aux_out);
 
 // The input image is a linear (gamma expanded) sRGB image.
+bool PixelsToPik(const CompressParams& params, const MetaImageF& linear,
+                 PaddedBytes* compressed, PikInfo* aux_out);
 bool PixelsToPik(const CompressParams& params, const Image3F& linear,
                  PaddedBytes* compressed, PikInfo* aux_out);
 
@@ -61,15 +44,21 @@ bool OpsinToPik(const CompressParams& params, const Image3F& opsin,
 
 // The output image is an 8-bit sRGB image.
 bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
-                 Image3B* planes, PikInfo* aux_out);
+                 MetaImageB* image, PikInfo* aux_out);
+bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
+                 Image3B* image, PikInfo* aux_out);
 
 // The output image is a 16-bit sRGB image.
 bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
-                 Image3U* planes, PikInfo* aux_out);
+                 MetaImageU* image, PikInfo* aux_out);
+bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
+                 Image3U* image, PikInfo* aux_out);
 
 // The output image is a linear (gamma expanded) sRGB image.
 bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
-                 Image3F* planes, PikInfo* aux_out);
+                 MetaImageF* image, PikInfo* aux_out);
+bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
+                 Image3F* image, PikInfo* aux_out);
 }  // namespace pik
 
 #endif  // PIK_H_

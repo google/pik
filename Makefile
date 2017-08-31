@@ -1,7 +1,7 @@
 PNG_FLAGS := $(shell pkg-config --cflags libpng)
 PNG_LIBS := $(shell pkg-config --libs libpng)
 
-override CXXFLAGS += -std=c++11 -Wall -O3 -fPIC -mavx2 -mfma -mlzcnt -mbmi2 -I. -Wno-sign-compare
+override CXXFLAGS += -std=c++11 -Wall -O3 -fPIC -mavx2 -mfma -mlzcnt -mbmi2 -I. -Ithird_party/brotli/c/include/ -Wno-sign-compare
 override LDFLAGS += $(PNG_LIBS) -ljpeg -lpthread
 
 PIK_OBJS := $(addprefix obj/, \
@@ -20,6 +20,7 @@ PIK_OBJS := $(addprefix obj/, \
 	gamma_correct.o \
 	header.o \
 	pik.o \
+	pik_alpha.o \
 	huffman_decode.o \
 	huffman_encode.o \
 	histogram_decode.o \
@@ -36,8 +37,11 @@ PIK_OBJS := $(addprefix obj/, \
 
 all: $(addprefix bin/, cpik dpik)
 
-bin/cpik: $(PIK_OBJS) obj/cpik.o
-bin/dpik: $(PIK_OBJS) obj/dpik.o
+third_party/brotli/libbrotli.a:
+	make -C third_party/brotli lib
+
+bin/cpik: $(PIK_OBJS) obj/cpik.o third_party/brotli/libbrotli.a
+bin/dpik: $(PIK_OBJS) obj/dpik.o third_party/brotli/libbrotli.a
 bin/butteraugli_main: $(PIK_OBJS) obj/butteraugli_main.o
 bin/png2y4m: $(PIK_OBJS) obj/png2y4m.o
 bin/y4m2png: $(PIK_OBJS) obj/y4m2png.o
@@ -56,7 +60,7 @@ deps.mk: $(wildcard *.cc) $(wildcard *.h) Makefile
 		target=obj/$${file##*/}; target=$${target%.*}.o; \
 		$(CXX) -c $(CPPFLAGS) $(CXXFLAGS) -MM -MT \
 		"$$target" "$$file"; \
-	done | sed -e ':b' -e 's-../[^./]*/--' -e 'tb' >$@
+	done | sed -e ':b' -e 's-\.\./[^\./]*/--' -e 'tb' >$@
 -include deps.mk
 
 clean:

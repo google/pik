@@ -35,6 +35,7 @@
 #include "header.h"
 #include "image_io.h"
 #include "opsin_image.h"
+#include "pik_alpha.h"
 #include "quantizer.h"
 
 // If true, prints the quantization maps at each iteration.
@@ -128,11 +129,12 @@ ImageF DistToPeakMap(const ImageF& field, float peak_min,
 }
 
 bool AdjustQuantVal(float* const PIK_RESTRICT q,
-                    const float d, const float factor) {
-  if (*q >= 4.0) return false;
+                    const float d, const float factor,
+                    const float quant_max) {
+  if (*q >= quant_max) return false;
   const float inv_q = 1.0f / *q;
   const float adj_inv_q = inv_q - factor / (d + 1.0f);
-  *q = 1.0f / std::max(1.0f / 4.0f, adj_inv_q);
+  *q = 1.0f / std::max(1.0f / quant_max, adj_inv_q);
   return true;
 }
 
@@ -196,6 +198,7 @@ void FindBestQuantization(const Image3F& opsin_orig,
   ImageF tile_distmap;
   static const int kMaxIters = 3;
   int iter = 0;
+  float quant_max = 4.0f;
   for (;;) {
     if (img->quantizer().SetQuantField(kInitialQuantDC, quant_field)) {
       img->Quantize();
@@ -215,26 +218,31 @@ void FindBestQuantization(const Image3F& opsin_orig,
       }
       if (FLAGS_dump_quant_state) {
         printf("\nButteraugli distance: %f\n", comparator.distance());
+        printf("quant_max: %f\n", quant_max);
         img->quantizer().DumpQuantizationMap();
       }
     }
     bool changed = false;
-    for (int local_radius = 1; local_radius <= 4 && !changed; ++local_radius) {
-      ImageF dist_to_peak_map = DistToPeakMap(tile_distmap, butteraugli_target,
-                                              local_radius, 0.65);
-      for (int y = 0; y < img->block_ysize(); ++y) {
-        float* const PIK_RESTRICT row_q = quant_field.Row(y);
-        const float* const PIK_RESTRICT row_dist = dist_to_peak_map.Row(y);
-        for (int x = 0; x < img->block_xsize(); ++x) {
-          if (row_dist[x] >= 0.0f) {
-            static const float kAdjSpeed[kMaxIters] = { 0.1, 0.05, 0.025 };
-            const float factor = kAdjSpeed[iter] * tile_distmap.Row(y)[x];
-            if (AdjustQuantVal(&row_q[x], row_dist[x], factor)) {
-              changed = true;
+    while (!changed && comparator.distance() > butteraugli_target) {
+      for (int radius = 1; radius <= 4 && !changed; ++radius) {
+        ImageF dist_to_peak_map = DistToPeakMap(
+            tile_distmap, butteraugli_target, radius, 0.65);
+        for (int y = 0; y < img->block_ysize(); ++y) {
+          float* const PIK_RESTRICT row_q = quant_field.Row(y);
+          const float* const PIK_RESTRICT row_dist = dist_to_peak_map.Row(y);
+          for (int x = 0; x < img->block_xsize(); ++x) {
+            if (row_dist[x] >= 0.0f) {
+              static const float kAdjSpeed[kMaxIters] = { 0.1, 0.05, 0.025 };
+              const float factor = kAdjSpeed[iter] * tile_distmap.Row(y)[x];
+              if (AdjustQuantVal(&row_q[x], row_dist[x], factor, quant_max)) {
+                changed = true;
+              }
             }
           }
         }
       }
+      if (quant_max >= 8.0f) break;
+      if (!changed) quant_max += 0.5f;
     }
     if (!changed) {
       if (++iter == kMaxIters) break;
@@ -470,21 +478,66 @@ void ToImage3(const CompressedImage& compressed, Image3F* image) {
 }
 }  // namespace
 
-bool PixelsToPik(const CompressParams& params, const Image3B& planes,
+
+template<typename T>
+bool AlphaToPik(const CompressParams& params, const MetaImage<T>& image,
                  PaddedBytes* compressed, PikInfo* aux_out) {
-  if (planes.xsize() == 0 || planes.ysize() == 0) {
-    return PIK_FAILURE("Empty image");
+  if (!image.HasAlpha()) {
+    return PIK_FAILURE("Must have alpha if alpha_channel set");
   }
-  return OpsinToPik(params, OpsinDynamicsImage(planes), compressed, aux_out);
+  size_t bytepos = compressed->size();
+  if (!AlphaToPik(params, image.GetAlpha(), &bytepos, compressed)) {
+    return false;
+  }
+  return true;
 }
 
-bool PixelsToPik(const CompressParams& params, const Image3F& linear,
+template<typename T>
+bool AlphaToPik(const CompressParams& params, const Image3<T>& image,
                  PaddedBytes* compressed, PikInfo* aux_out) {
-  if (linear.xsize() == 0 || linear.ysize() == 0) {
+  return PIK_FAILURE("Alpha not supported for Image3");
+}
+
+template<typename T>
+Image3F OpsinDynamicsImage(const MetaImage<T>& image) {
+  return OpsinDynamicsImage(image.GetColor());
+}
+
+template<typename Image>
+bool PixelsToPikT(const CompressParams& params, const Image& image,
+                  PaddedBytes* compressed, PikInfo* aux_out) {
+  if (image.xsize() == 0 || image.ysize() == 0) {
     return PIK_FAILURE("Empty image");
   }
-  Image3F opsin = OpsinDynamicsImage(linear);
-  return OpsinToPik(params, opsin, compressed, aux_out);
+  if (!OpsinToPik(params, OpsinDynamicsImage(image), compressed, aux_out)) {
+    return false;
+  }
+  if (params.alpha_channel) {
+    if (!AlphaToPik(params, image, compressed, aux_out)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool PixelsToPik(const CompressParams& params, const Image3B& image,
+                 PaddedBytes* compressed, PikInfo* aux_out) {
+  return PixelsToPikT(params, image, compressed, aux_out);
+}
+
+bool PixelsToPik(const CompressParams& params, const Image3F& image,
+                 PaddedBytes* compressed, PikInfo* aux_out) {
+  return PixelsToPikT(params, image, compressed, aux_out);
+}
+
+bool PixelsToPik(const CompressParams& params, const MetaImageB& image,
+                 PaddedBytes* compressed, PikInfo* aux_out) {
+  return PixelsToPikT(params, image, compressed, aux_out);
+}
+
+bool PixelsToPik(const CompressParams& params, const MetaImageF& image,
+                 PaddedBytes* compressed, PikInfo* aux_out) {
+  return PixelsToPikT(params, image, compressed, aux_out);
 }
 
 bool OpsinToPik(const CompressParams& params, const Image3F& opsin,
@@ -517,6 +570,10 @@ bool OpsinToPik(const CompressParams& params, const Image3F& opsin,
   Header header;
   header.xsize = xsize;
   header.ysize = ysize;
+  if (params.alpha_channel) {
+    header.flags |= Header::kAlpha;
+    header.opsin_compressed_size = compressed_data.size();
+  }
   compressed->resize(MaxCompressedHeaderSize() + compressed_data.size());
   BitSink sink(compressed->data());
   if (!StoreHeader(header, &sink)) return false;
@@ -528,13 +585,14 @@ bool OpsinToPik(const CompressParams& params, const Image3F& opsin,
 }
 
 
-template <typename Image>
+template <typename T>
 bool PikToPixelsT(const DecompressParams& params, const PaddedBytes& compressed,
-                  Image* planes, PikInfo* aux_out) {
+                  MetaImage<T>* image, PikInfo* aux_out) {
   if (compressed.size() == 0) {
     return PIK_FAILURE("Empty input.");
   }
-  const uint8_t* compressed_end = compressed.data() + compressed.size();
+  Image3<T> planes;
+  const uint8_t* const compressed_end = compressed.data() + compressed.size();
 
   Header header;
   BitSource source(compressed.data());
@@ -544,40 +602,89 @@ bool PikToPixelsT(const DecompressParams& params, const PaddedBytes& compressed,
     return PIK_FAILURE("Truncated header.");
   }
 
+  const uint8_t* opsin_end = compressed_end;
+  if (header.flags & Header::kAlpha) {
+    opsin_end = header_end + header.opsin_compressed_size;
+    if (opsin_end > compressed_end) {
+      return PIK_FAILURE("Invalid opsin_compressed_size.");
+    }
+  }
+
   if (header.flags & Header::kWebPLossless) {
     return PIK_FAILURE("Invalid format code");
   } else {  // Pik
+    if (header.xsize == 0 || header.ysize == 0) {
+      return PIK_FAILURE("Empty image.");
+    }
     static const uint32_t kMaxWidth = (1 << 25) - 1;
     if (header.xsize > kMaxWidth) {
       return PIK_FAILURE("Image too wide.");
     }
-    static const uint64_t kMaxPixels = 1 << 30;
     uint64_t num_pixels = static_cast<uint64_t>(header.xsize) * header.ysize;
-    if (num_pixels > kMaxPixels) {
+    if (num_pixels > params.max_num_pixels) {
       return PIK_FAILURE("Image too big.");
     }
     CompressedImage img(header.xsize, header.ysize, aux_out);
-    if (!img.Decode(header_end, compressed_end - header_end)) {
+    if (!img.Decode(header_end, opsin_end - header_end)) {
       return PIK_FAILURE("Pik decoding failed.");
     }
-    ToImage3(img, planes);
+    ToImage3(img, &planes);
+    image->SetColor(std::move(planes));
+
+    if (header.flags & Header::kAlpha) {
+      image->AddAlpha();
+      if (!PikToAlpha(params, opsin_end - compressed.data(),
+          compressed, &image->GetAlpha())) {
+        return false;
+      }
+    }
   }
   return true;
 }
 
 bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
-                 Image3B* planes, PikInfo* aux_out) {
-  return PikToPixelsT(params, compressed, planes, aux_out);
+                 MetaImageB* image, PikInfo* aux_out) {
+  return PikToPixelsT(params, compressed, image, aux_out);
 }
 
 bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
-                 Image3U* planes, PikInfo* aux_out) {
-  return PikToPixelsT(params, compressed, planes, aux_out);
+                 MetaImageU* image, PikInfo* aux_out) {
+  return PikToPixelsT(params, compressed, image, aux_out);
 }
 
 bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
-                 Image3F* planes, PikInfo* aux_out) {
-  return PikToPixelsT(params, compressed, planes, aux_out);
+                 MetaImageF* image, PikInfo* aux_out) {
+  return PikToPixelsT(params, compressed, image, aux_out);
+}
+
+template<typename T>
+bool PikToPixelsT(const DecompressParams& params, const PaddedBytes& compressed,
+                 Image3<T>* image, PikInfo* aux_out) {
+  MetaImage<T> temp;
+  if (!PikToPixelsT(params, compressed, &temp, aux_out)) {
+    return false;
+  }
+  if (temp.HasAlpha()) {
+    return PIK_FAILURE("Unable to output alpha channel");
+  }
+  *image = std::move(temp.GetColor());
+  return true;
+}
+
+bool PikToPixels(const DecompressParams& params,
+                 const PaddedBytes& compressed,
+                 Image3B* image, PikInfo* aux_out) {
+  return PikToPixelsT(params, compressed, image, aux_out);
+}
+bool PikToPixels(const DecompressParams& params,
+                 const PaddedBytes& compressed,
+                 Image3U* image, PikInfo* aux_out) {
+  return PikToPixelsT(params, compressed, image, aux_out);
+}
+bool PikToPixels(const DecompressParams& params,
+                 const PaddedBytes& compressed,
+                 Image3F* image, PikInfo* aux_out) {
+  return PikToPixelsT(params, compressed, image, aux_out);
 }
 
 }  // namespace pik
