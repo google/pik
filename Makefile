@@ -37,6 +37,12 @@ PIK_OBJS := $(addprefix obj/, \
 
 all: $(addprefix bin/, cpik dpik)
 
+# print an error message with helpful instructions if the brotli git submodule
+# is not checked out
+ifeq (,$(wildcard third_party/brotli/c/include/brotli/decode.h))
+$(error Brotli is required to make pik, run "git submodule init && git submodule update" to get it, then run make again)
+endif
+
 third_party/brotli/libbrotli.a:
 	make -C third_party/brotli lib
 
@@ -67,5 +73,6 @@ clean:
 	[ ! -d obj ] || $(RM) -r -- obj/
 	[ ! -d bin ] || $(RM) -r -- bin/
 	[ ! -d lib ] || $(RM) -r -- lib/
+	make -C third_party/brotli clean
 
-.PHONY: clean all install
+.PHONY: clean all install third_party/brotli/libbrotli.a
