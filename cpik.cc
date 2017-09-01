@@ -80,9 +80,12 @@ int Compress(const char* pathname_in, const char* distance,
 
 void PrintArgHelp(int argc, char** argv) {
   fprintf(stderr,
-          "Usage: %s in_rgb_8bit.png maxError[0.5 .. 3.0] out.pik [--fast]\n"
-          "  with --fast, maxError is ignored\n",
-          argv[0]);
+      "Usage: %s in.png <maxError> out.pik [--fast]\n"
+      "  maxError: Maximum butteraugli distance, smaller value means higher"
+      " quality.\n"
+      "            Good default: 1.0. Supported range: 0.5 .. 3.0.\n"
+      "  --fast: Use fast encoding, ignores maxError.\n",
+      argv[0]);
 }
 
 int main(int argc, char** argv) {
