@@ -91,7 +91,7 @@ ButteraugliComparator::ButteraugliComparator(const Image3B& srgb)
       ysize_(srgb.ysize()),
       comparator_(SrgbToLinearRgb(xsize_, ysize_, srgb)),
       distance_(0.0),
-      distmap_(xsize_, ysize_) {
+      distmap_(xsize_, ysize_, 0) {
 }
 
 ButteraugliComparator::ButteraugliComparator(const Image3F& opsin)
@@ -99,7 +99,7 @@ ButteraugliComparator::ButteraugliComparator(const Image3F& opsin)
       ysize_(opsin.ysize()),
       comparator_(OpsinToLinearRgb(xsize_, ysize_, opsin)),
       distance_(0.0),
-      distmap_(xsize_, ysize_) {
+      distmap_(xsize_, ysize_, 0) {
 }
 
 void ButteraugliComparator::Compare(const Image3B& srgb) {

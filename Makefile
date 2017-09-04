@@ -11,7 +11,6 @@ PIK_OBJS := $(addprefix obj/, \
 	butteraugli/butteraugli.o \
 	butteraugli_comparator.o \
 	butteraugli_distance.o \
-	cache_aligned.o \
 	compressed_image.o \
 	context_map_encode.o \
 	context_map_decode.o \
@@ -26,6 +25,7 @@ PIK_OBJS := $(addprefix obj/, \
 	histogram_decode.o \
 	histogram_encode.o \
 	image_io.o \
+	instruction_sets.o \
 	lehmer_code.o \
 	opsin_codec.o \
 	opsin_inverse.o \
