@@ -802,6 +802,9 @@ bool DecodeACData(BitReader* const PIK_RESTRICT br,
         const int context1 = c * 16 + (prev_num_nzeros[c] >> 2);
         int num_nzeros =
             kIndexLut[decoder->ReadSymbol(context_map[context1], br)];
+        if (num_nzeros > 64) {
+          return PIK_FAILURE("Invalid AC data.");
+        }
         prev_num_nzeros[c] = num_nzeros;
         if (num_nzeros == 0) continue;
         const int histo_offset = 48 + c * 120;
@@ -811,6 +814,9 @@ bool DecodeACData(BitReader* const PIK_RESTRICT br,
           br->FillBitBuffer();
           int s = decoder->ReadSymbol(histo_idx, br);
           k += (s >> 4);
+          if (k >= 64) {
+            return PIK_FAILURE("Invalid AC data.");
+          }
           s &= 15;
           if (s > 0) {
             int bits = br->PeekBits(s);

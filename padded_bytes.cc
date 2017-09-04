@@ -26,6 +26,7 @@ void PaddedBytes::resize(const size_t size) {
 
   CacheAlignedUniquePtr new_data = AllocateArray(new_padded_size);
   memcpy(new_data.get(), data_.get(), size_);  // old size
+  memset(new_data.get() + size_, 0, new_padded_size - size_);
 
   size_ = size;  // update after copying!
   padded_size_ = new_padded_size;

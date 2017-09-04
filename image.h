@@ -391,12 +391,18 @@ void PadImage(Image<T>* image) {
   const size_t kNumLanes = kVectorSize / sizeof(T);
   const size_t remainder = xsize % kNumLanes;
   const size_t extra = (remainder == 0) ? 0 : (kNumLanes - remainder);
+  const size_t max_mirror = std::min(kNumLanes + extra, xsize - 1);
 
   for (size_t y = 0; y < image->ysize(); ++y) {
     T* const PIK_RESTRICT row = image->Row(y);
-    for (size_t i = 0; i < kNumLanes + extra; ++i) {
+
+    size_t i = 0;
+    for (; i < max_mirror; ++i) {
       // The mirror is outside the last column => replicate once.
       row[xsize + i] = row[xsize - 1 - i];
+    }
+    for (; i < kNumLanes + extra; ++i) {
+      row[xsize + i] = 0;
     }
   }
 }
@@ -408,14 +414,22 @@ bool VerifyPadding(const Image<T>& image) {
   const size_t kNumLanes = kVectorSize / sizeof(T);
   const size_t remainder = xsize % kNumLanes;
   const size_t extra = (remainder == 0) ? 0 : (kNumLanes - remainder);
+  const size_t max_mirror = std::min(kNumLanes + extra, xsize - 1);
 
   const T* const PIK_RESTRICT row = image.Row(0);
-  for (size_t i = 0; i < kNumLanes + extra; ++i) {
+  size_t i = 0;
+  for (; i < max_mirror; ++i) {
     // The mirror is outside the last column => replicate once.
     if (fabsf(row[xsize + i] - row[xsize - 1 - i]) > 1E-3f) {
       return false;
     }
   }
+  for (; i < kNumLanes + extra; ++i) {
+    if (row[xsize + i] != 0) {
+      return false;
+    }
+  }
+
   return true;
 }
 
@@ -839,6 +853,7 @@ Image3<ToType> StaticCastImage3(const Image3<FromType>& from) {
   return to;
 }
 
+// Clamps input components to [0, 255] and casts to uint8_t.
 Image3B Float255ToByteImage3(const Image3F& from);
 
 

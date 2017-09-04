@@ -20,6 +20,7 @@
 #include <sys/types.h>
 #include <vector>
 
+#include "status.h"
 
 namespace pik {
 
@@ -109,6 +110,9 @@ static const uint16_t kNumNonzeroContextSkip[7] = {
 };
 
 inline int ZeroDensityContext(int nonzeros_left, int k, int bits) {
+  PIK_ASSERT(bits < 7);
+  PIK_ASSERT(nonzeros_left < 64);
+  PIK_ASSERT(k < 64);
   return kNumNonzeroContext[bits][nonzeros_left] + kFreqContext[bits][k];
 }
 
