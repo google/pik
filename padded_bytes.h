@@ -33,7 +33,9 @@ class PaddedBytes {
   PaddedBytes(size_t size)
       : size_(size),
         padded_size_(PaddedSize(size)),
-        data_(AllocateArray(padded_size_)) {}
+        data_(AllocateArray(padded_size_)) {
+    memset(data_.get() + size_, 0, padded_size_ - size_);
+  }
 
   // Reallocates and copies if PaddedSize(size) > padded_size_. The common case
   // of resizing to the final size after preallocating the upper bound is cheap.
