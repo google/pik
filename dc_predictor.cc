@@ -18,7 +18,6 @@
 
 #include "compiler_specific.h"
 
-#ifdef __AVX2__
 #include "vector128.h"
 #include "vector256.h"
 
@@ -537,4 +536,3 @@ void ExpandUV(const Image<DC>& dc_y, const Image<DC>& residuals,
 
 }  // namespace pik
 
-#endif  // __AVX2__
