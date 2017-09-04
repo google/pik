@@ -23,8 +23,13 @@
 #include <memory>
 #include <new>
 
+#include "arch_specific.h"
 #include "compiler_specific.h"
 #include "status.h"
+
+#if PIK_ARCH_X64
+#include <emmintrin.h>
+#endif
 
 namespace pik {
 
@@ -34,7 +39,21 @@ class CacheAligned {
   static constexpr size_t kPointerSize = sizeof(void*);
   static constexpr size_t kCacheLineSize = 64;
 
-  static void* Allocate(const size_t bytes);
+  static void* Allocate(const size_t bytes) {
+    PIK_ASSERT(bytes < 1ULL << 63);
+    char* const allocated = static_cast<char*>(malloc(bytes + kCacheLineSize));
+    if (allocated == nullptr) {
+      return nullptr;
+    }
+    const uintptr_t misalignment =
+        reinterpret_cast<uintptr_t>(allocated) & (kCacheLineSize - 1);
+    // malloc is at least kPointerSize aligned, so we can store the "allocated"
+    // pointer immediately before the aligned memory.
+    PIK_ASSERT(misalignment % kPointerSize == 0);
+    char* const aligned = allocated + kCacheLineSize - misalignment;
+    memcpy(aligned - kPointerSize, &allocated, kPointerSize);
+    return aligned;
+  }
 
   // Template allows freeing pointer-to-const.
   template <typename T>
@@ -56,6 +75,7 @@ class CacheAligned {
   template <typename T>
   static void StreamCacheLine(const T* PIK_RESTRICT from_items,
                               T* PIK_RESTRICT to_items) {
+#if PIK_ARCH_X64
     static_assert(sizeof(__m128i) % sizeof(T) == 0, "Cannot divide");
     const __m128i* const from = reinterpret_cast<const __m128i*>(from_items);
     __m128i* const to = reinterpret_cast<__m128i*>(to_items);
@@ -72,6 +92,9 @@ class CacheAligned {
     _mm_stream_si128(to + 2, v2);
     _mm_stream_si128(to + 3, v3);
     PIK_COMPILER_FENCE;
+#else
+    memcpy(to_items, from_items, kCacheLineSize);
+#endif
   }
 };
 
