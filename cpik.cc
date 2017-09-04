@@ -20,6 +20,7 @@
 #include "image_io.h"
 #include "padded_bytes.h"
 #include "pik.h"
+#include "instruction_sets.h"
 #include "pik_info.h"
 
 namespace pik {
@@ -28,6 +29,11 @@ namespace {
 // main() function, within namespace for convenience.
 int Compress(const char* pathname_in, const char* distance,
              const char* pathname_out, bool fast_mode) {
+  if ((InstructionSets::Supported() & PIK_TARGET_AVX2) == 0) {
+    fprintf(stderr, "Cannot continue because CPU lacks AVX2/FMA support.\n");
+    return 1;
+  }
+
   MetaImageF in = ReadMetaImageLinear(pathname_in);
   if (in.xsize() == 0 || in.ysize() == 0) {
     fprintf(stderr, "Failed to open image %s.\n", pathname_in);
