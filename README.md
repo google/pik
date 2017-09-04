@@ -1,5 +1,7 @@
 # Pik
 
+TEST - Do not commit
+
 [![Build status][build-status-img]][build-status]
 
 Pik is a new lossy image format for the internet. This directory contains
