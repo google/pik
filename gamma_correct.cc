@@ -82,6 +82,27 @@ Image3F LinearFromSrgb(const Image3B& srgb) {
                  LinearFromSrgb(srgb.plane(2)));
 }
 
+ImageF LinearFromSrgb(const ImageU& srgb) {
+  PROFILER_FUNC;
+  const size_t xsize = srgb.xsize();
+  const size_t ysize = srgb.ysize();
+  ImageF linear(xsize, ysize);
+  const float norm = 1.0 / 257.0;
+  for (size_t y = 0; y < ysize; ++y) {
+    const uint16_t* const PIK_RESTRICT row = srgb.Row(y);
+    float* const PIK_RESTRICT row_linear = linear.Row(y);
+    for (size_t x = 0; x < xsize; ++x) {
+      row_linear[x] = Srgb8ToLinearDirect(row[x] * norm);
+    }
+  }
+  return linear;
+}
+
+Image3F LinearFromSrgb(const Image3U& srgb) {
+  return Image3F(LinearFromSrgb(srgb.plane(0)), LinearFromSrgb(srgb.plane(1)),
+                 LinearFromSrgb(srgb.plane(2)));
+}
+
 ImageB Srgb8FromLinear(const ImageF& linear) {
   PROFILER_FUNC;
   const size_t xsize = linear.xsize();

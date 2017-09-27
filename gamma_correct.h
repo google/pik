@@ -54,6 +54,7 @@ PIK_INLINE float LinearToSrgb8Direct(float val) {
 
 ImageF LinearFromSrgb(const ImageB& srgb);
 Image3F LinearFromSrgb(const Image3B& srgb);
+Image3F LinearFromSrgb(const Image3U& srgb);
 
 ImageB Srgb8FromLinear(const ImageF& linear);
 Image3B Srgb8FromLinear(const Image3F& linear);

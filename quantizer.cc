@@ -124,10 +124,10 @@ void Quantizer::GetQuantField(float* quant_dc, ImageF* qf) {
   }
 }
 
-std::string Quantizer::Encode() const {
+std::string Quantizer::Encode(PikImageSizeInfo* info) const {
   return (std::string(1, global_scale_ >> 8) +
           std::string(1, global_scale_ & 0xff) + std::string(1, quant_dc_ - 1) +
-          EncodePlane(quant_img_ac_, 1, kQuantMax));
+          EncodePlane(quant_img_ac_, 1, kQuantMax, info));
 }
 
 size_t Quantizer::EncodedSize() const {

@@ -151,12 +151,14 @@ class Y4MReader {
  public:
   explicit Y4MReader(FILE* f) : f_(f), xsize_(0), ysize_(0) {}
 
+  int bit_depth() const { return bit_depth_; }
+
   bool ReadHeader() {
     if (!ReadLine()) {
       return false;
     }
     if (memcmp(line_, "YUV4MPEG2 ", 10)) {
-      return false;
+      return PIK_FAILURE("Invalid Y4M signature");
     }
     int tag_start;
     int tag_end;
@@ -168,21 +170,31 @@ class Y4MReader {
         ++tag_end;
       }
       if (tag_start < tag_end) {
+        const int tag_len = tag_end - tag_start;
         // Process tag
         switch (line_[tag_start]) {
           case 'W':
             if (sscanf(&line_[tag_start + 1], "%zd", &xsize_) != 1) {
-              return false;
+              return PIK_FAILURE("Invalid width");
             }
             break;
           case 'H':
             if (sscanf(&line_[tag_start + 1], "%zd", &ysize_) != 1) {
-              return false;
+              return PIK_FAILURE("Invalid height");
             }
             break;
           case 'C':
-            if (memcmp(&line_[tag_start], "C444", tag_end - tag_start)) {
-              return false;
+            if (tag_len == 4 &&
+                !memcmp(&line_[tag_start], "C444", tag_len)) {
+              bit_depth_ = 8;
+            } else if (tag_len == 7 &&
+                       !memcmp(&line_[tag_start], "C444p10", tag_len)) {
+              bit_depth_ = 10;
+            } else if (tag_len == 7 &&
+                       !memcmp(&line_[tag_start], "C444p12", tag_len)) {
+              bit_depth_ = 12;
+            } else {
+              return PIK_FAILURE("Unsupported chroma subsampling type");
             }
             break;
           default:
@@ -197,16 +209,54 @@ class Y4MReader {
     return (xsize_ > 0 && ysize_ > 0);
   }
 
-  void ReadFrame(Image3B* yuv) {
-    PIK_CHECK(ReadLine());
-    PIK_CHECK(!memcmp(line_, "FRAME", 5));
+  bool ReadFrame(Image3B* yuv) {
+    if (!ReadLine()) return false;
+    if (memcmp(line_, "FRAME", 5)) {
+      return PIK_FAILURE("Invalid frame header");
+    }
+    if (bit_depth_ != 8) {
+      return PIK_FAILURE("Invalid bit-depth");
+    }
     *yuv = Image3B(xsize_, ysize_);
     for (int c = 0; c < 3; ++c) {
       for (int y = 0; y < ysize_; ++y) {
         const size_t bytes_read = fread(yuv->Row(y)[c], 1, xsize_, f_);
-        PIK_CHECK(bytes_read == xsize_);
+        if (bytes_read != xsize_) {
+          return PIK_FAILURE("Unexpected end of file");
+        }
       }
     }
+    return true;
+  }
+
+  bool ReadFrame(Image3U* yuv) {
+    if (!ReadLine()) return false;
+    if (memcmp(line_, "FRAME", 5)) {
+      return PIK_FAILURE("Invalid frame header");
+    }
+    *yuv = Image3U(xsize_, ysize_);
+    int byte_depth = (bit_depth_ + 7) / 8;
+    int limit = (1 << bit_depth_) - 1;
+    PIK_ASSERT(byte_depth == 1 || byte_depth == 2);
+    for (int c = 0; c < 3; ++c) {
+      for (int y = 0; y < ysize_; ++y) {
+        for (int x = 0; x < xsize_; ++x) {
+          if (byte_depth == 1) {
+            uint8_t val;
+            if (fread(&val, sizeof(val), 1, f_) != 1) return false;
+            yuv->Row(y)[c][x] = val;
+          } else {
+            uint16_t val;
+            if (fread(&val, sizeof(val), 1, f_) != 1) return false;
+            if (val > limit) {
+              return PIK_FAILURE("Value greater than indicated by bit-depth");
+            }
+            yuv->Row(y)[c][x] = val;
+          }
+        }
+      }
+    }
+    return true;
   }
 
  private:
@@ -215,7 +265,7 @@ class Y4MReader {
     for (; pos < 79; ++pos) {
       int n = fread(&line_[pos], 1, 1, f_);
       if (n != 1) {
-        return false;
+        return PIK_FAILURE("Unexpected end of file");
       }
       if (line_[pos] == '\n') break;
     }
@@ -226,6 +276,7 @@ class Y4MReader {
   FILE* f_;
   size_t xsize_;
   size_t ysize_;
+  int bit_depth_ = 8;
   char line_[80];
 };
 
@@ -238,8 +289,21 @@ bool ReadImage(ImageFormatY4M, const std::string& pathname, Image3B* image) {
   if (!reader.ReadHeader()) {
     return false;
   }
-  reader.ReadFrame(image);
-  return true;
+  return reader.ReadFrame(image);
+}
+
+bool ReadImage(ImageFormatY4M, const std::string& pathname, Image3U* image,
+               int* bit_depth) {
+  FileWrapper f(pathname, "rb");
+  if (f == nullptr) {
+    return PIK_FAILURE("File open");
+  }
+  Y4MReader reader(f);
+  if (!reader.ReadHeader()) {
+    return false;
+  }
+  *bit_depth = reader.bit_depth();
+  return reader.ReadFrame(image);
 }
 
 bool WriteImage(ImageFormatY4M, const Image3B& image3,
@@ -259,6 +323,41 @@ bool WriteImage(ImageFormatY4M, const Image3B& image3,
       const size_t bytes_written =
           fwrite(image3.Row(y)[c], 1, image3.xsize(), f);
       PIK_CHECK(bytes_written == image3.xsize());
+    }
+  }
+  return true;
+}
+
+bool WriteImage(ImageFormatY4M format, const Image3U& image3,
+                const std::string& pathname) {
+  const int bit_depth = format.bit_depth;
+  PIK_CHECK(bit_depth == 8 || bit_depth == 10 || bit_depth == 12);
+
+  FileWrapper f(pathname, "wb");
+  if (f == nullptr) {
+    return PIK_FAILURE("File open");
+  }
+
+  const int ret =
+      fprintf(f, "YUV4MPEG2 W%zd H%zd F24:1 Ip A0:0 C444%s\nFRAME\n",
+              image3.xsize(), image3.ysize(),
+              bit_depth == 8 ? "" : bit_depth == 10 ? "p10" : "p12");
+  PIK_CHECK(ret > 0);
+
+  int byte_depth = (bit_depth + 7) / 8;
+  int limit = (1 << bit_depth) - 1;
+  for (int c = 0; c < 3; ++c) {
+    for (int y = 0; y < image3.ysize(); ++y) {
+      for (int x = 0; x < image3.xsize(); ++x) {
+        const uint16_t val = image3.PlaneRow(c, y)[x];
+        PIK_CHECK(val <= limit);
+        if (byte_depth == 1) {
+          const uint8_t v = val;
+          PIK_CHECK(fwrite(&v, sizeof(v), 1, f) == 1);
+        } else {
+          PIK_CHECK(fwrite(&val, sizeof(val), 1, f) == 1);
+        }
+      }
     }
   }
   return true;
@@ -1326,7 +1425,8 @@ class LinearLoader {
 
   // From YUV bytes
   void ConvertToLinearRGB(ImageFormatY4M, const Image3B& bytes) {
-    linear_rgb_->SetColor(RGBLinearImageFromYUVRec709(bytes));
+    linear_rgb_->SetColor(RGBLinearImageFromYUVRec709(
+        StaticCastImage3<uint8_t, uint16_t>(bytes), 8));
   }
 
   // From 16-bit sRGB

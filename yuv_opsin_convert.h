@@ -12,21 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef YUV_CONVERT_H_
-#define YUV_CONVERT_H_
+#ifndef YUV_OPSIN_CONVERT_H_
+#define YUV_OPSIN_CONVERT_H_
 
 #include "image.h"
 
 namespace pik {
 
-Image3B RGB8ImageFromYUVRec709(const Image3U& yuv, int bit_depth);
-Image3U RGB16ImageFromYUVRec709(const Image3U& yuv, int bit_depth);
-Image3F RGBLinearImageFromYUVRec709(const Image3U& yuv, int bit_depth);
+Image3B RGB8ImageFromYUVOpsin(const Image3U& yuv, int bit_depth);
+Image3U RGB16ImageFromYUVOpsin(const Image3U& yuv, int bit_depth);
+Image3F RGBLinearImageFromYUVOpsin(const Image3U& yuv, int bit_depth);
 
-Image3U YUVRec709ImageFromRGB8(const Image3B& rgb, int out_bit_depth);
-Image3U YUVRec709ImageFromRGB16(const Image3U& rgb, int out_bit_depth);
-Image3U YUVRec709ImageFromRGBLinear(const Image3F& rgb, int out_bit_depth);
+Image3U YUVOpsinImageFromRGB8(const Image3B& rgb, int out_bit_depth);
+Image3U YUVOpsinImageFromRGB16(const Image3U& rgb, int out_bit_depth);
+Image3U YUVOpsinImageFromRGBLinear(const Image3F& rgb, int out_bit_depth);
 
 }  // namespace pik
 
-#endif  // YUV_CONVERT_H_
+#endif  // YUV_OPSIN_CONVERT_H_

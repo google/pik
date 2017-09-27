@@ -27,8 +27,8 @@ namespace pik {
 namespace {
 
 // main() function, within namespace for convenience.
-int Compress(const char* pathname_in, const char* distance,
-             const char* pathname_out, bool fast_mode) {
+int Compress(const char* pathname_in, const float butteraugli_distance,
+             const char* pathname_out, const bool fast_mode) {
   if ((InstructionSets::Supported() & PIK_TARGET_AVX2) == 0) {
     fprintf(stderr, "Cannot continue because CPU lacks AVX2/FMA support.\n");
     return 1;
@@ -40,15 +40,12 @@ int Compress(const char* pathname_in, const char* distance,
     return 1;
   }
 
-  const float butteraugli_distance = strtod(distance, nullptr);
-  if (!fast_mode &&
-      !(0.5f <= butteraugli_distance && butteraugli_distance <= 3.0f)) {
-    fprintf(stderr, "Invalid/out of range distance '%s', try 0.5 to 3.\n",
-            distance);
-    return 1;
+  if (fast_mode) {
+    printf("Compressing with fast mode\n");
+  } else {
+    printf("Compressing with maximum Butteraugli distance %f\n",
+           butteraugli_distance);
   }
-  printf("Compressing with maximum Butteraugli distance %f\n",
-         butteraugli_distance);
 
   CompressParams params;
   params.butteraugli_distance = butteraugli_distance;
@@ -86,32 +83,65 @@ int Compress(const char* pathname_in, const char* distance,
 
 void PrintArgHelp(int argc, char** argv) {
   fprintf(stderr,
-      "Usage: %s in.png <maxError> out.pik [--fast]\n"
-      "  maxError: Maximum butteraugli distance, smaller value means higher"
+      "Usage: %s in.png out.pik [--distance <maxError>] [--fast]\n"
+      " --distance: Maximum butteraugli distance, smaller value means higher"
       " quality.\n"
-      "            Good default: 1.0. Supported range: 0.5 .. 3.0.\n"
-      "  --fast: Use fast encoding, ignores maxError.\n",
+      "             Good default: 1.0. Supported range: 0.5 .. 3.0.\n"
+      " --fast: Use fast encoding, ignores distance.\n"
+      " --help: Show this help.\n",
       argv[0]);
 }
 
-int main(int argc, char** argv) {
-  if (argc < 4) {
-    PrintArgHelp(argc, argv);
-    return 1;
-  }
+void ExitWithArgError(int argc, char** argv) {
+  PrintArgHelp(argc, argv);
+  std::exit(1);
+}
 
+int main(int argc, char** argv) {
   bool fast_mode = false;
-  if (argc > 4) {
-    for (int i = 4; i < argc; i++) {
+  const char* arg_maxError = nullptr;
+  const char* arg_in = nullptr;
+  const char* arg_out = nullptr;
+  for (int i = 1; i < argc; i++) {
+    if (argv[i][0] == '-') {
       std::string arg = argv[i];
       if (arg == "--fast") {
         fast_mode = true;
-      } else {
+      } else if (arg == "--distance") {
+        if (i + 1 >= argc) {
+          printf("Must give a distance value\n");
+          ExitWithArgError(argc, argv);
+        }
+        arg_maxError = argv[++i];
+      } else if (arg == "--help") {
         PrintArgHelp(argc, argv);
-        return 1;
+        return 0;
+      } else {
+        ExitWithArgError(argc, argv);
+      }
+    } else {
+      if (arg_in) {
+        if (arg_out) ExitWithArgError(argc, argv);
+        arg_out = argv[i];
+      } else {
+        arg_in = argv[i];
       }
     }
   }
 
-  return pik::Compress(argv[1], argv[2], argv[3], fast_mode);
+  float butteraugli_distance = 1.0;
+  if (arg_maxError) {
+    butteraugli_distance = strtod(arg_maxError, nullptr);
+    if (!(0.5f <= butteraugli_distance && butteraugli_distance <= 3.0f)) {
+      fprintf(stderr, "Invalid/out of range distance '%s', try 0.5 to 3.\n",
+              arg_maxError);
+      return 1;
+    }
+  }
+
+  if (!arg_in || !arg_out) {
+    ExitWithArgError(argc, argv);
+  }
+
+  return pik::Compress(arg_in, butteraugli_distance, arg_out, fast_mode);
 }

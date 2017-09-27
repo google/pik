@@ -27,31 +27,35 @@ struct PikImageSizeInfo {
     entropy_coded_bits += victim.entropy_coded_bits;
     extra_bits += victim.extra_bits;
     total_size += victim.total_size;
+    clustered_entropy += victim.clustered_entropy;
   }
   size_t num_clustered_histograms = 0;
   size_t histogram_size = 0;
   size_t entropy_coded_bits = 0;
   size_t extra_bits = 0;
   size_t total_size = 0;
+  double clustered_entropy = 0.0f;
 };
 
 // Metadata and statistics gathered during compression or decompression.
 struct PikInfo {
   void Assimilate(const PikInfo& victim) {
-    ytob_image_size += victim.ytob_image_size;
-    quant_image_size += victim.quant_image_size;
+    ytob_image.Assimilate(victim.ytob_image);
+    quant_image.Assimilate(victim.quant_image);
     dc_image.Assimilate(victim.dc_image);
     ac_image.Assimilate(victim.ac_image);
     num_butteraugli_iters += victim.num_butteraugli_iters;
   }
   PikImageSizeInfo TotalImageSize() const {
     PikImageSizeInfo total;
+    total.Assimilate(ytob_image);
+    total.Assimilate(quant_image);
     total.Assimilate(dc_image);
     total.Assimilate(ac_image);
     return total;
   }
-  size_t ytob_image_size = 0;
-  size_t quant_image_size = 0;
+  PikImageSizeInfo ytob_image;
+  PikImageSizeInfo quant_image;
   PikImageSizeInfo dc_image;
   PikImageSizeInfo ac_image;
   int num_butteraugli_iters = 0;

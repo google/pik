@@ -32,6 +32,7 @@
 #include "opsin_inverse.h"
 #include "opsin_params.h"
 #include "status.h"
+#include "vector128.h"
 #include "vector256.h"
 
 namespace pik {
@@ -81,52 +82,214 @@ void DumpOpsin(const PikInfo* info, const Image3F& in,
              info->debug_prefix + label + ".png");
 }
 
-static const float kQuantizeMul[3] = { 2.631f, 0.780f, 0.125f };
+const double *GetQuantizeMul() {
+  static double kQuantizeMul[3] = {
+    1.9189204419575077,
+    0.87086518648437961,
+    0.14416093417099549,
+  };
+  return &kQuantizeMul[0];
+};
 
 // kQuantWeights[3 * k_zz + c] is the relative weight of the k_zz coefficient
 // (in the zig-zag order) in component c. Higher weights correspond to finer
 // quantization intervals and more bits spent in encoding.
-static const float kQuantWeights[kBlockSize3] = {
-  3.0000000f, 1.9500000f, 3.7000000f, 2.0000000f, 1.4000000f, 2.0000000f,
-  2.0000000f, 1.4000000f, 2.0000000f, 1.4000000f, 1.4000000f, 1.2000000f,
-  1.6000000f, 1.4000000f, 1.4000000f, 1.3000000f, 1.4000000f, 1.2000000f,
-  1.0000000f, 1.0000000f, 1.0000000f, 1.0000000f, 1.0000000f, 1.0000000f,
-  1.0000000f, 1.0000000f, 1.0000000f, 1.0000000f, 1.0000000f, 1.0000000f,
-  0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f,
-  0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f,
-  0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f,
-  0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f,
-  0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f,
-  0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f,
-  0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f,
-  0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f,
-  0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f, 0.8000000f,
-  0.6200000f, 0.6200000f, 0.6200000f, 0.6200000f, 0.6200000f, 0.6200000f,
-  0.6200000f, 0.6200000f, 0.6200000f, 0.6200000f, 0.6200000f, 0.6200000f,
-  0.6200000f, 0.6200000f, 0.6200000f, 0.6200000f, 0.6200000f, 0.6200000f,
-  0.6200000f, 0.6200000f, 0.6200000f, 0.6200000f, 0.6200000f, 0.6200000f,
-  0.6200000f, 0.6200000f, 0.6200000f, 0.6200000f, 0.6200000f, 0.6200000f,
-  0.6200000f, 0.6200000f, 0.6200000f, 0.6200000f, 0.6200000f, 0.6200000f,
-  0.6200000f, 0.6200000f, 0.6200000f, 0.6200000f, 0.6200000f, 0.6200000f,
-  0.6200000f, 0.6200000f, 0.6200000f, 0.6000000f, 0.6000000f, 0.6000000f,
-  0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f,
-  0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f,
-  0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f,
-  0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f,
-  0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f,
-  0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f,
-  0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f,
-  0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f,
-  0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f,
-  0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f, 0.6000000f,
-};
-
-float getmodifier(int i) {
-  char buf[10];
-  snprintf(buf, 10, "VAR%d", i);
-  char* p = getenv(buf);
-  if (p == nullptr) return 0.0;
-  return static_cast<float>(atof(p));
+const double *GetQuantWeights() {
+  static double kQuantWeights[kBlockSize3] = {
+    3.1116384958312873,
+    1.9493486886858318,
+    3.7356702523108076,
+    1.6376603398927516,
+    0.90329541944008185,
+    1.1924294798808717,
+    1.6751086981040682,
+    0.91086559902706354,
+    1.3230594582478616,
+    1.2083767049877585,
+    1.3817411526714352,
+    1.2533650395458487,
+    1.3869170538521951,
+    1.4695312986673121,
+    0.99293595066355556,
+    1.0717982557177361,
+    0.77157226728475437,
+    0.90014274926175286,
+    0.98789123070249052,
+    1.0068666175402106,
+    0.96006472092122286,
+    0.97546450225501924,
+    1.0028287751393217,
+    0.96327362036476849,
+    0.94519992131731234,
+    1.0397303129870175,
+    0.8768538162652274,
+    0.72259226198101179,
+    0.77345511996219551,
+    0.69686799736446703,
+    0.75026596827865244,
+    0.74593198246655135,
+    0.72383355746284095,
+    0.85527787563242419,
+    0.77235080374314469,
+    0.89085410178838442,
+    0.7633330445134987,
+    0.80404240082171852,
+    0.75631861848435222,
+    0.7969244311243745,
+    0.80335731742726979,
+    0.67359559842028449,
+    0.72969875072028578,
+    0.7860618793942612,
+    0.54861701802111473,
+    0.69747238728941174,
+    0.79474549435934105,
+    0.64569824585883318,
+    0.74856364387131902,
+    0.79953121556785256,
+    0.5817162482472058,
+    0.7400626220783687,
+    0.75611094606974305,
+    0.68609545905365177,
+    0.87633313121025569,
+    0.82522696002735152,
+    0.68952511265573835,
+    0.81698325161338492,
+    0.77119264991997505,
+    0.65664011847964321,
+    0.7113943789197511,
+    0.71654686115855182,
+    0.57133610422951886,
+    0.53784460976696491,
+    0.67886793875123497,
+    0.41012386366984932,
+    0.88436458133484919,
+    0.78697858505117113,
+    0.66757231829162755,
+    0.79864079537213051,
+    0.83330073556484574,
+    0.56230115407003167,
+    0.73371714121200982,
+    0.784821179161595,
+    0.63683336803749147,
+    0.5128389662260503,
+    0.76510370223002389,
+    0.6071016402671725,
+    0.73760066230479648,
+    0.58811067041995513,
+    0.46565306264232459,
+    0.49953580940678222,
+    0.57710614035253449,
+    0.40765842682471454,
+    0.4303752490677128,
+    0.69532449310310929,
+    0.40590820226024099,
+    0.69075917888709448,
+    0.59844872816640948,
+    0.40071217887401517,
+    0.74273651388706152,
+    0.76304704918313782,
+    0.62634038749139065,
+    0.8415198507222702,
+    0.66967267156576216,
+    0.5808891642416677,
+    0.71015160986960257,
+    0.65137160765366753,
+    0.5166119362044449,
+    0.64106938434456939,
+    0.62650693826574488,
+    0.43316645272082255,
+    0.53431647340052557,
+    0.58646710734447582,
+    0.40928788614569234,
+    0.41505184593035693,
+    0.55438012479983545,
+    0.41220557667312735,
+    0.5744086069555473,
+    0.5902159769538029,
+    0.45008872519682036,
+    0.6922703294525423,
+    0.63862381356226594,
+    0.64548795603030296,
+    0.82406119574330217,
+    0.59972689373496091,
+    0.65635373313931233,
+    0.68947663433371897,
+    0.64923721443874749,
+    0.62201317742452744,
+    0.83870239301163885,
+    0.69933779474340596,
+    0.59374933718163225,
+    0.60373950696793921,
+    0.66063427518048312,
+    0.52682575197233517,
+    0.73699079546703949,
+    0.58801678449178196,
+    0.57315185779133337,
+    0.78233349785918793,
+    0.70528156369371808,
+    0.62405995474355513,
+    0.74537125413266614,
+    0.60380965247810592,
+    0.4970020248657363,
+    0.86917060671449842,
+    0.65352106325704196,
+    0.42007406411441695,
+    0.52992210097476178,
+    0.60917359099661206,
+    0.42429980778598214,
+    0.79896157287058611,
+    0.67526272980173785,
+    0.73685662140979558,
+    0.59364298008114702,
+    0.59260225011442091,
+    0.6862115228199912,
+    0.62567701952441157,
+    0.71242092064210538,
+    0.54522098190139823,
+    0.82235627711268378,
+    0.64777251030703653,
+    0.5586940003934312,
+    0.75611432702314785,
+    0.60493823358774101,
+    0.54369112638834083,
+    0.80427934057093309,
+    0.6054619372971719,
+    0.60547619250966378,
+    0.72807482897001252,
+    0.65904209615319964,
+    0.55011475454992043,
+    0.40730247508476503,
+    0.69345827743345601,
+    0.51765066822174743,
+    0.9455108649936359,
+    0.62089871937583396,
+    0.55362717915029036,
+    0.40914654233031822,
+    0.63174305912892581,
+    0.54984140651169744,
+    0.60024883096869397,
+    0.64718696705106504,
+    0.6392737396330197,
+    0.47977549663100738,
+    0.65033234442749888,
+    0.71328486015966841,
+    0.63857315688426208,
+    0.62699991616319317,
+    0.57225967233967767,
+    0.82055874019371045,
+    0.61477228068808698,
+    0.54185797617041831,
+    0.67913454625845626,
+    0.5327324114828782,
+    0.66993969215541949,
+    0.49206143412708364,
+    0.53004732658023113,
+    0.68218232914187027,
+    0.75028232828887931,
+    0.53230208750713925,
+    0.5272846988211819,
+  };
+  return &kQuantWeights[0];
 }
 
 const float* NewDequantMatrix() {
@@ -138,12 +301,10 @@ const float* NewDequantMatrix() {
       int idx = k_zz * 3 + c;
       float idct_scale =
           kIDCTScales[k % kBlockEdge] * kIDCTScales[k / kBlockEdge] / 64.0f;
-      float weight = kQuantWeights[idx];
-      float modify = getmodifier(idx);
-      PIK_CHECK(modify > -0.5 * weight);
-      weight += modify;
-      weight *= kQuantizeMul[c];
-      table[c * kCoeffsPerBlock + k] = idct_scale / weight;
+      double weight = GetQuantWeights()[idx];
+      if (weight < 0.4) { weight = 0.4; }
+      double mul = GetQuantizeMul()[c];
+      table[c * kCoeffsPerBlock + k] = idct_scale / (weight * mul);
     }
   }
   return table;
@@ -244,20 +405,31 @@ PIK_INLINE float ComputeBlurredBlock(const Image3F& blur_x, int c, int offsetx,
                                      const float* const PIK_RESTRICT w_cur,
                                      const float* const PIK_RESTRICT w_down,
                                      float* const PIK_RESTRICT out) {
-  const float* const PIK_RESTRICT row0 = &blur_x.Row(y_up)[c][offsetx];
-  const float* const PIK_RESTRICT row1 = &blur_x.Row(y_cur)[c][offsetx];
-  const float* const PIK_RESTRICT row2 = &blur_x.Row(y_down)[c][offsetx];
-  float avg = 0.0f;
-  for (int ix = 0; ix < kBlockEdge; ++ix) {
-    const float val0 = row0[ix];
-    const float val1 = row1[ix];
-    const float val2 = row2[ix];
-    for (int iy = 0; iy < kBlockEdge; ++iy) {
-      const float val = val0 * w_up[iy] + val1 * w_cur[iy] + val2 * w_down[iy];
-      out[iy * kBlockEdge + ix] = val;
-      avg += val;
-    }
+  const float* const PIK_RESTRICT row0 = blur_x.PlaneRow(c, y_up) + offsetx;
+  const float* const PIK_RESTRICT row1 = blur_x.PlaneRow(c, y_cur) + offsetx;
+  const float* const PIK_RESTRICT row2 = blur_x.PlaneRow(c, y_down) + offsetx;
+  // "Loop" over ix = [0, kBlockEdge), one per lane.
+  using namespace PIK_TARGET_NAME;
+  using V = V8x32F;
+  V sum(0.0f);
+  const V val0 = Load<V>(row0);
+  const V val1 = Load<V>(row1);
+  const V val2 = Load<V>(row2);
+  for (int iy = 0; iy < kBlockEdge; ++iy) {
+    const V val =
+        val0 * V(w_up[iy]) + val1 * V(w_cur[iy]) + val2 * V(w_down[iy]);
+    Store(val, out + iy * kBlockEdge);
+    sum += val;
   }
+
+  // Horizontal sum
+  alignas(32) float sum_lanes[V::N];
+  Store(sum, sum_lanes);
+  float avg = sum_lanes[0];
+  for (size_t i = 1; i < V::N; ++i) {
+    avg += sum_lanes[i];
+  }
+
   avg /= 64.0f;
   return avg;
 }
@@ -285,6 +457,7 @@ CompressedImage CompressedImage::FromOpsinImage(
   const size_t xsize = kBlockEdge * img.block_xsize_;
   const size_t ysize = kBlockEdge * img.block_ysize_;
   img.opsin_image_.reset(new Image3F(xsize, ysize));
+
   int y = 0;
   for (; y < opsin.ysize(); ++y) {
     for (int c = 0; c < 3; ++c) {
@@ -318,8 +491,8 @@ CompressedImage CompressedImage::FromOpsinImage(
 // We modify the standard DCT of the intensity channel by further decorrelating
 // the 1st and 3rd AC coefficients in the first row and first column. The
 // unscaled prediction coefficient corresponds to the 1-d DCT of a linear slope.
-static const float kACPredScale = 0.25f;
-static const float kACPred31 = kACPredScale * 0.104536f;
+static const float kACPredScale = 0.30348289542505313;
+static const float kACPred31 = kACPredScale * 0.051028376631910073;
 
 void CompressedImage::QuantizeBlock(int block_x, int block_y) {
   const int offsetx = block_x * kBlockEdge;
@@ -452,34 +625,30 @@ void CompressedImage::Quantize() {
 std::string CompressedImage::Encode() const {
   PIK_CHECK(ytob_dc_ >= 0);
   PIK_CHECK(ytob_dc_ < 256);
-  std::string ytob_code =
-      std::string(1, ytob_dc_) + EncodePlane(ytob_ac_, 0, 255);
-  std::string quant_code = quantizer_.Encode();
+  PikImageSizeInfo* ytob_info = pik_info_ ? &pik_info_->ytob_image : nullptr;
+  PikImageSizeInfo* quant_info = pik_info_ ? &pik_info_->quant_image : nullptr;
   PikImageSizeInfo* dc_info = pik_info_ ? &pik_info_->dc_image : nullptr;
   PikImageSizeInfo* ac_info = pik_info_ ? &pik_info_->ac_image : nullptr;
+  std::string ytob_code =
+      std::string(1, ytob_dc_) + EncodePlane(ytob_ac_, 0, 255, ytob_info);
+  std::string quant_code = quantizer_.Encode(quant_info);
   std::string dc_code = EncodeImage(PredictDC(dct_coeffs_), 1, dc_info);
   std::string ac_code = EncodeAC(dct_coeffs_, ac_info);
-  if (pik_info_) {
-    pik_info_->ytob_image_size = ytob_code.size();
-    pik_info_->quant_image_size = quant_code.size();
-  }
   return PadTo4Bytes(ytob_code + quant_code + dc_code + ac_code);
 }
 
 std::string CompressedImage::EncodeFast() const {
   PIK_CHECK(ytob_dc_ >= 0);
   PIK_CHECK(ytob_dc_ < 256);
-  std::string ytob_code =
-      std::string(1, ytob_dc_) + EncodePlane(ytob_ac_, 0, 255);
-  std::string quant_code = quantizer_.Encode();
+  PikImageSizeInfo* ytob_info = pik_info_ ? &pik_info_->ytob_image : nullptr;
+  PikImageSizeInfo* quant_info = pik_info_ ? &pik_info_->quant_image : nullptr;
   PikImageSizeInfo* dc_info = pik_info_ ? &pik_info_->dc_image : nullptr;
   PikImageSizeInfo* ac_info = pik_info_ ? &pik_info_->ac_image : nullptr;
+  std::string ytob_code =
+      std::string(1, ytob_dc_) + EncodePlane(ytob_ac_, 0, 255, ytob_info);
+  std::string quant_code = quantizer_.Encode(quant_info);
   std::string dc_code = EncodeImage(PredictDC(dct_coeffs_), 1, dc_info);
   std::string ac_code = EncodeACFast(dct_coeffs_, ac_info);
-  if (pik_info_) {
-    pik_info_->ytob_image_size = ytob_code.size();
-    pik_info_->quant_image_size = quant_code.size();
-  }
   return PadTo4Bytes(ytob_code + quant_code + dc_code + ac_code);
 }
 
@@ -514,7 +683,6 @@ bool CompressedImage::Decode(const uint8_t* compressed,
 
 void CompressedImage::DequantizeBlock(const int block_x, const int block_y,
                                       float* const PIK_RESTRICT block) const {
-
   using namespace PIK_TARGET_NAME;
   const int tile_y = block_y / kTileToBlockRatio;
   auto row = dct_coeffs_.Row(block_y);
@@ -534,9 +702,10 @@ void CompressedImage::DequantizeBlock(const int block_x, const int block_y,
   }
   using V = V8x32F;
   const float kYToBAC = YToBAC(tile_x, tile_y);
+  const V vYToBAC(kYToBAC);
   for (int k = 0; k < kBlockSize; k += V::N) {
     const V y = Load<V>(block + k + kBlockSize);
-    const V b = Load<V>(block + k + kBlockSize2) + V(kYToBAC) * y;
+    const V b = MulAdd(vYToBAC, y, Load<V>(block + k + kBlockSize2));
     Store(b, block + k + kBlockSize2);
   }
   block[kBlockSize2] += (YToBDC() - kYToBAC) * block[kBlockSize];
@@ -585,36 +754,49 @@ void ColorTransformOpsinToSrgb(const float* const PIK_RESTRICT block,
                                int block_x, int block_y,
                                Image3U* const PIK_RESTRICT srgb) {
   using namespace PIK_TARGET_NAME;
-  // TODO(user) Combine these two for loops and get rid of rgb[].
-  alignas(32) int rgb[kBlockSize3];
   using V = V8x32F;
-  for (int k = 0; k < kBlockSize; k += V::N) {
-    const V x = Load<V>(block + k) + V(kXybCenter[0]);
-    const V y = Load<V>(block + k + kBlockSize) + V(kXybCenter[1]);
-    const V b = Load<V>(block + k + kBlockSize2) + V(kXybCenter[2]);
-    const V scale_to_16bit(257.0f);
-    V out_r, out_g, out_b;
-    XybToRgb(x, y, b, &out_r, &out_g, &out_b);
+  const V scale_to_16bit(257.0f);
 
-    out_r = LinearToSrgbPoly(out_r) * scale_to_16bit;
-    out_g = LinearToSrgbPoly(out_g) * scale_to_16bit;
-    out_b = LinearToSrgbPoly(out_b) * scale_to_16bit;
-
-    Store(RoundToInt(out_r), rgb + k);
-    Store(RoundToInt(out_g), rgb + k + kBlockSize);
-    Store(RoundToInt(out_b), rgb + k + kBlockSize2);
-  }
-
+  int k = 0;  // index within 8x8 block (we access 3 consecutive blocks)
   const int yoff = kBlockEdge * block_y;
   const int xoff = kBlockEdge * block_x;
   for (int iy = 0; iy < kBlockEdge; ++iy) {
-    auto row = srgb->Row(iy + yoff);
-    for (int ix = 0; ix < kBlockEdge; ++ix) {
+    uint16_t* PIK_RESTRICT row0 = srgb->PlaneRow(0, iy + yoff);
+    uint16_t* PIK_RESTRICT row1 = srgb->PlaneRow(1, iy + yoff);
+    uint16_t* PIK_RESTRICT row2 = srgb->PlaneRow(2, iy + yoff);
+    for (int ix = 0; ix < kBlockEdge; ix += V::N) {
+      const V x = Load<V>(block + k) + V(kXybCenter[0]);
+      const V y = Load<V>(block + k + kBlockSize) + V(kXybCenter[1]);
+      const V b = Load<V>(block + k + kBlockSize2) + V(kXybCenter[2]);
+      k += V::N;
+      V out_r, out_g, out_b;
+      XybToRgb(x, y, b, &out_r, &out_g, &out_b);
+
+      out_r = LinearToSrgbPoly(out_r) * scale_to_16bit;
+      out_g = LinearToSrgbPoly(out_g) * scale_to_16bit;
+      out_b = LinearToSrgbPoly(out_b) * scale_to_16bit;
+
+      V8x32I int_r = RoundToInt(out_r);
+      V8x32I int_g = RoundToInt(out_g);
+      V8x32I int_b = RoundToInt(out_b);
+
+      // Bring upper 128 bits into lower so pack can outputs 8 consecutive u16.
+      const V8x32I hi_r(_mm256_permute2x128_si256(int_r, int_r, 0x11));
+      const V8x32I hi_g(_mm256_permute2x128_si256(int_g, int_g, 0x11));
+      const V8x32I hi_b(_mm256_permute2x128_si256(int_b, int_b, 0x11));
+
+      // We only need the lower 128 bits (8x u16).
+      const V8x16U u16_r(
+          _mm256_castsi256_si128(_mm256_packus_epi32(int_r, hi_r)));
+      const V8x16U u16_g(
+          _mm256_castsi256_si128(_mm256_packus_epi32(int_g, hi_g)));
+      const V8x16U u16_b(
+          _mm256_castsi256_si128(_mm256_packus_epi32(int_b, hi_b)));
+
       const int px = ix + xoff;
-      const int k = kBlockEdge * iy + ix;
-      row[0][px] = rgb[k + 0];
-      row[1][px] = rgb[k + kBlockSize];
-      row[2][px] = rgb[k + kBlockSize2];
+      Store(u16_r, row0 + px);
+      Store(u16_g, row1 + px);
+      Store(u16_b, row2 + px);
     }
   }
 }

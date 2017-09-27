@@ -33,9 +33,10 @@ PIK_OBJS := $(addprefix obj/, \
 	padded_bytes.o \
 	quantizer.o \
 	yuv_convert.o \
+	yuv_opsin_convert.o \
 )
 
-all: $(addprefix bin/, cpik dpik)
+all: $(addprefix bin/, cpik dpik butteraugli_main png2y4m y4m2png)
 
 # print an error message with helpful instructions if the brotli git submodule
 # is not checked out
@@ -48,9 +49,9 @@ third_party/brotli/libbrotli.a:
 
 bin/cpik: $(PIK_OBJS) obj/cpik.o third_party/brotli/libbrotli.a
 bin/dpik: $(PIK_OBJS) obj/dpik.o third_party/brotli/libbrotli.a
-bin/butteraugli_main: $(PIK_OBJS) obj/butteraugli_main.o
-bin/png2y4m: $(PIK_OBJS) obj/png2y4m.o
-bin/y4m2png: $(PIK_OBJS) obj/y4m2png.o
+bin/butteraugli_main: $(PIK_OBJS) obj/butteraugli_main.o third_party/brotli/libbrotli.a
+bin/png2y4m: $(PIK_OBJS) obj/png2y4m.o third_party/brotli/libbrotli.a
+bin/y4m2png: $(PIK_OBJS) obj/y4m2png.o third_party/brotli/libbrotli.a
 
 obj/%.o: %.cc
 	@mkdir -p -- $(dir $@)

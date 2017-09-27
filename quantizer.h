@@ -26,6 +26,7 @@
 #include "bit_reader.h"
 #include "compiler_specific.h"
 #include "image.h"
+#include "pik_info.h"
 
 namespace pik {
 
@@ -66,7 +67,7 @@ class Quantizer {
     }
   }
 
-  std::string Encode() const;
+  std::string Encode(PikImageSizeInfo* info) const;
   size_t EncodedSize() const;
 
   bool Decode(BitReader* br);

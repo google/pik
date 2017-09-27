@@ -286,6 +286,21 @@ void ProcessImage(const Image<T>& img,
   }
 }
 
+inline double ShannonEntropy(const uint32_t* data, const size_t data_size) {
+  double sum = 0.0f;
+  uint32_t total_count = 0;
+  for (int i = 0; i < data_size; ++i) {
+    if (data[i] > 0) {
+      sum -= data[i] * std::log2(data[i]);
+      total_count += data[i];
+    }
+  }
+  if (total_count > 0) {
+    sum += total_count * std::log2(total_count);
+  }
+  return sum;
+}
+
 class HistogramBuilder {
  public:
   explicit HistogramBuilder(const size_t num_contexts)
@@ -305,7 +320,8 @@ class HistogramBuilder {
   template <class EntropyEncodingData>
   void BuildAndStoreEntropyCodes(std::vector<EntropyEncodingData>* codes,
                                  std::vector<uint8_t>* context_map,
-                                 size_t* storage_ix, uint8_t* storage) {
+                                 size_t* storage_ix, uint8_t* storage,
+                                 PikImageSizeInfo* info) const {
     std::vector<Histogram> clustered_histograms(histograms_);
     context_map->resize(histograms_.size());
     if (histograms_.size() > 1) {
@@ -318,6 +334,11 @@ class HistogramBuilder {
       if (storage_ix != nullptr && storage != nullptr) {
         EncodeContextMap(*context_map, clustered_histograms.size(),
                          storage_ix, storage);
+      }
+    }
+    if (info) {
+      for (int i = 0; i < clustered_histograms.size(); ++i) {
+        info->clustered_entropy += clustered_histograms[i].ShannonEntropy();
       }
     }
     for (int c = 0; c < clustered_histograms.size(); ++c) {
@@ -365,6 +386,9 @@ class HistogramBuilder {
       }
       return pik::PopulationCost(counts.data(), counts.size(), total_count_);
     }
+    double ShannonEntropy() const {
+      return pik::ShannonEntropy(data_.data(), data_.size());
+    }
     std::vector<uint32_t> data_;
     uint32_t total_count_;
   };
@@ -397,7 +421,8 @@ bool DecodeImage(BitReader* br, int stride, Image3W* coeffs);
 
 bool DecodeAC(BitReader* br,Image3W* coeffs);
 
-std::string EncodePlane(const Image<int>& img, int minval, int maxval);
+std::string EncodePlane(const Image<int>& img, int minval, int maxval,
+                        PikImageSizeInfo* info);
 
 size_t EncodedPlaneSize(const Image<int>& img, int minval, int maxval);
 

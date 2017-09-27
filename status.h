@@ -20,7 +20,8 @@
 
 namespace pik {
 
-#ifdef PIK_ENABLE_ASSERT
+#if defined(PIK_ENABLE_ASSERT) || \
+  defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION)
 #define PIK_ASSERT(condition)                                   \
   while (!(condition)) {                                        \
     printf("Pik assert failed at %s:%d\n", __FILE__, __LINE__); \

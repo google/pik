@@ -381,8 +381,8 @@ std::string CompressToButteraugliDistance(const Image3F& opsin_orig,
 std::string CompressFast(const Image3F& opsin_orig,
                          const CompressParams& params,
                          PikInfo* info) {
-  const float kQuantDC = 0.80f;
-  const float kQuantAC = 1.52f;
+  const float kQuantDC = 0.76953163840390082;
+  const float kQuantAC = 1.52005680264295;
   CompressedImage img = CompressedImage::FromOpsinImage(opsin_orig, info);
   ImageF qf = AdaptiveQuantizationMap(opsin_orig.plane(1), kBlockEdge);
   img.quantizer().SetQuantField(kQuantDC, ScaleImage(kQuantAC, qf));

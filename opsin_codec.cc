@@ -312,7 +312,7 @@ struct EncodeImageInternal {
     std::vector<EntropyEncodingData> codes;
     std::vector<uint8_t> context_map;
     builder.BuildAndStoreEntropyCodes(
-        &codes, &context_map, &storage_ix, storage);
+        &codes, &context_map, &storage_ix, storage, info);
     // Close the histogram bit stream.
     size_t jump_bits = ((storage_ix + 7) & ~7) - storage_ix;
     WriteBits(jump_bits, 0, &storage_ix, storage);
@@ -441,6 +441,11 @@ std::string EncodeACFast(const Image3W& coeffs, PikImageSizeInfo* info) {
   for (int i = 0; i < tokens.size(); ++i) {
     ++histograms[tokens[i] >> 18];
   }
+  if (info) {
+    for (int c = 0; c < kNumStaticContexts; ++c) {
+      info->clustered_entropy += ShannonEntropy(&histograms[c << 8], 256);
+    }
+  }
   // Estimate total output size.
   size_t num_bits = num_extra_bits;
   for (int c = 0; c < kNumStaticContexts; ++c) {
@@ -564,7 +569,8 @@ Image3F LocalACInformationDensity(const Image3W& coeffs) {
   ProcessImage3(coeffs, &processor, &builder);
   std::vector<ANSEncodingData> codes;
   std::vector<uint8_t> context_map;
-  builder.BuildAndStoreEntropyCodes(&codes, &context_map, nullptr, nullptr);
+  builder.BuildAndStoreEntropyCodes(&codes, &context_map,
+                                    nullptr, nullptr, nullptr);
   ANSBitCounter counter(codes, context_map);
   Image3F out(coeffs.xsize() / processor.block_size(), coeffs.ysize());
   for (int y = 0; y < coeffs.ysize(); ++y) {
@@ -802,7 +808,7 @@ bool DecodeACData(BitReader* const PIK_RESTRICT br,
         const int context1 = c * 16 + (prev_num_nzeros[c] >> 2);
         int num_nzeros =
             kIndexLut[decoder->ReadSymbol(context_map[context1], br)];
-        if (num_nzeros > 64) {
+        if (num_nzeros > 63) {
           return PIK_FAILURE("Invalid AC data.");
         }
         prev_num_nzeros[c] = num_nzeros;
@@ -814,7 +820,7 @@ bool DecodeACData(BitReader* const PIK_RESTRICT br,
           br->FillBitBuffer();
           int s = decoder->ReadSymbol(histo_idx, br);
           k += (s >> 4);
-          if (k >= 64) {
+          if (k + num_nzeros > 64) {
             return PIK_FAILURE("Invalid AC data.");
           }
           s &= 15;
@@ -911,7 +917,8 @@ class DeltaCodingProcessor {
   std::vector<int> row_;
 };
 
-std::string EncodePlane(const Image<int>& img, int minval, int maxval) {
+std::string EncodePlane(const Image<int>& img, int minval, int maxval,
+                        PikImageSizeInfo* info) {
   DeltaCodingProcessor processor(minval, maxval, img.xsize());
   HistogramBuilder builder(processor.num_contexts());
   ProcessImage(img, &processor, &builder);
@@ -922,13 +929,23 @@ std::string EncodePlane(const Image<int>& img, int minval, int maxval) {
   storage[0] = 0;
   std::vector<HuffmanEncodingData> codes;
   std::vector<uint8_t> context_map;
-  builder.BuildAndStoreEntropyCodes(&codes, &context_map, &storage_ix, storage);
+  builder.BuildAndStoreEntropyCodes(&codes, &context_map, &storage_ix, storage,
+                                    info);
+  const size_t histo_bytes = storage_ix >> 3;
   HuffmanSymbolWriter symbol_writer(codes, context_map, &storage_ix, storage);
   ProcessImage(img, &processor, &symbol_writer);
   symbol_writer.FlushToBitStream();
+  const size_t data_bits = storage_ix - 8 * histo_bytes;
   const int out_size = (storage_ix + 7) >> 3;
   PIK_CHECK(out_size <= max_out_size);
   output.resize(out_size);
+  if (info) {
+    ++info->num_clustered_histograms;
+    info->histogram_size += histo_bytes;
+    info->entropy_coded_bits += data_bits - builder.num_extra_bits();
+    info->extra_bits += builder.num_extra_bits();
+    info->total_size += out_size;
+  }
   return output;
 }
 
@@ -952,6 +969,9 @@ bool DecodePlane(BitReader* br, int minval, int maxval, Image<int>* img) {
       int symbol = decoder.ReadSymbol(huff, br);
       int diff = SignedIntFromSymbol(symbol);
       row[x] = diff + processor.PredictVal(x, y, 0);
+      if (row[x] > maxval || row[x] < minval) {
+        return PIK_FAILURE("Out of range value in quantization plane.");
+      }
       processor.SetVal(x, y, 0, row[x]);
     }
   }

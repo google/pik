@@ -28,21 +28,38 @@ namespace {
 ImageF DiffPrecompute(const ImageF& xyb, float cutoff) {
   PIK_ASSERT(xyb.xsize() > 1);
   PIK_ASSERT(xyb.ysize() > 1);
-  ImageF result(xyb.xsize() - 1, xyb.ysize() - 1);
+  ImageF result(xyb.xsize(), xyb.ysize());
+  static const double mul0 = 0.972407512222;
   for (size_t y = 0; y + 1 < xyb.ysize(); ++y) {
     const float* const PIK_RESTRICT row_in = xyb.Row(y);
     const float* const PIK_RESTRICT row_in2 = xyb.Row(y + 1);
     float* const PIK_RESTRICT row_out = result.Row(y);
     for (size_t x = 0; x + 1 < xyb.xsize(); ++x) {
       const size_t x2 = x + 1;
-      const float hdiff = fabs(row_in[x] - row_in[x2]);
-      const float vdiff = fabs(row_in[x] - row_in2[x]);
-      const float xdiff0 = fabs(row_in[x] - row_in2[x2]);
-      const float xdiff1 = fabs(row_in[x2] - row_in2[x]);
-      const float mindiff =
-          std::min(hdiff, std::min(vdiff, std::min(xdiff0, xdiff1)));
-      row_out[x] = std::min(cutoff,
-                            0.25f * (hdiff + vdiff + mindiff + mindiff));
+      const float diff = mul0 * (fabs(row_in[x] - row_in[x2]) +
+                                 fabs(row_in[x] - row_in2[x]));
+      row_out[x] = std::min(cutoff, 0.5f * diff);
+    }
+    // Last pixel of the row.
+    {
+      const size_t x = xyb.xsize() - 1;
+      row_out[x] = mul0 * (fabs(row_in[x] - row_in2[x]));
+    }
+  }
+  // Last row.
+  {
+    const size_t y = xyb.ysize() - 1;
+    const float* const PIK_RESTRICT row_in = xyb.Row(y);
+    float* const PIK_RESTRICT row_out = result.Row(y);
+    for (size_t x = 0; x + 1 < xyb.xsize(); ++x) {
+      const size_t x2 = x + 1;
+      const float diff = mul0 * fabs(row_in[x] - row_in[x2]);
+      row_out[x] = std::min(cutoff, 0.5f * diff);
+    }
+    // Last pixel of the last row.
+    {
+      const size_t x = xyb.xsize() - 1;
+      row_out[x] = 0;
     }
   }
   return result;
@@ -119,9 +136,9 @@ ImageF ConvolveXSampleAndTranspose(const ImageF& in,
 }
 
 ImageF ComputeMask(const ImageF& diffs) {
-  static const float kBase = 0.076f;
-  static const float kMul = 0.024f;
-  static const float kOffset = 0.017f;
+  static const float kBase = 0.081994280342603476;
+  static const float kMul = 0.024979129332027221;
+  static const float kOffset = 0.016770665190778019;
   ImageF out(diffs.xsize(), diffs.ysize());
   for (int y = 0; y < diffs.ysize(); ++y) {
     const float* const PIK_RESTRICT row_in = diffs.Row(y);
@@ -167,10 +184,10 @@ ImageF AdaptiveQuantizationMap(const ImageF& img, size_t resolution) {
   if (img.ysize() <= 1) {
     return ImageF(out_xsize, 1, 1.0f);
   }
-  static const float kSigma = 6.5f;
+  static const float kSigma = 5.840439802203778;
   static const int kRadius = static_cast<int>(2 * kSigma + 0.5f);
   std::vector<float> kernel = GaussianKernel(kRadius, kSigma);
-  static const float kDiffCutoff = 0.085f;
+  static const float kDiffCutoff = 0.072750703471576167;
   ImageF out = DiffPrecompute(img, kDiffCutoff);
   out = Expand(out, resolution * out_xsize, resolution * out_ysize);
   out = ConvolveXSampleAndTranspose(out, kernel, kSampleRate);

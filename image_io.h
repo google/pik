@@ -53,10 +53,13 @@ struct ImageFormatPNG {
 };
 
 struct ImageFormatY4M {
+  ImageFormatY4M() {}
+  explicit ImageFormatY4M(int bits) : bit_depth(bits) {}
   static const char* Name() { return "Y4M"; }
   static bool IsExtension(const char* filename);
   static constexpr bool kPortableOnly = true;
   using NativeImage3 = Image3B;
+  const int bit_depth = 8;
 };
 
 // Loads RGB (possibly expanded from gray).
@@ -131,8 +134,11 @@ bool WriteImage(ImageFormatPNG, const MetaImageU&, const std::string&);
 // Y4M
 
 bool ReadImage(ImageFormatY4M, const std::string&, Image3B*);
+bool ReadImage(ImageFormatY4M, const std::string& pathname, Image3U* image,
+               int* bit_depth);
 
 bool WriteImage(ImageFormatY4M, const Image3B&, const std::string&);
+bool WriteImage(ImageFormatY4M, const Image3U&, const std::string&);
 
 // JPEG
 
