@@ -86,8 +86,9 @@ class CompressedImage {
   std::string EncodeFast() const;
 
   // Getters and setters for adaptive Y-to-blue correlation.
-  float YToBDC() const { return ytob_dc_ / 128.0; }
-  float YToBAC(int tx, int ty) const { return ytob_ac_.Row(ty)[tx] / 128.0; }
+  // (Clang generates a floating-point multiply.)
+  float YToBDC() const { return ytob_dc_ / 128.0f; }
+  float YToBAC(int tx, int ty) const { return ytob_ac_.Row(ty)[tx] / 128.0f; }
   void SetYToBDC(int ytob) { ytob_dc_ = ytob; }
   void SetYToBAC(int tx, int ty, int val) { ytob_ac_.Row(ty)[tx] = val; }
 
