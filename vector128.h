@@ -491,11 +491,9 @@ class V128<uint64_t> {
   PIK_INLINE operator __m128i() const { return v_; }
 
   // There are no greater-than comparison instructions for unsigned T.
-#ifdef __SSE4_1__
   PIK_INLINE V128 operator==(const V128& other) const {
     return V128(_mm_cmpeq_epi64(v_, other.v_));
   }
-#endif
 
   PIK_INLINE V128& operator+=(const V128& other) {
     v_ = _mm_add_epi64(v_, other.v_);
@@ -937,8 +935,6 @@ PIK_INLINE V128<double> AndNot(const V128<double>& neg_mask,
   return V128<double>(_mm_andnot_pd(neg_mask, values));
 }
 
-#ifdef __SSE4_1__
-
 PIK_INLINE V4x32F Select(const V4x32F& a, const V4x32F& b, const V4x32F& mask) {
   return V4x32F(_mm_blendv_ps(a, b, mask));
 }
@@ -946,8 +942,6 @@ PIK_INLINE V4x32F Select(const V4x32F& a, const V4x32F& b, const V4x32F& mask) {
 PIK_INLINE V2x64F Select(const V2x64F& a, const V2x64F& b, const V2x64F& mask) {
   return V2x64F(_mm_blendv_pd(a, b, mask));
 }
-
-#endif
 
 // Returns a 12-bit approximation of 1/x.
 PIK_INLINE V4x32F Reciprocal12(const V4x32F& x) {
@@ -986,8 +980,6 @@ PIK_INLINE V8x16I Min(const V8x16I& v0, const V8x16I& v1) {
 PIK_INLINE V8x16I Max(const V8x16I& v0, const V8x16I& v1) {
   return V8x16I(_mm_max_epi16(v0, v1));
 }
-
-#ifdef __SSE4_1__
 
 PIK_INLINE V8x16U Min(const V8x16U& v0, const V8x16U& v1) {
   return V8x16U(_mm_min_epu16(v0, v1));
@@ -1028,8 +1020,6 @@ PIK_INLINE V2x64F Min(const V2x64F& v0, const V2x64F& v1) {
 PIK_INLINE V2x64F Max(const V2x64F& v0, const V2x64F& v1) {
   return V2x64F(_mm_max_pd(v0, v1));
 }
-
-#endif
 
 }  // namespace PIK_TARGET_NAME
 }  // namespace pik
