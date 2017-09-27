@@ -55,7 +55,11 @@
 #include <new>
 
 #include "arch_specific.h"
+#include "cache_aligned.h"
 #include "compiler_specific.h"
+#include "robust_statistics.h"
+#include "status.h"
+#include "tsc_timer.h"
 
 // Non-portable aspects:
 // - SSE2 128-bit load/store (write-combining, UpdateOrAdd)
@@ -70,9 +74,6 @@
 #include <x86intrin.h>
 #endif
 #endif
-
-#include "robust_statistics.h"
-#include "tsc_timer.h"
 
 namespace pik {
 
