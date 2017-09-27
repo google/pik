@@ -14,14 +14,22 @@
 
 #include "dct.h"
 
+#include "arch_specific.h"
 #include "compiler_specific.h"
+
+#if PIK_TARGET == PIK_TARGET_AVX2
 #include "vector256.h"
+#endif
 
 namespace pik {
 
+using namespace PIK_TARGET_NAME;
+#if PIK_TARGET == PIK_TARGET_AVX2
+using V = V8x32F;
+#endif
+
 PIK_INLINE void TransposeBlock(float block[64]) {
-  using namespace PIK_TARGET_NAME;
-  using V = V8x32F;
+  // TODO(user) Add non-AVX2 fallback.
   const V p0 = Load<V>(&block[0]);
   const V p1 = Load<V>(&block[8]);
   const V p2 = Load<V>(&block[16]);
@@ -58,8 +66,6 @@ PIK_INLINE void TransposeBlock(float block[64]) {
 
 PIK_INLINE void ColumnIDCT(float block[64]) {
   // TODO(user) Add non-AVX2 fallback.
-  using namespace PIK_TARGET_NAME;
-  using V = V8x32F;
   const V i0 = Load<V>(&block[0]);
   const V i1 = Load<V>(&block[8]);
   const V i2 = Load<V>(&block[16]);
@@ -86,13 +92,13 @@ PIK_INLINE void ColumnIDCT(float block[64]) {
   const V t11 = t00 - t02;
   const V t12 = t05 + t07;
   const V t13 = c2 * t12;
-  const V t14(_mm256_fmsub_ps(c1, t03, t02));
+  const V t14 = MulSub(c1, t03, t02);
   const V t15 = t01 + t14;
   const V t16 = t01 - t14;
-  const V t17(_mm256_fmsub_ps(c3, t05, t13));
-  const V t18(_mm256_fmadd_ps(c4, t07, t13));
+  const V t17 = MulSub(c3, t05, t13);
+  const V t18 = MulAdd(c4, t07, t13);
   const V t19 = t17 - t08;
-  const V t20(_mm256_fmsub_ps(c1, t09, t19));
+  const V t20 = MulSub(c1, t09, t19);
   const V t21 = t18 - t20;
   Store(t10 + t08, &block[ 0]);
   Store(t15 + t19, &block[ 8]);
@@ -106,8 +112,6 @@ PIK_INLINE void ColumnIDCT(float block[64]) {
 
 PIK_INLINE void ColumnDCT(float block[64]) {
   // TODO(user) Add non-AVX2 fallback.
-  using namespace PIK_TARGET_NAME;
-  using V = V8x32F;
   const V i0 = Load<V>(&block[0]);
   const V i1 = Load<V>(&block[8]);
   const V i2 = Load<V>(&block[16]);
@@ -142,8 +146,8 @@ PIK_INLINE void ColumnDCT(float block[64]) {
   const V t19 = c2 * t16;
   const V t20 = t01 + t18;
   const V t21 = t01 - t18;
-  const V t22(_mm256_fmsub_ps(c3, t13, t19));
-  const V t23(_mm256_fmsub_ps(c4, t14, t19));
+  const V t22 = MulSub(c3, t13, t19);
+  const V t23 = MulSub(c4, t14, t19);
   Store(t08 + t10, &block[ 0]);
   Store(t20 + t22, &block[ 8]);
   Store(t09 + t17, &block[16]);
