@@ -155,7 +155,7 @@ int GetMostSignificantBits(const uint8_t* SIMD_RESTRICT from) {
   // Fixed-size, can use template or type alias.
   static_assert(sizeof(vec128<uint8_t>) == sizeof(u8x16), "Size mismatch");
   const auto bytes = load(u8x16(), from);
-  return ext::movemask(bytes);
+  return ext::movemask(bytes);  // 16 bits, one from each byte
 }
 
 #endif

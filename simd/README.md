@@ -31,9 +31,8 @@ blaze-bin/simd_test`
     during initial development. Analysis tools can warn about some potential
     inefficiencies, but likely not all. We instead provide a carefully chosen
     set of vector types and operations that are efficient on all target
-    platforms (PPC8, SSE4/AVX2+, ARMv8), plus some useful but less
-    performance-portable operations in an `ext` namespace to make their cost
-    visible. For supported operations/types, see go/simd-intersection.
+    platforms (PPC8, SSE4/AVX2+, ARMv8), plus some useful but less performance-
+    portable operations in an `ext` namespace to make their cost visible.
 
 *   Future SIMD hardware features are difficult to predict. For example, AVX2
     came with surprising semantics (almost no interaction between 128-bit
@@ -203,14 +202,46 @@ It contains few tests; the main purpose is to demonstrate compilation without
 
 ## Example source code
 
-```live-snippet
-cs/file:simd_test_target.cc function:Copy
+```c++
+void Copy(const uint8_t* SIMD_RESTRICT from, const size_t size,
+          uint8_t* SIMD_RESTRICT to) {
+  // Width-agnostic (library-specified NumLanes)
+  using V = vec<uint8_t>;
+  size_t i = 0;
+  for (; i + NumLanes<V>() <= size; i += NumLanes<V>()) {
+    const auto bytes = load(V(), from + i);
+    store(bytes, to + i);
+  }
+
+  for (; i < size; i += NumLanes<vec1<uint8_t>>()) {
+    // (Same loop body as above, could factor into a shared template)
+    const auto bytes = load(vec1<uint8_t>(), from + i);
+    store(bytes, to + i);
+  }
+}
 ```
 
-```live-snippet
-cs/file:simd_test_target.cc function:MulAdd
+```c++
+void MulAdd(const T* SIMD_RESTRICT mul_array, const T* SIMD_RESTRICT add_array,
+            const size_t size, T* SIMD_RESTRICT x_array) {
+  // Type-agnostic (caller-specified lane type) and width-agnostic (uses
+  // best available instruction set).
+  using V = vec<T>;
+  for (size_t i = 0; i < size; i += NumLanes<V>()) {
+    const auto mul = load(V(), mul_array + i);
+    const auto add = load(V(), add_array + i);
+    auto x = load(V(), x_array + i);
+    x = mul_add(mul, x, add);
+    store(x, x_array + i);
+  }
+}
 ```
 
-```live-snippet
-cs/file:simd_test_target.cc function:GetMostSignificantBits
+```c++
+int GetMostSignificantBits(const uint8_t* SIMD_RESTRICT from) {
+  // Fixed-size, can use template or type alias.
+  static_assert(sizeof(vec128<uint8_t>) == sizeof(u8x16), "Size mismatch");
+  const auto bytes = load(u8x16(), from);
+  return ext::movemask(bytes);  // 16 bits, one from each byte
+}
 ```
