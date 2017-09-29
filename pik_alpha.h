@@ -31,11 +31,14 @@ bool AlphaToPik(const CompressParams& params,
     const ImageU& plane, size_t* bytepos, PaddedBytes* compressed);
 
 bool PikToAlpha(const DecompressParams& params,
-    size_t bytepos, const PaddedBytes& compressed, ImageB* plane);
+                size_t bytepos, const PaddedBytes& compressed,
+                size_t* bytes_read, ImageB* plane);
 bool PikToAlpha(const DecompressParams& params,
-    size_t bytepos, const PaddedBytes& compressed, ImageF* plane);
+                size_t bytepos, const PaddedBytes& compressed,
+                size_t* bytes_read, ImageF* plane);
 bool PikToAlpha(const DecompressParams& params,
-    size_t bytepos, const PaddedBytes& compressed, ImageU* plane);
+                size_t bytepos, const PaddedBytes& compressed,
+                size_t* bytes_read, ImageU* plane);
 
 }  // namespace pik
 

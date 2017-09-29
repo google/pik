@@ -58,7 +58,8 @@ bool Quantizer::SetQuantField(const float quant_dc, const ImageF& qf) {
   // range_min would map to 8 / sqrt(range_dynamic).
   float log_global_scale =
       std::log(range_max / (8.0 * sqrt(range_dynamic))) / std::log(2);
-  int global_scale_shift = static_cast<int>(-log_global_scale + 0.5);
+  int global_scale_shift =
+      std::min(15, static_cast<int>(-log_global_scale + 0.5));
   int new_global_scale = kGlobalScaleDenom >> global_scale_shift;
   if (new_global_scale != global_scale_) {
     global_scale_ = new_global_scale;
@@ -125,8 +126,9 @@ void Quantizer::GetQuantField(float* quant_dc, ImageF* qf) {
 }
 
 std::string Quantizer::Encode(PikImageSizeInfo* info) const {
-  return (std::string(1, global_scale_ >> 8) +
-          std::string(1, global_scale_ & 0xff) + std::string(1, quant_dc_ - 1) +
+  return (std::string(1, (global_scale_ - 1) >> 8) +
+          std::string(1, (global_scale_ - 1) & 0xff) +
+          std::string(1, quant_dc_ - 1) +
           EncodePlane(quant_img_ac_, 1, kQuantMax, info));
 }
 
@@ -136,7 +138,7 @@ size_t Quantizer::EncodedSize() const {
 
 bool Quantizer::Decode(BitReader* br) {
   global_scale_ = br->ReadBits(8) << 8;
-  global_scale_ += br->ReadBits(8);
+  global_scale_ += br->ReadBits(8) + 1;
   quant_dc_ = br->ReadBits(8) + 1;
   if (!DecodePlane(br, 1, kQuantMax, &quant_img_ac_)) {
     return false;

@@ -68,12 +68,6 @@ struct Header {
     (*visitor)(0x00100004, &num_components);
     (*visitor)(kU32Selectors, &flags);
 
-    if (flags & Header::kAlpha) {
-      // TODO(user): Remove this again when we make the alpha channel or opsin
-      // encoder/decoder know its size itself
-      (*visitor)(kU32Selectors, &opsin_compressed_size);
-    }
-
     // Do not add other fields - only sections can be added.
   }
 
@@ -81,7 +75,6 @@ struct Header {
   uint32_t ysize = 0;
   uint32_t num_components = 0;
   uint32_t flags = 0;
-  uint32_t opsin_compressed_size = 0;
   // TODO(janwas): hash?
 };
 

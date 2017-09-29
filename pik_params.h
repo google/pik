@@ -21,6 +21,7 @@ struct CompressParams {
   // find a trade-off between quality and file size that optimizes the
   // quality-adjusted-bits-per-pixel metric.
   bool fast_mode = false;
+  int max_butteraugli_iters = 100;
 
   bool alpha_channel = false;
 
@@ -28,6 +29,9 @@ struct CompressParams {
 
 struct DecompressParams {
   uint64_t max_num_pixels = (1 << 30) - 1;
+  // If true, checks at the end of decoding that all of the compressed data
+  // was consumed by the decoder.
+  bool check_decompressed_size = true;
 };
 }  // namespace pik
 

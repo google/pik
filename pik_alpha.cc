@@ -24,6 +24,7 @@ namespace {
 
 bool BrotliDecompress(const std::vector<uint8_t>& in,
                       size_t max_output_size,
+                      size_t* bytes_read,
                       std::vector<uint8_t>* out) {
   BrotliDecoderState* s =
       BrotliDecoderCreateInstance(nullptr, nullptr, nullptr);
@@ -50,6 +51,7 @@ bool BrotliDecompress(const std::vector<uint8_t>& in,
     if (code != BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT) break;
   }
   if (code != BROTLI_DECODER_RESULT_SUCCESS) return false;
+  *bytes_read = insize - avail_in;
 
   free(temp_buffer);
   BrotliDecoderDestroyInstance(s);
@@ -135,14 +137,17 @@ bool EncodeAlpha(const std::vector<uint8_t>& data, size_t stride,
 }
 
 bool DecodeAlpha(size_t stride, size_t num_pixels,
-    const DecompressParams& params, size_t bytepos,
-    const PaddedBytes& compressed, std::vector<uint8_t>* result) {
+                 const DecompressParams& params, size_t bytepos,
+                 const PaddedBytes& compressed,
+                 size_t* bytes_read, std::vector<uint8_t>* result) {
   if (bytepos + 1 >= compressed.size()) return false;
   size_t cstride = compressed.data()[bytepos++];
   std::vector<uint8_t> data(compressed.data() + bytepos,
       compressed.data() + compressed.size());
   std::vector<uint8_t> delta;
-  if (!BrotliDecompress(data, num_pixels * cstride, &delta)) return false;
+  if (!BrotliDecompress(data, num_pixels * cstride, bytes_read, &delta)) {
+    return false;
+  }
   if (delta.size() != num_pixels * cstride) return false;
   data = DeltaDecode(delta, cstride);
   if (stride == cstride) {
@@ -206,10 +211,11 @@ bool AlphaToPik(const CompressParams& params,
 }
 
 bool PikToAlpha(const DecompressParams& params,
-    size_t bytepos, const PaddedBytes& compressed, ImageB* plane) {
+                size_t bytepos, const PaddedBytes& compressed,
+                size_t* bytes_read, ImageB* plane) {
   std::vector<uint8_t> data;
   if (!DecodeAlpha(1, plane->xsize() * plane->ysize(),
-      params, bytepos, compressed, &data)) {
+                   params, bytepos, compressed, bytes_read, &data)) {
     return false;
   }
 
@@ -223,10 +229,11 @@ bool PikToAlpha(const DecompressParams& params,
 }
 
 bool PikToAlpha(const DecompressParams& params,
-    size_t bytepos, const PaddedBytes& compressed, ImageF* plane) {
+                size_t bytepos, const PaddedBytes& compressed,
+                size_t* bytes_read, ImageF* plane) {
   std::vector<uint8_t> data;
   if (!DecodeAlpha(2, plane->xsize() * plane->ysize(),
-      params, bytepos, compressed, &data)) {
+                   params, bytepos, compressed, bytes_read, &data)) {
     return false;
   }
 
@@ -242,10 +249,11 @@ bool PikToAlpha(const DecompressParams& params,
 }
 
 bool PikToAlpha(const DecompressParams& params,
-    size_t bytepos, const PaddedBytes& compressed, ImageU* plane) {
+                size_t bytepos, const PaddedBytes& compressed,
+                size_t* bytes_read, ImageU* plane) {
   std::vector<uint8_t> data;
   if (!DecodeAlpha(2, plane->xsize() * plane->ysize(),
-      params, bytepos, compressed, &data)) {
+                   params, bytepos, compressed, bytes_read, &data)) {
     return false;
   }
 

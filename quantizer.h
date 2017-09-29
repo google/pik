@@ -79,7 +79,7 @@ class Quantizer {
   const int quant_ysize_;
   const int coeffs_per_block_;
   const float* const dequant_matrix_;
-  uint16_t global_scale_;
+  int global_scale_;
   int quant_dc_;
   Image<int> quant_img_ac_;
   float inv_global_scale_;

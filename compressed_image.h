@@ -46,7 +46,9 @@ class CompressedImage {
   static CompressedImage FromOpsinImage(const Image3F& opsin, PikInfo* info);
 
   // Replaces *this with a compressed image from the bitstream.
-  bool Decode(const uint8_t* compressed, const size_t compressed_size);
+  // Sets *compressed_size to the number of bytes read from the data buffer.
+  bool Decode(const uint8_t* data, const size_t data_size,
+              size_t* compressed_size);
 
   int xsize() const { return xsize_; }
   int ysize() const { return ysize_; }

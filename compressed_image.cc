@@ -652,15 +652,12 @@ std::string CompressedImage::EncodeFast() const {
   return PadTo4Bytes(ytob_code + quant_code + dc_code + ac_code);
 }
 
-bool CompressedImage::Decode(const uint8_t* compressed,
-                             const size_t compressed_size) {
-  if (compressed_size == 0) {
+bool CompressedImage::Decode(const uint8_t* data, const size_t data_size,
+                             size_t* compressed_size) {
+  if (data_size == 0) {
     return PIK_FAILURE("Empty compressed data.");
   }
-  if (compressed_size % 4 != 0) {
-    return PIK_FAILURE("Invalid padding.");
-  }
-  BitReader br(compressed, compressed_size);
+  BitReader br(data, data_size & ~3);
   ytob_dc_ = br.ReadBits(8);
   if (!DecodePlane(&br, 0, 255, &ytob_ac_)) {
     return PIK_FAILURE("DecodePlane failed.");
@@ -674,9 +671,7 @@ bool CompressedImage::Decode(const uint8_t* compressed,
   if (!DecodeAC(&br, &dct_coeffs_)) {
     return PIK_FAILURE("DecodeAC failed.");
   }
-  if (br.Position() != compressed_size) {
-    return PIK_FAILURE("Pik compressed data size mismatch.");
-  }
+  *compressed_size = br.Position();
   UnpredictDC(&dct_coeffs_);
   return true;
 }
