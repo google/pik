@@ -109,7 +109,8 @@
 
 // Compiler "supports" SIMD_TARGET_ATTR => use target-specific attributes
 // instead of per-file -mavx2; no need to check for predefined macros.
-#ifdef SIMD_TARGET_ATTR
+// TODO(janwas): re-enable once PIK functions have SIMD_ATTR annotations.
+#if defined(SIMD_TARGET_ATTR) && 0
 #define SIMD_ENABLE_SSE4 (SIMD_ENABLE & SIMD_SSE4)
 #define SIMD_ENABLE_AVX2 (SIMD_ENABLE & SIMD_AVX2)
 #define SIMD_ENABLE_NEON (SIMD_ENABLE & SIMD_ARM)

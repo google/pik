@@ -29,7 +29,11 @@
 // This file demonstrates the SIMD_ATTR approach for working around this
 // requirement. It requires a recent GCC/Clang, or MSVC, which does not need
 // extra flags in the first place.
-#if SIMD_ENABLE_ANY
+#if SIMD_ENABLE_ANY && defined(SIMD_ATTR_TARGET)
+#define SIMD_CUSTOM_DISPATCHER_TEST_ENABLED
+#endif
+
+#ifdef SIMD_CUSTOM_DISPATCHER_TEST_ENABLED
 
 namespace pik {
 namespace SIMD_NAMESPACE {
@@ -149,14 +153,14 @@ void RunTests() {
 }  // namespace SIMD_NAMESPACE
 }  // namespace pik
 
-#endif
+#endif  // SIMD_CUSTOM_DISPATCHER_TEST_ENABLED
 
 int main() {
-#if SIMD_ENABLE_ANY
+#ifdef SIMD_CUSTOM_DISPATCHER_TEST_ENABLED
   pik::SIMD_NAMESPACE::RunTests();
   return 0;
 #else
   printf("Compiler does not support SIMD_TARGET_ATTR => demo is disabled.\n");
-  return 1;
+  return 0;
 #endif
 }
