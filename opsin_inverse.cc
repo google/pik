@@ -17,21 +17,31 @@
 #include <array>
 
 #include "gamma_correct.h"
+#include "simd/simd.h"
 
 namespace pik {
 
-// TODO(user): Make this vectorizable.
 Image3B OpsinDynamicsInverse(const Image3F& opsin) {
   Image3B srgb(opsin.xsize(), opsin.ysize());
-  for (int y = 0; y < opsin.ysize(); ++y) {
+  for (size_t y = 0; y < opsin.ysize(); ++y) {
     auto row_in = opsin.Row(y);
     auto row_out = srgb.Row(y);
-    for (int x = 0; x < opsin.xsize(); ++x) {
-      float r, g, b;
-      XybToRgb(row_in[0][x], row_in[1][x], row_in[2][x], &r, &g, &b);
-      row_out[0][x] = LinearToSrgb8Direct(r);
-      row_out[1][x] = LinearToSrgb8Direct(g);
-      row_out[2][x] = LinearToSrgb8Direct(b);
+    using namespace SIMD_NAMESPACE;
+    using V = vec<float>;
+    constexpr size_t N = NumLanes<V>();
+    for (size_t x = 0; x < opsin.xsize(); x += N) {
+      V r, g, b;
+      XybToRgb(load(V(), row_in[0] + x), load(V(), row_in[1] + x),
+               load(V(), row_in[2] + x), &r, &g, &b);
+      const uint8_t u8 = 0;
+      // TODO(janwas): 8-bit precision would suffice.
+      const auto u8_r = convert_to(u8, i32_from_f32(LinearToSrgbPoly(r)));
+      const auto u8_g = convert_to(u8, i32_from_f32(LinearToSrgbPoly(g)));
+      const auto u8_b = convert_to(u8, i32_from_f32(LinearToSrgbPoly(b)));
+
+      store(u8_r, &row_out[0][x]);
+      store(u8_g, &row_out[1][x]);
+      store(u8_b, &row_out[2][x]);
     }
   }
   return srgb;
@@ -39,12 +49,21 @@ Image3B OpsinDynamicsInverse(const Image3F& opsin) {
 
 Image3F LinearFromOpsin(const Image3F& opsin) {
   Image3F srgb(opsin.xsize(), opsin.ysize());
-  for (int y = 0; y < opsin.ysize(); ++y) {
+  using namespace SIMD_NAMESPACE;
+  using V = vec<float>;
+  constexpr size_t N = NumLanes<V>();
+  for (size_t y = 0; y < opsin.ysize(); ++y) {
     auto row_in = opsin.Row(y);
     auto row_out = srgb.Row(y);
-    for (int x = 0; x < opsin.xsize(); ++x) {
-      XybToRgb(row_in[0][x], row_in[1][x], row_in[2][x],
-               &row_out[0][x], &row_out[1][x], &row_out[2][x]);
+    for (size_t x = 0; x < opsin.xsize(); x += N) {
+      const V vx = load(V(), row_in[0] + x);
+      const V vy = load(V(), row_in[1] + x);
+      const V vb = load(V(), row_in[2] + x);
+      V r, g, b;
+      XybToRgb(vx, vy, vb, &r, &g, &b);
+      store(r, row_out[0] + x);
+      store(g, row_out[1] + x);
+      store(b, row_out[2] + x);
     }
   }
   return srgb;

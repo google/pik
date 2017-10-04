@@ -383,7 +383,7 @@ Image<T> TorusShift(const Image<T>& img, size_t shift_x, size_t shift_y) {
 }
 
 
-// Ensures each row has RoundUp(xsize, V::N) + V::N valid values.
+// Ensures each row has RoundUp(xsize, N) + N valid values (N = NumLanes<V>()).
 // Generates missing values via mirroring with replication.
 template <typename T>
 void PadImage(Image<T>* image) {

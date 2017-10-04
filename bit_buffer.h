@@ -34,18 +34,18 @@
 #include "arch_specific.h"
 #include "byte_order.h"
 #include "compiler_specific.h"
-#include "vector128.h"
+#include "simd/simd.h"
 
 namespace pik {
 
 // Accumulates variable-sized codes and writes them to memory in 32-bit units.
 class BitSink {
-  using V = PIK_TARGET_NAME::V2x64U;
+  using V = SIMD_NAMESPACE::u64x2;
 
  public:
   // There are 32 lower bits to fill before reaching the upper bits.
   BitSink(uint8_t* const PIK_RESTRICT storage)
-      : buffer_(0), upper_bits_used_(-32), write_pos_(storage) {}
+      : buffer_(setzero(V())), upper_bits_used_(-32), write_pos_(storage) {}
 
   // It is safe to insert a total of <= 32 bits after construction, or the last
   // call to CanWrite32 that returned false.
@@ -58,7 +58,7 @@ class BitSink {
 
   // (Slightly less efficient code: num_bits is loaded into a vector.)
   void InsertVariableCount(const int num_bits, const uint64_t code) {
-    buffer_ <<= _mm_cvtsi32_si128(num_bits);
+    buffer_ = V(_mm_sll_epi64(buffer_, _mm_cvtsi32_si128(num_bits)));
     buffer_ |= V(_mm_cvtsi64_si128(code));
     upper_bits_used_ += num_bits;
   }
@@ -73,7 +73,8 @@ class BitSink {
   // BitSource will return them in FIFO order. Precondition: CanWrite32.
   // Postcondition: the buffer has space for at least 32 more bits.
   void Write32() {
-    const V oldest_32 = buffer_ >> _mm_cvtsi64_si128(upper_bits_used_);
+    const V oldest_32(
+        _mm_srl_epi64(buffer_, _mm_cvtsi64_si128(upper_bits_used_)));
     const uint32_t out = PIK_BSWAP32(_mm_cvtsi128_si32(oldest_32));
     memcpy(write_pos_, &out, 4);
     write_pos_ += 4;
@@ -84,7 +85,8 @@ class BitSink {
   // Do not call other functions after this.
   uint8_t* const PIK_RESTRICT Finalize() {
     // Left-align oldest bit, inserting zeros at the bottom.
-    buffer_ <<= _mm_cvtsi64_si128(32 - upper_bits_used_);
+    buffer_ =
+        V(_mm_sll_epi64(buffer_, _mm_cvtsi64_si128(32 - upper_bits_used_)));
     const uint64_t out = PIK_BSWAP64(_mm_cvtsi128_si64(buffer_));
 
     // Copy exactly the required number of bytes (other threads may be writing
@@ -139,14 +141,14 @@ class BitSink {
 
 // Reads from memory in 64 or 32-bit units and extracts variable-size codes.
 class BitSource {
-  using V = PIK_TARGET_NAME::V2x64U;
+  using V = SIMD_NAMESPACE::u64x2;
 
  public:
   // Reads exactly 64 bits.
   BitSource(const uint8_t* const PIK_RESTRICT from) : read_pos_(from + 8) {
     uint64_t bits;
     memcpy(&bits, from, 8);
-    buffer_ = _mm_cvtsi64_si128(PIK_BSWAP64(bits));
+    buffer_ = V(_mm_cvtsi64_si128(PIK_BSWAP64(bits)));
     // There are 32 upper bits to extract before reaching the lower bits.
     lower_bits_extracted_ = -32;
   }
@@ -184,7 +186,7 @@ class BitSource {
     read_pos_ += 4;
     const V vbits(_mm_cvtsi64_si128(PIK_BSWAP32(bits)));
     // The upper half may have had some zeros at the bottom, so match that.
-    buffer_ += vbits << shift;
+    buffer_ += V(_mm_sll_epi64(vbits, shift));
     lower_bits_extracted_ -= 32;
   }
 

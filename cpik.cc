@@ -20,8 +20,8 @@
 #include "image_io.h"
 #include "padded_bytes.h"
 #include "pik.h"
-#include "instruction_sets.h"
 #include "pik_info.h"
+#include "simd/dispatch.h"
 
 namespace pik {
 namespace {
@@ -29,7 +29,7 @@ namespace {
 // main() function, within namespace for convenience.
 int Compress(const char* pathname_in, const float butteraugli_distance,
              const char* pathname_out, const bool fast_mode) {
-  if ((InstructionSets::Supported() & PIK_TARGET_AVX2) == 0) {
+  if ((dispatch::SupportedTargets() & SIMD_AVX2) == 0) {
     fprintf(stderr, "Cannot continue because CPU lacks AVX2/FMA support.\n");
     return 1;
   }

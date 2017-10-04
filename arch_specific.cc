@@ -33,21 +33,6 @@
 
 namespace pik {
 
-const char* TargetName(const TargetBits target_bit) {
-  switch (target_bit) {
-    case PIK_TARGET_Portable:
-      return "Portable";
-    case PIK_TARGET_SSE41:
-      return "SSE41";
-    case PIK_TARGET_AVX2:
-      return "AVX2";
-    case PIK_TARGET_VSX:
-      return "VSX";
-    default:
-      return nullptr;  // zero, multiple, or unknown bits
-  }
-}
-
 #if PIK_ARCH_X64
 
 namespace {

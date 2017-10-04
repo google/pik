@@ -22,7 +22,6 @@
 #include "compiler_specific.h"
 #include "dct.h"
 #include "opsin_codec.h"
-#include "vector256.h"
 
 namespace pik {
 

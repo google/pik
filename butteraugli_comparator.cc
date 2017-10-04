@@ -22,10 +22,11 @@
 #include "compiler_specific.h"
 #include "gamma_correct.h"
 #include "opsin_inverse.h"
+#include "simd/simd.h"
 #include "status.h"
 
 namespace pik {
-
+namespace SIMD_NAMESPACE {
 namespace {
 
 // REQUIRES: xsize <= srgb.xsize(), ysize <= srgb.ysize()
@@ -53,6 +54,8 @@ std::vector<butteraugli::ImageF> SrgbToLinearRgb(
 std::vector<butteraugli::ImageF> OpsinToLinearRgb(
     const int xsize, const int ysize,
     const Image3F& opsin) {
+  using V = vec<float>;
+  constexpr size_t N = NumLanes<V>();
   PIK_ASSERT(xsize <= opsin.xsize());
   PIK_ASSERT(ysize <= opsin.ysize());
   std::vector<butteraugli::ImageF> planes =
@@ -61,9 +64,15 @@ std::vector<butteraugli::ImageF> OpsinToLinearRgb(
     auto row_in = opsin.Row(y);
     std::array<float*, 3> row_out{{
         planes[0].Row(y), planes[1].Row(y), planes[2].Row(y) }};
-    for (int x = 0; x < xsize; ++x) {
-      XybToRgb(row_in[0][x], row_in[1][x], row_in[2][x],
-               &row_out[0][x], &row_out[1][x], &row_out[2][x]);
+    for (int x = 0; x < xsize; x += N) {
+      const auto vx = load(V(), row_in[0] + x);
+      const auto vy = load(V(), row_in[1] + x);
+      const auto vb = load(V(), row_in[2] + x);
+      V r, g, b;
+      XybToRgb(vx, vy, vb, &r, &g, &b);
+      store(r, row_out[0] + x);
+      store(g, row_out[1] + x);
+      store(b, row_out[2] + x);
     }
   }
   return planes;
@@ -85,33 +94,33 @@ Image3F Image3FromButteraugliPlanes(
 }
 
 }  // namespace
+}  // namespace
 
 ButteraugliComparator::ButteraugliComparator(const Image3B& srgb)
     : xsize_(srgb.xsize()),
       ysize_(srgb.ysize()),
-      comparator_(SrgbToLinearRgb(xsize_, ysize_, srgb)),
+      comparator_(SIMD_NAMESPACE::SrgbToLinearRgb(xsize_, ysize_, srgb)),
       distance_(0.0),
-      distmap_(xsize_, ysize_, 0) {
-}
+      distmap_(xsize_, ysize_, 0) {}
 
 ButteraugliComparator::ButteraugliComparator(const Image3F& opsin)
     : xsize_(opsin.xsize()),
       ysize_(opsin.ysize()),
-      comparator_(OpsinToLinearRgb(xsize_, ysize_, opsin)),
+      comparator_(SIMD_NAMESPACE::OpsinToLinearRgb(xsize_, ysize_, opsin)),
       distance_(0.0),
-      distmap_(xsize_, ysize_, 0) {
-}
+      distmap_(xsize_, ysize_, 0) {}
 
 void ButteraugliComparator::Compare(const Image3B& srgb) {
-  comparator_.Diffmap(SrgbToLinearRgb(xsize_, ysize_, srgb), distmap_);
+  comparator_.Diffmap(SIMD_NAMESPACE::SrgbToLinearRgb(xsize_, ysize_, srgb),
+                      distmap_);
   distance_ = butteraugli::ButteraugliScoreFromDiffmap(distmap_);
 }
 
 void ButteraugliComparator::Mask(Image3F* mask, Image3F* mask_dc) {
   std::vector<butteraugli::ImageF> ba_mask, ba_mask_dc;
   comparator_.Mask(&ba_mask, &ba_mask_dc);
-  *mask = Image3FromButteraugliPlanes(ba_mask);
-  *mask_dc = Image3FromButteraugliPlanes(ba_mask_dc);
+  *mask = SIMD_NAMESPACE::Image3FromButteraugliPlanes(ba_mask);
+  *mask_dc = SIMD_NAMESPACE::Image3FromButteraugliPlanes(ba_mask_dc);
 }
 
 }  // namespace pik

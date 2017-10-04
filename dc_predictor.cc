@@ -18,39 +18,35 @@
 
 #include "compiler_specific.h"
 
-#ifdef __AVX2__
-#include "vector128.h"
-#include "vector256.h"
+#if SIMD_ENABLE_AVX2
+#include "simd/simd.h"
 
 namespace pik {
-namespace PIK_TARGET_NAME {
+namespace SIMD_NAMESPACE {
 namespace {
 
+// Not the same as avg, which rounds rather than truncates!
 template <class V>
-static PIK_INLINE V Average(const V& v0, const V& v1) {
+static PIK_INLINE V Average(const V v0, const V v1) {
   return (v0 + v1) >> 1;
 }
 
 // Clamps gradient to the min/max of n, w, l.
 template <class V>
-static PIK_INLINE V ClampedGradient(const V& n, const V& w, const V& l) {
+static PIK_INLINE V ClampedGradient(const V n, const V w, const V l) {
   const V grad = n + w - l;
-  const V min = Min(n, Min(w, l));
-  const V max = Max(n, Max(w, l));
-  return Min(Max(min, grad), max);
+  const V vmin = min(n, min(w, l));
+  const V vmax = max(n, max(w, l));
+  return min(max(vmin, grad), vmax);
 }
 
-static PIK_INLINE V8x32I AbsResidual(const V8x32I& c, const V8x32I& pred) {
-  return V8x32I(_mm256_abs_epi32(c - pred));
+static PIK_INLINE i32x8 AbsResidual(const i32x8& c, const i32x8& pred) {
+  return i32x8(_mm256_abs_epi32(c - pred));
 }
 
-static PIK_INLINE V8x16U Costs16(const V8x32I& costs) {
-  // Saturate to 16-bit for minpos; due to 128-bit interleaving, only the lower
-  // 64 bits of each half are valid.
-  const V16x16U costs7654_3210(_mm256_packus_epi32(costs, costs));
-  const V8x16U costs3210(_mm256_extracti128_si256(costs7654_3210, 0));
-  const V8x16U costs7654(_mm256_extracti128_si256(costs7654_3210, 1));
-  return V8x16U(_mm_unpacklo_epi64(costs3210, costs7654));
+static PIK_INLINE u16x8 Costs16(const i32x8& costs) {
+  // Saturate to 16-bit for minpos.
+  return convert_to(uint16_t(), costs);
 }
 
 // Sliding window of "causal" (already decoded) pixels, plus simple functions
@@ -76,21 +72,21 @@ static PIK_INLINE V8x16U Costs16(const V8x32I& costs) {
 // minpos(lanes) returns the lowest i with lanes[i] == min. We again retained
 // the permutation with the lowest encoding cost.
 class PixelNeighborsY {
-  using V = V8x32I;
+  using V = i32x8;
 
  public:
   // LoadT/StoreT/compute single Y values.
-  using T = V4x32I;
+  using T = i32x4;
   static PIK_INLINE T LoadT(const DC* const PIK_RESTRICT row, const size_t x) {
     return T(_mm_cvtsi32_si128(row[x]));
   }
 
-  static PIK_INLINE void StoreT(const T& dc, DC* const PIK_RESTRICT row,
+  static PIK_INLINE void StoreT(const T dc, DC* const PIK_RESTRICT row,
                                 const size_t x) {
     row[x] = _mm_cvtsi128_si32(dc);
   }
 
-  static PIK_INLINE V Broadcast(const T& dc) {
+  static PIK_INLINE V Broadcast(const T dc) {
     return V(_mm256_broadcastd_epi32(dc));
   }
 
@@ -101,13 +97,13 @@ class PixelNeighborsY {
                   const DC* const PIK_RESTRICT row_t,
                   const DC* const PIK_RESTRICT row_m,
                   const DC* const PIK_RESTRICT row_b) {
-    const V wl(row_m[0]);
-    const V ww(row_b[0]);
-    tl_ = V(row_t[1]);
-    tn_ = V(row_t[2]);
-    l_ = V(row_m[1]);
-    n_ = V(row_m[2]);
-    w_ = V(row_b[1]);
+    const V wl = set1(V(), row_m[0]);
+    const V ww = set1(V(), row_b[0]);
+    tl_ = set1(V(), row_t[1]);
+    tn_ = set1(V(), row_t[2]);
+    l_ = set1(V(), row_m[1]);
+    n_ = set1(V(), row_m[2]);
+    w_ = set1(V(), row_b[1]);
     pred_w_ = Predict(l_, ww, wl, n_);
   }
 
@@ -125,18 +121,18 @@ class PixelNeighborsY {
   }
 
   // Returns predictor for pixel c with min cost and updates pred_w_.
-  PIK_INLINE T PredictC(const T& r, const V& costs) {
-    const V8x16U idx_min(_mm_minpos_epu16(Costs16(costs)));
-    const V8x32U index = V8x32U(_mm256_broadcastd_epi32(idx_min)) >> 16;
+  PIK_INLINE T PredictC(const T r, const V costs) {
+    const u16x8 idx_min(_mm_minpos_epu16(Costs16(costs)));
+    const u32x8 index = u32x8(_mm256_broadcastd_epi32(idx_min)) >> 16;
 
     const V pred_c = Predict(n_, w_, l_, Broadcast(r));
     pred_w_ = pred_c;
 
     const V best(_mm256_permutevar8x32_epi32(pred_c, index));
-    return T(_mm256_extracti128_si256(best, 0));
+    return T(_mm256_castsi256_si128(best));
   }
 
-  PIK_INLINE void Advance(const T& r, const T& c) {
+  PIK_INLINE void Advance(const T r, const T c) {
     l_ = n_;
     n_ = Broadcast(r);
     w_ = Broadcast(c);
@@ -153,7 +149,7 @@ class PixelNeighborsY {
   // 6: PredClampedGrad(n, w, l);
   // 7: n;
   // All arguments are broadcasted.
-  static PIK_INLINE V Predict(const V& n, const V& w, const V& l, const V& r) {
+  static PIK_INLINE V Predict(const V n, const V w, const V l, const V r) {
     const V rnrnrnrn(_mm256_unpacklo_epi32(n, r));
     // "x" are invalid/don't care lanes.
     const V xxxnwrwn(_mm256_unpacklo_epi32(rnrnrnrn, w));
@@ -181,11 +177,11 @@ class PixelNeighborsY {
 // reduces the magnitude of residuals, but differentiating between the
 // chrominance bands does not.
 class PixelNeighborsUV {
-  using V = V8x32I;
+  using V = i32x8;
 
  public:
   // LoadT/StoreT/compute pairs of U, V.
-  using T = V4x32I;
+  using T = i32x4;
 
   // Returns 00UV.
   static PIK_INLINE T LoadT(const DC* const PIK_RESTRICT row, const size_t x) {
@@ -193,7 +189,7 @@ class PixelNeighborsUV {
         reinterpret_cast<const __m128i * PIK_RESTRICT>(row + 2 * x)));
   }
 
-  static PIK_INLINE void StoreT(const T& uv, DC* const PIK_RESTRICT row,
+  static PIK_INLINE void StoreT(const T uv, DC* const PIK_RESTRICT row,
                                 const size_t x) {
     _mm_storel_epi64(reinterpret_cast<__m128i * PIK_RESTRICT>(row + 2 * x), uv);
   }
@@ -203,9 +199,9 @@ class PixelNeighborsUV {
                    const DC* const PIK_RESTRICT row_t,
                    const DC* const PIK_RESTRICT row_m,
                    const DC* const PIK_RESTRICT row_b) {
-    yn_ = V(row_ym[2]);
-    yw_ = V(row_yb[1]);
-    yl_ = V(row_ym[1]);
+    yn_ = set1(V(), row_ym[2]);
+    yw_ = set1(V(), row_yb[1]);
+    yl_ = set1(V(), row_ym[1]);
     n_ = LoadT(row_m, 2);
     w_ = LoadT(row_b, 1);
     l_ = LoadT(row_m, 1);
@@ -216,8 +212,8 @@ class PixelNeighborsUV {
                               const DC* const PIK_RESTRICT row_ym,
                               const DC* const PIK_RESTRICT row_yb,
                               const DC* const PIK_RESTRICT) {
-    const V yr(row_ym[x + 1]);
-    const V yc(row_yb[x]);
+    const V yr = set1(V(), row_ym[x + 1]);
+    const V yc = set1(V(), row_yb[x]);
     const V costs = AbsResidual(yc, Predict(yn_, yw_, yl_, yr));
     yl_ = yn_;
     yn_ = yr;
@@ -226,35 +222,35 @@ class PixelNeighborsUV {
   }
 
   // Returns predictor for pixel c with min cost.
-  PIK_INLINE T PredictC(const T& r, const V& costs) const {
-    const V8x16U idx_min(_mm_minpos_epu16(Costs16(costs)));
-    const V8x32U index = V8x32U(_mm256_broadcastd_epi32(idx_min)) >> 16;
+  PIK_INLINE T PredictC(const T r, const V costs) const {
+    const u16x8 idx_min(_mm_minpos_epu16(Costs16(costs)));
+    const u32x8 index = u32x8(_mm256_broadcastd_epi32(idx_min)) >> 16;
 
     const V predictors_u =
         Predict(BroadcastU(n_), BroadcastU(w_), BroadcastU(l_), BroadcastU(r));
     const V predictors_v =
         Predict(BroadcastV(n_), BroadcastV(w_), BroadcastV(l_), BroadcastV(r));
-    // permutevar is faster than Store + load_ss.
+    // permutevar is faster than store + load_ss.
     const V best_u(_mm256_permutevar8x32_epi32(predictors_u, index));
     const V best_v(_mm256_permutevar8x32_epi32(predictors_v, index));
-    const T best_u128(_mm256_extracti128_si256(best_u, 0));
-    const T best_v128(_mm256_extracti128_si256(best_v, 0));
+    const T best_u128(_mm256_castsi256_si128(best_u));
+    const T best_v128(_mm256_castsi256_si128(best_v));
     return T(_mm_unpacklo_epi32(best_v128, best_u128));
   }
 
-  PIK_INLINE void Advance(const T& r, const T& c) {
+  PIK_INLINE void Advance(const T r, const T c) {
     l_ = n_;
     n_ = r;
     w_ = c;
   }
 
  private:
-  static PIK_INLINE V BroadcastU(const T& uv) {
-    const T u(_mm_srli_si128(uv, sizeof(DC)));
+  static PIK_INLINE V BroadcastU(const T uv) {
+    const T u = shift_bytes_right<sizeof(DC)>(uv);
     return V(_mm256_broadcastd_epi32(u));
   }
 
-  static PIK_INLINE V BroadcastV(const T& uv) {
+  static PIK_INLINE V BroadcastV(const T uv) {
     return V(_mm256_broadcastd_epi32(uv));
   }
 
@@ -268,7 +264,7 @@ class PixelNeighborsUV {
   // 6: Average2(w, l);
   // 7: r;
   // All arguments are broadcasted.
-  static PIK_INLINE V Predict(const V& n, const V& w, const V& l, const V& r) {
+  static PIK_INLINE V Predict(const V n, const V w, const V l, const V r) {
     const V xxxxxxx0 = ClampedGradient(n, w, l);
     // "x" lanes are unused.
     const V xxxxxx10(_mm256_unpacklo_epi32(xxxxxxx0, n));
@@ -380,7 +376,7 @@ class Adaptive {
     LeftBorder2<N>::Shrink(xsize, row_m, row_b, residuals);
 
     ForeachPrediction(xsize, row_ym, row_yb, row_t, row_m, row_b,
-                      [row_b, residuals](const size_t x, const T& pred) {
+                      [row_b, residuals](const size_t x, const T pred) {
                         const T c = N::LoadT(row_b, x);
                         N::StoreT(c - pred, residuals, x);
                         return c;
@@ -398,7 +394,7 @@ class Adaptive {
     LeftBorder2<N>::Expand(xsize, residuals, row_m, row_b);
 
     ForeachPrediction(xsize, row_ym, row_yb, row_t, row_m, row_b,
-                      [row_b, residuals](const size_t x, const T& pred) {
+                      [row_b, residuals](const size_t x, const T pred) {
                         const T c = pred + N::LoadT(residuals, x);
                         N::StoreT(c, row_b, x);
                         return c;
@@ -424,7 +420,7 @@ class Adaptive {
     // PixelNeighborsY uses w at x - 1 => two pixel margin.
     for (size_t x = 2; x < xsize - 1; ++x) {
       const T r = N::LoadT(row_m, x + 1);
-      const V8x32I costs = neighbors.PredictorCosts(x, row_ym, row_yb, row_t);
+      const i32x8 costs = neighbors.PredictorCosts(x, row_ym, row_yb, row_t);
       const T pred_c = neighbors.PredictC(r, costs);
       const T c = func(x, pred_c);
       neighbors.Advance(r, c);
@@ -512,29 +508,29 @@ void ExpandUV(const Image<DC>& dc_y, const Image<DC>& residuals,
 }
 
 }  // namespace
-}  // namespace PIK_TARGET_NAME
+}  // namespace SIMD_NAMESPACE
 
 // WARNING: the current implementation requires AVX2 and doesn't yet support
 // dynamic dispatching.
 
 void ShrinkY(const Image<DC>& dc, Image<DC>* const PIK_RESTRICT residuals) {
-  PIK_TARGET_NAME::ShrinkY(dc, residuals);
+  SIMD_NAMESPACE::ShrinkY(dc, residuals);
 }
 
 void ShrinkUV(const Image<DC>& dc_y, const Image<DC>& dc,
               Image<DC>* const PIK_RESTRICT residuals) {
-  PIK_TARGET_NAME::ShrinkUV(dc_y, dc, residuals);
+  SIMD_NAMESPACE::ShrinkUV(dc_y, dc, residuals);
 }
 
 void ExpandY(const Image<DC>& residuals, Image<DC>* const PIK_RESTRICT dc) {
-  PIK_TARGET_NAME::ExpandY(residuals, dc);
+  SIMD_NAMESPACE::ExpandY(residuals, dc);
 }
 
 void ExpandUV(const Image<DC>& dc_y, const Image<DC>& residuals,
               Image<DC>* const PIK_RESTRICT dc) {
-  PIK_TARGET_NAME::ExpandUV(dc_y, residuals, dc);
+  SIMD_NAMESPACE::ExpandUV(dc_y, residuals, dc);
 }
 
 }  // namespace pik
 
-#endif  // __AVX2__
+#endif  // SIMD_ENABLE_AVX2

@@ -23,72 +23,66 @@
 #include "compiler_specific.h"
 #include "image.h"
 #include "opsin_params.h"
-#include "vector256.h"
+#include "simd/simd.h"
 
 namespace pik {
 
-// V is either float or V8x32F; in most cases the code is identical.
+// V is vec1<float> or vec<float>.
 
 template <typename V>
-PIK_INLINE V XyToR(const V& x, const V& y) {
-  return V(kInvScaleR) * (y + x);
+PIK_INLINE V XyToR(const V x, const V y) {
+  return set1(V(), kInvScaleR) * (y + x);
 }
 
 template <typename V>
-PIK_INLINE V XyToG(const V& x, const V& y) {
-  return V(kInvScaleG) * (y - x);
+PIK_INLINE V XyToG(const V x, const V y) {
+  return set1(V(), kInvScaleG) * (y - x);
 }
 
 template <typename V>
-PIK_INLINE V SimpleGammaInverse(const V& v) {
+PIK_INLINE V SimpleGammaInverse(const V v) {
   return v * v * v;
 }
 
 template <typename V>
-PIK_INLINE V MixedToRed(const V& r, const V& g, const V& b) {
-  return (V(kOpsinAbsorbanceInverseMatrix[0]) * r +
-          V(kOpsinAbsorbanceInverseMatrix[1]) * g +
-          V(kOpsinAbsorbanceInverseMatrix[2]) * b);
+PIK_INLINE V MixedToRed(const V r, const V g, const V b) {
+  return (set1(V(), kOpsinAbsorbanceInverseMatrix[0]) * r +
+          set1(V(), kOpsinAbsorbanceInverseMatrix[1]) * g +
+          set1(V(), kOpsinAbsorbanceInverseMatrix[2]) * b);
 }
 
 template <typename V>
-PIK_INLINE V MixedToGreen(const V& r, const V& g, const V& b) {
-  return (V(kOpsinAbsorbanceInverseMatrix[3]) * r +
-          V(kOpsinAbsorbanceInverseMatrix[4]) * g +
-          V(kOpsinAbsorbanceInverseMatrix[5]) * b);
+PIK_INLINE V MixedToGreen(const V r, const V g, const V b) {
+  return (set1(V(), kOpsinAbsorbanceInverseMatrix[3]) * r +
+          set1(V(), kOpsinAbsorbanceInverseMatrix[4]) * g +
+          set1(V(), kOpsinAbsorbanceInverseMatrix[5]) * b);
 }
 
 template <typename V>
-PIK_INLINE V MixedToBlue(const V& r, const V& g, const V& b) {
-  return (V(kOpsinAbsorbanceInverseMatrix[6]) * r +
-          V(kOpsinAbsorbanceInverseMatrix[7]) * g +
-          V(kOpsinAbsorbanceInverseMatrix[8]) * b);
-}
-
-PIK_INLINE float Clamp(float x) {
-  return std::min(255.0f, std::max(0.0f, x));
+PIK_INLINE V MixedToBlue(const V r, const V g, const V b) {
+  return (set1(V(), kOpsinAbsorbanceInverseMatrix[6]) * r +
+          set1(V(), kOpsinAbsorbanceInverseMatrix[7]) * g +
+          set1(V(), kOpsinAbsorbanceInverseMatrix[8]) * b);
 }
 
 template <typename V>
-PIK_INLINE V Clamp(const V& x) {
-  const V zero(0.0);
-  const V max(255.0);
-  return Min(Select(x, zero, x), max);
+PIK_INLINE V Clamp0To255(const V x) {
+  return clamp(x, setzero(V()), set1(V(), 255.0f));
 }
 
 // Inverts the pixel-wise RGB->XYB conversion in OpsinDynamicsImage() (including
 // the gamma mixing and simple gamma) and clamps the resulting pixel values
 // between 0.0 and 255.0.
 template <typename V>
-PIK_INLINE void XybToRgb(const V& x, const V& y, const V& b,
+PIK_INLINE void XybToRgb(const V x, const V y, const V b,
                          V* const PIK_RESTRICT red, V* const PIK_RESTRICT green,
                          V* const PIK_RESTRICT blue) {
   const V r_mix = SimpleGammaInverse(XyToR(x, y));
   const V g_mix = SimpleGammaInverse(XyToG(x, y));
   const V b_mix = SimpleGammaInverse(b);
-  *red = Clamp(MixedToRed(r_mix, g_mix, b_mix));
-  *green = Clamp(MixedToGreen(r_mix, g_mix, b_mix));
-  *blue = Clamp(MixedToBlue(r_mix, g_mix, b_mix));
+  *red = Clamp0To255(MixedToRed(r_mix, g_mix, b_mix));
+  *green = Clamp0To255(MixedToGreen(r_mix, g_mix, b_mix));
+  *blue = Clamp0To255(MixedToBlue(r_mix, g_mix, b_mix));
 }
 
 Image3B OpsinDynamicsInverse(const Image3F& opsin);

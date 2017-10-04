@@ -31,9 +31,8 @@
 #include "opsin_image.h"
 #include "opsin_inverse.h"
 #include "opsin_params.h"
+#include "simd/simd.h"
 #include "status.h"
-#include "vector128.h"
-#include "vector256.h"
 
 namespace pik {
 
@@ -409,29 +408,22 @@ PIK_INLINE float ComputeBlurredBlock(const Image3F& blur_x, int c, int offsetx,
   const float* const PIK_RESTRICT row1 = blur_x.PlaneRow(c, y_cur) + offsetx;
   const float* const PIK_RESTRICT row2 = blur_x.PlaneRow(c, y_down) + offsetx;
   // "Loop" over ix = [0, kBlockEdge), one per lane.
-  using namespace PIK_TARGET_NAME;
-  using V = V8x32F;
-  V sum(0.0f);
-  const V val0 = Load<V>(row0);
-  const V val1 = Load<V>(row1);
-  const V val2 = Load<V>(row2);
+  using namespace SIMD_NAMESPACE;
+  using V = vec256<float>;
+  V sum = setzero(V());
+  const V val0 = load(V(), row0);
+  const V val1 = load(V(), row1);
+  const V val2 = load(V(), row2);
   for (int iy = 0; iy < kBlockEdge; ++iy) {
-    const V val =
-        val0 * V(w_up[iy]) + val1 * V(w_cur[iy]) + val2 * V(w_down[iy]);
-    Store(val, out + iy * kBlockEdge);
+    const V val = val0 * set1(V(), w_up[iy]) + val1 * set1(V(), w_cur[iy]) +
+                  val2 * set1(V(), w_down[iy]);
+    store(val, out + iy * kBlockEdge);
     sum += val;
   }
 
-  // Horizontal sum
-  alignas(32) float sum_lanes[V::N];
-  Store(sum, sum_lanes);
-  float avg = sum_lanes[0];
-  for (size_t i = 1; i < V::N; ++i) {
-    avg += sum_lanes[i];
-  }
-
-  avg /= 64.0f;
-  return avg;
+  float avg;
+  store(to_subset(vec32<float>(), ext::horz_sum(sum)), &avg);
+  return avg / 64.0f;
 }
 
 }  // namespace
@@ -497,7 +489,7 @@ static const float kACPred31 = kACPredScale * 0.051028376631910073;
 void CompressedImage::QuantizeBlock(int block_x, int block_y) {
   const int offsetx = block_x * kBlockEdge;
   const int offsety = block_y * kBlockEdge;
-  alignas(32) float block[kBlockSize3];
+  SIMD_ALIGN float block[kBlockSize3];
   for (int c = 0; c < 3; ++c) {
     float* const PIK_RESTRICT cblock = &block[kBlockSize * c];
     for (int iy = 0; iy < kBlockEdge; ++iy) {
@@ -678,7 +670,7 @@ bool CompressedImage::Decode(const uint8_t* data, const size_t data_size,
 
 void CompressedImage::DequantizeBlock(const int block_x, const int block_y,
                                       float* const PIK_RESTRICT block) const {
-  using namespace PIK_TARGET_NAME;
+  using namespace SIMD_NAMESPACE;
   const int tile_y = block_y / kTileToBlockRatio;
   auto row = dct_coeffs_.Row(block_y);
   const int tile_x = block_x / kTileToBlockRatio;
@@ -695,13 +687,14 @@ void CompressedImage::DequantizeBlock(const int block_x, const int block_y,
     }
     cur_block[0] = iblock[0] * (muls[0] * inv_quant_dc);
   }
-  using V = V8x32F;
+  using V = vec<float>;
+  constexpr size_t N = NumLanes<V>();
   const float kYToBAC = YToBAC(tile_x, tile_y);
-  const V vYToBAC(kYToBAC);
-  for (int k = 0; k < kBlockSize; k += V::N) {
-    const V y = Load<V>(block + k + kBlockSize);
-    const V b = MulAdd(vYToBAC, y, Load<V>(block + k + kBlockSize2));
-    Store(b, block + k + kBlockSize2);
+  const V vYToBAC = set1(V(), kYToBAC);
+  for (int k = 0; k < kBlockSize; k += N) {
+    const V y = load(V(), block + k + kBlockSize);
+    const V b = mul_add(vYToBAC, y, load(V(), block + k + kBlockSize2));
+    store(b, block + k + kBlockSize2);
   }
   block[kBlockSize2] += (YToBDC() - kYToBAC) * block[kBlockSize];
   block[kBlockSize + 3] += kACPred31 * block[kBlockSize + 1];
@@ -713,22 +706,23 @@ namespace {
 void ColorTransformOpsinToSrgb(const float* const PIK_RESTRICT block,
                                int block_x, int block_y,
                                Image3B* const PIK_RESTRICT srgb) {
-  using namespace PIK_TARGET_NAME;
+  using namespace SIMD_NAMESPACE;
   const uint8_t* lut_plus = LinearToSrgb8TablePlusQuarter();
   const uint8_t* lut_minus = LinearToSrgb8TableMinusQuarter();
   // TODO(user) Combine these two for loops and get rid of rgb[].
-  alignas(32) int rgb[kBlockSize3];
-  using V = V8x32F;
-  for (int k = 0; k < kBlockSize; k += V::N) {
-    const V x = Load<V>(block + k) + V(kXybCenter[0]);
-    const V y = Load<V>(block + k + kBlockSize) + V(kXybCenter[1]);
-    const V b = Load<V>(block + k + kBlockSize2) + V(kXybCenter[2]);
-    const V lut_scale(16.0f);
+  SIMD_ALIGN int rgb[kBlockSize3];
+  using V = vec<float>;
+  constexpr size_t N = NumLanes<V>();
+  for (int k = 0; k < kBlockSize; k += N) {
+    const V x = load(V(), block + k) + set1(V(), kXybCenter[0]);
+    const V y = load(V(), block + k + kBlockSize) + set1(V(), kXybCenter[1]);
+    const V b = load(V(), block + k + kBlockSize2) + set1(V(), kXybCenter[2]);
+    const V lut_scale = set1(V(), 16.0f);
     V out_r, out_g, out_b;
     XybToRgb(x, y, b, &out_r, &out_g, &out_b);
-    Store(RoundToInt(out_r * lut_scale), rgb + k);
-    Store(RoundToInt(out_g * lut_scale), rgb + k + kBlockSize);
-    Store(RoundToInt(out_b * lut_scale), rgb + k + kBlockSize2);
+    store(i32_from_f32(out_r * lut_scale), rgb + k);
+    store(i32_from_f32(out_g * lut_scale), rgb + k + kBlockSize);
+    store(i32_from_f32(out_b * lut_scale), rgb + k + kBlockSize2);
   }
   const int yoff = kBlockEdge * block_y;
   const int xoff = kBlockEdge * block_x;
@@ -748,9 +742,10 @@ void ColorTransformOpsinToSrgb(const float* const PIK_RESTRICT block,
 void ColorTransformOpsinToSrgb(const float* const PIK_RESTRICT block,
                                int block_x, int block_y,
                                Image3U* const PIK_RESTRICT srgb) {
-  using namespace PIK_TARGET_NAME;
-  using V = V8x32F;
-  const V scale_to_16bit(257.0f);
+  using namespace SIMD_NAMESPACE;
+  using V = vec<float>;
+  constexpr size_t N = NumLanes<V>();
+  const V scale_to_16bit = set1(V(), 257.0f);
 
   int k = 0;  // index within 8x8 block (we access 3 consecutive blocks)
   const int yoff = kBlockEdge * block_y;
@@ -759,11 +754,11 @@ void ColorTransformOpsinToSrgb(const float* const PIK_RESTRICT block,
     uint16_t* PIK_RESTRICT row0 = srgb->PlaneRow(0, iy + yoff);
     uint16_t* PIK_RESTRICT row1 = srgb->PlaneRow(1, iy + yoff);
     uint16_t* PIK_RESTRICT row2 = srgb->PlaneRow(2, iy + yoff);
-    for (int ix = 0; ix < kBlockEdge; ix += V::N) {
-      const V x = Load<V>(block + k) + V(kXybCenter[0]);
-      const V y = Load<V>(block + k + kBlockSize) + V(kXybCenter[1]);
-      const V b = Load<V>(block + k + kBlockSize2) + V(kXybCenter[2]);
-      k += V::N;
+    for (int ix = 0; ix < kBlockEdge; ix += N) {
+      const V x = load(V(), block + k) + set1(V(), kXybCenter[0]);
+      const V y = load(V(), block + k + kBlockSize) + set1(V(), kXybCenter[1]);
+      const V b = load(V(), block + k + kBlockSize2) + set1(V(), kXybCenter[2]);
+      k += N;
       V out_r, out_g, out_b;
       XybToRgb(x, y, b, &out_r, &out_g, &out_b);
 
@@ -771,27 +766,15 @@ void ColorTransformOpsinToSrgb(const float* const PIK_RESTRICT block,
       out_g = LinearToSrgbPoly(out_g) * scale_to_16bit;
       out_b = LinearToSrgbPoly(out_b) * scale_to_16bit;
 
-      V8x32I int_r = RoundToInt(out_r);
-      V8x32I int_g = RoundToInt(out_g);
-      V8x32I int_b = RoundToInt(out_b);
-
-      // Bring upper 128 bits into lower so pack can outputs 8 consecutive u16.
-      const V8x32I hi_r(_mm256_permute2x128_si256(int_r, int_r, 0x11));
-      const V8x32I hi_g(_mm256_permute2x128_si256(int_g, int_g, 0x11));
-      const V8x32I hi_b(_mm256_permute2x128_si256(int_b, int_b, 0x11));
-
-      // We only need the lower 128 bits (8x u16).
-      const V8x16U u16_r(
-          _mm256_castsi256_si128(_mm256_packus_epi32(int_r, hi_r)));
-      const V8x16U u16_g(
-          _mm256_castsi256_si128(_mm256_packus_epi32(int_g, hi_g)));
-      const V8x16U u16_b(
-          _mm256_castsi256_si128(_mm256_packus_epi32(int_b, hi_b)));
+      // Half-vectors of half-width lanes.
+      const auto u16_r = convert_to(uint16_t(), i32_from_f32(out_r));
+      const auto u16_g = convert_to(uint16_t(), i32_from_f32(out_g));
+      const auto u16_b = convert_to(uint16_t(), i32_from_f32(out_b));
 
       const int px = ix + xoff;
-      Store(u16_r, row0 + px);
-      Store(u16_g, row1 + px);
-      Store(u16_b, row2 + px);
+      store(u16_r, row0 + px);
+      store(u16_g, row1 + px);
+      store(u16_b, row2 + px);
     }
   }
 }
@@ -799,19 +782,20 @@ void ColorTransformOpsinToSrgb(const float* const PIK_RESTRICT block,
 void ColorTransformOpsinToSrgb(const float* const PIK_RESTRICT block,
                                int block_x, int block_y,
                                Image3F* const PIK_RESTRICT srgb) {
-  using namespace PIK_TARGET_NAME;
+  using namespace SIMD_NAMESPACE;
   // TODO(user) Combine these two for loops and get rid of rgb[].
-  alignas(32) float rgb[kBlockSize3];
-  using V = V8x32F;
-  for (int k = 0; k < kBlockSize; k += V::N) {
-    const V x = Load<V>(block + k) + V(kXybCenter[0]);
-    const V y = Load<V>(block + k + kBlockSize) + V(kXybCenter[1]);
-    const V b = Load<V>(block + k + kBlockSize2) + V(kXybCenter[2]);
+  SIMD_ALIGN float rgb[kBlockSize3];
+  using V = vec<float>;
+  constexpr size_t N = NumLanes<V>();
+  for (int k = 0; k < kBlockSize; k += N) {
+    const V x = load(V(), block + k) + set1(V(), kXybCenter[0]);
+    const V y = load(V(), block + k + kBlockSize) + set1(V(), kXybCenter[1]);
+    const V b = load(V(), block + k + kBlockSize2) + set1(V(), kXybCenter[2]);
     V out_r, out_g, out_b;
     XybToRgb(x, y, b, &out_r, &out_g, &out_b);
-    Store(out_r, rgb + k);
-    Store(out_g, rgb + k + kBlockSize);
-    Store(out_b, rgb + k + kBlockSize2);
+    store(out_r, rgb + k);
+    store(out_g, rgb + k + kBlockSize);
+    store(out_b, rgb + k + kBlockSize2);
   }
   const int yoff = kBlockEdge * block_y;
   const int xoff = kBlockEdge * block_x;
@@ -841,7 +825,7 @@ Image3T GetPixels(const CompressedImage& img) {
   float w_cur[kBlockSize] = { 0.0f };
   float w_down[kBlockSize] = { 0.0f };
   ComputeBlockBlurWeights(kDCBlurSigma, w_up, w_cur, w_down);
-  alignas(32) float block_out[kBlockSize3];
+  SIMD_ALIGN float block_out[kBlockSize3];
   for (int by = 0; by < block_ysize; ++by) {
     int by_u = block_ysize == 1 ? 0 : by == 0 ? 1 : by - 1;
     int by_d = block_ysize == 1 ? 0 : by + 1 < block_ysize ? by + 1 : by - 1;
@@ -850,7 +834,7 @@ Image3T GetPixels(const CompressedImage& img) {
       const int offsetx = bx * kBlockEdge;
       for (int c = 0; c < 3; ++c) {
         ComputeTransposedScaledBlockIDCTFloat(&block_out[kBlockSize * c]);
-        alignas(32) float dc_blur[kBlockSize];
+        SIMD_ALIGN float dc_blur[kBlockSize];
         float avg = ComputeBlurredBlock(dc_blur_x, c, offsetx, by_u, by, by_d,
                                         w_up, w_cur, w_down, dc_blur);
         for (int k = 0; k < kBlockSize; ++k) {

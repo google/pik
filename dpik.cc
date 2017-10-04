@@ -19,7 +19,7 @@
 #include "gamma_correct.h"
 #include "image.h"
 #include "image_io.h"
-#include "instruction_sets.h"
+#include "simd/dispatch.h"
 #include "padded_bytes.h"
 #include "pik.h"
 #include "pik_info.h"
@@ -56,7 +56,7 @@ bool LoadFile(const char* pathname, PaddedBytes* compressed) {
 
 template<typename ComponentType>
 int Decompress(const char* pathname_in, const char* pathname_out) {
-  if ((InstructionSets::Supported() & PIK_TARGET_AVX2) == 0) {
+  if ((dispatch::SupportedTargets() & SIMD_AVX2) == 0) {
     fprintf(stderr, "Cannot continue because CPU lacks AVX2/FMA support.\n");
     return 1;
   }

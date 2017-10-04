@@ -48,7 +48,7 @@
 
 #if PIK_COMPILER_MSVC
 #define PIK_RESTRICT __restrict
-#elif PIK_COMPILER_GCC
+#elif PIK_COMPILER_GCC || PIK_COMPILER_CLANG
 #define PIK_RESTRICT __restrict__
 #else
 #define PIK_RESTRICT
@@ -64,7 +64,7 @@
 
 #if PIK_COMPILER_MSVC
 #define PIK_NORETURN __declspec(noreturn)
-#elif PIK_COMPILER_GCC
+#elif PIK_COMPILER_GCC || PIK_COMPILER_CLANG
 #define PIK_NORETURN __attribute__((noreturn))
 #endif
 
@@ -90,7 +90,7 @@
 
 #pragma intrinsic(_ReadWriteBarrier)
 #define PIK_COMPILER_FENCE _ReadWriteBarrier()
-#elif PIK_COMPILER_GCC
+#elif PIK_COMPILER_GCC || PIK_COMPILER_CLANG
 #define PIK_COMPILER_FENCE asm volatile("" : : : "memory")
 #else
 #define PIK_COMPILER_FENCE

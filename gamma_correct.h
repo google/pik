@@ -63,30 +63,34 @@ Image3B Srgb8FromLinear(const Image3F& linear);
 template <typename V>
 V Pow24Poly(V z) {
   // Max error: 0.0033, just enough for 16-bit precision in range 0.05-255.0
-  return (((((((V(-4.68139386898368e-16f) * z + V(4.90086432807652e-13f)) * z +
-               V(-2.47340675718632e-10f)) *
+  return (((((((set1(V(), -4.68139386898368e-16f) * z +
+                set1(V(), 4.90086432807652e-13f)) *
+                   z +
+               set1(V(), -2.47340675718632e-10f)) *
                   z +
-              V(1.19290078259837e-07f)) *
+              set1(V(), 1.19290078259837e-07f)) *
                  z +
-             V(2.52620611718157e-05f)) *
+             set1(V(), 2.52620611718157e-05f)) *
                 z +
-            V(0.000444842939032242f)) *
+            set1(V(), 0.000444842939032242f)) *
                z +
-           V(0.000799090310465544f)) *
+           set1(V(), 0.000799090310465544f)) *
               z +
-          V(-0.000163653719937429f)) /
-         (((V(1.56013541641187e-07f) * z + V(7.53337144487887e-06f)) * z +
-           V(4.70604936708696e-05f)) *
+          set1(V(), -0.000163653719937429f)) /
+         (((set1(V(), 1.56013541641187e-07f) * z +
+            set1(V(), 7.53337144487887e-06f)) *
+               z +
+           set1(V(), 4.70604936708696e-05f)) *
               z +
-          V(3.22659288940486e-05f));
+          set1(V(), 3.22659288940486e-05f));
 }
 
 template <typename V>
 V LinearToSrgbPoly(V z) {
-  const V linear = z * V(12.92f);
+  const V linear = z * set1(V(), 12.92f);
   const V poly = Pow24Poly(z);
-  const V ret = Select(linear, poly, z > V(10.31475f / 12.92f));
-  return Min(Max(V(0.0f), ret), V(255.0f));
+  const V ret = select(linear, poly, z > set1(V(), 10.31475f / 12.92f));
+  return clamp(ret, setzero(V()), set1(V(), 255.0f));
 }
 
 // Returns sRGB as floating-point (same range but not rounded to integer).
