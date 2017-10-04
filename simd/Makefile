@@ -1,4 +1,4 @@
-override CPPFLAGS += -I. -Ithird_party/brotli/c/include//..
+override CPPFLAGS += -I. -I../ -Ithird_party/brotli/c/include//..
 override CXXFLAGS += -std=c++11 -Wall -O3 -fPIC
 
 TEST_OBJS := $(addprefix obj/, \

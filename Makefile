@@ -1,7 +1,7 @@
 PNG_FLAGS := $(shell pkg-config --cflags libpng)
 PNG_LIBS := $(shell pkg-config --libs libpng)
 
-override CXXFLAGS += -std=c++11 -Wall -O3 -fPIC -DSIMD_ENABLE=6 -mavx2 -mfma -mlzcnt -mbmi2 -msse4.2 -maes -I. -Ithird_party/brotli/c/include/ -Wno-sign-compare
+override CXXFLAGS += -std=c++11 -Wall -O3 -fPIC -DSIMD_ENABLE=6 -mavx2 -mfma -mlzcnt -mbmi2 -msse4.2 -maes -I. -I../ -Ithird_party/brotli/c/include/ -Wno-sign-compare
 override LDFLAGS += $(PNG_LIBS) -ljpeg -lpthread
 
 PIK_OBJS := $(addprefix obj/, \
