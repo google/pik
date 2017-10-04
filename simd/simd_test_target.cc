@@ -12,64 +12,48 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <stdarg.h>
-#include <stdio.h>
 #include <limits>
 
-#include "simd.h"
-#include "simd_test_target.h"
+#include "simd/simd.h"
+#include "simd/simd_test_target.h"
 
-namespace simd {
+namespace pik {
 namespace SIMD_NAMESPACE {
 namespace {
 
-// Returns a vector with lane i=0..N-1 set to "first" + i. Unique per-lane
-// values are required to detect lane-crossing bugs.
-template <class V>
-SIMD_INLINE V Iota(const Lane<V> first = 0) {
-  constexpr size_t N = NumLanes<V>();
-  SIMD_ALIGN Lane<V> lanes[N];
-  for (size_t i = 0; i < N; ++i) {
-    lanes[i] = first + i;
-  }
-  return load(V(), lanes);
-}
-
-// Test failure: prints message to stderr and aborts.
-[[noreturn]] inline void TestFailed(const char* format, ...) {
-  va_list args;
-  va_start(args, format);
-  vfprintf(stderr, format, args);
-  va_end(args);
-  SIMD_TRAP();
-}
+// Avoids having to pass this to every test.
+NotifyFailure g_notify_failure;
 
 // Compare non-vector T.
-template <typename T>
-void AssertEqual(const T expected, const T actual, const int line = -1,
-                 const size_t lane = 0, const char* vec_name = "") {
-  if (expected == actual) return;
-  char expected_buf[30];
-  char actual_buf[30];
+template <typename T1, typename T2>
+void AssertEqual(const T1 expected, const T2 actual, const int line = -1,
+                 const int lane = 0, const char* vec_name = "") {
+  char expected_buf[64];
+  char actual_buf[64];
   ToString(expected, expected_buf);
   ToString(actual, actual_buf);
-  TestFailed("line %d, %s lane %zu mismatch: expected %s, got %s.\n", line,
-             vec_name, lane, expected_buf, actual_buf);
+  // Rely on string comparison to ensure similar floats are "equal".
+  if (!StringsEqual(expected_buf, actual_buf)) {
+    g_notify_failure(line, vec_name, lane, expected_buf, actual_buf);
+  }
 }
 
 #define ASSERT_EQ(expected, actual) AssertEqual(expected, actual, __LINE__)
 
 // Compare expected vector to vector.
-template <class V>
-void AssertVecEqual(const V expected, const V actual, const int line) {
-  using T = Lane<V>;
-  constexpr size_t N = NumLanes<V>();
-  SIMD_ALIGN T actual_lanes[N];
-  SIMD_ALIGN T expected_lanes[N];
-  store(actual, actual_lanes);
+template <class V1, class V2>
+void AssertVecEqual(const V1 expected, const V2 actual, const int line) {
+  using T1 = Lane<V1>;
+  using T2 = Lane<V2>;
+  constexpr size_t N1 = NumLanes<V1>();
+  constexpr size_t N2 = NumLanes<V2>();
+  static_assert(N1 == N2, "Vectors must have same NumLanes");
+  SIMD_ALIGN T1 expected_lanes[N1];
+  SIMD_ALIGN T2 actual_lanes[N2];
   store(expected, expected_lanes);
-  const char* name = vec_name<V>();
-  for (size_t i = 0; i < N; ++i) {
+  store(actual, actual_lanes);
+  const char* name = vec_name<V1>();
+  for (size_t i = 0; i < N1; ++i) {
     AssertEqual(expected_lanes[i], actual_lanes[i], line, i, name);
   }
 }
@@ -248,9 +232,9 @@ void TestToString() {
   ToString(-1.0, buf);
   ASSERT_EQ(true, StringsEqual("-1.0", buf));
   ToString(-1.25, buf);
-  ASSERT_EQ(true, StringsEqual("-1.250", buf));
-  ToString(2.125, buf);
-  ASSERT_EQ(true, StringsEqual("2.125", buf));
+  ASSERT_EQ("-1.2500000000000000", const_cast<const char*>(buf));
+  ToString(2.125f, buf);
+  ASSERT_EQ("2.12500000", const_cast<const char*>(buf));
 }
 
 template <typename T, class V>
@@ -311,8 +295,7 @@ struct TestName {
     *end++ = 'x';
     end = ToString(NumLanes<V>::value, end);
     if (!StringsEqual(expected, vec_name<V>())) {
-      TestFailed("Name mismatch: expected %s, got %s\n", expected,
-                 vec_name<V>());
+      g_notify_failure(__LINE__, expected, -1, expected, vec_name<V>());
     }
   }
 };
@@ -387,30 +370,31 @@ struct TestHalf {
     for (size_t i = 0; i < N; ++i) {
       lanes[i] = 123;
     }
-    const auto lo = lower_half(v);
+    using HalfV = decltype(to_other_half(V()));
+    const auto lo = to_subset(HalfV(), v);
     store(lo, lanes);
     size_t i = 0;
     for (; i < (N + 1) / 2; ++i) {
       ASSERT_EQ(T(i + 1), lanes[i]);
     }
-    // Other lanes remain unchanged
+    // Only stored the smaller number of lanes
     for (; i < N; ++i) {
       ASSERT_EQ(T(123), lanes[i]);
     }
 
-    const auto hi = upper_half(v);
+    const auto hi = to_other_half(v);
     store(hi, lanes);
     i = 0;
     for (; i < (N + 1) / 2; ++i) {
       ASSERT_EQ(T(i + 1 + (N == 1 ? 0 : N / 2)), lanes[i]);
     }
-    // Other lanes remain unchanged
+    // Only stored the smaller number of lanes
     for (; i < N; ++i) {
       ASSERT_EQ(T(123), lanes[i]);
     }
 
     // Can convert to full (upper half undefined)
-    const V v2 = from_half(lo);
+    const V v2 = from_subset(V(), lo);
     store(v2, lanes);
     for (i = 0; i < (N + 1) / 2; ++i) {
       ASSERT_EQ(T(i + 1), lanes[i]);
@@ -466,7 +450,7 @@ void TestUnsignedSaturatingArithmetic() {
   using V = vec<T>;
   const V v0 = setzero(V());
   const V vi = Iota<V>(1);
-  const V vm = set1(V(), UnsignedMax<T>());
+  const V vm = set1(V(), LimitsMax<T>());
 
   ASSERT_VEC_EQ(v0 + v0, add_sat(v0, v0));
   ASSERT_VEC_EQ(v0 + vi, add_sat(v0, vi));
@@ -488,7 +472,7 @@ void TestSignedSaturatingArithmetic() {
 
   const V v0 = setzero(V());
   const V vi = Iota<V>(1);
-  const V vpm = set1(V(), SignedMax<T>());
+  const V vpm = set1(V(), LimitsMax<T>());
   const V vn = Iota<V>(-T(N));
   const V vnm = set1(V(), std::numeric_limits<T>::lowest());
 
@@ -607,6 +591,7 @@ void TestSignedShifts() {
 }
 
 void TestShifts() {
+#if !SIMD_ARCH_ARM
   // No u8.
   TestUnsignedShifts<uint16_t>();
   TestUnsignedShifts<uint32_t>();
@@ -615,11 +600,12 @@ void TestShifts() {
   TestSignedShifts<int16_t>();
   TestSignedShifts<int32_t>();
   // No i64/f32/f64.
+#endif
 }
 
 template <typename T>
 void TestVariableShiftsT() {
-#if SIMD_ENABLE_AVX2
+#if SIMD_ENABLE_AVX2 || SIMD_ENABLE_ARM
   using V = vec<T>;
   constexpr size_t N = NumLanes<V>();
 
@@ -654,7 +640,7 @@ void TestUnsignedMinMax() {
   const V v0 = setzero(V());
   const V v1 = Iota<V>(1);
   const V v2 = Iota<V>(2);
-  const V v_max = Iota<V>(UnsignedMax<T>() - N + 1);
+  const V v_max = Iota<V>(LimitsMax<T>() - N + 1);
   ASSERT_VEC_EQ(v1, min(v1, v2));
   ASSERT_VEC_EQ(v2, max(v1, v2));
   ASSERT_VEC_EQ(v0, min(v1, v0));
@@ -683,6 +669,19 @@ void TestSignedMinMax() {
   ASSERT_VEC_EQ(v_neg, max(v_neg, v_neg_max));
 }
 
+template <typename T>
+void TestFloatMinMax() {
+  using V = vec<T>;
+  const size_t N = NumLanes<V>();
+  const V v1 = Iota<V>(1);
+  const V v2 = Iota<V>(2);
+  const V v_neg = Iota<V>(-T(N));
+  ASSERT_VEC_EQ(v1, min(v1, v2));
+  ASSERT_VEC_EQ(v2, max(v1, v2));
+  ASSERT_VEC_EQ(v_neg, min(v1, v_neg));
+  ASSERT_VEC_EQ(v1, max(v1, v_neg));
+}
+
 void TestMinMax() {
   TestUnsignedMinMax<uint8_t>();
   TestUnsignedMinMax<uint16_t>();
@@ -692,8 +691,8 @@ void TestMinMax() {
   TestSignedMinMax<int16_t>();
   TestSignedMinMax<int32_t>();
   // No i64.
-  TestSignedMinMax<float>();
-  TestSignedMinMax<double>();
+  TestFloatMinMax<float>();
+  TestFloatMinMax<double>();
 }
 
 template <typename T>
@@ -720,7 +719,7 @@ void TestUnsignedMul() {
   }
   ASSERT_VEC_EQ(lanes, vi * vj);
 
-  const T max = UnsignedMax<T>();
+  const T max = LimitsMax<T>();
   const V vmax = set1(V(), max);
   ASSERT_VEC_EQ(vmax, vmax * v1);
   ASSERT_VEC_EQ(vmax, v1 * vmax);
@@ -784,7 +783,7 @@ void TestMulHi16() {
 
   // Large positive squared
   for (size_t i = 0; i < N; ++i) {
-    in_lanes[i] = SignedMax<T>() >> i;
+    in_lanes[i] = LimitsMax<T>() >> i;
     expected_lanes[i] = (int32_t(in_lanes[i]) * in_lanes[i]) >> 16;
   }
   v = load(V(), in_lanes);
@@ -915,6 +914,7 @@ struct TestRound {
       const V v = Iota<V>(4.0);
       ASSERT_VEC_EQ(v, round_pos_inf(v));
       ASSERT_VEC_EQ(v, round_neg_inf(v));
+      ASSERT_VEC_EQ(v, round_nearest(v));
     }
 
     // Integer negative
@@ -922,18 +922,19 @@ struct TestRound {
       const V v = Iota<V>(T(-32.0));
       ASSERT_VEC_EQ(v, round_pos_inf(v));
       ASSERT_VEC_EQ(v, round_neg_inf(v));
+      ASSERT_VEC_EQ(v, round_nearest(v));
     }
 
     // Huge positive
     {
-      const V v = set1(V(), T(1E30));
+      const V v = set1(V(), T(1E15));
       ASSERT_VEC_EQ(v, round_pos_inf(v));
       ASSERT_VEC_EQ(v, round_neg_inf(v));
     }
 
     // Huge negative
     {
-      const V v = set1(V(), T(-1E31));
+      const V v = set1(V(), T(-1E15));
       ASSERT_VEC_EQ(v, round_pos_inf(v));
       ASSERT_VEC_EQ(v, round_neg_inf(v));
     }
@@ -945,6 +946,7 @@ struct TestRound {
       const V v2 = Iota<V>(T(2));
       ASSERT_VEC_EQ(v3, round_pos_inf(v));
       ASSERT_VEC_EQ(v2, round_neg_inf(v));
+      ASSERT_VEC_EQ(v2, round_nearest(v));
     }
 
     // Below positive
@@ -954,6 +956,7 @@ struct TestRound {
       const V v3 = Iota<V>(T(3));
       ASSERT_VEC_EQ(v4, round_pos_inf(v));
       ASSERT_VEC_EQ(v3, round_neg_inf(v));
+      ASSERT_VEC_EQ(v4, round_nearest(v));
     }
 
     // Above negative
@@ -963,6 +966,7 @@ struct TestRound {
       const V v4 = Iota<V>(T(-4));
       ASSERT_VEC_EQ(v3, round_pos_inf(v));
       ASSERT_VEC_EQ(v4, round_neg_inf(v));
+      ASSERT_VEC_EQ(v4, round_nearest(v));
     }
 
     // Below negative
@@ -972,9 +976,58 @@ struct TestRound {
       const V v3 = Iota<V>(T(-3));
       ASSERT_VEC_EQ(v2, round_pos_inf(v));
       ASSERT_VEC_EQ(v3, round_neg_inf(v));
+      ASSERT_VEC_EQ(v2, round_nearest(v));
     }
   }
 };
+
+void TestFloatToInt() {
+  using VF = vec<float>;
+  using VI = vec<int32_t>;
+  // Integer positive
+  {
+    const VF vf = Iota<VF>(4.0f);
+    const VI vi = Iota<VI>(4);
+    ASSERT_VEC_EQ(vi, i32_from_f32(vf));
+    ASSERT_VEC_EQ(vf, f32_from_i32(vi));
+  }
+
+  // Integer negative
+  {
+    const VF vf = Iota<VF>(-32.0f);
+    const VI vi = Iota<VI>(-32);
+    ASSERT_VEC_EQ(vi, i32_from_f32(vf));
+    ASSERT_VEC_EQ(vf, f32_from_i32(vi));
+  }
+
+  // Above positive
+  {
+    const VI vi = Iota<VI>(2);
+    ASSERT_VEC_EQ(vi, i32_from_f32(Iota<VF>(2.001f)));
+    ASSERT_VEC_EQ(Iota<VF>(2.0f), f32_from_i32(vi));
+  }
+
+  // Below positive
+  {
+    const VI vi = Iota<VI>(4);
+    ASSERT_VEC_EQ(vi, i32_from_f32(Iota<VF>(3.9999f)));
+    ASSERT_VEC_EQ(Iota<VF>(4.0f), f32_from_i32(vi));
+  }
+
+  // Above negative
+  {
+    const VI vi = Iota<VI>(-4);
+    ASSERT_VEC_EQ(vi, i32_from_f32(Iota<VF>(-3.9999f)));
+    ASSERT_VEC_EQ(Iota<VF>(-4.0f), f32_from_i32(vi));
+  }
+
+  // Below negative
+  {
+    const VI vi = Iota<VI>(-2);
+    ASSERT_VEC_EQ(vi, i32_from_f32(Iota<VF>(-2.001f)));
+    ASSERT_VEC_EQ(Iota<VF>(-2.0f), f32_from_i32(vi));
+  }
+}
 
 void TestHorzSum8() {
   using V = vec<uint8_t>;
@@ -1036,6 +1089,7 @@ void TestArithmetic() {
   ForeachFloatLaneType<TestSquareRoot>();
   TestReciprocalSquareRoot();
   ForeachFloatLaneType<TestRound>();
+  TestFloatToInt();
 
   TestHorzSum();
 }
@@ -1237,8 +1291,6 @@ struct TestLoadStore {
     // Aligned load
     const V lo2 = load(V(), lanes);
     ASSERT_VEC_EQ(lo2, lo);
-    // First value goes into least-significant/lowest lane
-    ASSERT_EQ(T(1), get_low(lo2));
 
     // Aligned store
     SIMD_ALIGN T lanes2[2 * N];
@@ -1276,15 +1328,13 @@ template <typename T, class V>
 struct TestLoadDup128 {
   void operator()() const {
 #if SIMD_ENABLE_ANY
-    constexpr size_t N = NumLanes<V>();
-    const size_t num_lanes_128 = 16 / sizeof(T);
+    constexpr size_t num_lanes_128 = sizeof(vec128<T>) / sizeof(T);
     alignas(16) T lanes[num_lanes_128];
-    for (size_t i = 0; i < num_lanes_128; ++i) {
-      lanes[i] = 1 + i;
-    }
-    const V v = load_dup128(V(), lanes);
+    store(Iota<vec128<T>>(1), lanes);
+    const auto v = load_dup128(V(), lanes);
+    constexpr size_t N = NumLanes<V>();
     SIMD_ALIGN T out[N];
-    store(v, out);
+    store(V(v.raw), out);
     for (size_t i = 0; i < N; ++i) {
       ASSERT_EQ(T(i % num_lanes_128 + 1), out[i]);
     }
@@ -1334,9 +1384,7 @@ struct TestShiftBytesT {
 
     // Zero remains zero
     const V v0 = setzero(V());
-    ASSERT_VEC_EQ(v0, shift_bytes_left<0>(v0));
     ASSERT_VEC_EQ(v0, shift_bytes_left<1>(v0));
-    ASSERT_VEC_EQ(v0, shift_bytes_right<0>(v0));
     ASSERT_VEC_EQ(v0, shift_bytes_right<1>(v0));
 
     // Zero after shifting out the high/low byte
@@ -1347,15 +1395,7 @@ struct TestShiftBytesT {
     bytes[0] = 0x7F;
     const V vlo(load(V8(), bytes));
     ASSERT_EQ(true, ext::all_zero(shift_bytes_left<1>(vhi)));
-    ASSERT_EQ(true, ext::all_zero(shift_bytes_left<sizeof(V)>(vlo)));
     ASSERT_EQ(true, ext::all_zero(shift_bytes_right<1>(vlo)));
-    ASSERT_EQ(true, ext::all_zero(shift_bytes_right<sizeof(V)>(vhi)));
-
-    // Shifting by zero has no effect
-    ASSERT_VEC_EQ(vlo, shift_bytes_left<0>(vlo));
-    ASSERT_VEC_EQ(vlo, shift_bytes_right<0>(vlo));
-    ASSERT_VEC_EQ(vhi, shift_bytes_left<0>(vhi));
-    ASSERT_VEC_EQ(vhi, shift_bytes_right<0>(vhi));
 
     SIMD_ALIGN T in[N];
     const uint8_t* in_bytes = reinterpret_cast<const uint8_t*>(in);
@@ -1389,29 +1429,49 @@ void TestShiftBytes() {
 }
 
 template <typename T, class V>
-struct TestGetSet {
+struct TestSubset {
   void operator()() const {
-    constexpr size_t N = NumLanes<V>();
-    SIMD_ALIGN T lanes[N];
-
-    const V v0 = set_low(V(), T(0));
-    ASSERT_EQ(T(0), get_low(v0));
-    store(v0, lanes);
-    for (size_t i = 1; i < N; ++i) {
-      ASSERT_EQ(T(0), lanes[i]);
-    }
-
-    V v1 = set_low(V(), T(1));
-    ASSERT_EQ(T(1), get_low(v1));
-    store(v1, lanes);
-    for (size_t i = 1; i < N; ++i) {
-      ASSERT_EQ(T(0), lanes[i]);
-    }
-
-    v1 = set_low(V(), T(2));
-    ASSERT_EQ(T(2), get_low(v1));
+#if SIMD_ENABLE_ANY
+    const V v = Iota<V>(1);
+    // Same values after round-trip.
+#if SIMD_ENABLE_AVX2
+    const auto v256 = to_subset(vec256<T>(), v);
+#endif
+    const auto v128 = to_subset(vec128<T>(), v);
+    const auto v64 = to_subset(vec64<T>(), v);
+    const auto from128 = from_subset(V(), v128);
+    const auto from64 = from_subset(V(), v64);
+#if SIMD_ENABLE_AVX2
+    ASSERT_VEC_EQ(v, from_subset(V(), v256));
+#endif
+    ASSERT_VEC_EQ(v128, to_subset(vec128<T>(), from128));
+    ASSERT_VEC_EQ(v64, to_subset(vec64<T>(), from64));
+#endif
   }
 };
+
+template <typename T>
+void TestSubset32T() {
+#if SIMD_ENABLE_ANY
+  using V = vec<T>;
+  const V v = Iota<V>(1);
+  // Same values after round-trip.
+  const auto v32 = to_subset(vec32<T>(), v);
+  const auto from32 = from_subset(V(), v32);
+  ASSERT_VEC_EQ(v32, to_subset(vec32<T>(), from32));
+#endif
+}
+
+void TestSubset32() {
+  TestSubset32T<uint8_t>();
+  TestSubset32T<uint16_t>();
+  TestSubset32T<uint32_t>();
+  // No 64-bit types fit in 32 bits.
+  TestSubset32T<int8_t>();
+  TestSubset32T<int16_t>();
+  TestSubset32T<int32_t>();
+  TestSubset32T<float>();
+}
 
 template <typename T, int kLane>
 struct TestBroadcastR {
@@ -1461,7 +1521,7 @@ void TestBroadcast() {
 }
 
 template <typename T, class V>
-struct TestZip {
+struct TestInterleave {
   void operator()() const {
 // Not supported by scalar.h: zip(f32, f32) would need to return f32x2.
 #if SIMD_ENABLE_ANY
@@ -1477,8 +1537,8 @@ struct TestZip {
 
     SIMD_ALIGN T lo_lanes[N];
     SIMD_ALIGN T hi_lanes[N];
-    store(zip_lo(even, odd), lo_lanes);
-    store(zip_hi(even, odd), hi_lanes);
+    store(interleave_lo(even, odd), lo_lanes);
+    store(interleave_hi(even, odd), hi_lanes);
 
     const size_t kBlockT = 16 / sizeof(T);
     for (size_t i = 0; i < N; ++i) {
@@ -1490,6 +1550,50 @@ struct TestZip {
 #endif
   }
 };
+
+template <typename T>
+struct TestZipT {
+  void operator()() const {
+    using V = vec<T>;
+    constexpr size_t N = NumLanes<V>();
+    SIMD_ALIGN T even_lanes[N];
+    SIMD_ALIGN T odd_lanes[N];
+    for (size_t i = 0; i < N; ++i) {
+      even_lanes[i] = 2 * i + 0;
+      odd_lanes[i] = 2 * i + 1;
+    }
+    const V even = load(V(), even_lanes);
+    const V odd = load(V(), odd_lanes);
+
+    using WideV = decltype(zip_lo(even, odd));
+    using WideT = Lane<WideV>;
+    SIMD_ALIGN WideT lo_lanes[N / 2];
+    SIMD_ALIGN WideT hi_lanes[N / 2];
+    store(zip_lo(even, odd), lo_lanes);
+    store(zip_hi(even, odd), hi_lanes);
+
+    const size_t kBlockT = 16 / sizeof(WideT);
+    for (size_t i = 0; i < N / 2; ++i) {
+      const size_t block = i / kBlockT;
+      const size_t lo = (i % kBlockT) + block * 2 * kBlockT;
+      const size_t bits = sizeof(T) * 8;
+      const size_t expected_lo = ((lo + 1) << bits) + lo;
+      const size_t expected_hi = ((lo + kBlockT + 1) << bits) + lo + kBlockT;
+      ASSERT_EQ(T(expected_lo), lo_lanes[i]);
+      ASSERT_EQ(T(expected_hi), hi_lanes[i]);
+    }
+  }
+};
+
+void TestZip() {
+  TestZipT<uint8_t>();
+  TestZipT<uint16_t>();
+  TestZipT<uint32_t>();
+  // No 64-bit nor float.
+  TestZipT<int8_t>();
+  TestZipT<int16_t>();
+  TestZipT<int32_t>();
+}
 
 template <typename T, class V>
 struct TestShuffleT {
@@ -1564,13 +1668,13 @@ struct TestExtractR {
 };
 
 template <typename T, class V>
-struct TestExtractR<T, V, -1> {
+struct TestExtractR<T, V, 0> {
   void operator()() const {}
 };
 
 template <typename T, class V>
 struct TestExtractT {
-  void operator()() const { TestExtractR<T, V, sizeof(vec<T>)>()(); }
+  void operator()() const { TestExtractR<T, V, sizeof(vec<T>)-1>()(); }
 };
 
 void TestExtract() {
@@ -1666,147 +1770,71 @@ struct TestSelect {
   }
 };
 
-// Basic test: iota values remain unchanged. Called by Test*Promote.
-template <typename T>
-void TestPromote() {
-  using HalfV = Half<vec<T>>;
-  const HalfV v = Iota<HalfV>();
-  const auto wide = promote(v);
-  using WideV = decltype(wide);
-  const auto expected_wide = Iota<WideV>();
-  ASSERT_VEC_EQ(expected_wide, wide);
+template <class FromV, class ToV, typename NarrowT>
+void TestConvertT() {
+  using FromT = Lane<FromV>;
+  using ToT = Lane<ToV>;
+
+  const FromV from = Iota<FromV>(1);
+  const FromV from_n1 = set1(FromV(), FromT(NarrowT(-1)));
+  const FromV from_min = set1(FromV(), FromT(LimitsMin<NarrowT>()));
+  const FromV from_max = set1(FromV(), FromT(LimitsMax<NarrowT>()));
+  const ToV to = Iota<ToV>(1);
+  const ToV to_n1 = set1(ToV(), ToT(NarrowT(-1)));
+  const ToV to_min = set1(ToV(), ToT(LimitsMin<NarrowT>()));
+  const ToV to_max = set1(ToV(), ToT(LimitsMax<NarrowT>()));
+  ASSERT_VEC_EQ(to, convert_to(ToT(), from));
+  ASSERT_VEC_EQ(to_n1, convert_to(ToT(), from_n1));
+  ASSERT_VEC_EQ(to_min, convert_to(ToT(), from_min));
+  ASSERT_VEC_EQ(to_max, convert_to(ToT(), from_max));
 }
 
-template <typename T>
-void TestUnsignedPromote() {
-  TestPromote<T>();
-  using HalfV = Half<vec<T>>;
-  const HalfV v = Iota<HalfV>(1);
-  using WideV = decltype(promote(v));
-  using WideT = Lane<WideV>;
-
-  // Test extreme value: the maximum.
-  const HalfV vpm = set1(HalfV(), UnsignedMax<T>());
-  const WideV wpm = set1(WideV(), WideT(UnsignedMax<T>()));
-  ASSERT_VEC_EQ(wpm, promote(vpm));
+template <typename FromT, typename ToT>
+void TestPromoteT() {
+  using ToV = vec<ToT>;
+  // Deduce FromV as the return value of the corresponding demotion.
+  TestConvertT<decltype(convert_to(FromT(), ToV())), ToV, FromT>();
 }
 
-template <typename T>
-void TestSignedPromote() {
-  TestPromote<T>();
-  using HalfV = Half<vec<T>>;
-  const HalfV v = Iota<HalfV>();
-  using WideV = decltype(promote(v));
-  using WideT = Lane<WideV>;
-
-  // Test other values: -1, max, min.
-  const HalfV vn1 = set1(HalfV(), T(-1));
-  const HalfV vpm = set1(HalfV(), SignedMax<T>());
-  const HalfV vnm = set1(HalfV(), std::numeric_limits<T>::lowest());
-  const WideV wn1 = set1(WideV(), WideT(-1));
-  const WideV wpm = set1(WideV(), WideT(SignedMax<T>()));
-  const WideV wnm = set1(WideV(), WideT(std::numeric_limits<T>::lowest()));
-  ASSERT_VEC_EQ(wn1, promote(vn1));
-  ASSERT_VEC_EQ(wpm, promote(vpm));
-  ASSERT_VEC_EQ(wnm, promote(vnm));
+template <typename FromT, typename ToT>
+void TestDemoteT() {
+  using FromV = vec<FromT>;
+  TestConvertT<FromV, decltype(convert_to(ToT(), FromV())), ToT>();
 }
 
-void TestPromote() {
-  TestUnsignedPromote<uint8_t>();
-  TestUnsignedPromote<uint16_t>();
-  TestUnsignedPromote<uint32_t>();
-  // No u64.
+void TestConvert() {
+  // Promote: no u64,i64
+  TestPromoteT<uint8_t, int16_t>();
+  TestPromoteT<uint8_t, int32_t>();
+  TestPromoteT<uint16_t, int32_t>();
+  TestPromoteT<int8_t, int16_t>();
+  TestPromoteT<int8_t, int32_t>();
+  TestPromoteT<int16_t, int32_t>();
+  // Cannot deduce FromV because we don't have the corresponding demotion.
+  // TestPromoteT<uint32_t, uint64_t>();
+  // TestPromoteT<int32_t, int64_t>();
 
-  TestSignedPromote<int8_t>();
-  TestSignedPromote<int16_t>();
-  TestSignedPromote<int32_t>();
-  // No i64,float.
-}
-
-template <typename T>
-void TestDemoteToUnsignedT() {
-  using V = vec<T>;
-  constexpr size_t N = NumLanes<V>();
-
-  // Verify order.
-  const V v = Iota<V>(1);
-  const auto narrow = demote_to_unsigned(v);
-  using NarrowV = decltype(narrow);
-  using NarrowT = Lane<NarrowV>;
-  SIMD_ALIGN NarrowT lanes[N];
-  store(narrow, lanes);
-  for (size_t i = 0; i < N; ++i) {
-    ASSERT_EQ(NarrowT(1 + i), lanes[i]);
-  }
-
-  // Test extreme values of the input.
-  const V v0 = setzero(V());
-  const V vp1 = set1(V(), T(1));
-  const V vpm = set1(V(), SignedMax<T>());
-  const V vnm = set1(V(), std::numeric_limits<T>::lowest());
-
-  const NarrowV n0 = set1(NarrowV(), NarrowT(0));
-  const NarrowV n1 = set1(NarrowV(), NarrowT(1));
-  const NarrowV npm = set1(NarrowV(), UnsignedMax<NarrowT>());
-  const NarrowV nnm = n0;
-  ASSERT_VEC_EQ(n0, demote_to_unsigned(v0));
-  ASSERT_VEC_EQ(n1, demote_to_unsigned(vp1));
-  ASSERT_VEC_EQ(npm, demote_to_unsigned(vpm));
-  ASSERT_VEC_EQ(nnm, demote_to_unsigned(vnm));
-}
-
-template <typename T>
-void TestDemoteToSignedT() {
-  using V = vec<T>;
-  constexpr size_t N = NumLanes<V>();
-
-  // Verify order.
-  const V v = Iota<V>(1);
-  const auto narrow = demote(v);
-  using NarrowV = decltype(narrow);
-  using NarrowT = Lane<NarrowV>;
-  SIMD_ALIGN NarrowT lanes[N];
-  store(narrow, lanes);
-  for (size_t i = 0; i < N; ++i) {
-    ASSERT_EQ(NarrowT(1 + i), lanes[i]);
-  }
-
-  // Test extreme values of the input.
-  const V v0 = setzero(V());
-  const V vp1 = set1(V(), T(1));
-  const V vpm = set1(V(), SignedMax<T>());
-  const V vnm = set1(V(), std::numeric_limits<T>::lowest());
-
-  const NarrowV n0 = setzero(NarrowV());
-  const NarrowV np1 = set1(NarrowV(), NarrowT(1));
-  const NarrowV npm = set1(NarrowV(), SignedMax<NarrowT>());
-  const NarrowV nnm = set1(NarrowV(), std::numeric_limits<NarrowT>::lowest());
-
-  ASSERT_VEC_EQ(n0, demote(v0));
-  ASSERT_VEC_EQ(np1, demote(vp1));
-  ASSERT_VEC_EQ(npm, demote(vpm));
-  ASSERT_VEC_EQ(nnm, demote(vnm));
-}
-
-void TestDemote() {
-  // No i8,i64.
-  TestDemoteToUnsignedT<int16_t>();
-  TestDemoteToUnsignedT<int32_t>();
-  TestDemoteToSignedT<int16_t>();
-  TestDemoteToSignedT<int32_t>();
+  // Demote
+  TestDemoteT<int16_t, int8_t>();
+  TestDemoteT<int32_t, int8_t>();
+  TestDemoteT<int32_t, int16_t>();
+  TestDemoteT<int16_t, uint8_t>();
+  TestDemoteT<int32_t, uint8_t>();
+  TestDemoteT<int32_t, uint16_t>();
 }
 
 void TestSwizzle() {
   TestShiftBytes();
-  ForeachLaneType<TestGetSet>();
+  ForeachLaneType<TestSubset>();
+  TestSubset32();
   TestBroadcast();
-  ForeachLaneType<TestZip>();
+  ForeachLaneType<TestInterleave>();
+  TestZip();
   TestShuffle();
   TestExtract();
   TestSpecialShuffles();
   ForeachLaneType<TestSelect>();
-  TestPromote();
-  TestDemote();
+  TestConvert();
 }
 
 }  // namespace swizzle
@@ -1826,9 +1854,10 @@ void RunTests() {
 
 // Instantiate for the current target.
 template <>
-void SimdTest::operator()<SIMD_TARGET>() {
+void SimdTest::operator()<SIMD_TARGET>(NotifyFailure notify_failure) {
+  SIMD_NAMESPACE::g_notify_failure = notify_failure;
   SIMD_NAMESPACE::RunTests();
   targets |= SIMD_TARGET::value;
 }
 
-}  // namespace simd
+}  // namespace pik

@@ -90,25 +90,25 @@ SIMD_INLINE vec1<T> setzero(vec1<T>) {
   return vec1<T>(T(0));
 }
 
-template <typename T>
-SIMD_INLINE vec1<T> set1(vec1<T>, const T t) {
-  return vec1<T>(t);
+template <typename Lane, typename T>
+SIMD_INLINE vec1<Lane> set1(vec1<Lane>, const T t) {
+  return vec1<Lane>(t);
 }
 
-// ------------------------------ Half
+// ------------------------------ Cast to/from vector subset (zero-cost)
 
 template <typename T>
-vec1<T> lower_half(const vec1<T> v) {
+vec1<T> to_subset(vec1<T>, const vec1<T> v) {
   return v;
 }
 
 template <typename T>
-vec1<T> upper_half(const vec1<T> v) {
+vec1<T> from_subset(vec1<T>, const vec1<T> v) {
   return v;
 }
 
 template <typename T>
-vec1<T> from_half(const vec1<T> v) {
+vec1<T> to_other_half(const vec1<T> v) {
   return v;
 }
 
@@ -246,6 +246,13 @@ SIMD_INLINE i16x1 mulhi(const i16x1 a, const i16x1 b) {
   return i16x1((int32_t(a) * int32_t(b)) >> 16);
 }
 
+// Returns (((a * b) >> 14) + 1) >> 1.
+SIMD_INLINE i16x1 mulhrs(const i16x1 a, const i16x1 b) {
+  const int rounded = ((int16_t(a) * int16_t(b)) + (1 << 14)) >> 15;
+  const int clamped = SIMD_MIN(SIMD_MAX(-32768, rounded), 32767);
+  return i16x1(clamped);
+}
+
 }  // namespace ext
 
 // Multiplies even lanes (0, 2 ..) and returns the double-wide result.
@@ -308,12 +315,16 @@ SIMD_INLINE f64x1 sqrt(const f64x1 v) {
 
 // ------------------------------ Floating-point rounding
 
-// Toward nearest integer
+// Approximation of round-to-nearest for numbers representable as integers.
 SIMD_INLINE f32x1 round_nearest(const f32x1 v) {
-  return f32x1(static_cast<int>(float(v) + 0.5f));
+  const float f = v;
+  const float bias = f < 0.0f ? -0.5f : 0.5f;
+  return f32x1(static_cast<int32_t>(f + bias));
 }
 SIMD_INLINE f64x1 round_nearest(const f64x1 v) {
-  return f64x1(static_cast<int>(double(v) + 0.5));
+  const double f = v;
+  const double bias = f < 0.0 ? -0.5 : 0.5;
+  return f64x1(static_cast<int64_t>(f + bias));
 }
 
 template <typename Float, typename Bits, int kMantissaBits, int kExponentBits,
@@ -399,29 +410,32 @@ SIMD_INLINE f64x1 round_neg_inf(const f64x1 v) {
 SIMD_INLINE f32x1 f32_from_i32(const i32x1 v) {
   return f32x1(static_cast<float>(v));
 }
+// Approximation of round-to-nearest for numbers representable as int32_t.
 SIMD_INLINE i32x1 i32_from_f32(const f32x1 v) {
-  return i32x1(static_cast<int>(v));
+  const float f = v;
+  const float bias = f < 0.0f ? -0.5f : 0.5f;
+  return i32x1(f + bias);
 }
 
 // ------------------------------ Cast to/from floating-point representation
 
-SIMD_INLINE f32x1 f32_from_bits(const i32x1 v) {
+SIMD_INLINE f32x1 float_from_bits(const i32x1 v) {
   float f;
   CopyBytes(v, &f);
   return f32x1(f);
 }
-SIMD_INLINE i32x1 bits_from_f32(const f32x1 v) {
+SIMD_INLINE i32x1 bits_from_float(const f32x1 v) {
   int32_t i;
   CopyBytes(v, &i);
   return i32x1(i);
 }
 
-SIMD_INLINE f64x1 f64_from_bits(const i64x1 v) {
+SIMD_INLINE f64x1 float_from_bits(const i64x1 v) {
   double f;
   CopyBytes(v, &f);
   return f64x1(f);
 }
-SIMD_INLINE i64x1 bits_from_f64(const f64x1 v) {
+SIMD_INLINE i64x1 bits_from_float(const f64x1 v) {
   int64_t i;
   CopyBytes(v, &i);
   return i64x1(i);
@@ -614,27 +628,6 @@ SIMD_INLINE void stream(const vec1<T> v, T* SIMD_RESTRICT aligned) {
   return store(v, aligned);
 }
 
-#if !SIMD_ENABLE_SSE4
-
-SIMD_INLINE void stream32(const uint32_t t, uint32_t* SIMD_RESTRICT aligned) {
-  CopyBytes(t, aligned);
-}
-
-SIMD_INLINE void stream64(const uint64_t t, uint64_t* SIMD_RESTRICT aligned) {
-  CopyBytes(t, aligned);
-}
-
-SIMD_INLINE void store_fence() {}
-
-// ------------------------------ Cache control
-
-template <typename T>
-SIMD_INLINE void prefetch(const T*) {}
-
-SIMD_INLINE void flush_cacheline(const void*) {}
-
-#endif
-
 // ================================================== SWIZZLE
 
 // ------------------------------ Shift vector by constant #bytes
@@ -671,18 +664,6 @@ SIMD_INLINE vec1<T> extract_concat_bytes(const vec1<T> hi, const vec1<T> lo) {
   return vec1<T>(ret);
 }
 
-// ------------------------------ Get/set least-significant lane
-
-template <typename T>
-SIMD_INLINE T get_low(const vec1<T> v) {
-  return static_cast<T>(v);
-}
-
-template <typename T>
-SIMD_INLINE vec1<T> set_low(vec1<T>, const T t) {
-  return vec1<T>(t);
-}
-
 // ------------------------------ Broadcast/splat any lane
 
 template <int kLane, typename T>
@@ -713,37 +694,39 @@ SIMD_INLINE vec1<T> shuffle_bytes(const vec1<T> v, const vec1<T> from) {
 
 // ------------------------------ Zip/interleave/unpack
 
-// Not supported - integer unpack could return double-wide lanes, but for
-// floats/doubles the two resulting lanes do not fit in vec1.
+// interleave_* are not supported because they return two lanes.
 
-// ------------------------------ Cast to double-width lane type
-
-// Unsigned: zero-extend.
-SIMD_INLINE u16x1 promote(const u8x1 v) { return u16x1(uint16_t(v)); }
-SIMD_INLINE u32x1 promote(const u16x1 v) { return u32x1(uint32_t(v)); }
-SIMD_INLINE u64x1 promote(const u32x1 v) { return u64x1(uint64_t(v)); }
-
-// Signed: replicate sign bit.
-SIMD_INLINE i16x1 promote(const i8x1 v) { return i16x1(int8_t(v)); }
-SIMD_INLINE i32x1 promote(const i16x1 v) { return i32x1(int32_t(v)); }
-SIMD_INLINE i64x1 promote(const i32x1 v) { return i64x1(int64_t(v)); }
-
-// ------------------------------ Cast to half-width lane types
-
-// Converts to half-width type after saturating.
-
-SIMD_INLINE u8x1 demote_to_unsigned(const i16x1 v) {
-  return u8x1(SIMD_MIN(SIMD_MAX(0, int32_t(v)), 255));
+SIMD_INLINE u16x1 zip_lo(const u8x1 a, const u8x1 b) {
+  return u16x1((uint32_t(b) << 8) + uint32_t(a));
 }
-SIMD_INLINE u16x1 demote_to_unsigned(const i32x1 v) {
-  return u16x1(SIMD_MIN(SIMD_MAX(0, int32_t(v)), 65535));
+SIMD_INLINE u32x1 zip_lo(const u16x1 a, const u16x1 b) {
+  return u32x1((uint32_t(b) << 16) + uint32_t(a));
+}
+SIMD_INLINE u64x1 zip_lo(const u32x1 a, const u32x1 b) {
+  return u64x1((uint64_t(b) << 32) + uint64_t(a));
+}
+SIMD_INLINE i16x1 zip_lo(const i8x1 a, const i8x1 b) {
+  return i16x1((int32_t(b) << 8) + int32_t(a));
+}
+SIMD_INLINE i32x1 zip_lo(const i16x1 a, const i16x1 b) {
+  return i32x1((int32_t(b) << 16) + int32_t(a));
+}
+SIMD_INLINE i64x1 zip_lo(const i32x1 a, const i32x1 b) {
+  return i64x1((int64_t(b) << 32) + int64_t(a));
 }
 
-SIMD_INLINE i8x1 demote(const i16x1 v) {
-  return i8x1(SIMD_MIN(SIMD_MAX(-128, int32_t(v)), 127));
+template <typename T>
+SIMD_INLINE auto zip_hi(const vec1<T> a, const vec1<T> b)
+    -> decltype(zip_lo(a, b)) {
+  return zip_lo(a, b);
 }
-SIMD_INLINE i16x1 demote(const i32x1 v) {
-  return i16x1(SIMD_MIN(SIMD_MAX(-32768, int32_t(v)), 32767));
+
+// ------------------------------ Convert
+
+template <typename ToT, class FromV>
+SIMD_INLINE vec1<ToT> convert_to(ToT, const FromV from) {
+  const Lane<FromV> t = from;
+  return vec1<ToT>(static_cast<ToT>(t));
 }
 
 // ------------------------------ Select/blend

@@ -1,14 +1,15 @@
 ## Efficient and portable SIMD wrapper
 
 This library provides type-safe and source-code portable wrappers over existing
-platform-specific intrinsics.
+platform-specific intrinsics. Its design aims for simplicity, efficiency and
+immediate usability with current compilers.
 
 ## Current status
 
 Implemented for SSE4, AVX2 and scalar (portable) targets, each with unit tests.
 
 `blaze build -c opt simd:all &&
-blaze-bin/simd_test`
+blaze-bin/simd/simd_test`
 
 ## Design philosophy
 
@@ -29,10 +30,11 @@ blaze-bin/simd_test`
     use, as evidenced by widespread use of `HADDPS`. Performance acceptance
     tests may detect large regressions, but do not help choose the approach
     during initial development. Analysis tools can warn about some potential
-    inefficiencies, but likely not all. We instead provide a carefully chosen
+    inefficiencies, but likely not all. We instead provide [a carefully chosen
     set of vector types and operations that are efficient on all target
-    platforms (PPC8, SSE4/AVX2+, ARMv8), plus some useful but less performance-
-    portable operations in an `ext` namespace to make their cost visible.
+    platforms][instmtx] (PPC8, SSE4/AVX2+, ARMv8), plus some useful but less
+    performance-portable operations in an `ext` namespace to make their cost
+    visible.
 
 *   Future SIMD hardware features are difficult to predict. For example, AVX2
     came with surprising semantics (almost no interaction between 128-bit
@@ -43,7 +45,7 @@ blaze-bin/simd_test`
 *   Masking is not yet widely supported on current CPUs. It is difficult to
     define an interface that provides access to all platform features while
     retaining performance portability. The P0214R5 proposal lacks support for
-    AVX-512 zeromasks. We suggest standardizing masking only after the
+    AVX-512/ARM SVE zeromasks. We suggest standardizing masking only after the
     community has gained more experience with it.
 
 *   "Width-agnostic" SIMD is more future-proof than user-specified fixed sizes.
@@ -54,11 +56,10 @@ blaze-bin/simd_test`
     support vectors of 128-bit size on all platforms, and 256-bit vectors in
     AVX2-specific applications.
 
-*   Compiler requirements should be modest. For open-source projects, we are
-    obligated to support 5-6 year old compilers because some users cannot
-    upgrade. We provide an API that enables efficient code on older compilers
-    (GCC 4.8) but takes advantage of newer features (e.g. function-specific
-    target attributes) when available.
+*   The API and its implementation should be usable and efficient with commonly
+    used compilers. Some of our open-source users cannot upgrade, so we need to
+    support 4-6 year old compilers (e.g. GCC 4.8). However, we take advantage of
+    newer features such as function-specific target attributes when available.
 
 *   Efficient and safe runtime dispatch is important. Modules such as image or
     video codecs are typically embedded into larger applications such as
@@ -82,7 +83,8 @@ blaze-bin/simd_test`
 
 *   The core API should be compact and easy to learn. We provide only the few
     dozen operations which are necessary and sufficient for most of the 150+
-    SIMD applications we examined.
+    SIMD applications we examined. As a result, the quick_reference card in
+    `g3doc/` is only 6 pages long.
 
 ## Differences versus [P0214R5 proposal](https://goo.gl/zKW4SA)
 
@@ -114,23 +116,28 @@ blaze-bin/simd_test`
     multiple flags on recent compilers, and defending against ODR violations on
     older compilers (see HOWTO section below).
 
+1.  Using built-in PPC vector types without any wrapper. This leads to much
+    better code generation with GCC 4.8: https://godbolt.org/g/KYp7ew.
+    By contrast, P0214R5 requires a wrapper class. We avoid this by using only
+    the member operators provided by the PPC vectors; all other functions and
+    typedefs are non-members and the user-visible `vec<T, Target>` interface is
+    an alias template.
+
 *   Omitting inefficient or non-performance-portable operations such as `hmax`,
     `operator[]`, and unsupported integer comparisons. Applications can often
     replace these operations at lower cost than emulating them.
 
 *   Omitting `long double` types: these are not commonly available in hardware.
 
+*   Simple implementation, less than a tenth of the size of the Vc library
+    from which P0214 was derived (98,000 lines in https://github.com/VcDevel/Vc
+    according to the gloc Chrome extension).
+
 *   Avoiding hidden performance costs. P0214R5 allows implicit conversions from
     integer to float, which costs 3-4 cycles on x86. We make these conversions
     explicit to ensure their cost is visible.
 
-*   Using built-in PPC vector types without any wrapper to ensure good code
-    generation. P0214R5 requires an additional wrapper class. We avoid this by
-    using only the member operators provided by the PPC vectors; all other
-    functions and typedefs are non-members and the user-visible `vec<T, Target>`
-    interface is an alias template.
-
-## Prior design experience
+## Prior API designs
 
 The author has been writing SIMD code since 2002: first via assembly language,
 then intrinsics, later Intel's `F32vec4` wrapper, followed by three generations
@@ -245,3 +252,9 @@ int GetMostSignificantBits(const uint8_t* SIMD_RESTRICT from) {
   return ext::movemask(bytes);  // 16 bits, one from each byte
 }
 ```
+
+## Additional resources
+
+*   [Overview of instructions per operation on different architectures][instmtx]
+
+[instmtx]: instruction_matrix.pdf

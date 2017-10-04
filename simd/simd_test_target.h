@@ -15,18 +15,21 @@
 #ifndef SIMD_SIMD_TEST_TARGET_H_
 #define SIMD_SIMD_TEST_TARGET_H_
 
-namespace simd {
+namespace pik {
 
-// Call via ForeachTarget(SimdTest()). Prints a message to stderr and exits
-// immediately after the first test failure. Otherwise, ORs Target::value
-// (e.g. SIMD_SSE4) into "targets" to show which instruction set(s) were used.
+typedef void (*NotifyFailure)(int line, const char* vec, int lane,
+                              const char* expected, const char* actual);
+
+// Call via ForeachTarget(SimdTest()). Calls "notify_failure" on every test
+// failure. Otherwise, ORs Target::value (e.g. SIMD_SSE4) into "targets" to show
+// which instruction set(s) were used. Thread-hostile.
 struct SimdTest {
   template <class Target>
-  void operator()();
+  void operator()(NotifyFailure notify_failure);
 
   int targets = 0;
 };
 
-}  // namespace simd
+}  // namespace pik
 
 #endif  // SIMD_SIMD_TEST_TARGET_H_

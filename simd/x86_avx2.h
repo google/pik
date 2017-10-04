@@ -21,6 +21,8 @@
 // Avoid compile errors when generating deps.mk.
 #ifndef SIMD_DEPS
 
+// ================================================== vec256
+
 // Primary template for 1-8 byte integer lanes.
 template <typename T>
 struct Raw256 {
@@ -35,6 +37,14 @@ struct Raw256<float> {
 template <>
 struct Raw256<double> {
   using type = __m256d;
+};
+
+// Returned by load_dup128.
+template <typename T>
+struct dup128x2 {
+  using Raw = typename Raw256<T>::type;
+  explicit dup128x2(const Raw v) : raw(v) {}
+  Raw raw;
 };
 
 template <typename Lane>
@@ -148,54 +158,68 @@ SIMD_ATTR_AVX2 SIMD_INLINE i32x8 set1(i32x8, const int32_t t) {
 SIMD_ATTR_AVX2 SIMD_INLINE i64x4 set1(i64x4, const int64_t t) {
   return i64x4(_mm256_set1_epi64x(t));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE f32x8 set1(f32x8, const float t) {
+template <typename T>
+SIMD_ATTR_AVX2 SIMD_INLINE f32x8 set1(f32x8, const T t) {
   return f32x8(_mm256_set1_ps(t));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE f64x4 set1(f64x4, const double t) {
+template <typename T>
+SIMD_ATTR_AVX2 SIMD_INLINE f64x4 set1(f64x4, const T t) {
   return f64x4(_mm256_set1_pd(t));
 }
 
-// ------------------------------ Half
-
-template <class T>
-struct HalfT<vec256<T>> {
-  using type = vec128<T>;
-};
+// ------------------------------ Cast to/from vector subset (zero-cost)
 
 template <typename T>
-SIMD_ATTR_AVX2 SIMD_INLINE vec128<T> lower_half(const vec256<T> v) {
+SIMD_ATTR_AVX2 SIMD_INLINE vec256<T> to_subset(vec256<T>, const vec256<T> v) {
+  return v;
+}
+template <typename T>
+SIMD_ATTR_AVX2 SIMD_INLINE vec128<T> to_subset(vec128<T>, const vec256<T> v) {
   return vec128<T>(_mm256_castsi256_si128(v));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE f32x4 lower_half(const f32x8 v) {
+SIMD_ATTR_AVX2 SIMD_INLINE f32x4 to_subset(f32x4, const f32x8 v) {
   return f32x4(_mm256_castps256_ps128(v));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE f64x2 lower_half(const f64x4 v) {
+SIMD_ATTR_AVX2 SIMD_INLINE f64x2 to_subset(f64x2, const f64x4 v) {
   return f64x2(_mm256_castpd256_pd128(v));
 }
 
 template <typename T>
-SIMD_ATTR_AVX2 SIMD_INLINE vec128<T> upper_half(const vec256<T> v) {
-  return vec128<T>(_mm256_extracti128_si256(v, 1));
-}
-SIMD_ATTR_AVX2 SIMD_INLINE f32x4 upper_half(const f32x8 v) {
-  return f32x4(_mm256_extractf128_ps(v, 1));
-}
-SIMD_ATTR_AVX2 SIMD_INLINE f64x2 upper_half(const f64x4 v) {
-  return f64x2(_mm256_extractf128_pd(v, 1));
+SIMD_ATTR_AVX2 SIMD_INLINE vec64<T> to_subset(vec64<T>, const vec256<T> v) {
+  return vec64<T>(to_subset(vec128<T>(), v));
 }
 
-// Returns full_vec with undefined values in the upper half.
 template <typename T>
-SIMD_ATTR_AVX2 SIMD_INLINE vec256<T> from_half(const vec128<T> v) {
+SIMD_ATTR_AVX2 SIMD_INLINE vec32<T> to_subset(vec32<T>, const vec256<T> v) {
+  return vec32<T>(to_subset(vec128<T>(), v));
+}
+
+template <typename T>
+SIMD_ATTR_AVX2 SIMD_INLINE vec256<T> from_subset(vec256<T>, const vec256<T> v) {
+  return v;
+}
+// Upper lane(s) are undefined.
+template <typename T>
+SIMD_ATTR_AVX2 SIMD_INLINE vec256<T> from_subset(vec256<T>, const vec128<T> v) {
   return vec256<T>(_mm256_castsi128_si256(v));
 }
 template <>
-SIMD_ATTR_AVX2 SIMD_INLINE f32x8 from_half(const f32x4 v) {
+SIMD_ATTR_AVX2 SIMD_INLINE f32x8 from_subset(f32x8, const f32x4 v) {
   return f32x8(_mm256_castps128_ps256(v));
 }
 template <>
-SIMD_ATTR_AVX2 SIMD_INLINE f64x4 from_half(const f64x2 v) {
+SIMD_ATTR_AVX2 SIMD_INLINE f64x4 from_subset(f64x4, const f64x2 v) {
   return f64x4(_mm256_castpd128_pd256(v));
+}
+
+template <typename T>
+SIMD_ATTR_AVX2 SIMD_INLINE vec256<T> from_subset(vec256<T>, const vec64<T> v) {
+  return from_subset(vec256<T>(), vec128<T>(v));
+}
+
+template <typename T>
+SIMD_ATTR_AVX2 SIMD_INLINE vec256<T> from_subset(vec256<T>, const vec32<T> v) {
+  return from_subset(vec256<T>(), vec128<T>(v));
 }
 
 // ================================================== ARITHMETIC
@@ -485,6 +509,10 @@ SIMD_ATTR_AVX2 SIMD_INLINE i16x16 mulhi(const i16x16 a, const i16x16 b) {
   return i16x16(_mm256_mulhi_epi16(a, b));
 }
 
+SIMD_ATTR_AVX2 SIMD_INLINE i16x16 mulhrs(const i16x16 a, const i16x16 b) {
+  return i16x16(_mm256_mulhrs_epi16(a, b));
+}
+
 }  // namespace ext
 
 // Multiplies even lanes (0, 2 ..) and places the double-wide result into
@@ -599,25 +627,34 @@ SIMD_ATTR_AVX2 SIMD_INLINE f64x4 round_neg_inf(const f64x4 v) {
 SIMD_ATTR_AVX2 SIMD_INLINE f32x8 f32_from_i32(const i32x8 v) {
   return f32x8(_mm256_cvtepi32_ps(v));
 }
+// Uses current rounding mode, which defaults to round-to-nearest.
 SIMD_ATTR_AVX2 SIMD_INLINE i32x8 i32_from_f32(const f32x8 v) {
   return i32x8(_mm256_cvtps_epi32(v));
 }
 
 // ------------------------------ Cast to/from floating-point representation
 
-SIMD_ATTR_AVX2 SIMD_INLINE f32x8 f32_from_bits(const i32x8 v) {
+SIMD_ATTR_AVX2 SIMD_INLINE f32x8 float_from_bits(const u32x8 v) {
   return f32x8(_mm256_castsi256_ps(v));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE i32x8 bits_from_f32(const f32x8 v) {
+SIMD_ATTR_AVX2 SIMD_INLINE f32x8 float_from_bits(const i32x8 v) {
+  return f32x8(_mm256_castsi256_ps(v));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE i32x8 bits_from_float(const f32x8 v) {
   return i32x8(_mm256_castps_si256(v));
 }
 
-SIMD_ATTR_AVX2 SIMD_INLINE f64x4 f64_from_bits(const i64x4 v) {
+SIMD_ATTR_AVX2 SIMD_INLINE f64x4 float_from_bits(const u64x4 v) {
   return f64x4(_mm256_castsi256_pd(v));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE i64x4 bits_from_f64(const f64x4 v) {
+SIMD_ATTR_AVX2 SIMD_INLINE f64x4 float_from_bits(const i64x4 v) {
+  return f64x4(_mm256_castsi256_pd(v));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE i64x4 bits_from_float(const f64x4 v) {
   return i64x4(_mm256_castpd_si256(v));
 }
+
+// ------------------------------ Horizontal sum (reduction)
 
 // "Extensions": useful but quite performance-portable operations. We add
 // functions to this namespace in multiple places.
@@ -631,7 +668,9 @@ SIMD_ATTR_AVX2 SIMD_INLINE u64x4 horz_sum(const u8x32 v) {
 // Supported for {uif}32x8, {uif}64x4. Returns the sum in each lane.
 template <typename T>
 SIMD_ATTR_AVX2 SIMD_INLINE vec128<T> horz_sum(const vec256<T> v) {
-  return horz_sum(upper_half(v)) + horz_sum(lower_half(v));
+  const vec128<T> v0 = to_subset(vec128<T>(), v);
+  const vec128<T> v1 = to_other_half(v);
+  return horz_sum(v0 + v1);
 }
 
 }  // namespace ext
@@ -870,20 +909,20 @@ load_unaligned<double>(f64x4, const double* SIMD_RESTRICT p) {
 // Loads 128 bit and duplicates into both 128-bit halves. This avoids the
 // 3-cycle cost of moving data between 128-bit halves and avoids port 5.
 template <typename T>
-SIMD_ATTR_AVX2 SIMD_INLINE vec256<T> load_dup128(
+SIMD_ATTR_AVX2 SIMD_INLINE dup128x2<T> load_dup128(
     vec256<T>, const T* const SIMD_RESTRICT p) {
   // NOTE: Clang 3.9 generates VINSERTF128; 4 yields the desired VBROADCASTI128.
-  return vec256<T>(_mm256_broadcastsi128_si256(load(vec128<T>(), p)));
+  return dup128x2<T>(_mm256_broadcastsi128_si256(load(vec128<T>(), p)));
 }
-template <>
-SIMD_ATTR_AVX2 SIMD_INLINE f32x8
-load_dup128<float>(f32x8, const float* const SIMD_RESTRICT p) {
-  return f32x8(_mm256_broadcast_ps(reinterpret_cast<const __m128*>(p)));
+SIMD_ATTR_AVX2 SIMD_INLINE dup128x2<float> load_dup128(
+    f32x8, const float* const SIMD_RESTRICT p) {
+  return dup128x2<float>(
+      _mm256_broadcast_ps(reinterpret_cast<const __m128*>(p)));
 }
-template <>
-SIMD_ATTR_AVX2 SIMD_INLINE f64x4
-load_dup128<double>(f64x4, const double* const SIMD_RESTRICT p) {
-  return f64x4(_mm256_broadcast_pd(reinterpret_cast<const __m128d*>(p)));
+SIMD_ATTR_AVX2 SIMD_INLINE dup128x2<double> load_dup128(
+    f64x4, const double* const SIMD_RESTRICT p) {
+  return dup128x2<double>(
+      _mm256_broadcast_pd(reinterpret_cast<const __m128d*>(p)));
 }
 
 // ------------------------------ Store all lanes
@@ -940,9 +979,22 @@ SIMD_ATTR_AVX2 SIMD_INLINE void stream<double>(const f64x4 v,
   _mm256_stream_pd(aligned, v);
 }
 
-// stream32/64, store_fence and cache control already defined by x86_sse4.h.
+// stream(u32/64), store_fence and cache control already defined by x86_sse4.h.
 
 // ================================================== SWIZZLE
+
+// ------------------------------ Extract other half (see to_subset)
+
+template <typename T>
+SIMD_ATTR_AVX2 SIMD_INLINE vec128<T> to_other_half(const vec256<T> v) {
+  return vec128<T>(_mm256_extracti128_si256(v, 1));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE f32x4 to_other_half(const f32x8 v) {
+  return f32x4(_mm256_extractf128_ps(v, 1));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE f64x2 to_other_half(const f64x4 v) {
+  return f64x2(_mm256_extractf128_pd(v, 1));
+}
 
 // ------------------------------ Shift vector by constant #bytes
 
@@ -965,42 +1017,6 @@ template <int kBytes, typename T>
 SIMD_ATTR_AVX2 SIMD_INLINE vec256<T> extract_concat_bytes(const vec256<T> hi,
                                                           const vec256<T> lo) {
   return vec256<T>(_mm256_alignr_epi8(hi, lo, kBytes));
-}
-
-// ------------------------------ Get/set least-significant lane
-
-template <typename T>
-SIMD_ATTR_AVX2 SIMD_INLINE T get_low(const vec256<T> v) {
-  const vec128<T> lo(_mm256_castsi256_si128(v));
-  return static_cast<T>(_mm_cvtsi128_si64(lo));
-}
-template <>
-SIMD_ATTR_AVX2 SIMD_INLINE float get_low<float>(const f32x8 v) {
-  const f32x4 lo(_mm256_castps256_ps128(v));
-  return _mm_cvtss_f32(lo);
-}
-template <>
-SIMD_ATTR_AVX2 SIMD_INLINE double get_low<double>(const f64x4 v) {
-  const f64x2 lo(_mm256_castpd256_pd128(v));
-  return _mm_cvtsd_f64(lo);
-}
-
-// Sets least-significant lane and zero-fills the other lanes.
-template <typename T>
-SIMD_ATTR_AVX2 SIMD_INLINE vec256<T> set_low(vec256<T>, const T t) {
-  const __m256i hi = _mm256_setzero_si256();
-  const __m128i lo = _mm_cvtsi64_si128(t);
-  return vec256<T>(_mm256_inserti128_si256(hi, lo, 0));  // extra op
-}
-SIMD_ATTR_AVX2 SIMD_INLINE f32x8 set_low(f32x8, const float t) {
-  const __m256 hi = _mm256_setzero_ps();
-  const __m128 lo = _mm_load_ss(&t);
-  return f32x8(_mm256_insertf128_ps(hi, lo, 0));  // extra op
-}
-SIMD_ATTR_AVX2 SIMD_INLINE f64x4 set_low(f64x4, const double t) {
-  const __m256d hi = _mm256_setzero_pd();
-  const __m128d lo = _mm_load_sd(&t);
-  return f64x4(_mm256_insertf128_pd(hi, lo, 0));  // extra op
 }
 
 // ------------------------------ Broadcast/splat any lane
@@ -1043,7 +1059,8 @@ SIMD_ATTR_AVX2 SIMD_INLINE f64x4 broadcast(const f64x4 v) {
 
 // ------------------------------ Shuffle bytes with variable indices
 
-// Returns vector of bytes[from[i]]. "from" must be valid indices in [0, 16).
+// Returns vector of bytes[from[i]]. "from" must be valid indices in [0, 16) or
+// >= 0x80 to zero the i-th output byte.
 template <typename T>
 SIMD_ATTR_AVX2 SIMD_INLINE vec256<T> shuffle_bytes(const vec256<T> bytes,
                                                    const vec256<T> from) {
@@ -1087,91 +1104,147 @@ SIMD_ATTR_AVX2 SIMD_INLINE f32x8 shuffle_2103(const f32x8 v) {
   return f32x8(_mm256_shuffle_ps(v, v, 0x93));
 }
 
-// ------------------------------ Zip/interleave/unpack
+// ------------------------------ Interleave lanes
 
-// Interleaves halves of the 128-bit parts of "a" (starting in the
-// least-significant lane) and "b". To zero-extend, use promote() instead.
+// Interleaves lanes from halves of the 128-bit blocks of "a" (which provides
+// the least-significant lane) and "b". To concatenate two half-width integers
+// into one, use zip_lo/hi instead (also works with vec1).
 
-SIMD_ATTR_AVX2 SIMD_INLINE u8x32 zip_lo(const u8x32 a, const u8x32 b) {
+SIMD_ATTR_AVX2 SIMD_INLINE u8x32 interleave_lo(const u8x32 a, const u8x32 b) {
   return u8x32(_mm256_unpacklo_epi8(a, b));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE u16x16 zip_lo(const u16x16 a, const u16x16 b) {
+SIMD_ATTR_AVX2 SIMD_INLINE u16x16 interleave_lo(const u16x16 a, const u16x16 b) {
   return u16x16(_mm256_unpacklo_epi16(a, b));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE u32x8 zip_lo(const u32x8 a, const u32x8 b) {
+SIMD_ATTR_AVX2 SIMD_INLINE u32x8 interleave_lo(const u32x8 a, const u32x8 b) {
   return u32x8(_mm256_unpacklo_epi32(a, b));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE u64x4 zip_lo(const u64x4 a, const u64x4 b) {
+SIMD_ATTR_AVX2 SIMD_INLINE u64x4 interleave_lo(const u64x4 a, const u64x4 b) {
   return u64x4(_mm256_unpacklo_epi64(a, b));
 }
 
-SIMD_ATTR_AVX2 SIMD_INLINE i8x32 zip_lo(const i8x32 a, const i8x32 b) {
+SIMD_ATTR_AVX2 SIMD_INLINE i8x32 interleave_lo(const i8x32 a, const i8x32 b) {
   return i8x32(_mm256_unpacklo_epi8(a, b));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE i16x16 zip_lo(const i16x16 a, const i16x16 b) {
+SIMD_ATTR_AVX2 SIMD_INLINE i16x16 interleave_lo(const i16x16 a, const i16x16 b) {
   return i16x16(_mm256_unpacklo_epi16(a, b));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE i32x8 zip_lo(const i32x8 a, const i32x8 b) {
+SIMD_ATTR_AVX2 SIMD_INLINE i32x8 interleave_lo(const i32x8 a, const i32x8 b) {
   return i32x8(_mm256_unpacklo_epi32(a, b));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE i64x4 zip_lo(const i64x4 a, const i64x4 b) {
+SIMD_ATTR_AVX2 SIMD_INLINE i64x4 interleave_lo(const i64x4 a, const i64x4 b) {
   return i64x4(_mm256_unpacklo_epi64(a, b));
 }
 
-SIMD_ATTR_AVX2 SIMD_INLINE f32x8 zip_lo(const f32x8 a, const f32x8 b) {
+SIMD_ATTR_AVX2 SIMD_INLINE f32x8 interleave_lo(const f32x8 a, const f32x8 b) {
   return f32x8(_mm256_unpacklo_ps(a, b));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE f64x4 zip_lo(const f64x4 a, const f64x4 b) {
+SIMD_ATTR_AVX2 SIMD_INLINE f64x4 interleave_lo(const f64x4 a, const f64x4 b) {
   return f64x4(_mm256_unpacklo_pd(a, b));
 }
 
-SIMD_ATTR_AVX2 SIMD_INLINE u8x32 zip_hi(const u8x32 a, const u8x32 b) {
+SIMD_ATTR_AVX2 SIMD_INLINE u8x32 interleave_hi(const u8x32 a, const u8x32 b) {
   return u8x32(_mm256_unpackhi_epi8(a, b));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE u16x16 zip_hi(const u16x16 a, const u16x16 b) {
+SIMD_ATTR_AVX2 SIMD_INLINE u16x16 interleave_hi(const u16x16 a, const u16x16 b) {
   return u16x16(_mm256_unpackhi_epi16(a, b));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE u32x8 zip_hi(const u32x8 a, const u32x8 b) {
+SIMD_ATTR_AVX2 SIMD_INLINE u32x8 interleave_hi(const u32x8 a, const u32x8 b) {
   return u32x8(_mm256_unpackhi_epi32(a, b));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE u64x4 zip_hi(const u64x4 a, const u64x4 b) {
+SIMD_ATTR_AVX2 SIMD_INLINE u64x4 interleave_hi(const u64x4 a, const u64x4 b) {
   return u64x4(_mm256_unpackhi_epi64(a, b));
 }
 
-SIMD_ATTR_AVX2 SIMD_INLINE i8x32 zip_hi(const i8x32 a, const i8x32 b) {
+SIMD_ATTR_AVX2 SIMD_INLINE i8x32 interleave_hi(const i8x32 a, const i8x32 b) {
   return i8x32(_mm256_unpackhi_epi8(a, b));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE i16x16 zip_hi(const i16x16 a, const i16x16 b) {
+SIMD_ATTR_AVX2 SIMD_INLINE i16x16 interleave_hi(const i16x16 a, const i16x16 b) {
   return i16x16(_mm256_unpackhi_epi16(a, b));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE i32x8 zip_hi(const i32x8 a, const i32x8 b) {
+SIMD_ATTR_AVX2 SIMD_INLINE i32x8 interleave_hi(const i32x8 a, const i32x8 b) {
   return i32x8(_mm256_unpackhi_epi32(a, b));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE i64x4 zip_hi(const i64x4 a, const i64x4 b) {
+SIMD_ATTR_AVX2 SIMD_INLINE i64x4 interleave_hi(const i64x4 a, const i64x4 b) {
   return i64x4(_mm256_unpackhi_epi64(a, b));
 }
 
-SIMD_ATTR_AVX2 SIMD_INLINE f32x8 zip_hi(const f32x8 a, const f32x8 b) {
+SIMD_ATTR_AVX2 SIMD_INLINE f32x8 interleave_hi(const f32x8 a, const f32x8 b) {
   return f32x8(_mm256_unpackhi_ps(a, b));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE f64x4 zip_hi(const f64x4 a, const f64x4 b) {
+SIMD_ATTR_AVX2 SIMD_INLINE f64x4 interleave_hi(const f64x4 a, const f64x4 b) {
   return f64x4(_mm256_unpackhi_pd(a, b));
 }
 
-// ------------------------------ Cast to double-width lane type
+// ------------------------------ Zip lanes
 
-// Returns full-vector given half-vector of half-width lanes.
+// Same as interleave_*, except that the return lanes are double-width integers;
+// this is necessary because the single-lane vec1 cannot return two values.
+
+SIMD_ATTR_AVX2 SIMD_INLINE u16x16 zip_lo(const u8x32 a, const u8x32 b) {
+  return u16x16(_mm256_unpacklo_epi8(a, b));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE u32x8 zip_lo(const u16x16 a, const u16x16 b) {
+  return u32x8(_mm256_unpacklo_epi16(a, b));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE u64x4 zip_lo(const u32x8 a, const u32x8 b) {
+  return u64x4(_mm256_unpacklo_epi32(a, b));
+}
+
+SIMD_ATTR_AVX2 SIMD_INLINE i16x16 zip_lo(const i8x32 a, const i8x32 b) {
+  return i16x16(_mm256_unpacklo_epi8(a, b));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE i32x8 zip_lo(const i16x16 a, const i16x16 b) {
+  return i32x8(_mm256_unpacklo_epi16(a, b));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE i64x4 zip_lo(const i32x8 a, const i32x8 b) {
+  return i64x4(_mm256_unpacklo_epi32(a, b));
+}
+
+SIMD_ATTR_AVX2 SIMD_INLINE u16x16 zip_hi(const u8x32 a, const u8x32 b) {
+  return u16x16(_mm256_unpackhi_epi8(a, b));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE u32x8 zip_hi(const u16x16 a, const u16x16 b) {
+  return u32x8(_mm256_unpackhi_epi16(a, b));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE u64x4 zip_hi(const u32x8 a, const u32x8 b) {
+  return u64x4(_mm256_unpackhi_epi32(a, b));
+}
+
+SIMD_ATTR_AVX2 SIMD_INLINE i16x16 zip_hi(const i8x32 a, const i8x32 b) {
+  return i16x16(_mm256_unpackhi_epi8(a, b));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE i32x8 zip_hi(const i16x16 a, const i16x16 b) {
+  return i32x8(_mm256_unpackhi_epi16(a, b));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE i64x4 zip_hi(const i32x8 a, const i32x8 b) {
+  return i64x4(_mm256_unpackhi_epi32(a, b));
+}
+
+// ------------------------------ Promotions (subset w/ narrow lanes -> full)
 
 // Unsigned: zero-extend.
 // Note: these have 3 cycle latency; if inputs are already split across the
 // 128 bit blocks (in their upper/lower halves), then zip_hi/lo would be faster.
-SIMD_ATTR_AVX2 SIMD_INLINE u16x16 promote(const u8x16 v) {
+SIMD_ATTR_AVX2 SIMD_INLINE u16x16 convert_to(uint16_t, const u8x16 v) {
   return u16x16(_mm256_cvtepu8_epi16(v));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE u32x8 promote(const u16x8 v) {
+SIMD_ATTR_AVX2 SIMD_INLINE u32x8 convert_to(uint32_t, const u8x8 v) {
+  return u32x8(_mm256_cvtepu8_epi32(v));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE i16x16 convert_to(int16_t, const u8x16 v) {
+  return i16x16(_mm256_cvtepu8_epi16(v));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE i32x8 convert_to(int32_t, const u8x8 v) {
+  return i32x8(_mm256_cvtepu8_epi32(v));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE u32x8 convert_to(uint32_t, const u16x8 v) {
   return u32x8(_mm256_cvtepu16_epi32(v));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE u64x4 promote(const u32x4 v) {
+SIMD_ATTR_AVX2 SIMD_INLINE i32x8 convert_to(int32_t, const u16x8 v) {
+  return i32x8(_mm256_cvtepu16_epi32(v));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE u64x4 convert_to(uint64_t, const u32x4 v) {
   return u64x4(_mm256_cvtepu32_epi64(v));
 }
 
@@ -1179,36 +1252,59 @@ SIMD_ATTR_AVX2 SIMD_INLINE u64x4 promote(const u32x4 v) {
 // Note: these have 3 cycle latency; if inputs are already split across the
 // 128 bit blocks (in their upper/lower halves), then zip_hi/lo followed by
 // signed shift would be faster.
-SIMD_ATTR_AVX2 SIMD_INLINE i16x16 promote(const i8x16 v) {
+SIMD_ATTR_AVX2 SIMD_INLINE i16x16 convert_to(int16_t, const i8x16 v) {
   return i16x16(_mm256_cvtepi8_epi16(v));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE i32x8 promote(const i16x8 v) {
+SIMD_ATTR_AVX2 SIMD_INLINE i32x8 convert_to(int32_t, const i8x8 v) {
+  return i32x8(_mm256_cvtepi8_epi32(v));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE i32x8 convert_to(int32_t, const i16x8 v) {
   return i32x8(_mm256_cvtepi16_epi32(v));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE i64x4 promote(const i32x4 v) {
+SIMD_ATTR_AVX2 SIMD_INLINE i64x4 convert_to(int64_t, const i32x4 v) {
   return i64x4(_mm256_cvtepi32_epi64(v));
 }
 
-// ------------------------------ Cast to half-width lane types
+// ------------------------------ Demotions (full -> subset w/ narrow lanes)
 
-// Returns half-vector of half-width lanes.
-
-SIMD_ATTR_AVX2 SIMD_INLINE u8x16 demote_to_unsigned(const i16x16 v) {
-  const i16x16 hi(_mm256_permute2x128_si256(v, v, 0x11));  // extra op
-  return u8x16(_mm256_castsi256_si128(_mm256_packus_epi16(v, hi)));
-}
-SIMD_ATTR_AVX2 SIMD_INLINE u16x8 demote_to_unsigned(const i32x8 v) {
-  const i32x8 hi(_mm256_permute2x128_si256(v, v, 0x11));  // extra op
-  return u16x8(_mm256_castsi256_si128(_mm256_packus_epi32(v, hi)));
+SIMD_ATTR_AVX2 SIMD_INLINE u16x8 convert_to(uint16_t, const i32x8 v) {
+  const __m256i u16 = _mm256_packus_epi32(v, v);
+  // Concatenating lower halves of both 128-bit blocks afterward is more
+  // efficient than an extra input with low block = high block of v.
+  return u16x8(_mm256_castsi256_si128(_mm256_permute4x64_epi64(u16, 0x88)));
 }
 
-SIMD_ATTR_AVX2 SIMD_INLINE i8x16 demote(const i16x16 v) {
-  const i16x16 hi(_mm256_permute2x128_si256(v, v, 0x11));  // extra op
-  return i8x16(_mm256_castsi256_si128(_mm256_packs_epi16(v, hi)));
+SIMD_ATTR_AVX2 SIMD_INLINE u8x8 convert_to(uint8_t, const i32x8 v) {
+  const __m256i u16 = _mm256_packus_epi32(v, v);
+  const __m256i u8 = _mm256_packus_epi16(u16, u16);
+  // Zeros upper bits.
+  const __m256i idx = _mm256_castsi128_si256(_mm_cvtsi64_si128(0x400000000ull));
+  const __m256i fixed = _mm256_permutevar8x32_epi32(u8, idx);
+  return u8x8(_mm256_castsi256_si128(fixed));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE i16x8 demote(const i32x8 v) {
-  const i32x8 hi(_mm256_permute2x128_si256(v, v, 0x11));  // extra op
-  return i16x8(_mm256_castsi256_si128(_mm256_packs_epi32(v, hi)));
+
+SIMD_ATTR_AVX2 SIMD_INLINE i16x8 convert_to(int16_t, const i32x8 v) {
+  const __m256i i16 = _mm256_packs_epi32(v, v);
+  return i16x8(_mm256_castsi256_si128(_mm256_permute4x64_epi64(i16, 0x88)));
+}
+
+SIMD_ATTR_AVX2 SIMD_INLINE i8x8 convert_to(int8_t, const i32x8 v) {
+  const __m256i i16 = _mm256_packs_epi32(v, v);
+  const __m256i i8 = _mm256_packs_epi16(i16, i16);
+  // Zeros upper bits.
+  const __m256i idx = _mm256_castsi128_si256(_mm_cvtsi64_si128(0x400000000ull));
+  const __m256i fixed = _mm256_permutevar8x32_epi32(i8, idx);
+  return i8x8(_mm256_castsi256_si128(fixed));
+}
+
+SIMD_ATTR_AVX2 SIMD_INLINE u8x16 convert_to(uint8_t, const i16x16 v) {
+  const __m256i u8 = _mm256_packus_epi16(v, v);
+  return u8x16(_mm256_castsi256_si128(_mm256_permute4x64_epi64(u8, 0x88)));
+}
+
+SIMD_ATTR_AVX2 SIMD_INLINE i8x16 convert_to(int8_t, const i16x16 v) {
+  const __m256i i8 = _mm256_packs_epi16(v, v);
+  return i8x16(_mm256_castsi256_si128(_mm256_permute4x64_epi64(i8, 0x88)));
 }
 
 // ------------------------------ Select/blend

@@ -88,11 +88,17 @@
 // Instruction set bits are a compact encoding of zero or more targets used in
 // dispatch::Run and the SIMD_ENABLE macro.
 #define SIMD_NONE 0
-#define SIMD_PPC 1  // v2.07 or 3
+#if SIMD_ARCH_X86
 #define SIMD_AVX2 2
 #define SIMD_SSE4 4
-#define SIMD_ARM 8  // v8
 #define SIMD_AVX512 16
+#endif
+#if SIMD_ARCH_PPC
+#define SIMD_PPC 1  // v2.07 or 3
+#endif
+#if SIMD_ARCH_ARM
+#define SIMD_ARM 8  // v8
+#endif
 
 // Default to portable mode (only scalar.h). This macro should only be set by
 // the build system and tested below; users check #if SIMD_ENABLE_* to decide
@@ -106,6 +112,7 @@
 #ifdef SIMD_TARGET_ATTR
 #define SIMD_ENABLE_SSE4 (SIMD_ENABLE & SIMD_SSE4)
 #define SIMD_ENABLE_AVX2 (SIMD_ENABLE & SIMD_AVX2)
+#define SIMD_ENABLE_NEON (SIMD_ENABLE & SIMD_ARM)
 #define SIMD_ATTR_SSE4 SIMD_TARGET_ATTR("sse4.2,aes,pclmul")
 #define SIMD_ATTR_AVX2 SIMD_TARGET_ATTR("avx,avx2,fma")
 
@@ -115,22 +122,28 @@
 #define SIMD_ATTR_AVX2
 
 #if defined(__SSE4_2__) && defined(__AES__)
-#define SIMD_ENABLE_SSE4 1
+#define SIMD_ENABLE_SSE4 (SIMD_ENABLE & SIMD_SSE4)
 #else
 #define SIMD_ENABLE_SSE4 0
 #endif
 
 #if defined(__AVX2__) && defined(__FMA__)
-#define SIMD_ENABLE_AVX2 1
+#define SIMD_ENABLE_AVX2 (SIMD_ENABLE & SIMD_AVX2)
 #else
 #define SIMD_ENABLE_AVX2 0
+#endif
+
+#if defined(SIMD_ARCH_ARM) && defined(__ARM_NEON)
+#define SIMD_ENABLE_NEON (SIMD_ENABLE & SIMD_ARM)
+#else
+#define SIMD_ENABLE_NEON 0
 #endif
 
 #endif
 
 // Whether any SIMD instruction set is active (used to exclude tests not
 // supported by scalar.h).
-#define SIMD_ENABLE_ANY (SIMD_ENABLE_SSE4 | SIMD_ENABLE_AVX2)
+#define SIMD_ENABLE_ANY (SIMD_ENABLE_SSE4 | SIMD_ENABLE_AVX2 | SIMD_ENABLE_NEON)
 
 // Detects "best available" instruction set and includes their headers;
 // defines SIMD_NAMESPACE, SIMD_TARGET for vec<T, SIMD_TARGET> and SIMD_ATTR
@@ -138,28 +151,44 @@
 // SIMD_NAMESPACE due to conflicts with other system headers. ODR violations
 // are avoided if all their functions (static inline in Clang's library and
 // extern inline in GCC's) are inlined.
+#if SIMD_ARCH_X86
 #if SIMD_ENABLE_AVX2
 #include <immintrin.h>
 #define SIMD_NAMESPACE avx2
 #define SIMD_TARGET AVX2
 #define SIMD_ATTR SIMD_ATTR_AVX2
+
 #elif SIMD_ENABLE_SSE4
 #include <smmintrin.h>
 #include <wmmintrin.h>
 #define SIMD_NAMESPACE sse4
 #define SIMD_TARGET SSE4
 #define SIMD_ATTR SIMD_ATTR_SSE4
+
 #else
+// No instruction set enabled, but we still need "SSE2" for cache-control.
+#include <emmintrin.h>
+#endif
+#endif
+
+#if SIMD_ENABLE_NEON
+#include <arm_neon.h>
+#define SIMD_NAMESPACE neon
+#define SIMD_TARGET ARM8
+#define SIMD_ATTR
+#endif
+
+#ifndef SIMD_TARGET
 #define SIMD_NAMESPACE none
 #define SIMD_TARGET None
 #define SIMD_ATTR
 #endif
 
-namespace simd {
+namespace pik {
 
 // Instruction set tag names used to specialize VecT - results in more
-// understandable mangled names than using SIMD_SSE4=4 directly. These are
-// always defined so dispatch.h does not require textual inclusion.
+// understandable mangled names than using SIMD_SSE4=4 directly.
+#if SIMD_ARCH_X86
 struct SSE4 {
   static constexpr int value = SIMD_SSE4;
 };
@@ -169,16 +198,20 @@ struct AVX2 {
 struct AVX512 {
   static constexpr int value = SIMD_AVX512;
 };
-struct ARM8 {
-  static constexpr int value = SIMD_ARM;
-};
+#elif SIMD_ARCH_PPC
 struct PPC {
   static constexpr int value = SIMD_PPC;
 };
+#elif SIMD_ARCH_ARM
+struct ARM8 {
+  static constexpr int value = SIMD_ARM;
+};
+#endif
+
 struct None {
   static constexpr int value = SIMD_NONE;
 };
 
-}  // namespace simd
+}  // namespace pik
 
 #endif  // SIMD_PORT_H_

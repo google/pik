@@ -14,44 +14,39 @@
 
 // Facade/dispatcher for calling all supported SimdTest instantiations.
 
-#include "simd.h"
+#include "simd/simd.h"
 #include <stdio.h>
-#include "dispatch.h"
-#include "simd_test_target.h"
+#include "simd/dispatch.h"
+#include "simd/simd_test_target.h"
 
-namespace simd {
+namespace pik {
 namespace {
 
-// Calls func.operator()<Target>(args) for all instruction sets in "targets".
-template <class Func, typename... Args>
-SIMD_INLINE void ForeachTarget(const int targets, Func&& func, Args&&... args) {
-  if (targets & SIMD_SSE4) {
-    std::forward<Func>(func).template operator()<SSE4>(
-        std::forward<Args>(args)...);
-  }
-
-  if (targets & SIMD_AVX2) {
-    std::forward<Func>(func).template operator()<AVX2>(
-        std::forward<Args>(args)...);
-  }
-
-  std::forward<Func>(func).template operator()<None>(
-      std::forward<Args>(args)...);
+void NotifyFailed(const int line, const char* vec_name, const int lane,
+                  const char* expected, const char* actual) {
+  fprintf(stderr, "line %d, %s lane %d mismatch: expected '%s', got '%s'.\n",
+          line, vec_name, lane, expected, actual);
+  SIMD_TRAP();
 }
 
-void RunTests() {
-  simd::SimdTest tests;
-  const int supported = dispatch::SupportedTargets();
-  simd::ForeachTarget(supported, tests);
+int RunTests() {
+  SimdTest tests;
+  const int targets = dispatch::SupportedTargets();
+  dispatch::ForeachTarget(targets, tests, NotifyFailed);
 
-  printf("Supported: %x; ran: %x\n", supported, tests.targets);
+  if (targets != tests.targets) {
+    printf("Did not run all tests. Expected: %x; actual: %x\n", targets,
+           tests.targets);
+    return 1;
+  }
+  printf("Successfully tested instruction sets: 0x%x.\n", targets);
+  return 0;
 }
 
 }  // namespace
-}  // namespace simd
+}  // namespace pik
 
 int main() {
   setvbuf(stdin, nullptr, _IONBF, 0);
-  simd::RunTests();
-  return 0;
+  return pik::RunTests();
 }

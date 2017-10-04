@@ -22,8 +22,8 @@
 // This can be limited to e.g. SIMD_SSE4 for compilers that don't support AVX2.
 #define SIMD_ENABLE ~0u
 
-#include "simd.h"
-#include "dispatch.h"
+#include "simd/simd.h"
+#include "simd/dispatch.h"
 
 // GCC/Clang require certain code generation flags when using intrinsics.
 // This file demonstrates the SIMD_ATTR approach for working around this
@@ -31,7 +31,7 @@
 // extra flags in the first place.
 #if SIMD_ENABLE_ANY
 
-namespace simd {
+namespace pik {
 namespace SIMD_NAMESPACE {
 namespace {
 
@@ -147,13 +147,13 @@ void RunTests() {
 
 }  // namespace
 }  // namespace SIMD_NAMESPACE
-}  // namespace simd
+}  // namespace pik
 
 #endif
 
 int main() {
 #if SIMD_ENABLE_ANY
-  simd::SIMD_NAMESPACE::RunTests();
+  pik::SIMD_NAMESPACE::RunTests();
   return 0;
 #else
   printf("Compiler does not support SIMD_TARGET_ATTR => demo is disabled.\n");

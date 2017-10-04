@@ -27,12 +27,14 @@
 
 #include <stddef.h>  // size_t
 #include <stdint.h>
-#include "port.h"
-#include "util.h"  // must come after port.h
+#include "simd/port.h"
+#include "simd/util.h"  // must come after port.h
 
 // Summary of available types (T is the lane type, e.g. float):
 // vec1<T>: single-element vector for loop remainders/measuring SIMD speedup;
-// vec128<T>: 128-bit vector, supported on all platforms;
+// vec32<T>: quarter of a 128-bit vector, limited operations;
+// vec64<T>: half of a 128-bit vector, limited operations;
+// vec128<T>: 128-bit vector;
 // vec256<T>: 256-bit vector, only available to AVX2-specific programs;
 // vec<T>: alias template for the best instruction set from SIMD_ENABLE;
 // vec<T, SSE4>: alias template for a specific instruction set (SSE4);
@@ -41,7 +43,7 @@
 //   B[B] = number of bits per lane;
 //   N[N] = number of lanes (such that B[B] * N[N] is one of the above sizes).
 
-namespace simd {
+namespace pik {
 namespace SIMD_NAMESPACE {
 
 // "Member types and constants" for vec<T, Target>; must be non-members because
@@ -63,16 +65,6 @@ struct LaneT {
 template <class V>
 using Lane = typename LaneT<V>::type;
 
-// (Primary template; will be specialized in platform-specific headers.)
-template <class V>
-struct HalfT {
-  using type = V;  // half of a scalar is still a scalar
-};
-// The type that represents half of V, typically with the same underlying raw
-// type, but specialized load/stores.
-template <class V>
-using Half = typename HalfT<V>::type;
-
 // How many lanes in the vector. NumLanes<i32x4>() = 4.
 // (Primary template; specialized for platform-specific half-vectors.)
 template <class V>
@@ -86,21 +78,25 @@ struct NumLanes {
 // Ensures these dependencies are added to deps.mk. The inclusions have no
 // effect because the headers are empty #ifdef SIMD_DEPS.
 #ifdef SIMD_DEPS
-#include "x86_avx2.h"
-#include "x86_sse4.h"
+#include "simd/x86_avx2.h"
+#include "simd/x86_sse4.h"
 #endif
 
 // Must be included before x86_avx2.h (this is its half-vector type)
 #if SIMD_ENABLE_SSE4
-#include "x86_sse4.h"
+#include "simd/x86_sse4.h"
 #endif
 
 #if SIMD_ENABLE_SSE4 && SIMD_ENABLE_AVX2
-#include "x86_avx2.h"
+#include "simd/x86_avx2.h"
+#endif
+
+#if SIMD_ENABLE_NEON
+#include "simd/arm64_neon.h"
 #endif
 
 // Always available
-#include "scalar.h"
+#include "simd/scalar.h"
 
 // (specializations for vec<>, see below)
 template <class Target>
@@ -115,18 +111,38 @@ struct VecT<None> {
   template <typename T>
   using type = vec1<T>;
 };
+#if SIMD_ENABLE_AVX2
 template <>
 struct VecT<AVX2> {
-#if SIMD_ENABLE_AVX2
   template <typename T>
   using type = vec256<T>;
-#endif
 };
+#endif
 // Alias of a vector class with lane type T and instruction set Target,
 // typically obtained from SIMD_TARGET or dispatch::Run. The default Target is
 // the 'best' (i.e. with the widest vectors) of all SIMD_ENABLE bits.
 template <typename T, class Target = SIMD_TARGET>
 using vec = typename VecT<Target>::template type<T>;
+
+// Generic SIMD algorithms:
+
+// Returns the closest value to v within [lo, hi].
+template <typename V>
+SIMD_INLINE V clamp(const V v, const V lo, const V hi) {
+  return min(max(lo, v), hi);
+}
+
+// Returns a vector with lane i=0..N-1 set to "first" + i. Unique per-lane
+// values are required to detect lane-crossing bugs.
+template <class V>
+SIMD_INLINE V Iota(const Lane<V> first = 0) {
+  constexpr size_t N = NumLanes<V>();
+  SIMD_ALIGN Lane<V> lanes[N];
+  for (size_t i = 0; i < N; ++i) {
+    lanes[i] = first + i;
+  }
+  return load(V(), lanes);
+}
 
 // Returns a name for V in PB[B]xN[N] format (see above).
 // Useful for understanding which instantiation of a generic test failed.
@@ -156,7 +172,49 @@ SIMD_INLINE const char* vec_name() {
   return name;
 }
 
+// Cache control
+
+SIMD_INLINE void stream(const uint32_t t, uint32_t* SIMD_RESTRICT aligned) {
+#if SIMD_ARCH_X86
+  _mm_stream_si32(reinterpret_cast<int*>(aligned), t);
+#else
+  CopyBytes(t, aligned);
+#endif
+}
+
+SIMD_INLINE void stream(const uint64_t t, uint64_t* SIMD_RESTRICT aligned) {
+#if SIMD_ARCH_X86
+  _mm_stream_si64(reinterpret_cast<long long*>(aligned), t);
+#else
+  CopyBytes(t, aligned);
+#endif
+}
+
+// Ensures previous weakly-ordered stores are visible. No effect on non-x86.
+SIMD_INLINE void store_fence() {
+#if SIMD_ARCH_X86
+  _mm_sfence();
+#endif
+}
+
+// Begins loading the cache line containing "p".
+template <typename T>
+SIMD_INLINE void prefetch(const T* p) {
+#if SIMD_ARCH_X86
+  _mm_prefetch(p, _MM_HINT_T0);
+#elif SIMD_ARCH_ARM
+  __pld(p);
+#endif
+}
+
+// Invalidates and flushes the cache line containing "p". No effect on non-x86.
+SIMD_INLINE void flush_cacheline(const void* p) {
+#if SIMD_ARCH_X86
+  _mm_clflush(p);
+#endif
+}
+
 }  // namespace SIMD_NAMESPACE
-}  // namespace simd
+}  // namespace pik
 
 #endif  // SIMD_SIMD_H_

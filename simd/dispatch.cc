@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "dispatch.h"
+#include "simd/dispatch.h"
 
 #include <stdint.h>
 #include <atomic>
@@ -24,7 +24,7 @@
 #endif
 #endif
 
-namespace simd {
+namespace pik {
 namespace dispatch {
 
 namespace {
@@ -158,11 +158,13 @@ int SupportedTargets() {
   if ((flags & kGroupSSE4) == kGroupSSE4) {
     supported |= SIMD_SSE4;
   }
-#endif  // SIMD_ARCH_X86
+#elif SIMD_ARCH_ARM
+  supported |= SIMD_ARM;
+#endif
 
   supported_.store(supported, std::memory_order_release);
   return supported;
 }
 
 }  // namespace dispatch
-}  // namespace simd
+}  // namespace pik

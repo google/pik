@@ -18,9 +18,9 @@
 #ifndef SIMD_UTIL_H_
 #define SIMD_UTIL_H_
 
-#include "port.h"
+#include "simd/port.h"
 
-namespace simd {
+namespace pik {
 namespace SIMD_NAMESPACE {
 
 // std::min/max.
@@ -30,22 +30,26 @@ namespace SIMD_NAMESPACE {
 
 // memcpy/memset.
 
+// The source/destination must not overlap/alias.
 template <typename From, typename To>
 SIMD_INLINE void CopyBytes(const From& from, To* to) {
   static_assert(sizeof(From) >= sizeof(To), "From is too small");
-  const uint8_t* from_bytes = reinterpret_cast<const uint8_t*>(&from);
-  uint8_t* to_bytes = reinterpret_cast<uint8_t*>(to);
+  const uint8_t* SIMD_RESTRICT from_bytes =
+      reinterpret_cast<const uint8_t*>(&from);
+  uint8_t* SIMD_RESTRICT to_bytes = reinterpret_cast<uint8_t*>(to);
   for (size_t i = 0; i < sizeof(To); ++i) {
     to_bytes[i] = from_bytes[i];
   }
 }
 
+// The source/destination must not overlap/alias.
 template <typename From, typename To>
 SIMD_INLINE void CopyBytesWithOffset(const From& from, const int offset,
                                      To* to) {
   static_assert(sizeof(From) >= sizeof(To), "From is too small");
-  const uint8_t* from_bytes = reinterpret_cast<const uint8_t*>(&from) + offset;
-  uint8_t* to_bytes = reinterpret_cast<uint8_t*>(to);
+  const uint8_t* SIMD_RESTRICT from_bytes =
+      reinterpret_cast<const uint8_t*>(&from) + offset;
+  uint8_t* SIMD_RESTRICT to_bytes = reinterpret_cast<uint8_t*>(to);
   for (size_t i = 0; i < sizeof(To); ++i) {
     to_bytes[i] = from_bytes[i];
   }
@@ -71,15 +75,15 @@ constexpr bool IsSigned() {
   return T(0) > T(-1);
 }
 
+// Largest/smallest representable integer values.
 template <typename T>
-constexpr T UnsignedMax() {
-  static_assert(T(0) < T(-T(1)), "Must be unsigned");
-  return static_cast<T>(~0ull);
+constexpr T LimitsMax() {
+  return IsSigned<T>() ? (1LL << (sizeof(T) * 8 - 1)) - 1
+                       : static_cast<T>(~0ull);
 }
 template <typename T>
-constexpr T SignedMax() {
-  static_assert(T(0) > T(-T(1)), "Must be signed");
-  return (1LL << (sizeof(T) * 8 - 1)) - 1;
+constexpr T LimitsMin() {
+  return IsSigned<T>() ? -LimitsMax<T>() - 1 : T(0);
 }
 
 // Random numbers
@@ -106,7 +110,7 @@ SIMD_INLINE uint32_t Random32(RandomState* rng) {
 // Returns end of string (position of '\0').
 template <typename T>
 inline char* ToString(T value, char* to) {
-  char reversed[32];
+  char reversed[64];
   char* pos = reversed;
   int64_t before;
   do {
@@ -118,8 +122,8 @@ inline char* ToString(T value, char* to) {
   if (before < 0) *pos++ = '-';
 
   // Reverse the string
-  const size_t num_chars = pos - reversed;
-  for (size_t i = 0; i < num_chars; ++i) {
+  const int num_chars = pos - reversed;
+  for (int i = 0; i < num_chars; ++i) {
     to[i] = pos[-1 - i];
   }
   to[num_chars] = '\0';
@@ -127,13 +131,33 @@ inline char* ToString(T value, char* to) {
 }
 
 template <>
+inline char* ToString<float>(const float value, char* to) {
+  const int64_t truncated = static_cast<int64_t>(value);
+  char* end = ToString(truncated, to);
+  *end++ = '.';
+  int64_t frac = static_cast<int64_t>((value - truncated) * 1E8);
+  if (frac < 0) frac = -frac;
+  return ToString(frac, end);
+}
+
+template <>
 inline char* ToString<double>(const double value, char* to) {
   const int64_t truncated = static_cast<int64_t>(value);
   char* end = ToString(truncated, to);
   *end++ = '.';
-  int64_t frac = static_cast<int64_t>((value - truncated) * 1E3);
+  int64_t frac = static_cast<int64_t>((value - truncated) * 1E16);
   if (frac < 0) frac = -frac;
   return ToString(frac, end);
+}
+
+template <>
+inline char* ToString<const char*>(const char* value, char* to) {
+  const char* p = value;
+  while (*p != '\0') {
+    *to++ = *p++;
+  }
+  *to = '\0';
+  return to;
 }
 
 // String comparison
@@ -156,6 +180,6 @@ inline bool StringsEqual(const char* s1, const char* s2) {
 }
 
 }  // namespace SIMD_NAMESPACE
-}  // namespace simd
+}  // namespace pik
 
 #endif  // SIMD_UTIL_H_
