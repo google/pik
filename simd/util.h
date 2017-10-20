@@ -31,26 +31,24 @@ namespace SIMD_NAMESPACE {
 // memcpy/memset.
 
 // The source/destination must not overlap/alias.
-template <typename From, typename To>
-SIMD_INLINE void CopyBytes(const From& from, To* to) {
-  static_assert(sizeof(From) >= sizeof(To), "From is too small");
+template <size_t kBytes, typename From, typename To>
+SIMD_INLINE void CopyBytes(const From* from, To* to) {
   const uint8_t* SIMD_RESTRICT from_bytes =
-      reinterpret_cast<const uint8_t*>(&from);
+      reinterpret_cast<const uint8_t*>(from);
   uint8_t* SIMD_RESTRICT to_bytes = reinterpret_cast<uint8_t*>(to);
-  for (size_t i = 0; i < sizeof(To); ++i) {
+  for (size_t i = 0; i < kBytes; ++i) {
     to_bytes[i] = from_bytes[i];
   }
 }
 
 // The source/destination must not overlap/alias.
-template <typename From, typename To>
-SIMD_INLINE void CopyBytesWithOffset(const From& from, const int offset,
+template <size_t kBytes, typename From, typename To>
+SIMD_INLINE void CopyBytesWithOffset(const From* from, const int offset,
                                      To* to) {
-  static_assert(sizeof(From) >= sizeof(To), "From is too small");
   const uint8_t* SIMD_RESTRICT from_bytes =
-      reinterpret_cast<const uint8_t*>(&from) + offset;
+      reinterpret_cast<const uint8_t*>(from) + offset;
   uint8_t* SIMD_RESTRICT to_bytes = reinterpret_cast<uint8_t*>(to);
-  for (size_t i = 0; i < sizeof(To); ++i) {
+  for (size_t i = 0; i < kBytes; ++i) {
     to_bytes[i] = from_bytes[i];
   }
 }
@@ -78,12 +76,12 @@ constexpr bool IsSigned() {
 // Largest/smallest representable integer values.
 template <typename T>
 constexpr T LimitsMax() {
-  return IsSigned<T>() ? (1LL << (sizeof(T) * 8 - 1)) - 1
+  return IsSigned<T>() ? T((1ULL << (sizeof(T) * 8 - 1)) - 1)
                        : static_cast<T>(~0ull);
 }
 template <typename T>
 constexpr T LimitsMin() {
-  return IsSigned<T>() ? -LimitsMax<T>() - 1 : T(0);
+  return IsSigned<T>() ? T(-1) - LimitsMax<T>() : T(0);
 }
 
 // Random numbers
@@ -177,6 +175,48 @@ inline bool StringsEqual(const char* s1, const char* s2) {
     if (*s1++ == '\0') return true;
   }
   return false;
+}
+
+// Cache control
+
+SIMD_INLINE void stream(const uint32_t t, uint32_t* SIMD_RESTRICT aligned) {
+#if SIMD_ARCH == SIMD_ARCH_X86
+  _mm_stream_si32(reinterpret_cast<int*>(aligned), t);
+#else
+  CopyBytes<4>(&t, aligned);
+#endif
+}
+
+SIMD_INLINE void stream(const uint64_t t, uint64_t* SIMD_RESTRICT aligned) {
+#if SIMD_ARCH == SIMD_ARCH_X86
+  _mm_stream_si64(reinterpret_cast<long long*>(aligned), t);
+#else
+  CopyBytes<8>(&t, aligned);
+#endif
+}
+
+// Ensures previous weakly-ordered stores are visible. No effect on non-x86.
+SIMD_INLINE void store_fence() {
+#if SIMD_ARCH == SIMD_ARCH_X86
+  _mm_sfence();
+#endif
+}
+
+// Begins loading the cache line containing "p".
+template <typename T>
+SIMD_INLINE void prefetch(const T* p) {
+#if SIMD_ARCH == SIMD_ARCH_X86
+  _mm_prefetch(p, _MM_HINT_T0);
+#elif SIMD_ARCH == SIMD_ARCH_ARM
+  __pld(p);
+#endif
+}
+
+// Invalidates and flushes the cache line containing "p". No effect on non-x86.
+SIMD_INLINE void flush_cacheline(const void* p) {
+#if SIMD_ARCH == SIMD_ARCH_X86
+  _mm_clflush(p);
+#endif
 }
 
 }  // namespace SIMD_NAMESPACE

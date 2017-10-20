@@ -22,10 +22,11 @@
 namespace pik {
 namespace {
 
-void NotifyFailed(const int line, const char* vec_name, const int lane,
-                  const char* expected, const char* actual) {
-  fprintf(stderr, "line %d, %s lane %d mismatch: expected '%s', got '%s'.\n",
-          line, vec_name, lane, expected, actual);
+void NotifyFailed(const int target, const int line, const char* vec_name,
+                  const int lane, const char* expected, const char* actual) {
+  fprintf(stderr,
+          "target %x, line %d, %s lane %d mismatch: expected '%s', got '%s'.\n",
+          target, line, vec_name, lane, expected, actual);
   SIMD_TRAP();
 }
 

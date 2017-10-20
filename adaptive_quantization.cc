@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "compiler_specific.h"
+#include "gauss_blur.h"
 #include "status.h"
 
 namespace pik {
@@ -82,59 +83,6 @@ ImageF Expand(const ImageF& img, size_t out_xsize, size_t out_ysize) {
   return out;
 }
 
-std::vector<float> GaussianKernel(int radius, float sigma) {
-  std::vector<float> kernel(2 * radius + 1);
-  const float scaler = -1.0 / (2 * sigma * sigma);
-  for (int i = -radius; i <= radius; ++i) {
-    kernel[i + radius] = std::exp(scaler * i * i);
-  }
-  return kernel;
-}
-
-inline void ExtrapolateBorders(const float* const PIK_RESTRICT row_in,
-                               float* const PIK_RESTRICT row_out,
-                               const int xsize,
-                               const int radius) {
-  const int lastcol = xsize - 1;
-  for (int x = 1; x <= radius; ++x) {
-    row_out[-x] = row_in[std::min(x, xsize - 1)];
-  }
-  memcpy(row_out, row_in, xsize * sizeof(row_out[0]));
-  for (int x = 1; x <= radius; ++x) {
-    row_out[lastcol + x] = row_in[std::max(0, lastcol - x)];
-  }
-}
-
-ImageF ConvolveXSampleAndTranspose(const ImageF& in,
-                                   const std::vector<float>& kernel,
-                                   const size_t res) {
-  PIK_ASSERT(kernel.size() % 2 == 1);
-  PIK_ASSERT(in.xsize() % res == 0);
-  const int offset = (res + 1) / 2;
-  const int out_xsize = in.xsize() / res;
-  ImageF out(in.ysize(), out_xsize);
-  float weight = 0.0f;
-  for (int i = 0; i < kernel.size(); ++i) {
-    weight += kernel[i];
-  }
-  float scale = 1.0f / weight;
-  const int r = kernel.size() / 2;
-  std::vector<float> row_tmp(in.xsize() + 2 * r);
-  float* const PIK_RESTRICT rowp = &row_tmp[r];
-  const float* const kernelp = &kernel[r];
-  for (int y = 0; y < in.ysize(); ++y) {
-    ExtrapolateBorders(in.Row(y), rowp, in.xsize(), r);
-    for (int x = offset, ox = 0; x < in.xsize(); x += res, ++ox) {
-      float sum = 0.0f;
-      for (int i = -r; i <= r; ++i) {
-        sum += rowp[x + i] * kernelp[i];
-      }
-      out.Row(ox)[y] = sum * scale;
-    }
-  }
-  return out;
-}
-
 ImageF ComputeMask(const ImageF& diffs) {
   static const float kBase = 0.081994280342603476;
   static const float kMul = 0.024979129332027221;
@@ -190,8 +138,7 @@ ImageF AdaptiveQuantizationMap(const ImageF& img, size_t resolution) {
   static const float kDiffCutoff = 0.072750703471576167;
   ImageF out = DiffPrecompute(img, kDiffCutoff);
   out = Expand(out, resolution * out_xsize, resolution * out_ysize);
-  out = ConvolveXSampleAndTranspose(out, kernel, kSampleRate);
-  out = ConvolveXSampleAndTranspose(out, kernel, kSampleRate);
+  out = ConvolveAndSample(out, kernel, kSampleRate);
   out = ComputeMask(out);
   if (resolution > kSampleRate) {
     out = SubsampleWithMax(out, resolution / kSampleRate);

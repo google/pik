@@ -30,16 +30,9 @@
 
 namespace pik {
 
-struct AdaptiveQuantParams {
-  float initial_quant_val_dc;
-  float initial_quant_val_ac;
-};
-
 class Quantizer {
  public:
-  Quantizer(int xsize, int ysize,
-            const int coeffs_per_block,
-            const float* dequant_matrix);
+  Quantizer(int quant_xsize, int quant_ysize);
 
   bool SetQuantField(const float quant_dc, const ImageF& qf);
   void GetQuantField(float* quant_dc, ImageF* qf);
@@ -53,13 +46,12 @@ class Quantizer {
     return inv_global_scale_ / quant_img_ac_.Row(quant_y)[quant_x];
   }
 
-  void QuantizeBlock(int quant_x, int quant_y,
-                     int c, int k_start, int k_end,
+  void QuantizeBlock(int quant_x, int quant_y, int c,
                      const float* PIK_RESTRICT block_in,
                      int16_t* PIK_RESTRICT block_out) const {
     const float* const PIK_RESTRICT scale =
-        &scale_.Row(quant_y)[c][quant_x * coeffs_per_block_];
-    for (int k = k_start; k < k_end; ++k) {
+        &scale_.Row(quant_y)[c][quant_x * 64];
+    for (int k = 0; k < 64; ++k) {
       const float val = block_in[k] * scale[k];
       static const float kZeroBias[3] = { 0.65f, 0.6f, 0.7f };
       const float thres = kZeroBias[c];
@@ -77,8 +69,6 @@ class Quantizer {
  private:
   const int quant_xsize_;
   const int quant_ysize_;
-  const int coeffs_per_block_;
-  const float* const dequant_matrix_;
   int global_scale_;
   int quant_dc_;
   Image<int> quant_img_ac_;
@@ -88,6 +78,9 @@ class Quantizer {
   Image3F scale_;
   bool initialized_ = false;
 };
+
+Image3W QuantizeCoeffs(const Image3F& in, const Quantizer& quantizer);
+Image3F DequantizeCoeffs(const Image3W& in, const Quantizer& quantizer);
 
 }  // namespace pik
 

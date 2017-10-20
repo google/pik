@@ -187,12 +187,29 @@ class Y4MReader {
             if (tag_len == 4 &&
                 !memcmp(&line_[tag_start], "C444", tag_len)) {
               bit_depth_ = 8;
+              chroma_subsample_ = false;
             } else if (tag_len == 7 &&
                        !memcmp(&line_[tag_start], "C444p10", tag_len)) {
               bit_depth_ = 10;
+              chroma_subsample_ = false;
             } else if (tag_len == 7 &&
                        !memcmp(&line_[tag_start], "C444p12", tag_len)) {
               bit_depth_ = 12;
+              chroma_subsample_ = false;
+            } else if ((tag_len == 4 &&
+                        !memcmp(&line_[tag_start], "C420", tag_len)) ||
+                       (tag_len == 8 &&
+                        !memcmp(&line_[tag_start], "C420jpeg", tag_len))) {
+              bit_depth_ = 8;
+              chroma_subsample_ = true;
+            } else if (tag_len == 7 &&
+                       !memcmp(&line_[tag_start], "C420p10", tag_len)) {
+              bit_depth_ = 10;
+              chroma_subsample_ = true;
+            } else if (tag_len == 7 &&
+                       !memcmp(&line_[tag_start], "C420p12", tag_len)) {
+              bit_depth_ = 12;
+              chroma_subsample_ = true;
             } else {
               return PIK_FAILURE("Unsupported chroma subsampling type");
             }
@@ -217,6 +234,9 @@ class Y4MReader {
     if (bit_depth_ != 8) {
       return PIK_FAILURE("Invalid bit-depth");
     }
+    if (chroma_subsample_) {
+      return PIK_FAILURE("420 is only supported for Image3U frames.");
+    }
     *yuv = Image3B(xsize_, ysize_);
     for (int c = 0; c < 3; ++c) {
       for (int y = 0; y < ysize_; ++y) {
@@ -234,27 +254,36 @@ class Y4MReader {
     if (memcmp(line_, "FRAME", 5)) {
       return PIK_FAILURE("Invalid frame header");
     }
-    *yuv = Image3U(xsize_, ysize_);
+    std::array<ImageU, 3> planes;
     int byte_depth = (bit_depth_ + 7) / 8;
     int limit = (1 << bit_depth_) - 1;
     PIK_ASSERT(byte_depth == 1 || byte_depth == 2);
     for (int c = 0; c < 3; ++c) {
-      for (int y = 0; y < ysize_; ++y) {
-        for (int x = 0; x < xsize_; ++x) {
+      int pxsize = (c == 0 || !chroma_subsample_) ? xsize_ : (xsize_ + 1) / 2;
+      int pysize = (c == 0 || !chroma_subsample_) ? ysize_ : (ysize_ + 1) / 2;
+      planes[c] = ImageU(pxsize, pysize);
+      for (int y = 0; y < pysize; ++y) {
+        uint16_t* const PIK_RESTRICT row = planes[c].Row(y);
+        for (int x = 0; x < pxsize; ++x) {
           if (byte_depth == 1) {
             uint8_t val;
             if (fread(&val, sizeof(val), 1, f_) != 1) return false;
-            yuv->Row(y)[c][x] = val;
+            row[x] = val;
           } else {
             uint16_t val;
             if (fread(&val, sizeof(val), 1, f_) != 1) return false;
             if (val > limit) {
               return PIK_FAILURE("Value greater than indicated by bit-depth");
             }
-            yuv->Row(y)[c][x] = val;
+            row[x] = val;
           }
         }
       }
+    }
+    if (chroma_subsample_) {
+      *yuv = SuperSampleChroma(planes[0], planes[1], planes[2], bit_depth_);
+    } else {
+      *yuv = Image3U(planes);
     }
     return true;
   }
@@ -277,6 +306,7 @@ class Y4MReader {
   size_t xsize_;
   size_t ysize_;
   int bit_depth_ = 8;
+  bool chroma_subsample_ = false;
   char line_[80];
 };
 
@@ -306,7 +336,7 @@ bool ReadImage(ImageFormatY4M, const std::string& pathname, Image3U* image,
   return reader.ReadFrame(image);
 }
 
-bool WriteImage(ImageFormatY4M, const Image3B& image3,
+bool WriteImage(ImageFormatY4M format, const Image3B& image3,
                 const std::string& pathname) {
   FileWrapper f(pathname, "wb");
   if (f == nullptr) {
@@ -339,17 +369,26 @@ bool WriteImage(ImageFormatY4M format, const Image3U& image3,
   }
 
   const int ret =
-      fprintf(f, "YUV4MPEG2 W%zd H%zd F24:1 Ip A0:0 C444%s\nFRAME\n",
+      fprintf(f, "YUV4MPEG2 W%zd H%zd F24:1 Ip A0:0 C%s%s\nFRAME\n",
               image3.xsize(), image3.ysize(),
+              format.chroma_subsample ? "420" : "444",
               bit_depth == 8 ? "" : bit_depth == 10 ? "p10" : "p12");
   PIK_CHECK(ret > 0);
+
+  std::array<ImageU, 3> subplanes;
+  if (format.chroma_subsample) {
+    SubSampleChroma(image3, bit_depth,
+                    &subplanes[0], &subplanes[1], &subplanes[2]);
+  }
 
   int byte_depth = (bit_depth + 7) / 8;
   int limit = (1 << bit_depth) - 1;
   for (int c = 0; c < 3; ++c) {
-    for (int y = 0; y < image3.ysize(); ++y) {
-      for (int x = 0; x < image3.xsize(); ++x) {
-        const uint16_t val = image3.PlaneRow(c, y)[x];
+    const ImageU& plane = format.chroma_subsample ?
+        subplanes[c] : image3.plane(c);
+    for (int y = 0; y < plane.ysize(); ++y) {
+      for (int x = 0; x < plane.xsize(); ++x) {
+        const uint16_t val = plane.Row(y)[x];
         PIK_CHECK(val <= limit);
         if (byte_depth == 1) {
           const uint8_t v = val;

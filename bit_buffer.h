@@ -37,29 +37,30 @@
 #include "simd/simd.h"
 
 namespace pik {
+namespace SIMD_NAMESPACE {
 
 // Accumulates variable-sized codes and writes them to memory in 32-bit units.
 class BitSink {
-  using V = SIMD_NAMESPACE::u64x2;
+  static const Part<uint64_t, 2> d;
 
  public:
   // There are 32 lower bits to fill before reaching the upper bits.
   BitSink(uint8_t* const PIK_RESTRICT storage)
-      : buffer_(setzero(V())), upper_bits_used_(-32), write_pos_(storage) {}
+      : buffer_(setzero(d)), upper_bits_used_(-32), write_pos_(storage) {}
 
   // It is safe to insert a total of <= 32 bits after construction, or the last
   // call to CanWrite32 that returned false.
   template <int num_bits>
   void Insert(const uint64_t code) {
-    buffer_ <<= num_bits;
-    buffer_ |= V(_mm_cvtsi64_si128(code));
+    buffer_ = shift_left<num_bits>(buffer_);
+    buffer_ |= set(d, code);
     upper_bits_used_ += num_bits;
   }
 
   // (Slightly less efficient code: num_bits is loaded into a vector.)
   void InsertVariableCount(const int num_bits, const uint64_t code) {
-    buffer_ = V(_mm_sll_epi64(buffer_, _mm_cvtsi32_si128(num_bits)));
-    buffer_ |= V(_mm_cvtsi64_si128(code));
+    buffer_ = shift_left_same(buffer_, set_shift_left_count(d, num_bits));
+    buffer_ |= set(d, code);
     upper_bits_used_ += num_bits;
   }
 
@@ -73,9 +74,9 @@ class BitSink {
   // BitSource will return them in FIFO order. Precondition: CanWrite32.
   // Postcondition: the buffer has space for at least 32 more bits.
   void Write32() {
-    const V oldest_32(
-        _mm_srl_epi64(buffer_, _mm_cvtsi64_si128(upper_bits_used_)));
-    const uint32_t out = PIK_BSWAP32(_mm_cvtsi128_si32(oldest_32));
+    const auto oldest_32 =
+        shift_right_same(buffer_, set_shift_right_count(d, upper_bits_used_));
+    const uint32_t out = PIK_BSWAP32(uint32_t(get(d, oldest_32)));
     memcpy(write_pos_, &out, 4);
     write_pos_ += 4;
     upper_bits_used_ -= 32;
@@ -85,9 +86,9 @@ class BitSink {
   // Do not call other functions after this.
   uint8_t* const PIK_RESTRICT Finalize() {
     // Left-align oldest bit, inserting zeros at the bottom.
-    buffer_ =
-        V(_mm_sll_epi64(buffer_, _mm_cvtsi64_si128(32 - upper_bits_used_)));
-    const uint64_t out = PIK_BSWAP64(_mm_cvtsi128_si64(buffer_));
+    buffer_ = shift_left_same(buffer_,
+                              set_shift_left_count(d, 32 - upper_bits_used_));
+    const uint64_t out = PIK_BSWAP64(get(d, buffer_));
 
     // Copy exactly the required number of bytes (other threads may be writing
     // at subsequent positions).
@@ -134,21 +135,21 @@ class BitSink {
   }
 
  private:
-  V buffer_;
+  Part<uint64_t, 2>::V buffer_;
   int upper_bits_used_;
   uint8_t* PIK_RESTRICT write_pos_;
 };
 
 // Reads from memory in 64 or 32-bit units and extracts variable-size codes.
 class BitSource {
-  using V = SIMD_NAMESPACE::u64x2;
+  static const Part<uint64_t, 2> d;
 
  public:
   // Reads exactly 64 bits.
   BitSource(const uint8_t* const PIK_RESTRICT from) : read_pos_(from + 8) {
     uint64_t bits;
     memcpy(&bits, from, 8);
-    buffer_ = V(_mm_cvtsi64_si128(PIK_BSWAP64(bits)));
+    buffer_ = set(d, PIK_BSWAP64(bits));
     // There are 32 upper bits to extract before reaching the lower bits.
     lower_bits_extracted_ = -32;
   }
@@ -158,18 +159,19 @@ class BitSource {
   // CanRead32 that returned false.
   template <int num_bits>
   size_t Extract() {
-    const V bits = buffer_ >> (64 - num_bits);
-    const uint64_t code = _mm_cvtsi128_si64(bits);
-    buffer_ <<= num_bits;
+    const auto bits = shift_right<64 - num_bits>(buffer_);
+    const uint64_t code = get(d, bits);
+    buffer_ = shift_left<num_bits>(buffer_);
     lower_bits_extracted_ += num_bits;
     return code;
   }
 
   // (Slightly less efficient code: num_bits is loaded into a vector.)
   size_t ExtractVariableCount(const int num_bits) {
-    const V bits = buffer_ >> (64 - num_bits);
-    const uint64_t code = _mm_cvtsi128_si64(bits);
-    buffer_ <<= num_bits;
+    const auto bits =
+        shift_right_same(buffer_, set_shift_right_count(d, 64 - num_bits));
+    const uint64_t code = get(d, bits);
+    buffer_ = shift_left_same(buffer_, set_shift_left_count(d, num_bits));
     lower_bits_extracted_ += num_bits;
     return code;
   }
@@ -180,13 +182,13 @@ class BitSource {
   // Reads the next 32 bits into the buffer. Precondition: CanRead32 =>
   // lower_bits_extracted_ >= 0 => buffer_[0,32) == 0.
   void Read32() {
-    const __m128i shift = _mm_cvtsi64_si128(lower_bits_extracted_);
+    const auto shift = set_shift_left_count(d, lower_bits_extracted_);
     uint32_t bits;
     memcpy(&bits, read_pos_, 4);
     read_pos_ += 4;
-    const V vbits(_mm_cvtsi64_si128(PIK_BSWAP32(bits)));
+    const auto vbits = set(d, uint64_t(PIK_BSWAP32(bits)));
     // The upper half may have had some zeros at the bottom, so match that.
-    buffer_ += V(_mm_sll_epi64(vbits, shift));
+    buffer_ += shift_left_same(vbits, shift);
     lower_bits_extracted_ -= 32;
   }
 
@@ -197,11 +199,12 @@ class BitSource {
   }
 
  private:
-  V buffer_;
+  Part<uint64_t, 2>::V buffer_;
   int lower_bits_extracted_;
   const uint8_t* PIK_RESTRICT read_pos_;
 };
 
+}  // namespace SIMD_NAMESPACE
 }  // namespace pik
 
 #endif  // BIT_BUFFER_H_

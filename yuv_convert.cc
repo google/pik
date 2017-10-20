@@ -208,4 +208,77 @@ Image3U YUVRec709ImageFromRGBLinear(const Image3F& rgb, int out_bit_depth) {
   return yuv;
 }
 
+void SubSampleChroma(const Image3U& yuv,
+                     int bit_depth,
+                     ImageU* yplane,
+                     ImageU* uplane,
+                     ImageU* vplane) {
+  const int xsize = yuv.xsize();
+  const int ysize = yuv.ysize();
+  const int c_xsize = (xsize + 1) / 2;
+  const int c_ysize = (ysize + 1) / 2;
+  *yplane = CopyImage(yuv.plane(0));
+  *uplane = ImageU(c_xsize, c_ysize);
+  *vplane = ImageU(c_xsize, c_ysize);
+  for (int y = 0; y < c_ysize; ++y) {
+    for (int x = 0; x < c_xsize; ++x) {
+      int sum_u = 0;
+      int sum_v = 0;
+      for (int iy = 0; iy < 2; ++iy) {
+        for (int ix = 0; ix < 2; ++ix) {
+          int yy = std::min(2 * y + iy, ysize - 1);
+          int xx = std::min(2 * x + ix, xsize - 1);
+          sum_u += yuv.Row(yy)[1][xx];
+          sum_v += yuv.Row(yy)[2][xx];
+        }
+      }
+      uplane->Row(y)[x] = (sum_u + 2) / 4;
+      vplane->Row(y)[x] = (sum_v + 2) / 4;
+    }
+  }
+}
+
+ImageU SuperSamplePlane(const ImageU& in, int bit_depth,
+                        int out_xsize, int out_ysize) {
+  const int c_xsize = in.xsize();
+  const int c_ysize = in.ysize();
+  ImageU out(2 * c_xsize, 2 * c_ysize);
+  for (int y = 0; y < c_ysize; ++y) {
+    const int y0 = y > 0 ? y - 1 : y;
+    const int y1 = y;
+    const int y2 = y + 1 < c_ysize ? y + 1 : y;
+    const uint16_t* const PIK_RESTRICT row0 = in.Row(y0);
+    const uint16_t* const PIK_RESTRICT row1 = in.Row(y1);
+    const uint16_t* const PIK_RESTRICT row2 = in.Row(y2);
+    uint16_t* const PIK_RESTRICT row_out0 = out.Row(2 * y);
+    uint16_t* const PIK_RESTRICT row_out1 = out.Row(2 * y + 1);
+    for (int x = 0; x < c_xsize; ++x) {
+      const int x0 = x > 0 ? x - 1 : x;
+      const int x1 = x;
+      const int x2 = x + 1 < c_xsize ? x + 1 : x;
+      row_out0[2 * x + 0] = (9 * row1[x1] + 3 * row1[x0] +
+                             3 * row0[x1] + 1 * row0[x0] + 8) / 16;
+      row_out0[2 * x + 1] = (9 * row1[x1] + 3 * row1[x2] +
+                             3 * row0[x1] + 1 * row0[x2] + 8) / 16;
+      row_out1[2 * x + 0] = (9 * row1[x1] + 3 * row1[x0] +
+                             3 * row2[x1] + 1 * row2[x0] + 8) / 16;
+      row_out1[2 * x + 1] = (9 * row1[x1] + 3 * row1[x2] +
+                             3 * row2[x1] + 1 * row2[x2] + 8) / 16;
+    }
+  }
+  out.ShrinkTo(out_xsize, out_ysize);
+  return out;
+}
+
+Image3U SuperSampleChroma(const ImageU& yplane,
+                          const ImageU& uplane,
+                          const ImageU& vplane,
+                          int bit_depth) {
+  const int xsize = yplane.xsize();
+  const int ysize = yplane.ysize();
+  return Image3U(CopyImage(yplane),
+                 SuperSamplePlane(uplane, bit_depth, xsize, ysize),
+                 SuperSamplePlane(vplane, bit_depth, xsize, ysize));
+}
+
 }  // namespace pik

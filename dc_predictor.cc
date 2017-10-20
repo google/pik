@@ -24,11 +24,12 @@
 namespace pik {
 namespace SIMD_NAMESPACE {
 namespace {
+const Full<int32_t> d;
 
 // Not the same as avg, which rounds rather than truncates!
 template <class V>
 static PIK_INLINE V Average(const V v0, const V v1) {
-  return (v0 + v1) >> 1;
+  return shift_right<1>(v0 + v1);
 }
 
 // Clamps gradient to the min/max of n, w, l.
@@ -40,13 +41,13 @@ static PIK_INLINE V ClampedGradient(const V n, const V w, const V l) {
   return min(max(vmin, grad), vmax);
 }
 
-static PIK_INLINE i32x8 AbsResidual(const i32x8& c, const i32x8& pred) {
+static PIK_INLINE i32x8 AbsResidual(const i32x8 c, const i32x8 pred) {
   return i32x8(_mm256_abs_epi32(c - pred));
 }
 
-static PIK_INLINE u16x8 Costs16(const i32x8& costs) {
+static PIK_INLINE u16x8 Costs16(const i32x8 costs) {
   // Saturate to 16-bit for minpos.
-  return convert_to(uint16_t(), costs);
+  return convert_to(Part<uint16_t, 8>(), costs);
 }
 
 // Sliding window of "causal" (already decoded) pixels, plus simple functions
@@ -78,12 +79,12 @@ class PixelNeighborsY {
   // LoadT/StoreT/compute single Y values.
   using T = i32x4;
   static PIK_INLINE T LoadT(const DC* const PIK_RESTRICT row, const size_t x) {
-    return T(_mm_cvtsi32_si128(row[x]));
+    return set(Part<int32_t, 4>(), row[x]);
   }
 
   static PIK_INLINE void StoreT(const T dc, DC* const PIK_RESTRICT row,
                                 const size_t x) {
-    row[x] = _mm_cvtsi128_si32(dc);
+    row[x] = get(Part<int32_t, 4>(), dc);
   }
 
   static PIK_INLINE V Broadcast(const T dc) {
@@ -97,13 +98,13 @@ class PixelNeighborsY {
                   const DC* const PIK_RESTRICT row_t,
                   const DC* const PIK_RESTRICT row_m,
                   const DC* const PIK_RESTRICT row_b) {
-    const V wl = set1(V(), row_m[0]);
-    const V ww = set1(V(), row_b[0]);
-    tl_ = set1(V(), row_t[1]);
-    tn_ = set1(V(), row_t[2]);
-    l_ = set1(V(), row_m[1]);
-    n_ = set1(V(), row_m[2]);
-    w_ = set1(V(), row_b[1]);
+    const auto wl = set1(d, row_m[0]);
+    const auto ww = set1(d, row_b[0]);
+    tl_ = set1(d, row_t[1]);
+    tn_ = set1(d, row_t[2]);
+    l_ = set1(d, row_m[1]);
+    n_ = set1(d, row_m[2]);
+    w_ = set1(d, row_b[1]);
     pred_w_ = Predict(l_, ww, wl, n_);
   }
 
@@ -123,7 +124,8 @@ class PixelNeighborsY {
   // Returns predictor for pixel c with min cost and updates pred_w_.
   PIK_INLINE T PredictC(const T r, const V costs) {
     const u16x8 idx_min(_mm_minpos_epu16(Costs16(costs)));
-    const u32x8 index = u32x8(_mm256_broadcastd_epi32(idx_min)) >> 16;
+    const u32x8 index_unscaled = u32x8(_mm256_broadcastd_epi32(idx_min));
+    const u32x8 index = shift_right<16>(index_unscaled);
 
     const V pred_c = Predict(n_, w_, l_, Broadcast(r));
     pred_w_ = pred_c;
@@ -199,9 +201,9 @@ class PixelNeighborsUV {
                    const DC* const PIK_RESTRICT row_t,
                    const DC* const PIK_RESTRICT row_m,
                    const DC* const PIK_RESTRICT row_b) {
-    yn_ = set1(V(), row_ym[2]);
-    yw_ = set1(V(), row_yb[1]);
-    yl_ = set1(V(), row_ym[1]);
+    yn_ = set1(d, row_ym[2]);
+    yw_ = set1(d, row_yb[1]);
+    yl_ = set1(d, row_ym[1]);
     n_ = LoadT(row_m, 2);
     w_ = LoadT(row_b, 1);
     l_ = LoadT(row_m, 1);
@@ -212,8 +214,8 @@ class PixelNeighborsUV {
                               const DC* const PIK_RESTRICT row_ym,
                               const DC* const PIK_RESTRICT row_yb,
                               const DC* const PIK_RESTRICT) {
-    const V yr = set1(V(), row_ym[x + 1]);
-    const V yc = set1(V(), row_yb[x]);
+    const V yr = set1(d, row_ym[x + 1]);
+    const V yc = set1(d, row_yb[x]);
     const V costs = AbsResidual(yc, Predict(yn_, yw_, yl_, yr));
     yl_ = yn_;
     yn_ = yr;
@@ -224,7 +226,8 @@ class PixelNeighborsUV {
   // Returns predictor for pixel c with min cost.
   PIK_INLINE T PredictC(const T r, const V costs) const {
     const u16x8 idx_min(_mm_minpos_epu16(Costs16(costs)));
-    const u32x8 index = u32x8(_mm256_broadcastd_epi32(idx_min)) >> 16;
+    const u32x8 index_unscaled = u32x8(_mm256_broadcastd_epi32(idx_min));
+    const u32x8 index = shift_right<16>(index_unscaled);
 
     const V predictors_u =
         Predict(BroadcastU(n_), BroadcastU(w_), BroadcastU(l_), BroadcastU(r));

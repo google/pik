@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <string>
+#include <vector>
 
 namespace pik {
 
@@ -29,6 +30,12 @@ struct PikImageSizeInfo {
     total_size += victim.total_size;
     clustered_entropy += victim.clustered_entropy;
   }
+  void Print(size_t num_inputs) const {
+    printf("%10zd   [%6.2f %8zd %10zd %10zd %21.10f]\n", total_size,
+           num_clustered_histograms * 1.0 / num_inputs, histogram_size,
+           entropy_coded_bits >> 3, extra_bits >> 3,
+           histogram_size + (clustered_entropy + extra_bits) / 8.0f);
+  }
   size_t num_clustered_histograms = 0;
   size_t histogram_size = 0;
   size_t entropy_coded_bits = 0;
@@ -37,27 +44,42 @@ struct PikImageSizeInfo {
   double clustered_entropy = 0.0f;
 };
 
+static const int kNumImageLayers = 3;
+static const char* kImageLayers[] = {
+  "quant", "DC", "AC",
+};
+
 // Metadata and statistics gathered during compression or decompression.
 struct PikInfo {
+  PikInfo() : layers(kNumImageLayers) {}
   void Assimilate(const PikInfo& victim) {
-    ytob_image.Assimilate(victim.ytob_image);
-    quant_image.Assimilate(victim.quant_image);
-    dc_image.Assimilate(victim.dc_image);
-    ac_image.Assimilate(victim.ac_image);
+    for (int i = 0; i < layers.size(); ++i) {
+      layers[i].Assimilate(victim.layers[i]);
+    }
     num_butteraugli_iters += victim.num_butteraugli_iters;
   }
   PikImageSizeInfo TotalImageSize() const {
     PikImageSizeInfo total;
-    total.Assimilate(ytob_image);
-    total.Assimilate(quant_image);
-    total.Assimilate(dc_image);
-    total.Assimilate(ac_image);
+    for (int i = 0; i < layers.size(); ++i) {
+      total.Assimilate(layers[i]);
+    }
     return total;
   }
-  PikImageSizeInfo ytob_image;
-  PikImageSizeInfo quant_image;
-  PikImageSizeInfo dc_image;
-  PikImageSizeInfo ac_image;
+
+  void Print(size_t num_inputs) const {
+    if (num_inputs == 0) return;
+    printf("Average butteraugli iters: %10.2f\n",
+           num_butteraugli_iters * 1.0 / num_inputs);
+    for (int i = 0; i < layers.size(); ++i) {
+      printf("Total layer size %-10s", kImageLayers[i]);
+      layers[i].Print(num_inputs);
+    }
+    printf("Total image size           ");
+    TotalImageSize().Print(num_inputs);
+  }
+
+
+  std::vector<PikImageSizeInfo> layers;
   int num_butteraugli_iters = 0;
   size_t decoded_size = 0;
   // If not empty, additional debugging information (e.g. debug images) is

@@ -16,139 +16,86 @@
 #define SIMD_SIMD_H_
 
 // SIMD library facade: delegates to platform-specific headers (currently
-// SSE4/AVX2/scalar, later PPC8 and ARMv8). To ensure performance portability,
+// scalar/SSE4/AVX2/ARMv8, later PPC8). To ensure performance portability,
 // the library only includes operations that are efficient on all platforms.
 //
-// WARNING: this header may be included from translation units compiled with
-// different flags. To prevent ODR violations, this header and its
-// dependencies must only define functions if they are static inline and/or
-// within namespace SIMD_NAMESPACE. The namespace name varies depending on
-// compile flags, so this header requires textual inclusion.
+// WARNING: this header is included from translation units compiled with
+// different flags. To prevent ODR violations, all functions defined here or
+// in dependent headers must be inlined and/or within namespace SIMD_NAMESPACE.
+// The namespace name varies depending on compile flags, so this header requires
+// textual inclusion.
 
 #include <stddef.h>  // size_t
-#include <stdint.h>
 #include "simd/port.h"
 #include "simd/util.h"  // must come after port.h
 
 // Summary of available types (T is the lane type, e.g. float):
-// vec1<T>: single-element vector for loop remainders/measuring SIMD speedup;
-// vec32<T>: quarter of a 128-bit vector, limited operations;
-// vec64<T>: half of a 128-bit vector, limited operations;
-// vec128<T>: 128-bit vector;
-// vec256<T>: 256-bit vector, only available to AVX2-specific programs;
-// vec<T>: alias template for the best instruction set from SIMD_ENABLE;
-// vec<T, SSE4>: alias template for a specific instruction set (SSE4);
-// PB[B]xN[N]: fixed-type, fixed-width type aliases, where
+// Vec<T, N[, Target]> or Desc<T, N[, Target]>::V are aliases for a full vector
+//   of at least 128 bits, or N (=2^j) lane part, or scalar.
+//
+// PB[B]xN[N] are aliases for vectors/parts with a given lane type and count:
 //   P = lane type prefix: unsigned (u), signed (i), or floating-point (f);
 //   B[B] = number of bits per lane;
-//   N[N] = number of lanes (such that B[B] * N[N] is one of the above sizes).
+//   N[N] = number of lanes: N[N] = 2^j, B[B] * N[N] <= 128.
 
 namespace pik {
 namespace SIMD_NAMESPACE {
 
-// "Member types and constants" for vec<T, Target>; must be non-members because
-// we do not control the specializations (vector classes) on PPC.
+// Platform-specific specializations with "type" alias; use via Vec<> below.
+template <typename T, size_t N, class Target>
+struct VecT;
 
-// True if V is one of our vector types, e.g. i32x4 or i32vec or vec<int32_t>.
-// (Primary template; will be specialized in platform-specific headers.)
-template <class V>
-struct IsVec {
-  static constexpr bool value = false;
+// Alias for a vector/part/scalar: Vec<uint32_t, 1> = u32x1;
+// Vec<float, 1, NONE> = scalar<float>. This is the return type of initializers
+// such as setzero(). Parts and full vectors are distinct types on x86 to avoid
+// inadvertent conversions. By contrast, PPC parts are merely aliases for full
+// vectors to avoid wrapper overhead.
+template <typename T, size_t N, class Target = SIMD_TARGET>
+using Vec = typename VecT<T, N, Target>::type;
+
+// Descriptor: properties that uniquely identify a Vec. Used to select an
+// overloaded function, typically via Full/Part/Scalar aliases below.
+template <typename LaneT, size_t kLanes, class TargetT = SIMD_TARGET>
+struct Desc {
+  using T = LaneT;
+  static constexpr size_t N = kLanes;
+  using Target = TargetT;
+
+  using V = Vec<T, N, Target>;
+
+  static_assert((N & (N - 1)) == 0, "N must be a power of two");
+  static_assert(N == 1 || TargetT::value != SIMD_NONE, "Scalar must have N=1");
 };
 
-// (Primary template; will be specialized for PPC vectors.)
-template <class V>
-struct LaneT {
-  using type = typename V::T;  // member type in x86 and scalar wrappers.
-};
-// The vector's lane type. Lane<i32x4> = int32_t.
-template <class V>
-using Lane = typename LaneT<V>::type;
-
-// How many lanes in the vector. NumLanes<i32x4>() = 4.
-// (Primary template; specialized for platform-specific half-vectors.)
-template <class V>
-struct NumLanes {
-  using T = Lane<V>;
-  static constexpr size_t value = sizeof(V) / sizeof(T);
-  static_assert(value != 0, "NumLanes cannot be zero");
-  constexpr operator size_t() const { return value; }
-};
-
-// Ensures these dependencies are added to deps.mk. The inclusions have no
-// effect because the headers are empty #ifdef SIMD_DEPS.
-#ifdef SIMD_DEPS
-#include "simd/x86_avx2.h"
-#include "simd/x86_sse4.h"
-#endif
-
-// Must be included before x86_avx2.h (this is its half-vector type)
-#if SIMD_ENABLE_SSE4
-#include "simd/x86_sse4.h"
-#endif
-
-#if SIMD_ENABLE_SSE4 && SIMD_ENABLE_AVX2
-#include "simd/x86_avx2.h"
-#endif
-
-#if SIMD_ENABLE_NEON
-#include "simd/arm64_neon.h"
-#endif
-
-// Always available
-#include "simd/scalar.h"
-
-// (specializations for vec<>, see below)
-template <class Target>
-struct VecT {
-#if SIMD_ENABLE_ANY
-  template <typename T>
-  using type = vec128<T>;
-#endif
-};
-template <>
-struct VecT<None> {
-  template <typename T>
-  using type = vec1<T>;
-};
-#if SIMD_ENABLE_AVX2
-template <>
-struct VecT<AVX2> {
-  template <typename T>
-  using type = vec256<T>;
-};
-#endif
-// Alias of a vector class with lane type T and instruction set Target,
-// typically obtained from SIMD_TARGET or dispatch::Run. The default Target is
-// the 'best' (i.e. with the widest vectors) of all SIMD_ENABLE bits.
+// Shorthand for a full vector.
 template <typename T, class Target = SIMD_TARGET>
-using vec = typename VecT<Target>::template type<T>;
+using Full = Desc<T, Target::template NumLanes<T>(), Target>;
 
-// Generic SIMD algorithms:
+// Shorthand for a part (or full) vector. N=2^j. Note that MinTarget selects
+// a 128-bit Target when T and N are small enough (avoids additional AVX2
+// versions of SSE4 initializers/loads).
+template <typename T, size_t N>
+using Part = Desc<T, N, MinTarget<T, N>>;
 
-// Returns the closest value to v within [lo, hi].
-template <typename V>
-SIMD_INLINE V clamp(const V v, const V lo, const V hi) {
-  return min(max(lo, v), hi);
+// Shorthand for a scalar; note that scalar<T> is the actual data class.
+template <typename T>
+using Scalar = Desc<T, 1, NONE>;
+
+// Returns size [bytes] of the valid lanes, not necessarily the same as the
+// underlying raw register.
+template <class D>
+constexpr size_t vec_size() {
+  return D::N * sizeof(typename D::T);
 }
 
-// Returns a vector with lane i=0..N-1 set to "first" + i. Unique per-lane
-// values are required to detect lane-crossing bugs.
-template <class V>
-SIMD_INLINE V Iota(const Lane<V> first = 0) {
-  constexpr size_t N = NumLanes<V>();
-  SIMD_ALIGN Lane<V> lanes[N];
-  for (size_t i = 0; i < N; ++i) {
-    lanes[i] = first + i;
-  }
-  return load(V(), lanes);
-}
-
-// Returns a name for V in PB[B]xN[N] format (see above).
+// Returns a name for the vector/part/scalar in PB[B][xN[N]] format (see above).
 // Useful for understanding which instantiation of a generic test failed.
-template <class V>
-SIMD_INLINE const char* vec_name() {
-  using T = Lane<V>;
+template <class D>
+inline const char* vec_name() {
+  using T = typename D::T;
+  constexpr size_t N = D::N;
+  constexpr int kTarget = D::Target::value;
+
   // Avoids depending on <type_traits>.
   const bool is_float = T(2.25) != T(2);
   const bool is_signed = T(-1) < T(0);
@@ -158,61 +105,44 @@ SIMD_INLINE const char* vec_name() {
   constexpr char bits10 = '0' + (bits / 10);
   constexpr char bits1 = '0' + (bits % 10);
 
-  constexpr size_t N = NumLanes<V>();
+  // Scalars: omit the xN suffix.
+  if (kTarget == SIMD_NONE) {
+    static constexpr char name1[8] = {prefix, bits1};
+    static constexpr char name2[8] = {prefix, bits10, bits1};
+    return sizeof(T) == 1 ? name1 : name2;
+  }
+
   constexpr char N1 = (N < 10) ? '\0' : '0' + (N % 10);
   constexpr char N10 = (N < 10) ? '0' + (N % 10) : '0' + (N / 10);
 
-  // 8-bit lanes (the only single-digit bit width)
-  if (sizeof(T) == 1) {
-    static constexpr char name[8] = {prefix, bits1, 'x', N10, N1};
-    return name;
-  }
-
-  static constexpr char name[8] = {prefix, bits10, bits1, 'x', N10, N1};
-  return name;
+  static constexpr char name1[8] = {prefix, bits1, 'x', N10, N1};
+  static constexpr char name2[8] = {prefix, bits10, bits1, 'x', N10, N1};
+  return sizeof(T) == 1 ? name1 : name2;
 }
 
-// Cache control
-
-SIMD_INLINE void stream(const uint32_t t, uint32_t* SIMD_RESTRICT aligned) {
-#if SIMD_ARCH_X86
-  _mm_stream_si32(reinterpret_cast<int*>(aligned), t);
-#else
-  CopyBytes(t, aligned);
+// Ensures these dependencies are added to deps.mk. The inclusions have no
+// effect because the headers are empty #ifdef SIMD_DEPS.
+#ifdef SIMD_DEPS
+#include "simd/x86_avx2.h"
+#include "simd/x86_sse4.h"
+#include "simd/arm64_neon.h"
 #endif
-}
 
-SIMD_INLINE void stream(const uint64_t t, uint64_t* SIMD_RESTRICT aligned) {
-#if SIMD_ARCH_X86
-  _mm_stream_si64(reinterpret_cast<long long*>(aligned), t);
-#else
-  CopyBytes(t, aligned);
+// Also used by x86_avx2.h => must be included first.
+#if SIMD_ENABLE_SSE4
+#include "simd/x86_sse4.h"
 #endif
-}
 
-// Ensures previous weakly-ordered stores are visible. No effect on non-x86.
-SIMD_INLINE void store_fence() {
-#if SIMD_ARCH_X86
-  _mm_sfence();
+#if SIMD_ENABLE_SSE4 && SIMD_ENABLE_AVX2
+#include "simd/x86_avx2.h"
 #endif
-}
 
-// Begins loading the cache line containing "p".
-template <typename T>
-SIMD_INLINE void prefetch(const T* p) {
-#if SIMD_ARCH_X86
-  _mm_prefetch(p, _MM_HINT_T0);
-#elif SIMD_ARCH_ARM
-  __pld(p);
+#if SIMD_ENABLE_ARM8
+#include "simd/arm64_neon.h"
 #endif
-}
 
-// Invalidates and flushes the cache line containing "p". No effect on non-x86.
-SIMD_INLINE void flush_cacheline(const void* p) {
-#if SIMD_ARCH_X86
-  _mm_clflush(p);
-#endif
-}
+// Always available
+#include "simd/scalar.h"
 
 }  // namespace SIMD_NAMESPACE
 }  // namespace pik

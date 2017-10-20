@@ -47,7 +47,7 @@ bool BrotliDecompress(const std::vector<uint8_t>& in,
     out_size = next_out - temp_buffer;
     out->resize(out->size() + out_size);
     if (out->size() > max_output_size) return false;
-    memcpy(&(*out)[0] + out->size() - out_size, temp_buffer, out_size);
+    memcpy(out->data() + out->size() - out_size, temp_buffer, out_size);
     if (code != BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT) break;
   }
   if (code != BROTLI_DECODER_RESULT_SUCCESS) return false;

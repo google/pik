@@ -37,9 +37,9 @@ template <class Target>
 constexpr bool IsSupported(const int targets) {
   return (targets & Target::value);
 }
-// Special-case for None - always supported, but its value is zero.
+// Special-case for NONE - always supported, but its value is zero.
 template <>
-constexpr bool IsSupported<None>(const int targets) {
+constexpr bool IsSupported<NONE>(const int targets) {
   return true;
 }
 
@@ -49,13 +49,13 @@ constexpr bool IsSupported<None>(const int targets) {
 // template (as opposed to a class template) allows stateful functors.
 template <class Func, typename... Args>
 SIMD_INLINE auto Run(Func&& func, Args&&... args)
-    -> decltype(std::forward<Func>(func).template operator()<None>(
+    -> decltype(std::forward<Func>(func).template operator()<NONE>(
         std::forward<Args>(args)...)) {
   const int supported = SupportedTargets();
   (void)supported;
   // NOTE: do not check SIMD_ENABLE_*: SIMD_ENABLE might be zero in this
   // translation unit, but the instantiation[s] can still be called.
-#if SIMD_ARCH_X86
+#if SIMD_ARCH == SIMD_ARCH_X86
   if (supported & SIMD_AVX2) {
     return std::forward<Func>(func).template operator()<AVX2>(
         std::forward<Args>(args)...);
@@ -64,14 +64,14 @@ SIMD_INLINE auto Run(Func&& func, Args&&... args)
     return std::forward<Func>(func).template operator()<SSE4>(
         std::forward<Args>(args)...);
   }
-#elif SIMD_ARCH_ARM
-  if (supported & SIMD_ARM) {
+#elif SIMD_ARCH == SIMD_ARCH_ARM
+  if (supported & SIMD_ARM8) {
     return std::forward<Func>(func).template operator()<ARM8>(
         std::forward<Args>(args)...);
   }
 #endif
 
-  return std::forward<Func>(func).template operator()<None>(
+  return std::forward<Func>(func).template operator()<NONE>(
       std::forward<Args>(args)...);
 }
 
@@ -81,7 +81,7 @@ template <class Func, typename... Args>
 SIMD_INLINE void ForeachTarget(const int targets, Func&& func, Args&&... args) {
   // NOTE: do not check SIMD_ENABLE_*: SIMD_ENABLE might be zero in this
   // translation unit, but the instantiation[s] can still be called.
-#if SIMD_ARCH_X86
+#if SIMD_ARCH == SIMD_ARCH_X86
   if (targets & SIMD_SSE4) {
     std::forward<Func>(func).template operator()<SSE4>(
         std::forward<Args>(args)...);
@@ -90,14 +90,14 @@ SIMD_INLINE void ForeachTarget(const int targets, Func&& func, Args&&... args) {
     std::forward<Func>(func).template operator()<AVX2>(
         std::forward<Args>(args)...);
   }
-#elif SIMD_ARCH_ARM
-  if (targets & SIMD_ARM) {
+#elif SIMD_ARCH == SIMD_ARCH_ARM
+  if (targets & SIMD_ARM8) {
     std::forward<Func>(func).template operator()<ARM8>(
         std::forward<Args>(args)...);
   }
 #endif
 
-  std::forward<Func>(func).template operator()<None>(
+  std::forward<Func>(func).template operator()<NONE>(
       std::forward<Args>(args)...);
 }
 

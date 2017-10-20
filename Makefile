@@ -16,8 +16,10 @@ PIK_OBJS := $(addprefix obj/, \
 	context_map_encode.o \
 	context_map_decode.o \
 	dct.o \
+	dct_util.o \
 	dc_predictor.o \
 	gamma_correct.o \
+	gauss_blur.o \
 	header.o \
 	pik.o \
 	pik_alpha.o \

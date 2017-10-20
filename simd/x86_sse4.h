@@ -18,270 +18,268 @@
 // Avoid compile errors when generating deps.mk.
 #ifndef SIMD_DEPS
 
-// ================================================== vec128
-
-// Primary template for 1-8 byte integer lanes.
 template <typename T>
-struct Raw128 {
+struct raw_sse4 {
   using type = __m128i;
 };
-
 template <>
-struct Raw128<float> {
+struct raw_sse4<float> {
   using type = __m128;
 };
-
 template <>
-struct Raw128<double> {
+struct raw_sse4<double> {
   using type = __m128d;
 };
 
-// Returned by load_dup128.
+// All 128-bit blocks equal; returned from load_dup128.
 template <typename T>
 struct dup128x1 {
-  using Raw = typename Raw128<T>::type;
+  using Raw = typename raw_sse4<T>::type;
+
   explicit dup128x1(const Raw v) : raw(v) {}
+
   Raw raw;
 };
 
-template <typename Lane>
-class vec128 {
-  using Raw = typename Raw128<Lane>::type;
+// Returned by set_shift_*_count, also used by AVX2; do not use directly.
+template <typename T>
+struct shift_left_count {
+  __m128i raw;
+};
+
+template <typename T>
+struct shift_right_count {
+  __m128i raw;
+};
+
+template <typename T, size_t N = SSE4::NumLanes<T>()>
+class vec_sse4 {
+  using Raw = typename raw_sse4<T>::type;
+  static constexpr size_t kBytes = N * sizeof(T);
+  static_assert((kBytes & (kBytes - 1)) == 0, "Size must be 2^j bytes");
+  static_assert(kBytes == 0 || (4 <= kBytes && kBytes <= 16), "Invalid size");
 
  public:
-  using T = Lane;
-
-  SIMD_ATTR_SSE4 SIMD_INLINE vec128() {}
-  vec128(const vec128&) = default;
-  vec128& operator=(const vec128&) = default;
-  SIMD_ATTR_SSE4 SIMD_INLINE explicit vec128(const Raw v) : v_(v) {}
+  SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4() {}
+  vec_sse4(const vec_sse4&) = default;
+  vec_sse4& operator=(const vec_sse4&) = default;
+  SIMD_ATTR_SSE4 SIMD_INLINE explicit vec_sse4(const Raw v) : raw(v) {}
 
   // Used by non-member functions; avoids verbose .raw() for each argument and
   // reduces Clang compile time of the test by 10-20%.
-  SIMD_ATTR_SSE4 SIMD_INLINE operator Raw() const { return v_; }  // NOLINT
+  SIMD_ATTR_SSE4 SIMD_INLINE operator Raw() const { return raw; }  // NOLINT
 
   // Compound assignment. Only usable if there is a corresponding non-member
   // binary operator overload. For example, only f32 and f64 support division.
-  SIMD_ATTR_SSE4 SIMD_INLINE vec128& operator*=(const vec128 other) {
+  SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4& operator*=(const vec_sse4 other) {
     return *this = (*this * other);
   }
-  SIMD_ATTR_SSE4 SIMD_INLINE vec128& operator/=(const vec128 other) {
+  SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4& operator/=(const vec_sse4 other) {
     return *this = (*this / other);
   }
-  SIMD_ATTR_SSE4 SIMD_INLINE vec128& operator+=(const vec128 other) {
+  SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4& operator+=(const vec_sse4 other) {
     return *this = (*this + other);
   }
-  SIMD_ATTR_SSE4 SIMD_INLINE vec128& operator-=(const vec128 other) {
+  SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4& operator-=(const vec_sse4 other) {
     return *this = (*this - other);
   }
-  SIMD_ATTR_SSE4 SIMD_INLINE vec128& operator&=(const vec128 other) {
+  SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4& operator&=(const vec_sse4 other) {
     return *this = (*this & other);
   }
-  SIMD_ATTR_SSE4 SIMD_INLINE vec128& operator|=(const vec128 other) {
+  SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4& operator|=(const vec_sse4 other) {
     return *this = (*this | other);
   }
-  SIMD_ATTR_SSE4 SIMD_INLINE vec128& operator^=(const vec128 other) {
+  SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4& operator^=(const vec_sse4 other) {
     return *this = (*this ^ other);
   }
-  template <typename ShiftArg>  // int or vec128
-  SIMD_ATTR_SSE4 SIMD_INLINE vec128& operator<<=(const ShiftArg count) {
-    return *this = operator<<(*this, count);
-  }
-  template <typename ShiftArg>
-  SIMD_ATTR_SSE4 SIMD_INLINE vec128& operator>>=(const ShiftArg count) {
-    return *this = operator>>(*this, count);
-  }
 
- private:
-  Raw v_;
+  Raw raw;
 };
 
-template <typename Lane>
-struct IsVec<vec128<Lane>> {
-  static constexpr bool value = true;
+template <typename T, size_t N>
+struct VecT<T, N, SSE4> {
+  using type = vec_sse4<T, N>;
 };
 
-using u8x16 = vec128<uint8_t>;
-using u16x8 = vec128<uint16_t>;
-using u32x4 = vec128<uint32_t>;
-using u64x2 = vec128<uint64_t>;
+using u8x16 = vec_sse4<uint8_t, 16>;
+using u16x8 = vec_sse4<uint16_t, 8>;
+using u32x4 = vec_sse4<uint32_t, 4>;
+using u64x2 = vec_sse4<uint64_t, 2>;
+using i8x16 = vec_sse4<int8_t, 16>;
+using i16x8 = vec_sse4<int16_t, 8>;
+using i32x4 = vec_sse4<int32_t, 4>;
+using i64x2 = vec_sse4<int64_t, 2>;
+using f32x4 = vec_sse4<float, 4>;
+using f64x2 = vec_sse4<double, 2>;
 
-using i8x16 = vec128<int8_t>;
-using i16x8 = vec128<int16_t>;
-using i32x4 = vec128<int32_t>;
-using i64x2 = vec128<int64_t>;
+using u8x8 = vec_sse4<uint8_t, 8>;
+using u16x4 = vec_sse4<uint16_t, 4>;
+using u32x2 = vec_sse4<uint32_t, 2>;
+using u64x1 = vec_sse4<uint64_t, 1>;
+using i8x8 = vec_sse4<int8_t, 8>;
+using i16x4 = vec_sse4<int16_t, 4>;
+using i32x2 = vec_sse4<int32_t, 2>;
+using i64x1 = vec_sse4<int64_t, 1>;
+using f32x2 = vec_sse4<float, 2>;
+using f64x1 = vec_sse4<double, 1>;
 
-using f32x4 = vec128<float>;
-using f64x2 = vec128<double>;
-
-// ================================================== vec64
-
-// Mainly used for convert_to; can also load/store.
-template <typename Lane>
-class vec64 {
-  using Raw = typename Raw128<Lane>::type;
-
- public:
-  using T = Lane;
-
-  SIMD_ATTR_SSE4 SIMD_INLINE vec64() {}
-  vec64(const vec64&) = default;
-  vec64& operator=(const vec64&) = default;
-  SIMD_ATTR_SSE4 SIMD_INLINE explicit vec64(const Raw v) : v_(v) {}
-
-  SIMD_ATTR_SSE4 SIMD_INLINE operator Raw() const { return v_; }  // NOLINT
-
- private:
-  Raw v_;
-};
-
-template <typename Lane>
-struct NumLanes<vec64<Lane>> {
-  static constexpr size_t value = 8 / sizeof(Lane);
-  static_assert(value != 0, "NumLanes cannot be zero");
-  constexpr operator size_t() const { return value; }
-};
-
-using u8x8 = vec64<uint8_t>;
-using u16x4 = vec64<uint16_t>;
-using u32x2 = vec64<uint32_t>;
-using i8x8 = vec64<int8_t>;
-using i16x4 = vec64<int16_t>;
-using i32x2 = vec64<int32_t>;
-using f32x2 = vec64<float>;
-// No typedefs for 64-bit lanes because they would conflict with scalar.h.
-
-// ================================================== vec32
-
-// Used for conversion from i32 to u8; can load/store.
-template <typename Lane>
-class vec32 {
-  using Raw = typename Raw128<Lane>::type;
-
- public:
-  using T = Lane;
-
-  SIMD_ATTR_SSE4 SIMD_INLINE vec32() {}
-  vec32(const vec32&) = default;
-  vec32& operator=(const vec32&) = default;
-  SIMD_ATTR_SSE4 SIMD_INLINE explicit vec32(const Raw v) : v_(v) {}
-
-  SIMD_ATTR_SSE4 SIMD_INLINE operator Raw() const { return v_; }  // NOLINT
-
- private:
-  Raw v_;
-};
-
-template <typename Lane>
-struct NumLanes<vec32<Lane>> {
-  static constexpr size_t value = 4 / sizeof(Lane);
-  static_assert(value != 0, "NumLanes cannot be zero");
-  constexpr operator size_t() const { return value; }
-};
-
-using u8x4 = vec32<uint8_t>;
-using u16x2 = vec32<uint16_t>;
-using i8x4 = vec32<int8_t>;
-using i16x2 = vec32<int16_t>;
-// No typedefs for 32-bit lanes because they would conflict with scalar.h.
+using u8x4 = vec_sse4<uint8_t, 4>;
+using u16x2 = vec_sse4<uint16_t, 2>;
+using u32x1 = vec_sse4<uint32_t, 1>;
+using i8x4 = vec_sse4<int8_t, 4>;
+using i16x2 = vec_sse4<int16_t, 2>;
+using i32x1 = vec_sse4<int32_t, 1>;
+using f32x1 = vec_sse4<float, 1>;
 
 // ------------------------------ Set
 
-// Returns an all-zero vector.
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec128<T> setzero(vec128<T>) {
-  return vec128<T>(_mm_setzero_si128());
+// Returns an all-zero vector/part.
+template <typename T, size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, N> setzero(Desc<T, N, SSE4>) {
+  return vec_sse4<T, N>(_mm_setzero_si128());
 }
-template <>
-SIMD_ATTR_SSE4 SIMD_INLINE f32x4 setzero(f32x4) {
-  return f32x4(_mm_setzero_ps());
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE Vec<float, N, SSE4> setzero(Desc<float, N, SSE4>) {
+  return Vec<float, N, SSE4>(_mm_setzero_ps());
 }
-template <>
-SIMD_ATTR_SSE4 SIMD_INLINE f64x2 setzero(f64x2) {
-  return f64x2(_mm_setzero_pd());
-}
-
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec64<T> setzero(vec64<T>) {
-  return vec64<T>(setzero(vec128<T>()));
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE Vec<double, N, SSE4> setzero(Desc<double, N, SSE4>) {
+  return Vec<double, N, SSE4>(_mm_setzero_pd());
 }
 
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec32<T> setzero(vec32<T>) {
-  return vec32<T>(setzero(vec128<T>()));
+// Returns a vector/part with all lanes set to "t".
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE Vec<uint8_t, N, SSE4> set1(Desc<uint8_t, N, SSE4>,
+                                                      const uint8_t t) {
+  return Vec<uint8_t, N, SSE4>(_mm_set1_epi8(t));
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE Vec<uint16_t, N, SSE4> set1(Desc<uint16_t, N, SSE4>,
+                                                       const uint16_t t) {
+  return Vec<uint16_t, N, SSE4>(_mm_set1_epi16(t));
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE Vec<uint32_t, N, SSE4> set1(Desc<uint32_t, N, SSE4>,
+                                                       const uint32_t t) {
+  return Vec<uint32_t, N, SSE4>(_mm_set1_epi32(t));
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE Vec<uint64_t, N, SSE4> set1(Desc<uint64_t, N, SSE4>,
+                                                       const uint64_t t) {
+  return Vec<uint64_t, N, SSE4>(_mm_set1_epi64x(t));
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE Vec<int8_t, N, SSE4> set1(Desc<int8_t, N, SSE4>,
+                                                     const int8_t t) {
+  return Vec<int8_t, N, SSE4>(_mm_set1_epi8(t));
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE Vec<int16_t, N, SSE4> set1(Desc<int16_t, N, SSE4>,
+                                                      const int16_t t) {
+  return Vec<int16_t, N, SSE4>(_mm_set1_epi16(t));
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE Vec<int32_t, N, SSE4> set1(Desc<int32_t, N, SSE4>,
+                                                      const int32_t t) {
+  return Vec<int32_t, N, SSE4>(_mm_set1_epi32(t));
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE Vec<int64_t, N, SSE4> set1(Desc<int64_t, N, SSE4>,
+                                                      const int64_t t) {
+  return Vec<int64_t, N, SSE4>(_mm_set1_epi64x(t));
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE Vec<float, N, SSE4> set1(Desc<float, N, SSE4>,
+                                                    const float t) {
+  return Vec<float, N, SSE4>(_mm_set1_ps(t));
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE Vec<double, N, SSE4> set1(Desc<double, N, SSE4>,
+                                                     const double t) {
+  return Vec<double, N, SSE4>(_mm_set1_pd(t));
 }
 
-// Returns a vector with all lanes set to "t".
-SIMD_ATTR_SSE4 SIMD_INLINE u8x16 set1(u8x16, const uint8_t t) {
-  return u8x16(_mm_set1_epi8(t));
-}
-SIMD_ATTR_SSE4 SIMD_INLINE u16x8 set1(u16x8, const uint16_t t) {
-  return u16x8(_mm_set1_epi16(t));
-}
-SIMD_ATTR_SSE4 SIMD_INLINE u32x4 set1(u32x4, const uint32_t t) {
-  return u32x4(_mm_set1_epi32(t));
-}
-SIMD_ATTR_SSE4 SIMD_INLINE u64x2 set1(u64x2, const uint64_t t) {
-  return u64x2(_mm_set1_epi64x(t));
-}
-SIMD_ATTR_SSE4 SIMD_INLINE i8x16 set1(i8x16, const int8_t t) {
-  return i8x16(_mm_set1_epi8(t));
-}
-SIMD_ATTR_SSE4 SIMD_INLINE i16x8 set1(i16x8, const int16_t t) {
-  return i16x8(_mm_set1_epi16(t));
-}
-SIMD_ATTR_SSE4 SIMD_INLINE i32x4 set1(i32x4, const int32_t t) {
-  return i32x4(_mm_set1_epi32(t));
-}
-SIMD_ATTR_SSE4 SIMD_INLINE i64x2 set1(i64x2, const int64_t t) {
-  return i64x2(_mm_set1_epi64x(t));
-}
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE f32x4 set1(f32x4, const T t) {
-  return f32x4(_mm_set1_ps(t));
-}
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE f64x2 set1(f64x2, const T t) {
-  return f64x2(_mm_set1_pd(t));
+// Returns a vector with lane i=[0, N) set to "first" + i. Unique per-lane
+// values are required to detect lane-crossing bugs.
+template <typename T, size_t N, typename T2>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, N> iota(Desc<T, N, SSE4> d,
+                                               const T2 first) {
+  SIMD_ALIGN T lanes[N];
+  for (size_t i = 0; i < N; ++i) {
+    lanes[i] = first + i;
+  }
+  return load(d, lanes);
 }
 
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec64<T> set1(vec64<T>, const T t) {
-  return vec64<T>(set1(vec128<T>(), t));
+// Returns a vector/part with value "t".
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE Vec<uint32_t, N, SSE4> set(Desc<uint32_t, N, SSE4>,
+                                                      const uint32_t t) {
+  return Vec<uint32_t, N, SSE4>(_mm_cvtsi32_si128(t));
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE Vec<int32_t, N, SSE4> set(Desc<int32_t, N, SSE4>,
+                                                     const int32_t t) {
+  return Vec<int32_t, N, SSE4>(_mm_cvtsi32_si128(t));
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE Vec<float, N, SSE4> set(Desc<float, N, SSE4>,
+                                                   const float t) {
+  return Vec<float, N, SSE4>(_mm_set_ss(t));
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE Vec<uint64_t, N, SSE4> set(Desc<uint64_t, N, SSE4>,
+                                                      const uint64_t t) {
+  return Vec<uint64_t, N, SSE4>(_mm_cvtsi64_si128(t));
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE Vec<int64_t, N, SSE4> set(Desc<int64_t, N, SSE4>,
+                                                     const int64_t t) {
+  return Vec<int64_t, N, SSE4>(_mm_cvtsi64_si128(t));
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE Vec<double, N, SSE4> set(Desc<double, N, SSE4>,
+                                                    const double t) {
+  return Vec<double, N, SSE4>(_mm_set_sd(t));
 }
 
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec32<T> set1(vec32<T>, const T t) {
-  return vec32<T>(set1(vec128<T>(), t));
+// Gets the single value stored in a vector/part.
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE uint32_t get(Desc<uint32_t, N, SSE4>,
+                                        const Vec<uint32_t, N, SSE4> v) {
+  return _mm_cvtsi128_si32(v);
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE int32_t get(Desc<int32_t, N, SSE4>,
+                                       const Vec<int32_t, N, SSE4> v) {
+  return _mm_cvtsi128_si32(v);
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE float get(Desc<float, N, SSE4>,
+                                     const Vec<float, N, SSE4> v) {
+  return _mm_cvtss_f32(v);
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE uint64_t get(Desc<uint64_t, N, SSE4>,
+                                        const Vec<uint64_t, N, SSE4> v) {
+  return _mm_cvtsi128_si64(v);
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE int64_t get(Desc<int64_t, N, SSE4>,
+                                       const Vec<int64_t, N, SSE4> v) {
+  return _mm_cvtsi128_si64(v);
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE double get(Desc<double, N, SSE4>,
+                                      const Vec<double, N, SSE4> v) {
+  return _mm_cvtsd_f64(v);
 }
 
-// ------------------------------ Cast to/from vector subset (zero-cost)
-
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec128<T> to_subset(vec128<T>, const vec128<T> v) {
-  return v;
-}
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec64<T> to_subset(vec64<T>, const vec128<T> v) {
-  return vec64<T>(v);
-}
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec32<T> to_subset(vec32<T>, const vec128<T> v) {
-  return vec32<T>(v);
-}
-
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec128<T> from_subset(vec128<T>, const vec128<T> v) {
-  return v;
-}
-// Upper lane(s) are undefined.
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec128<T> from_subset(vec128<T>, const vec64<T> v) {
-  return vec128<T>(v);
-}
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec128<T> from_subset(vec128<T>, const vec32<T> v) {
-  return vec128<T>(v);
+// Returns part of a vector (unspecified whether upper or lower).
+template <typename T, size_t N, size_t VN>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, N> any_part(Desc<T, N, SSE4>,
+                                                   const vec_sse4<T, VN> v) {
+  return vec_sse4<T, N>(v);
 }
 
 // ================================================== ARITHMETIC
@@ -417,40 +415,114 @@ SIMD_ATTR_SSE4 SIMD_INLINE u16x8 avg(const u16x8 a, const u16x8 b) {
 // ------------------------------ Shift lanes by constant #bits
 
 // Unsigned
-SIMD_ATTR_SSE4 SIMD_INLINE u16x8 operator<<(const u16x8 v, const int bits) {
-  return u16x8(_mm_slli_epi16(v, bits));
+template <int kBits>
+SIMD_ATTR_SSE4 SIMD_INLINE u16x8 shift_left(const u16x8 v) {
+  return u16x8(_mm_slli_epi16(v, kBits));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE u16x8 operator>>(const u16x8 v, const int bits) {
-  return u16x8(_mm_srli_epi16(v, bits));
+template <int kBits>
+SIMD_ATTR_SSE4 SIMD_INLINE u16x8 shift_right(const u16x8 v) {
+  return u16x8(_mm_srli_epi16(v, kBits));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE u32x4 operator<<(const u32x4 v, const int bits) {
-  return u32x4(_mm_slli_epi32(v, bits));
+template <int kBits>
+SIMD_ATTR_SSE4 SIMD_INLINE u32x4 shift_left(const u32x4 v) {
+  return u32x4(_mm_slli_epi32(v, kBits));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE u32x4 operator>>(const u32x4 v, const int bits) {
-  return u32x4(_mm_srli_epi32(v, bits));
+template <int kBits>
+SIMD_ATTR_SSE4 SIMD_INLINE u32x4 shift_right(const u32x4 v) {
+  return u32x4(_mm_srli_epi32(v, kBits));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE u64x2 operator<<(const u64x2 v, const int bits) {
-  return u64x2(_mm_slli_epi64(v, bits));
+template <int kBits>
+SIMD_ATTR_SSE4 SIMD_INLINE u64x2 shift_left(const u64x2 v) {
+  return u64x2(_mm_slli_epi64(v, kBits));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE u64x2 operator>>(const u64x2 v, const int bits) {
-  return u64x2(_mm_srli_epi64(v, bits));
+template <int kBits>
+SIMD_ATTR_SSE4 SIMD_INLINE u64x2 shift_right(const u64x2 v) {
+  return u64x2(_mm_srli_epi64(v, kBits));
 }
 
-// Signed (no i64 shr)
-SIMD_ATTR_SSE4 SIMD_INLINE i16x8 operator<<(const i16x8 v, const int bits) {
-  return i16x8(_mm_slli_epi16(v, bits));
+// Signed (no i64 shift_right)
+template <int kBits>
+SIMD_ATTR_SSE4 SIMD_INLINE i16x8 shift_left(const i16x8 v) {
+  return i16x8(_mm_slli_epi16(v, kBits));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE i16x8 operator>>(const i16x8 v, const int bits) {
-  return i16x8(_mm_srai_epi16(v, bits));
+template <int kBits>
+SIMD_ATTR_SSE4 SIMD_INLINE i16x8 shift_right(const i16x8 v) {
+  return i16x8(_mm_srai_epi16(v, kBits));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE i32x4 operator<<(const i32x4 v, const int bits) {
-  return i32x4(_mm_slli_epi32(v, bits));
+template <int kBits>
+SIMD_ATTR_SSE4 SIMD_INLINE i32x4 shift_left(const i32x4 v) {
+  return i32x4(_mm_slli_epi32(v, kBits));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE i32x4 operator>>(const i32x4 v, const int bits) {
-  return i32x4(_mm_srai_epi32(v, bits));
+template <int kBits>
+SIMD_ATTR_SSE4 SIMD_INLINE i32x4 shift_right(const i32x4 v) {
+  return i32x4(_mm_srai_epi32(v, kBits));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE i64x2 operator<<(const i64x2 v, const int bits) {
-  return i64x2(_mm_slli_epi64(v, bits));
+template <int kBits>
+SIMD_ATTR_SSE4 SIMD_INLINE i64x2 shift_left(const i64x2 v) {
+  return i64x2(_mm_slli_epi64(v, kBits));
+}
+
+// ------------------------------ Shift lanes by same variable #bits
+
+template <typename T, size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE shift_left_count<T> set_shift_left_count(
+    Desc<T, N, SSE4>, const int bits) {
+  return shift_left_count<T>{_mm_cvtsi32_si128(bits)};
+}
+
+// Same as shift_left_count on x86, but different on ARM.
+template <typename T, size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE shift_right_count<T> set_shift_right_count(
+    Desc<T, N, SSE4>, const int bits) {
+  return shift_right_count<T>{_mm_cvtsi32_si128(bits)};
+}
+
+// Unsigned (no u8)
+SIMD_ATTR_SSE4 SIMD_INLINE u16x8
+shift_left_same(const u16x8 v, const shift_left_count<uint16_t> bits) {
+  return u16x8(_mm_sll_epi16(v, bits.raw));
+}
+SIMD_ATTR_SSE4 SIMD_INLINE u16x8
+shift_right_same(const u16x8 v, const shift_right_count<uint16_t> bits) {
+  return u16x8(_mm_srl_epi16(v, bits.raw));
+}
+SIMD_ATTR_SSE4 SIMD_INLINE u32x4
+shift_left_same(const u32x4 v, const shift_left_count<uint32_t> bits) {
+  return u32x4(_mm_sll_epi32(v, bits.raw));
+}
+SIMD_ATTR_SSE4 SIMD_INLINE u32x4
+shift_right_same(const u32x4 v, const shift_right_count<uint32_t> bits) {
+  return u32x4(_mm_srl_epi32(v, bits.raw));
+}
+SIMD_ATTR_SSE4 SIMD_INLINE u64x2
+shift_left_same(const u64x2 v, const shift_left_count<uint64_t> bits) {
+  return u64x2(_mm_sll_epi64(v, bits.raw));
+}
+SIMD_ATTR_SSE4 SIMD_INLINE u64x2
+shift_right_same(const u64x2 v, const shift_right_count<uint64_t> bits) {
+  return u64x2(_mm_srl_epi64(v, bits.raw));
+}
+
+// Signed (no i8,i64)
+SIMD_ATTR_SSE4 SIMD_INLINE i16x8
+shift_left_same(const i16x8 v, const shift_left_count<int16_t> bits) {
+  return i16x8(_mm_sll_epi16(v, bits.raw));
+}
+SIMD_ATTR_SSE4 SIMD_INLINE i16x8
+shift_right_same(const i16x8 v, const shift_right_count<int16_t> bits) {
+  return i16x8(_mm_sra_epi16(v, bits.raw));
+}
+SIMD_ATTR_SSE4 SIMD_INLINE i32x4
+shift_left_same(const i32x4 v, const shift_left_count<int32_t> bits) {
+  return i32x4(_mm_sll_epi32(v, bits.raw));
+}
+SIMD_ATTR_SSE4 SIMD_INLINE i32x4
+shift_right_same(const i32x4 v, const shift_right_count<int32_t> bits) {
+  return i32x4(_mm_sra_epi32(v, bits.raw));
+}
+SIMD_ATTR_SSE4 SIMD_INLINE i64x2
+shift_left_same(const i64x2 v, const shift_left_count<int64_t> bits) {
+  return i64x2(_mm_sll_epi64(v, bits.raw));
 }
 
 // ------------------------------ Shift lanes by independent variable #bits
@@ -458,27 +530,34 @@ SIMD_ATTR_SSE4 SIMD_INLINE i64x2 operator<<(const i64x2 v, const int bits) {
 #if SIMD_X86_AVX2
 
 // Unsigned (no u8,u16)
-SIMD_ATTR_SSE4 SIMD_INLINE u32x4 operator<<(const u32x4 v, const u32x4 bits) {
+SIMD_ATTR_SSE4 SIMD_INLINE u32x4 shift_left_var(const u32x4 v,
+                                                const u32x4 bits) {
   return u32x4(_mm_sllv_epi32(v, bits));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE u32x4 operator>>(const u32x4 v, const u32x4 bits) {
+SIMD_ATTR_SSE4 SIMD_INLINE u32x4 shift_right_var(const u32x4 v,
+                                                 const u32x4 bits) {
   return u32x4(_mm_srlv_epi32(v, bits));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE u64x2 operator<<(const u64x2 v, const u64x2 bits) {
+SIMD_ATTR_SSE4 SIMD_INLINE u64x2 shift_left_var(const u64x2 v,
+                                                const u64x2 bits) {
   return u64x2(_mm_sllv_epi64(v, bits));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE u64x2 operator>>(const u64x2 v, const u64x2 bits) {
+SIMD_ATTR_SSE4 SIMD_INLINE u64x2 shift_right_var(const u64x2 v,
+                                                 const u64x2 bits) {
   return u64x2(_mm_srlv_epi64(v, bits));
 }
 
 // Signed (no i8,i16,i64)
-SIMD_ATTR_SSE4 SIMD_INLINE i32x4 operator<<(const i32x4 v, const i32x4 bits) {
+SIMD_ATTR_SSE4 SIMD_INLINE i32x4 shift_left_var(const i32x4 v,
+                                                const i32x4 bits) {
   return i32x4(_mm_sllv_epi32(v, bits));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE i32x4 operator>>(const i32x4 v, const i32x4 bits) {
+SIMD_ATTR_SSE4 SIMD_INLINE i32x4 shift_right_var(const i32x4 v,
+                                                 const i32x4 bits) {
   return i32x4(_mm_srav_epi32(v, bits));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE i64x2 operator<<(const i64x2 v, const i64x2 bits) {
+SIMD_ATTR_SSE4 SIMD_INLINE i64x2 shift_left_var(const i64x2 v,
+                                                const i64x2 bits) {
   return i64x2(_mm_sllv_epi64(v, bits));
 }
 
@@ -546,6 +625,14 @@ SIMD_ATTR_SSE4 SIMD_INLINE f32x4 max(const f32x4 a, const f32x4 b) {
 }
 SIMD_ATTR_SSE4 SIMD_INLINE f64x2 max(const f64x2 a, const f64x2 b) {
   return f64x2(_mm_max_pd(a, b));
+}
+
+// Returns the closest value to v within [lo, hi].
+template <typename T, size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, N> clamp(const vec_sse4<T, N> v,
+                                                const vec_sse4<T, N> lo,
+                                                const vec_sse4<T, N> hi) {
+  return min(max(lo, v), hi);
 }
 
 // ------------------------------ Integer multiplication
@@ -859,7 +946,7 @@ SIMD_ATTR_SSE4 SIMD_INLINE uint32_t movemask(const f64x2 v) {
 
 // Returns whether all lanes are equal to zero. Supported for all integer V.
 template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE bool all_zero(const vec128<T> v) {
+SIMD_ATTR_SSE4 SIMD_INLINE bool all_zero(const vec_sse4<T> v) {
   return static_cast<bool>(_mm_testz_si128(v, v));
 }
 
@@ -869,10 +956,10 @@ SIMD_ATTR_SSE4 SIMD_INLINE bool all_zero(const vec128<T> v) {
 
 // ------------------------------ Bitwise AND
 
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec128<T> operator&(const vec128<T> a,
-                                               const vec128<T> b) {
-  return vec128<T>(_mm_and_si128(a, b));
+template <typename T, size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, N> operator&(const vec_sse4<T, N> a,
+                                                    const vec_sse4<T, N> b) {
+  return vec_sse4<T, N>(_mm_and_si128(a, b));
 }
 template <>
 SIMD_ATTR_SSE4 SIMD_INLINE f32x4 operator&(const f32x4 a, const f32x4 b) {
@@ -886,10 +973,10 @@ SIMD_ATTR_SSE4 SIMD_INLINE f64x2 operator&(const f64x2 a, const f64x2 b) {
 // ------------------------------ Bitwise AND-NOT
 
 // Returns ~not_mask & mask.
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec128<T> andnot(const vec128<T> not_mask,
-                                            const vec128<T> mask) {
-  return vec128<T>(_mm_andnot_si128(not_mask, mask));
+template <typename T, size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, N> andnot(const vec_sse4<T, N> not_mask,
+                                                 const vec_sse4<T, N> mask) {
+  return vec_sse4<T, N>(_mm_andnot_si128(not_mask, mask));
 }
 SIMD_ATTR_SSE4 SIMD_INLINE f32x4 andnot(const f32x4 not_mask,
                                         const f32x4 mask) {
@@ -902,10 +989,10 @@ SIMD_ATTR_SSE4 SIMD_INLINE f64x2 andnot(const f64x2 not_mask,
 
 // ------------------------------ Bitwise OR
 
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec128<T> operator|(const vec128<T> a,
-                                               const vec128<T> b) {
-  return vec128<T>(_mm_or_si128(a, b));
+template <typename T, size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, N> operator|(const vec_sse4<T, N> a,
+                                                    const vec_sse4<T, N> b) {
+  return vec_sse4<T, N>(_mm_or_si128(a, b));
 }
 template <>
 SIMD_ATTR_SSE4 SIMD_INLINE f32x4 operator|(const f32x4 a, const f32x4 b) {
@@ -918,10 +1005,10 @@ SIMD_ATTR_SSE4 SIMD_INLINE f64x2 operator|(const f64x2 a, const f64x2 b) {
 
 // ------------------------------ Bitwise XOR
 
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec128<T> operator^(const vec128<T> a,
-                                               const vec128<T> b) {
-  return vec128<T>(_mm_xor_si128(a, b));
+template <typename T, size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, N> operator^(const vec_sse4<T, N> a,
+                                                    const vec_sse4<T, N> b) {
+  return vec_sse4<T, N>(_mm_xor_si128(a, b));
 }
 template <>
 SIMD_ATTR_SSE4 SIMD_INLINE f32x4 operator^(const f32x4 a, const f32x4 b) {
@@ -932,177 +1019,163 @@ SIMD_ATTR_SSE4 SIMD_INLINE f64x2 operator^(const f64x2 a, const f64x2 b) {
   return f64x2(_mm_xor_pd(a, b));
 }
 
-// ================================================== STORE
+// ================================================== MEMORY
 
-// ------------------------------ Load 128
+// ------------------------------ Load
 
 template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec128<T> load(vec128<T>,
-                                          const T* SIMD_RESTRICT aligned) {
-  return vec128<T>(_mm_load_si128(reinterpret_cast<const __m128i*>(aligned)));
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> load(Full<T, SSE4>,
+                                            const T* SIMD_RESTRICT aligned) {
+  return vec_sse4<T>(_mm_load_si128(reinterpret_cast<const __m128i*>(aligned)));
 }
 template <>
 SIMD_ATTR_SSE4 SIMD_INLINE f32x4
-load<float>(f32x4, const float* SIMD_RESTRICT aligned) {
+load<float>(Full<float, SSE4>, const float* SIMD_RESTRICT aligned) {
   return f32x4(_mm_load_ps(aligned));
 }
 template <>
 SIMD_ATTR_SSE4 SIMD_INLINE f64x2
-load<double>(f64x2, const double* SIMD_RESTRICT aligned) {
+load<double>(Full<double, SSE4>, const double* SIMD_RESTRICT aligned) {
   return f64x2(_mm_load_pd(aligned));
 }
 
 template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec128<T> load_unaligned(vec128<T>,
-                                                    const T* SIMD_RESTRICT p) {
-  return vec128<T>(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p)));
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> load_unaligned(
+    Full<T, SSE4>, const T* SIMD_RESTRICT p) {
+  return vec_sse4<T>(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p)));
 }
 template <>
 SIMD_ATTR_SSE4 SIMD_INLINE f32x4
-load_unaligned<float>(f32x4, const float* SIMD_RESTRICT p) {
+load_unaligned<float>(Full<float, SSE4>, const float* SIMD_RESTRICT p) {
   return f32x4(_mm_loadu_ps(p));
 }
 template <>
 SIMD_ATTR_SSE4 SIMD_INLINE f64x2
-load_unaligned<double>(f64x2, const double* SIMD_RESTRICT p) {
+load_unaligned<double>(Full<double, SSE4>, const double* SIMD_RESTRICT p) {
   return f64x2(_mm_loadu_pd(p));
+}
+
+template <typename T>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, 8 / sizeof(T)> load(
+    Desc<T, 8 / sizeof(T), SSE4>, const T* SIMD_RESTRICT p) {
+  return vec_sse4<T, 8 / sizeof(T)>(
+      _mm_loadl_epi64(reinterpret_cast<const __m128i*>(p)));
+}
+template <>
+SIMD_ATTR_SSE4 SIMD_INLINE f32x2 load<float>(Desc<float, 2, SSE4>,
+                                             const float* SIMD_RESTRICT p) {
+  const __m128 hi = _mm_setzero_ps();
+  return f32x2(_mm_loadl_pi(hi, reinterpret_cast<const __m64*>(p)));
+}
+template <>
+SIMD_ATTR_SSE4 SIMD_INLINE f64x1 load<double>(Desc<double, 1, SSE4>,
+                                              const double* SIMD_RESTRICT p) {
+  const __m128d hi = _mm_setzero_pd();
+  return f64x1(_mm_loadl_pd(hi, p));
+}
+
+template <typename T>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, 4 / sizeof(T)> load(
+    Desc<T, 4 / sizeof(T), SSE4>, const T* SIMD_RESTRICT p) {
+  // TODO(janwas): load_ss?
+  int32_t bits;
+  CopyBytes<4>(p, &bits);
+  return vec_sse4<T, 4 / sizeof(T)>(_mm_cvtsi32_si128(bits));
+}
+template <>
+SIMD_ATTR_SSE4 SIMD_INLINE f32x1 load<float>(Desc<float, 1, SSE4>,
+                                             const float* SIMD_RESTRICT p) {
+  return f32x1(_mm_load_ss(p));
 }
 
 // 128-bit SIMD => nothing to duplicate, same as an unaligned load.
 template <typename T>
 SIMD_ATTR_SSE4 SIMD_INLINE dup128x1<T> load_dup128(
-    const vec128<T> v, const T* const SIMD_RESTRICT p) {
-  return dup128x1<T>(load_unaligned(v, p));
+    Full<T, SSE4> d, const T* const SIMD_RESTRICT p) {
+  return dup128x1<T>(load_unaligned(d, p));
 }
 
-// ------------------------------ Store 128
+// ------------------------------ Store
 
 template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE void store(const vec128<T> v,
+SIMD_ATTR_SSE4 SIMD_INLINE void store(const vec_sse4<T> v, Full<T, SSE4>,
                                       T* SIMD_RESTRICT aligned) {
   _mm_store_si128(reinterpret_cast<__m128i*>(aligned), v);
 }
 template <>
-SIMD_ATTR_SSE4 SIMD_INLINE void store<float>(const f32x4 v,
+SIMD_ATTR_SSE4 SIMD_INLINE void store<float>(const f32x4 v, Full<float, SSE4>,
                                              float* SIMD_RESTRICT aligned) {
   _mm_store_ps(aligned, v);
 }
 template <>
-SIMD_ATTR_SSE4 SIMD_INLINE void store<double>(const f64x2 v,
+SIMD_ATTR_SSE4 SIMD_INLINE void store<double>(const f64x2 v, Full<double, SSE4>,
                                               double* SIMD_RESTRICT aligned) {
   _mm_store_pd(aligned, v);
 }
 
 template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE void store_unaligned(const vec128<T> v,
+SIMD_ATTR_SSE4 SIMD_INLINE void store(const dup128x1<T> v, Full<T, SSE4> d,
+                                      T* SIMD_RESTRICT aligned) {
+  store(vec_sse4<T>(v.raw), d, aligned);
+}
+
+template <typename T>
+SIMD_ATTR_SSE4 SIMD_INLINE void store_unaligned(const vec_sse4<T> v,
+                                                Full<T, SSE4>,
                                                 T* SIMD_RESTRICT p) {
   _mm_storeu_si128(reinterpret_cast<__m128i*>(p), v);
 }
 template <>
 SIMD_ATTR_SSE4 SIMD_INLINE void store_unaligned<float>(const f32x4 v,
+                                                       Full<float, SSE4>,
                                                        float* SIMD_RESTRICT p) {
   _mm_storeu_ps(p, v);
 }
 template <>
 SIMD_ATTR_SSE4 SIMD_INLINE void store_unaligned<double>(
-    const f64x2 v, double* SIMD_RESTRICT p) {
+    const f64x2 v, Full<double, SSE4>, double* SIMD_RESTRICT p) {
   _mm_storeu_pd(p, v);
 }
 
-// ------------------------------ Load 64
-
 template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec64<T> load_unaligned(vec64<T>,
-                                                   const T* SIMD_RESTRICT p) {
-  return vec64<T>(_mm_loadl_epi64(reinterpret_cast<const __m128i*>(p)));
-}
-template <>
-SIMD_ATTR_SSE4 SIMD_INLINE f32x2
-load_unaligned<float>(f32x2, const float* SIMD_RESTRICT p) {
-  const __m128 hi = _mm_setzero_ps();
-  return f32x2(_mm_loadl_pi(hi, reinterpret_cast<const __m64*>(p)));
-}
-template <>
-SIMD_ATTR_SSE4 SIMD_INLINE vec64<double> load_unaligned<double>(
-    vec64<double>, const double* SIMD_RESTRICT p) {
-  const __m128d hi = _mm_setzero_pd();
-  return vec64<double>(_mm_loadl_pd(hi, p));
-}
-
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec64<T> load(const vec64<T> v,
-                                         const T* SIMD_RESTRICT p) {
-  return load_unaligned(v, p);
-}
-
-// ------------------------------ Store 64
-
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE void store_unaligned(const vec64<T> v,
+SIMD_ATTR_SSE4 SIMD_INLINE void store_unaligned(const dup128x1<T> v,
+                                                Full<T, SSE4> d,
                                                 T* SIMD_RESTRICT p) {
+  store_unaligned(vec_sse4<T>(v.raw), d, p);
+}
+
+template <typename T>
+SIMD_ATTR_SSE4 SIMD_INLINE void store(const vec_sse4<T, 8 / sizeof(T)> v,
+                                      Desc<T, 8 / sizeof(T), SSE4>,
+                                      T* SIMD_RESTRICT p) {
   _mm_storel_epi64(reinterpret_cast<__m128i*>(p), v);
 }
 template <>
-SIMD_ATTR_SSE4 SIMD_INLINE void store_unaligned<float>(const f32x2 v,
-                                                       float* SIMD_RESTRICT p) {
+SIMD_ATTR_SSE4 SIMD_INLINE void store<float>(const f32x2 v,
+                                             Desc<float, 2, SSE4>,
+                                             float* SIMD_RESTRICT p) {
   _mm_storel_pi(reinterpret_cast<__m64*>(p), v);
 }
 template <>
-SIMD_ATTR_SSE4 SIMD_INLINE void store_unaligned<double>(
-    const vec64<double> v, double* SIMD_RESTRICT p) {
+SIMD_ATTR_SSE4 SIMD_INLINE void store<double>(const f64x1 v,
+                                              Desc<double, 1, SSE4>,
+                                              double* SIMD_RESTRICT p) {
   _mm_storel_pd(p, v);
 }
 
 template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE void store(const vec64<T> v, T* SIMD_RESTRICT p) {
-  store_unaligned(v, p);
-}
-
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec32<T> lower_quarter(const vec128<T> v) {
-  return vec32<T>(v);
-}
-
-// ------------------------------ Load 32
-
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec32<T> load_unaligned(const vec32<T> v,
-                                                   const T* SIMD_RESTRICT p) {
-  int32_t bits;
-  CopyBytes(*reinterpret_cast<const uint32_t*>(p), &bits);
-  return vec32<T>(_mm_cvtsi32_si128(bits));
+SIMD_ATTR_SSE4 SIMD_INLINE void store(const vec_sse4<T, 4 / sizeof(T)> v,
+                                      Desc<T, 4 / sizeof(T), SSE4>,
+                                      T* SIMD_RESTRICT p) {
+  // _mm_storeu_si32 is documented but unavailable in Clang; CopyBytes generates
+  // bad code; type-punning is unsafe; this actually generates MOVD.
+  _mm_store_ss(reinterpret_cast<float * SIMD_RESTRICT>(p), _mm_castsi128_ps(v));
 }
 template <>
-SIMD_ATTR_SSE4 SIMD_INLINE vec32<float> load_unaligned<float>(
-    const vec32<float> v, const float* SIMD_RESTRICT p) {
-  return vec32<float>(_mm_load_ss(p));
-}
-
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec32<T> load(const vec32<T> v,
-                                         const T* SIMD_RESTRICT aligned) {
-  return load_unaligned(v, aligned);
-}
-
-// ------------------------------ Store 32
-
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE void store_unaligned(const vec32<T> v,
-                                                T* SIMD_RESTRICT p) {
-  // _mm_storeu_si32 is documented but unavailable in Clang.
-  const int32_t bits = _mm_cvtsi128_si32(v);
-  // Cast required because CopyBytes deduces size from destination.
-  CopyBytes(bits, reinterpret_cast<int32_t*>(p));
-}
-template <>
-SIMD_ATTR_SSE4 SIMD_INLINE void store_unaligned<float>(const vec32<float> v,
-                                                       float* SIMD_RESTRICT p) {
+SIMD_ATTR_SSE4 SIMD_INLINE void store<float>(const f32x1 v,
+                                             Desc<float, 1, SSE4>,
+                                             float* SIMD_RESTRICT p) {
   _mm_store_ss(p, v);
-}
-
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE void store(const vec32<T> v, T* SIMD_RESTRICT p) {
-  store_unaligned(v, p);
 }
 
 // ------------------------------ Non-temporal stores
@@ -1110,58 +1183,60 @@ SIMD_ATTR_SSE4 SIMD_INLINE void store(const vec32<T> v, T* SIMD_RESTRICT p) {
 // Same as aligned stores on non-x86.
 
 template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE void stream(const vec128<T> v,
+SIMD_ATTR_SSE4 SIMD_INLINE void stream(const vec_sse4<T> v, Full<T, SSE4>,
                                        T* SIMD_RESTRICT aligned) {
   _mm_stream_si128(reinterpret_cast<__m128i*>(aligned), v);
 }
 template <>
-SIMD_ATTR_SSE4 SIMD_INLINE void stream<float>(const f32x4 v,
+SIMD_ATTR_SSE4 SIMD_INLINE void stream<float>(const f32x4 v, Full<float, SSE4>,
                                               float* SIMD_RESTRICT aligned) {
   _mm_stream_ps(aligned, v);
 }
 template <>
 SIMD_ATTR_SSE4 SIMD_INLINE void stream<double>(const f64x2 v,
+                                               Full<double, SSE4>,
                                                double* SIMD_RESTRICT aligned) {
   _mm_stream_pd(aligned, v);
 }
 
 // ================================================== SWIZZLE
 
-// ------------------------------ 'Extract' other half (see to_subset)
+// ------------------------------ 'Extract' other half (see any_part)
 
 // These copy hi into lo (smaller instruction encoding than shifts).
 template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec64<T> to_other_half(const vec128<T> v) {
-  return vec64<T>(_mm_unpackhi_epi64(v, v));
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, 8 / sizeof(T)> other_half(
+    const vec_sse4<T> v) {
+  return vec_sse4<T, 8 / sizeof(T)>(_mm_unpackhi_epi64(v, v));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE f32x2 to_other_half(const f32x4 v) {
+SIMD_ATTR_SSE4 SIMD_INLINE f32x2 other_half(const f32x4 v) {
   return f32x2(_mm_movehl_ps(v, v));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE vec64<double> to_other_half(const f64x2 v) {
-  return vec64<double>(_mm_unpackhi_pd(v, v));
+SIMD_ATTR_SSE4 SIMD_INLINE f64x1 other_half(const f64x2 v) {
+  return f64x1(_mm_unpackhi_pd(v, v));
 }
 
 // ------------------------------ Shift vector by constant #bytes
 
 // 0x01..0F, kBytes = 1 => 0x02..0F00
 template <int kBytes, typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec128<T> shift_bytes_left(const vec128<T> v) {
-  return vec128<T>(_mm_slli_si128(v, kBytes));
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> shift_bytes_left(const vec_sse4<T> v) {
+  return vec_sse4<T>(_mm_slli_si128(v, kBytes));
 }
 
 // 0x01..0F, kBytes = 1 => 0x0001..0E
 template <int kBytes, typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec128<T> shift_bytes_right(const vec128<T> v) {
-  return vec128<T>(_mm_srli_si128(v, kBytes));
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> shift_bytes_right(const vec_sse4<T> v) {
+  return vec_sse4<T>(_mm_srli_si128(v, kBytes));
 }
 
 // ------------------------------ Extract from 2x 128-bit at constant offset
 
 // Extracts 128 bits from <hi, lo> by skipping the least-significant kBytes.
 template <int kBytes, typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec128<T> extract_concat_bytes(const vec128<T> hi,
-                                                          const vec128<T> lo) {
-  return vec128<T>(_mm_alignr_epi8(hi, lo, kBytes));
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> extract_concat_bytes(
+    const vec_sse4<T> hi, const vec_sse4<T> lo) {
+  return vec_sse4<T>(_mm_alignr_epi8(hi, lo, kBytes));
 }
 
 // ------------------------------ Broadcast/splat any lane
@@ -1169,47 +1244,47 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec128<T> extract_concat_bytes(const vec128<T> hi,
 // Unsigned
 template <int kLane>
 SIMD_ATTR_SSE4 SIMD_INLINE u32x4 broadcast(const u32x4 v) {
-  static_assert(0 <= kLane && kLane < NumLanes<u32x4>(), "Invalid lane");
+  static_assert(0 <= kLane && kLane < 4, "Invalid lane");
   return u32x4(_mm_shuffle_epi32(v, 0x55 * kLane));
 }
 template <int kLane>
 SIMD_ATTR_SSE4 SIMD_INLINE u64x2 broadcast(const u64x2 v) {
-  static_assert(0 <= kLane && kLane < NumLanes<u64x2>(), "Invalid lane");
+  static_assert(0 <= kLane && kLane < 2, "Invalid lane");
   return u64x2(_mm_shuffle_epi32(v, kLane ? 0xEE : 0x44));
 }
 
 // Signed
 template <int kLane>
 SIMD_ATTR_SSE4 SIMD_INLINE i32x4 broadcast(const i32x4 v) {
-  static_assert(0 <= kLane && kLane < NumLanes<i32x4>(), "Invalid lane");
+  static_assert(0 <= kLane && kLane < 4, "Invalid lane");
   return i32x4(_mm_shuffle_epi32(v, 0x55 * kLane));
 }
 template <int kLane>
 SIMD_ATTR_SSE4 SIMD_INLINE i64x2 broadcast(const i64x2 v) {
-  static_assert(0 <= kLane && kLane < NumLanes<i64x2>(), "Invalid lane");
+  static_assert(0 <= kLane && kLane < 2, "Invalid lane");
   return i64x2(_mm_shuffle_epi32(v, kLane ? 0xEE : 0x44));
 }
 
 // Float
 template <int kLane>
 SIMD_ATTR_SSE4 SIMD_INLINE f32x4 broadcast(const f32x4 v) {
-  static_assert(0 <= kLane && kLane < NumLanes<f32x4>(), "Invalid lane");
+  static_assert(0 <= kLane && kLane < 4, "Invalid lane");
   return f32x4(_mm_shuffle_ps(v, v, 0x55 * kLane));
 }
 template <int kLane>
 SIMD_ATTR_SSE4 SIMD_INLINE f64x2 broadcast(const f64x2 v) {
-  static_assert(0 <= kLane && kLane < NumLanes<f64x2>(), "Invalid lane");
+  static_assert(0 <= kLane && kLane < 2, "Invalid lane");
   return f64x2(_mm_shuffle_pd(v, v, 3 * kLane));
 }
 
 // ------------------------------ Shuffle bytes with variable indices
 
-// Returns vector of bytes[from[i]]. "from" must be valid indices in [0, 16) or
-// >= 0x80 to zero the i-th output byte.
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec128<T> shuffle_bytes(const vec128<T> bytes,
-                                                   const vec128<T> from) {
-  return vec128<T>(_mm_shuffle_epi8(bytes, from));
+// Returns vector of bytes[from[i]]. "from" is also interpreted as bytes:
+// either valid indices in [0, 16) or >= 0x80 to zero the i-th output byte.
+template <typename T, typename TI>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> shuffle_bytes(const vec_sse4<T> bytes,
+                                                     const vec_sse4<TI> from) {
+  return vec_sse4<T>(_mm_shuffle_epi8(bytes, from));
 }
 
 // ------------------------------ Hard-coded shuffles
@@ -1264,7 +1339,7 @@ SIMD_ATTR_SSE4 SIMD_INLINE f32x4 shuffle_2103(const f32x4 v) {
 
 // Interleaves lanes from halves of the 128-bit blocks of "a" (which provides
 // the least-significant lane) and "b". To concatenate two half-width integers
-// into one, use zip_lo/hi instead (also works with vec1).
+// into one, use zip_lo/hi instead (also works with scalar).
 
 SIMD_ATTR_SSE4 SIMD_INLINE u8x16 interleave_lo(const u8x16 a, const u8x16 b) {
   return u8x16(_mm_unpacklo_epi8(a, b));
@@ -1335,7 +1410,7 @@ SIMD_ATTR_SSE4 SIMD_INLINE f64x2 interleave_hi(const f64x2 a, const f64x2 b) {
 // ------------------------------ Zip lanes
 
 // Same as interleave_*, except that the return lanes are double-width integers;
-// this is necessary because the single-lane vec1 cannot return two values.
+// this is necessary because the single-lane scalar cannot return two values.
 
 SIMD_ATTR_SSE4 SIMD_INLINE u16x8 zip_lo(const u8x16 a, const u8x16 b) {
   return u16x8(_mm_unpacklo_epi8(a, b));
@@ -1377,70 +1452,77 @@ SIMD_ATTR_SSE4 SIMD_INLINE i64x2 zip_hi(const i32x4 a, const i32x4 b) {
   return i64x2(_mm_unpackhi_epi32(a, b));
 }
 
-// ------------------------------ Promotions (subset w/ narrow lanes -> full)
+// ------------------------------ Promotions (part w/ narrow lanes -> full)
 
 // Unsigned: zero-extend.
-SIMD_ATTR_SSE4 SIMD_INLINE u16x8 convert_to(uint16_t, const u8x8 v) {
+SIMD_ATTR_SSE4 SIMD_INLINE u16x8 convert_to(Full<uint16_t, SSE4>,
+                                            const u8x8 v) {
   return u16x8(_mm_cvtepu8_epi16(v));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE u32x4 convert_to(uint32_t, const u8x4 v) {
+SIMD_ATTR_SSE4 SIMD_INLINE u32x4 convert_to(Full<uint32_t, SSE4>,
+                                            const u8x4 v) {
   return u32x4(_mm_cvtepu8_epi32(v));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE i16x8 convert_to(int16_t, const u8x8 v) {
+SIMD_ATTR_SSE4 SIMD_INLINE i16x8 convert_to(Full<int16_t, SSE4>, const u8x8 v) {
   return i16x8(_mm_cvtepu8_epi16(v));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE i32x4 convert_to(int32_t, const u8x4 v) {
+SIMD_ATTR_SSE4 SIMD_INLINE i32x4 convert_to(Full<int32_t, SSE4>, const u8x4 v) {
   return i32x4(_mm_cvtepu8_epi32(v));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE u32x4 convert_to(uint32_t, const u16x4 v) {
+SIMD_ATTR_SSE4 SIMD_INLINE u32x4 convert_to(Full<uint32_t, SSE4>,
+                                            const u16x4 v) {
   return u32x4(_mm_cvtepu16_epi32(v));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE i32x4 convert_to(int32_t, const u16x4 v) {
+SIMD_ATTR_SSE4 SIMD_INLINE i32x4 convert_to(Full<int32_t, SSE4>,
+                                            const u16x4 v) {
   return i32x4(_mm_cvtepu16_epi32(v));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE u64x2 convert_to(uint64_t, const u32x2 v) {
+SIMD_ATTR_SSE4 SIMD_INLINE u64x2 convert_to(Full<uint64_t, SSE4>,
+                                            const u32x2 v) {
   return u64x2(_mm_cvtepu32_epi64(v));
 }
 
 // Signed: replicate sign bit.
-SIMD_ATTR_SSE4 SIMD_INLINE i16x8 convert_to(int16_t, const i8x8 v) {
+SIMD_ATTR_SSE4 SIMD_INLINE i16x8 convert_to(Full<int16_t, SSE4>, const i8x8 v) {
   return i16x8(_mm_cvtepi8_epi16(v));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE i32x4 convert_to(int32_t, const i8x4 v) {
+SIMD_ATTR_SSE4 SIMD_INLINE i32x4 convert_to(Full<int32_t, SSE4>, const i8x4 v) {
   return i32x4(_mm_cvtepi8_epi32(v));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE i32x4 convert_to(int32_t, const i16x4 v) {
+SIMD_ATTR_SSE4 SIMD_INLINE i32x4 convert_to(Full<int32_t, SSE4>,
+                                            const i16x4 v) {
   return i32x4(_mm_cvtepi16_epi32(v));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE i64x2 convert_to(int64_t, const i32x2 v) {
+SIMD_ATTR_SSE4 SIMD_INLINE i64x2 convert_to(Full<int64_t, SSE4>,
+                                            const i32x2 v) {
   return i64x2(_mm_cvtepi32_epi64(v));
 }
 
-// ------------------------------ Demotions (full -> subset w/ narrow lanes)
+// ------------------------------ Demotions (full -> part w/ narrow lanes)
 
-SIMD_ATTR_SSE4 SIMD_INLINE u16x4 convert_to(uint16_t, const i32x4 v) {
+SIMD_ATTR_SSE4 SIMD_INLINE u16x4 convert_to(Part<uint16_t, 4>, const i32x4 v) {
   return u16x4(_mm_packus_epi32(v, v));
 }
 
-SIMD_ATTR_SSE4 SIMD_INLINE u8x4 convert_to(uint8_t, const i32x4 v) {
-  const u16x4 u16(_mm_packus_epi32(v, v));
+SIMD_ATTR_SSE4 SIMD_INLINE u8x4 convert_to(Part<uint8_t, 4>, const i32x4 v) {
+  const __m128i u16 = _mm_packus_epi32(v, v);
   return u8x4(_mm_packus_epi16(u16, u16));
 }
 
-SIMD_ATTR_SSE4 SIMD_INLINE i16x4 convert_to(int16_t, const i32x4 v) {
-  return i16x4(_mm_packs_epi32(v, v));
-}
-
-SIMD_ATTR_SSE4 SIMD_INLINE i8x4 convert_to(int8_t, const i32x4 v) {
-  const i16x4 i16(_mm_packs_epi32(v, v));
-  return i8x4(_mm_packs_epi16(i16, i16));
-}
-
-SIMD_ATTR_SSE4 SIMD_INLINE u8x8 convert_to(uint8_t, const i16x8 v) {
+SIMD_ATTR_SSE4 SIMD_INLINE u8x8 convert_to(Part<uint8_t, 8>, const i16x8 v) {
   return u8x8(_mm_packus_epi16(v, v));
 }
 
-SIMD_ATTR_SSE4 SIMD_INLINE i8x8 convert_to(int8_t, const i16x8 v) {
+SIMD_ATTR_SSE4 SIMD_INLINE i16x4 convert_to(Part<int16_t, 4>, const i32x4 v) {
+  return i16x4(_mm_packs_epi32(v, v));
+}
+
+SIMD_ATTR_SSE4 SIMD_INLINE i8x4 convert_to(Part<int8_t, 4>, const i32x4 v) {
+  const __m128i i16 = _mm_packs_epi32(v, v);
+  return i8x4(_mm_packs_epi16(i16, i16));
+}
+
+SIMD_ATTR_SSE4 SIMD_INLINE i8x8 convert_to(Part<int8_t, 8>, const i16x8 v) {
   return i8x8(_mm_packs_epi16(v, v));
 }
 
@@ -1448,11 +1530,11 @@ SIMD_ATTR_SSE4 SIMD_INLINE i8x8 convert_to(int8_t, const i16x8 v) {
 
 // Returns mask ? b : a. Due to ARM's semantics, each lane of "mask" must
 // equal T(0) or ~T(0) although x86 may only check the most significant bit.
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec128<T> select(const vec128<T> a,
-                                            const vec128<T> b,
-                                            const vec128<T> mask) {
-  return vec128<T>(_mm_blendv_epi8(a, b, mask));
+template <typename T, size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, N> select(const vec_sse4<T, N> a,
+                                                 const vec_sse4<T, N> b,
+                                                 const vec_sse4<T, N> mask) {
+  return vec_sse4<T, N>(_mm_blendv_epi8(a, b, mask));
 }
 template <>
 SIMD_ATTR_SSE4 SIMD_INLINE f32x4 select<float>(const f32x4 a, const f32x4 b,
@@ -1481,16 +1563,16 @@ SIMD_ATTR_SSE4 SIMD_INLINE u8x16 aes_round(const u8x16 state,
 namespace ext {
 
 // Returns 64-bit sums of 8-byte groups.
-SIMD_ATTR_SSE4 SIMD_INLINE u64x2 horz_sum(const u8x16 v) {
-  return u64x2(_mm_sad_epu8(v, setzero(u8x16())));
+SIMD_ATTR_SSE4 SIMD_INLINE u64x2 sums_of_u8x8(const u8x16 v) {
+  return u64x2(_mm_sad_epu8(v, _mm_setzero_si128()));
 }
 
 // Supported for u32x4, i32x4 and f32x4. Returns the sum in each lane.
 template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec128<T> horz_sum(const vec128<T> v3210) {
-  const vec128<T> v1032 = shuffle_1032(v3210);
-  const vec128<T> v31_20_31_20 = v3210 + v1032;
-  const vec128<T> v20_31_20_31 = shuffle_0321(v31_20_31_20);
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> horz_sum(const vec_sse4<T> v3210) {
+  const vec_sse4<T> v1032 = shuffle_1032(v3210);
+  const vec_sse4<T> v31_20_31_20 = v3210 + v1032;
+  const vec_sse4<T> v20_31_20_31 = shuffle_0321(v31_20_31_20);
   return v20_31_20_31 + v31_20_31_20;
 }
 

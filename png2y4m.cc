@@ -7,7 +7,8 @@
 
 namespace pik {
 
-int Convert(const char* from, const char* to, int bit_depth, bool use_opsin) {
+int Convert(const char* from, const char* to, int bit_depth,
+            bool chroma_subsample, bool use_opsin) {
   Image3U rgb16;
   if (!ReadImage(ImageFormatPNG(), from, &rgb16)) {
     fprintf(stderr, "Failed to read input file %s\n", from);
@@ -16,7 +17,7 @@ int Convert(const char* from, const char* to, int bit_depth, bool use_opsin) {
   Image3U yuv = use_opsin ?
       YUVOpsinImageFromRGB16(rgb16, bit_depth) :
       YUVRec709ImageFromRGB16(rgb16, bit_depth);
-  if (!WriteImage(ImageFormatY4M(bit_depth), yuv, to)) {
+  if (!WriteImage(ImageFormatY4M(bit_depth, chroma_subsample), yuv, to)) {
     fprintf(stderr, "Failed to write output file %s\n", to);
     return 1;
   }
@@ -36,7 +37,8 @@ int main(int argc, char** argv) {
     return PrintArgHelp(argc, argv);
   }
   int bit_depth = 8;
-  int use_opsin = false;
+  bool use_opsin = false;
+  bool chroma_subsample = false;
   for (int i = 3; i < argc; i++) {
     std::string arg = argv[i];
     if (arg == "--bit_depth") {
@@ -56,9 +58,13 @@ int main(int argc, char** argv) {
       ++i;
     } else if (arg == "--opsin") {
       use_opsin = true;
+    } else if (arg == "--420") {
+      chroma_subsample = true;
+    } else if (arg == "--444") {
+      chroma_subsample = false;
     } else {
       return PrintArgHelp(argc, argv);
     }
   }
-  return pik::Convert(argv[1], argv[2], bit_depth, use_opsin);
+  return pik::Convert(argv[1], argv[2], bit_depth, chroma_subsample, use_opsin);
 }

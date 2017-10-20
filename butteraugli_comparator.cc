@@ -54,8 +54,7 @@ std::vector<butteraugli::ImageF> SrgbToLinearRgb(
 std::vector<butteraugli::ImageF> OpsinToLinearRgb(
     const int xsize, const int ysize,
     const Image3F& opsin) {
-  using V = vec<float>;
-  constexpr size_t N = NumLanes<V>();
+  const Full<float> d;
   PIK_ASSERT(xsize <= opsin.xsize());
   PIK_ASSERT(ysize <= opsin.ysize());
   std::vector<butteraugli::ImageF> planes =
@@ -64,15 +63,15 @@ std::vector<butteraugli::ImageF> OpsinToLinearRgb(
     auto row_in = opsin.Row(y);
     std::array<float*, 3> row_out{{
         planes[0].Row(y), planes[1].Row(y), planes[2].Row(y) }};
-    for (int x = 0; x < xsize; x += N) {
-      const auto vx = load(V(), row_in[0] + x);
-      const auto vy = load(V(), row_in[1] + x);
-      const auto vb = load(V(), row_in[2] + x);
-      V r, g, b;
-      XybToRgb(vx, vy, vb, &r, &g, &b);
-      store(r, row_out[0] + x);
-      store(g, row_out[1] + x);
-      store(b, row_out[2] + x);
+    for (int x = 0; x < xsize; x += d.N) {
+      const auto vx = load(d, row_in[0] + x);
+      const auto vy = load(d, row_in[1] + x);
+      const auto vb = load(d, row_in[2] + x);
+      Full<float>::V r, g, b;
+      XybToRgb(d, vx, vy, vb, &r, &g, &b);
+      store(r, d, row_out[0] + x);
+      store(g, d, row_out[1] + x);
+      store(b, d, row_out[2] + x);
     }
   }
   return planes;

@@ -17,7 +17,7 @@
 #include <stdint.h>
 #include <atomic>
 
-#if SIMD_ARCH_X86
+#if SIMD_ARCH == SIMD_ARCH_X86
 #include <xmmintrin.h>
 #ifndef _MSC_VER
 #include <cpuid.h>
@@ -33,7 +33,7 @@ bool IsBitSet(const uint32_t reg, const int index) {
   return (reg & (1U << index)) != 0;
 }
 
-#if SIMD_ARCH_X86
+#if SIMD_ARCH == SIMD_ARCH_X86
 
 // Calls CPUID instruction with eax=level and ecx=count and returns the result
 // in abcd array where abcd = {eax, ebx, ecx, edx} (hence the name abcd).
@@ -105,7 +105,7 @@ int SupportedTargets() {
 
   supported = SIMD_NONE;
 
-#if SIMD_ARCH_X86
+#if SIMD_ARCH == SIMD_ARCH_X86
   uint32_t flags = 0;
   uint32_t abcd[4];
 
@@ -158,8 +158,8 @@ int SupportedTargets() {
   if ((flags & kGroupSSE4) == kGroupSSE4) {
     supported |= SIMD_SSE4;
   }
-#elif SIMD_ARCH_ARM
-  supported |= SIMD_ARM;
+#elif SIMD_ARCH == SIMD_ARCH_ARM
+  supported |= SIMD_ARM8;
 #endif
 
   supported_.store(supported, std::memory_order_release);

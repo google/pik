@@ -54,12 +54,14 @@ struct ImageFormatPNG {
 
 struct ImageFormatY4M {
   ImageFormatY4M() {}
-  explicit ImageFormatY4M(int bits) : bit_depth(bits) {}
+  ImageFormatY4M(int bits, bool subsample)
+      : bit_depth(bits), chroma_subsample(subsample) {}
   static const char* Name() { return "Y4M"; }
   static bool IsExtension(const char* filename);
   static constexpr bool kPortableOnly = true;
   using NativeImage3 = Image3B;
   const int bit_depth = 8;
+  const bool chroma_subsample = false;
 };
 
 // Loads RGB (possibly expanded from gray).

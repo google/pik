@@ -144,8 +144,8 @@ class Image {
   // Useful for pre-allocating image with some padding for alignment purposes
   // and later reporting the actual valid dimensions.
   void ShrinkTo(const size_t xsize, const size_t ysize) {
-    PIK_ASSERT(xsize < xsize_);
-    PIK_ASSERT(ysize < ysize_);
+    PIK_ASSERT(xsize <= xsize_);
+    PIK_ASSERT(ysize <= ysize_);
     xsize_ = xsize;
     ysize_ = ysize;
   }
@@ -278,31 +278,27 @@ void Subtract(const ImageIn& image1, const ImageIn& image2, ImageOut* out) {
 }
 
 // In-place.
-template <class ImageIn, class ImageOut>
-void SubtractFrom(const ImageIn& what, ImageOut* from) {
-  using T = typename ImageIn::T;
+template <typename Tin, typename Tout>
+void SubtractFrom(const Image<Tin>& what, Image<Tout>* to) {
   const size_t xsize = what.xsize();
   const size_t ysize = what.ysize();
-  PIK_CHECK(xsize == from->xsize());
-  PIK_CHECK(ysize == from->ysize());
-
   for (size_t y = 0; y < ysize; ++y) {
-    const T* const PIK_RESTRICT row_what = what.Row(y);
-    T* const PIK_RESTRICT row_from = from->Row(y);
+    const Tin* PIK_RESTRICT row_what = what.ConstRow(y);
+    Tout* PIK_RESTRICT row_to = to->Row(y);
     for (size_t x = 0; x < xsize; ++x) {
-      row_from[x] -= row_what[x];
+      row_to[x] -= row_what[x];
     }
   }
 }
 
 // In-place.
-template <class ImageIn, class ImageOut>
-void AddTo(const ImageIn& what, ImageOut* to) {
+template <typename Tin, typename Tout>
+void AddTo(const Image<Tin>& what, Image<Tout>* to) {
   const size_t xsize = what.xsize();
   const size_t ysize = what.ysize();
   for (size_t y = 0; y < ysize; ++y) {
-    const float* PIK_RESTRICT row_what = what.ConstRow(y);
-    float* PIK_RESTRICT row_to = to->Row(y);
+    const Tin* PIK_RESTRICT row_what = what.ConstRow(y);
+    Tout* PIK_RESTRICT row_to = to->Row(y);
     for (size_t x = 0; x < xsize; ++x) {
       row_to[x] += row_what[x];
     }
@@ -856,6 +852,35 @@ Image3<ToType> StaticCastImage3(const Image3<FromType>& from) {
 // Clamps input components to [0, 255] and casts to uint8_t.
 Image3B Float255ToByteImage3(const Image3F& from);
 
+template <typename Tin, typename Tout>
+void SubtractFrom(const Image3<Tin>& what, Image3<Tout>* to) {
+  const size_t xsize = what.xsize();
+  const size_t ysize = what.ysize();
+  for (size_t y = 0; y < ysize; ++y) {
+    for (int c = 0; c < 3; ++c) {
+      const Tin* PIK_RESTRICT row_what = what.ConstPlaneRow(c, y);
+      Tout* PIK_RESTRICT row_to = to->PlaneRow(c, y);
+      for (size_t x = 0; x < xsize; ++x) {
+        row_to[x] -= row_what[x];
+      }
+    }
+  }
+}
+
+template <typename Tin, typename Tout>
+void AddTo(const Image3<Tin>& what, Image3<Tout>* to) {
+  const size_t xsize = what.xsize();
+  const size_t ysize = what.ysize();
+  for (size_t y = 0; y < ysize; ++y) {
+    for (int c = 0; c < 3; ++c) {
+      const Tin* PIK_RESTRICT row_what = what.ConstPlaneRow(c, y);
+      Tout* PIK_RESTRICT row_to = to->PlaneRow(c, y);
+      for (size_t x = 0; x < xsize; ++x) {
+        row_to[x] += row_what[x];
+      }
+    }
+  }
+}
 
 template <typename T>
 Image3<T> LinComb(const T lambda1, const Image3<T>& image1,

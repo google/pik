@@ -15,113 +15,96 @@
 // Single-element vectors and operations.
 // (No include guard nor namespace: this is included from the middle of simd.h.)
 
-// (We can't just use built-in types because comparison and shift operators
-// need to be overloaded.)
-template <typename Lane>
-class vec1 {
-  using Raw = Lane;
+// Returned by set_shift_*_count; do not use directly.
+struct scalar_shift_left_count {
+  int count;
+};
+struct scalar_shift_right_count {
+  int count;
+};
 
- public:
-  using T = Lane;
+// (Wrapper class required for overloading comparison operators.)
+template <typename T>
+struct scalar {
+  SIMD_INLINE scalar() {}
+  scalar(const scalar&) = default;
+  scalar& operator=(const scalar&) = default;
+  SIMD_INLINE explicit scalar(const T lane) : lane(lane) {}
 
-  SIMD_INLINE vec1() {}
-  vec1(const vec1&) = default;
-  vec1& operator=(const vec1&) = default;
-  SIMD_INLINE explicit vec1(const Raw& v) : v_(v) {}
+  SIMD_INLINE operator T() const { return lane; }  // NOLINT
 
-  SIMD_INLINE operator Raw() const { return v_; }  // NOLINT
-
-  SIMD_INLINE vec1& operator*=(const vec1 other) {
+  SIMD_INLINE scalar& operator*=(const scalar other) {
     return *this = (*this * other);
   }
-  SIMD_INLINE vec1& operator/=(const vec1 other) {
+  SIMD_INLINE scalar& operator/=(const scalar other) {
     return *this = (*this / other);
   }
-  SIMD_INLINE vec1& operator+=(const vec1 other) {
+  SIMD_INLINE scalar& operator+=(const scalar other) {
     return *this = (*this + other);
   }
-  SIMD_INLINE vec1& operator-=(const vec1 other) {
+  SIMD_INLINE scalar& operator-=(const scalar other) {
     return *this = (*this - other);
   }
-  SIMD_INLINE vec1& operator&=(const vec1 other) {
+  SIMD_INLINE scalar& operator&=(const scalar other) {
     return *this = (*this & other);
   }
-  SIMD_INLINE vec1& operator|=(const vec1 other) {
+  SIMD_INLINE scalar& operator|=(const scalar other) {
     return *this = (*this | other);
   }
-  SIMD_INLINE vec1& operator^=(const vec1 other) {
+  SIMD_INLINE scalar& operator^=(const scalar other) {
     return *this = (*this ^ other);
   }
-  template <typename ShiftArg>  // int or vec1
-  SIMD_INLINE vec1& operator<<=(const ShiftArg count) {
-    return *this = (*this << count);
-  }
-  template <typename ShiftArg>
-  SIMD_INLINE vec1& operator>>=(const ShiftArg count) {
-    return *this = (*this >> count);
-  }
 
- private:
-  Raw v_;
+  T lane;
 };
 
-template <typename Lane>
-struct IsVec<vec1<Lane>> {
-  static constexpr bool value = true;
+template <typename T>
+struct VecT<T, 1, NONE> {
+  using type = scalar<T>;
 };
-
-using u8x1 = vec1<uint8_t>;
-using u16x1 = vec1<uint16_t>;
-using u32x1 = vec1<uint32_t>;
-using u64x1 = vec1<uint64_t>;
-
-using i8x1 = vec1<int8_t>;
-using i16x1 = vec1<int16_t>;
-using i32x1 = vec1<int32_t>;
-using i64x1 = vec1<int64_t>;
-
-using f32x1 = vec1<float>;
-using f64x1 = vec1<double>;
 
 // ------------------------------ Set
 
 template <typename T>
-SIMD_INLINE vec1<T> setzero(vec1<T>) {
-  return vec1<T>(T(0));
+SIMD_INLINE scalar<T> setzero(Scalar<T>) {
+  return scalar<T>(T(0));
 }
 
-template <typename Lane, typename T>
-SIMD_INLINE vec1<Lane> set1(vec1<Lane>, const T t) {
-  return vec1<Lane>(t);
+template <typename T, typename T2>
+SIMD_INLINE scalar<T> set1(Scalar<T>, const T2 t) {
+  return scalar<T>(t);
 }
 
-// ------------------------------ Cast to/from vector subset (zero-cost)
-
-template <typename T>
-vec1<T> to_subset(vec1<T>, const vec1<T> v) {
-  return v;
+template <typename T, typename T2>
+SIMD_INLINE scalar<T> iota(Scalar<T>, const T2 first) {
+  return scalar<T>(first);
 }
 
-template <typename T>
-vec1<T> from_subset(vec1<T>, const vec1<T> v) {
-  return v;
+template <typename T, typename T2>
+SIMD_INLINE scalar<T> set(Scalar<T>, const T2 t) {
+  return scalar<T>(t);
 }
 
 template <typename T>
-vec1<T> to_other_half(const vec1<T> v) {
+SIMD_INLINE T get(Scalar<T>, const scalar<T> v) {
+  return static_cast<T>(v);
+}
+
+template <typename T>
+SIMD_INLINE scalar<T> any_part(Scalar<T>, const scalar<T> v) {
   return v;
 }
 
 // ================================================== ARITHMETIC
 
 template <typename T>
-SIMD_INLINE vec1<T> operator+(const vec1<T> a, const vec1<T> b) {
-  return vec1<T>(T(a) + T(b));
+SIMD_INLINE scalar<T> operator+(const scalar<T> a, const scalar<T> b) {
+  return scalar<T>(T(a) + T(b));
 }
 
 template <typename T>
-SIMD_INLINE vec1<T> operator-(const vec1<T> a, const vec1<T> b) {
-  return vec1<T>(T(a) - T(b));
+SIMD_INLINE scalar<T> operator-(const scalar<T> a, const scalar<T> b) {
+  return scalar<T>(T(a) - T(b));
 }
 
 // ------------------------------ Saturating addition
@@ -129,19 +112,22 @@ SIMD_INLINE vec1<T> operator-(const vec1<T> a, const vec1<T> b) {
 // Returns a + b clamped to the destination range.
 
 // Unsigned
-SIMD_INLINE u8x1 add_sat(const u8x1 a, const u8x1 b) {
-  return u8x1(SIMD_MIN(SIMD_MAX(0, int(a) + int(b)), 255));
+SIMD_INLINE scalar<uint8_t> add_sat(const scalar<uint8_t> a,
+                                  const scalar<uint8_t> b) {
+  return scalar<uint8_t>(SIMD_MIN(SIMD_MAX(0, int(a) + int(b)), 255));
 }
-SIMD_INLINE u16x1 add_sat(const u16x1 a, const u16x1 b) {
-  return u16x1(SIMD_MIN(SIMD_MAX(0, int(a) + int(b)), 65535));
+SIMD_INLINE scalar<uint16_t> add_sat(const scalar<uint16_t> a,
+                                   const scalar<uint16_t> b) {
+  return scalar<uint16_t>(SIMD_MIN(SIMD_MAX(0, int(a) + int(b)), 65535));
 }
 
 // Signed
-SIMD_INLINE i8x1 add_sat(const i8x1 a, const i8x1 b) {
-  return i8x1(SIMD_MIN(SIMD_MAX(-128, int(a) + int(b)), 127));
+SIMD_INLINE scalar<int8_t> add_sat(const scalar<int8_t> a, const scalar<int8_t> b) {
+  return scalar<int8_t>(SIMD_MIN(SIMD_MAX(-128, int(a) + int(b)), 127));
 }
-SIMD_INLINE i16x1 add_sat(const i16x1 a, const i16x1 b) {
-  return i16x1(SIMD_MIN(SIMD_MAX(-32768, int(a) + int(b)), 32767));
+SIMD_INLINE scalar<int16_t> add_sat(const scalar<int16_t> a,
+                                  const scalar<int16_t> b) {
+  return scalar<int16_t>(SIMD_MIN(SIMD_MAX(-32768, int(a) + int(b)), 32767));
 }
 
 // ------------------------------ Saturating subtraction
@@ -149,92 +135,121 @@ SIMD_INLINE i16x1 add_sat(const i16x1 a, const i16x1 b) {
 // Returns a - b clamped to the destination range.
 
 // Unsigned
-SIMD_INLINE u8x1 sub_sat(const u8x1 a, const u8x1 b) {
-  return u8x1(SIMD_MIN(SIMD_MAX(0, int(a) - int(b)), 255));
+SIMD_INLINE scalar<uint8_t> sub_sat(const scalar<uint8_t> a,
+                                  const scalar<uint8_t> b) {
+  return scalar<uint8_t>(SIMD_MIN(SIMD_MAX(0, int(a) - int(b)), 255));
 }
-SIMD_INLINE u16x1 sub_sat(const u16x1 a, const u16x1 b) {
-  return u16x1(SIMD_MIN(SIMD_MAX(0, int(a) - int(b)), 65535));
+SIMD_INLINE scalar<uint16_t> sub_sat(const scalar<uint16_t> a,
+                                   const scalar<uint16_t> b) {
+  return scalar<uint16_t>(SIMD_MIN(SIMD_MAX(0, int(a) - int(b)), 65535));
 }
 
 // Signed
-SIMD_INLINE i8x1 sub_sat(const i8x1 a, const i8x1 b) {
-  return i8x1(SIMD_MIN(SIMD_MAX(-128, int(a) - int(b)), 127));
+SIMD_INLINE scalar<int8_t> sub_sat(const scalar<int8_t> a, const scalar<int8_t> b) {
+  return scalar<int8_t>(SIMD_MIN(SIMD_MAX(-128, int(a) - int(b)), 127));
 }
-SIMD_INLINE i16x1 sub_sat(const i16x1 a, const i16x1 b) {
-  return i16x1(SIMD_MIN(SIMD_MAX(-32768, int(a) - int(b)), 32767));
+SIMD_INLINE scalar<int16_t> sub_sat(const scalar<int16_t> a,
+                                  const scalar<int16_t> b) {
+  return scalar<int16_t>(SIMD_MIN(SIMD_MAX(-32768, int(a) - int(b)), 32767));
 }
 
 // ------------------------------ Average
 
 // Returns (a + b + 1) / 2
 
-SIMD_INLINE u8x1 avg(const u8x1 a, const u8x1 b) {
-  return u8x1((a + b + 1) / 2);
+SIMD_INLINE scalar<uint8_t> avg(const scalar<uint8_t> a, const scalar<uint8_t> b) {
+  return scalar<uint8_t>((a + b + 1) / 2);
 }
-SIMD_INLINE u16x1 avg(const u16x1 a, const u16x1 b) {
-  return u16x1((a + b + 1) / 2);
+SIMD_INLINE scalar<uint16_t> avg(const scalar<uint16_t> a, const scalar<uint16_t> b) {
+  return scalar<uint16_t>((a + b + 1) / 2);
 }
 
 // ------------------------------ Shift lanes by constant #bits
 
-// Shift counts >= type bits are undefined in C, but we want to match the
-// sensible behavior of SSE2 (zeroing).
+template <int kBits, typename T>
+SIMD_INLINE scalar<T> shift_left(const scalar<T> v) {
+  static_assert(0 <= kBits && kBits < sizeof(T) * 8, "Invalid shift");
+  return scalar<T>(T(v) << kBits);
+}
+
+template <int kBits, typename T>
+SIMD_INLINE scalar<T> shift_right(const scalar<T> v) {
+  static_assert(0 <= kBits && kBits < sizeof(T) * 8, "Invalid shift");
+  return scalar<T>(T(v) >> kBits);
+}
+
+// ------------------------------ Shift lanes by same variable #bits
 
 template <typename T>
-SIMD_INLINE vec1<T> operator<<(const vec1<T> v, const int bits) {
-  if (bits >= sizeof(T) * 8) {
-    return vec1<T>(0);
-  }
-  return vec1<T>(T(v) << bits);
+SIMD_INLINE scalar_shift_left_count set_shift_left_count(Scalar<T>,
+                                                         const int bits) {
+  return scalar_shift_left_count{bits};
 }
 
 template <typename T>
-SIMD_INLINE vec1<T> operator>>(const vec1<T> v, const int bits) {
-  if (bits >= sizeof(T) * 8) {
-    return vec1<T>(0);
-  }
-  return vec1<T>(T(v) >> bits);
+SIMD_INLINE scalar_shift_right_count set_shift_right_count(Scalar<T>,
+                                                           const int bits) {
+  return scalar_shift_right_count{bits};
+}
+
+template <typename T>
+SIMD_INLINE scalar<T> shift_left_same(const scalar<T> v,
+                                      const scalar_shift_left_count bits) {
+  return scalar<T>(T(v) << bits.count);
+}
+template <typename T>
+SIMD_INLINE scalar<T> shift_right_same(const scalar<T> v,
+                                       const scalar_shift_right_count bits) {
+  return scalar<T>(T(v) >> bits.count);
 }
 
 // ------------------------------ Shift lanes by independent variable #bits
 
+// Single-lane => same as above except for the argument type.
 template <typename T>
-SIMD_INLINE u32x1 operator<<(const u32x1 v, const u32x1 bits) {
-  return operator<<(v, static_cast<int>(bits));
+SIMD_INLINE scalar<T> shift_left_var(const scalar<T> v, const scalar<T> bits) {
+  return scalar<T>(T(v) << T(bits));
 }
 template <typename T>
-SIMD_INLINE u32x1 operator>>(const u32x1 v, const u32x1 bits) {
-  return operator>>(v, static_cast<int>(bits));
+SIMD_INLINE scalar<T> shift_right_var(const scalar<T> v, const scalar<T> bits) {
+  return scalar<T>(T(v) >> T(bits));
 }
 
 // ------------------------------ min/max
 
 template <typename T>
-SIMD_INLINE vec1<T> min(const vec1<T> a, const vec1<T> b) {
-  return vec1<T>(SIMD_MIN(a, b));
+SIMD_INLINE scalar<T> min(const scalar<T> a, const scalar<T> b) {
+  return scalar<T>(SIMD_MIN(a, b));
 }
 
 template <typename T>
-SIMD_INLINE vec1<T> max(const vec1<T> a, const vec1<T> b) {
-  return vec1<T>(SIMD_MAX(a, b));
+SIMD_INLINE scalar<T> max(const scalar<T> a, const scalar<T> b) {
+  return scalar<T>(SIMD_MAX(a, b));
+}
+
+// Returns the closest value to v within [lo, hi].
+template <typename T>
+SIMD_INLINE scalar<T> clamp(const scalar<T> v, const scalar<T> lo,
+                            const scalar<T> hi) {
+  return min(max(lo, v), hi);
 }
 
 // ------------------------------ mul/div
 
 template <typename T>
-SIMD_INLINE vec1<T> operator*(const vec1<T> a, const vec1<T> b) {
+SIMD_INLINE scalar<T> operator*(const scalar<T> a, const scalar<T> b) {
   if (IsFloat<T>()) {
-    return vec1<T>(static_cast<T>(double(a) * double(b)));
+    return scalar<T>(static_cast<T>(double(a) * double(b)));
   } else if (IsSigned<T>()) {
-    return vec1<T>(static_cast<T>(int64_t(a) * int64_t(b)));
+    return scalar<T>(static_cast<T>(int64_t(a) * int64_t(b)));
   } else {
-    return vec1<T>(static_cast<T>(uint64_t(a) * uint64_t(b)));
+    return scalar<T>(static_cast<T>(uint64_t(a) * uint64_t(b)));
   }
 }
 
 template <typename T>
-SIMD_INLINE vec1<T> operator/(const vec1<T> a, const vec1<T> b) {
-  return vec1<T>(T(a) / T(b));
+SIMD_INLINE scalar<T> operator/(const scalar<T> a, const scalar<T> b) {
+  return scalar<T>(T(a) / T(b));
 }
 
 // "Extensions": useful but quite performance-portable operations. We add
@@ -242,49 +257,53 @@ SIMD_INLINE vec1<T> operator/(const vec1<T> a, const vec1<T> b) {
 namespace ext {
 
 // Returns the upper 16 bits of a * b in each lane.
-SIMD_INLINE i16x1 mulhi(const i16x1 a, const i16x1 b) {
-  return i16x1((int32_t(a) * int32_t(b)) >> 16);
+SIMD_INLINE scalar<int16_t> mulhi(const scalar<int16_t> a, const scalar<int16_t> b) {
+  return scalar<int16_t>((int32_t(a) * int32_t(b)) >> 16);
 }
 
 // Returns (((a * b) >> 14) + 1) >> 1.
-SIMD_INLINE i16x1 mulhrs(const i16x1 a, const i16x1 b) {
+SIMD_INLINE scalar<int16_t> mulhrs(const scalar<int16_t> a, const scalar<int16_t> b) {
   const int rounded = ((int16_t(a) * int16_t(b)) + (1 << 14)) >> 15;
   const int clamped = SIMD_MIN(SIMD_MAX(-32768, rounded), 32767);
-  return i16x1(clamped);
+  return scalar<int16_t>(clamped);
 }
 
 }  // namespace ext
 
 // Multiplies even lanes (0, 2 ..) and returns the double-wide result.
-SIMD_INLINE i64x1 mul_even(const i32x1 a, const i32x1 b) {
+SIMD_INLINE scalar<int64_t> mul_even(const scalar<int32_t> a,
+                                   const scalar<int32_t> b) {
   const int64_t a64 = a;
-  return i64x1(a64 * int32_t(b));
+  return scalar<int64_t>(a64 * int32_t(b));
 }
-SIMD_INLINE u64x1 mul_even(const u32x1 a, const u32x1 b) {
+SIMD_INLINE scalar<uint64_t> mul_even(const scalar<uint32_t> a,
+                                    const scalar<uint32_t> b) {
   const uint64_t a64 = a;
-  return u64x1(a64 * uint32_t(b));
+  return scalar<uint64_t>(a64 * uint32_t(b));
 }
 
 // Approximate reciprocal
-SIMD_INLINE f32x1 rcp_approx(const f32x1 v) { return f32x1(1.0f / float(v)); }
+SIMD_INLINE scalar<float> rcp_approx(const scalar<float> v) {
+  return scalar<float>(1.0f / float(v));
+}
 
 // ------------------------------ Floating-point multiply-add variants
 
 template <typename T>
-SIMD_INLINE vec1<T> mul_add(const vec1<T> mul, const vec1<T> x,
-                            const vec1<T> add) {
+SIMD_INLINE scalar<T> mul_add(const scalar<T> mul, const scalar<T> x,
+                            const scalar<T> add) {
   return mul * x + add;
 }
 
 template <typename T>
-SIMD_INLINE vec1<T> mul_sub(const vec1<T> mul, const vec1<T> x,
-                            const vec1<T> sub) {
+SIMD_INLINE scalar<T> mul_sub(const scalar<T> mul, const scalar<T> x,
+                            const scalar<T> sub) {
   return mul * x - sub;
 }
 
 template <typename T>
-SIMD_INLINE vec1<T> nmul_add(const vec1<T> mul, const vec1<T> x,
-                             const vec1<T> add) {
+SIMD_INLINE scalar<T> nmul_add(const scalar<T> mul, const scalar<T> x,
+                             const scalar<T> add) {
   return add - mul * x;
 }
 
@@ -293,38 +312,40 @@ SIMD_INLINE vec1<T> nmul_add(const vec1<T> mul, const vec1<T> x,
 // ------------------------------ Floating-point square root
 
 // Approximate reciprocal square root
-SIMD_INLINE f32x1 rsqrt_approx(const f32x1 v) {
+SIMD_INLINE scalar<float> rsqrt_approx(const scalar<float> v) {
   float f = v;
   const float half = f * 0.5f;
   uint32_t bits;
-  CopyBytes(f, &bits);
+  CopyBytes<4>(&f, &bits);
   // Initial guess based on log2(f)
   bits = 0x5F3759DF - (bits >> 1);
-  CopyBytes(bits, &f);
+  CopyBytes<4>(&bits, &f);
   // One Newton-Raphson iteration
-  return f32x1(f * (1.5f - (half * f * f)));
+  return scalar<float>(f * (1.5f - (half * f * f)));
 }
 
 // Square root
-SIMD_INLINE f32x1 sqrt(const f32x1 v) { return rsqrt_approx(v) * v; }
-SIMD_INLINE f64x1 sqrt(const f64x1 v) {
+SIMD_INLINE scalar<float> sqrt(const scalar<float> v) {
+  return rsqrt_approx(v) * v;
+}
+SIMD_INLINE scalar<double> sqrt(const scalar<double> v) {
   const double f = v;
-  const float s = sqrt(f32x1(f));
-  return f64x1(s);
+  const float s = sqrt(scalar<float>(f));
+  return scalar<double>(s);
 }
 
 // ------------------------------ Floating-point rounding
 
 // Approximation of round-to-nearest for numbers representable as integers.
-SIMD_INLINE f32x1 round_nearest(const f32x1 v) {
+SIMD_INLINE scalar<float> round_nearest(const scalar<float> v) {
   const float f = v;
   const float bias = f < 0.0f ? -0.5f : 0.5f;
-  return f32x1(static_cast<int32_t>(f + bias));
+  return scalar<float>(static_cast<int32_t>(f + bias));
 }
-SIMD_INLINE f64x1 round_nearest(const f64x1 v) {
+SIMD_INLINE scalar<double> round_nearest(const scalar<double> v) {
   const double f = v;
   const double bias = f < 0.0 ? -0.5 : 0.5;
-  return f64x1(static_cast<int64_t>(f + bias));
+  return scalar<double>(static_cast<int64_t>(f + bias));
 }
 
 template <typename Float, typename Bits, int kMantissaBits, int kExponentBits,
@@ -338,7 +359,7 @@ V Ceiling(const V v) {
   const bool positive = f > 0.0f;
 
   Bits bits;
-  CopyBytes(v, &bits);
+  CopyBytes<sizeof(Bits)>(&v, &bits);
 
   const int exponent = ((bits >> kMantissaBits) & kExponentMask) - kBias;
   // Already an integer.
@@ -354,7 +375,7 @@ V Ceiling(const V v) {
   if (positive) bits += (kMantissaMask + 1) >> exponent;
   bits &= ~mantissa_mask;
 
-  CopyBytes(bits, &f);
+  CopyBytes<sizeof(Bits)>(&bits, &f);
   return V(f);
 }
 
@@ -369,7 +390,7 @@ V Floor(const V v) {
   const bool negative = f < 0.0f;
 
   Bits bits;
-  CopyBytes(v, &bits);
+  CopyBytes<sizeof(Bits)>(&v, &bits);
 
   const int exponent = ((bits >> kMantissaBits) & kExponentMask) - kBias;
   // Already an integer.
@@ -385,60 +406,60 @@ V Floor(const V v) {
   if (negative) bits += (kMantissaMask + 1) >> exponent;
   bits &= ~mantissa_mask;
 
-  CopyBytes(bits, &f);
+  CopyBytes<sizeof(Bits)>(&bits, &f);
   return V(f);
 }
 
 // Toward +infinity, aka ceiling
-SIMD_INLINE f32x1 round_pos_inf(const f32x1 v) {
+SIMD_INLINE scalar<float> round_pos_inf(const scalar<float> v) {
   return Ceiling<float, uint32_t, 23, 8>(v);
 }
-SIMD_INLINE f64x1 round_pos_inf(const f64x1 v) {
+SIMD_INLINE scalar<double> round_pos_inf(const scalar<double> v) {
   return Ceiling<double, uint64_t, 52, 11>(v);
 }
 
 // Toward -infinity, aka floor
-SIMD_INLINE f32x1 round_neg_inf(const f32x1 v) {
+SIMD_INLINE scalar<float> round_neg_inf(const scalar<float> v) {
   return Floor<float, uint32_t, 23, 8>(v);
 }
-SIMD_INLINE f64x1 round_neg_inf(const f64x1 v) {
+SIMD_INLINE scalar<double> round_neg_inf(const scalar<double> v) {
   return Floor<double, uint64_t, 52, 11>(v);
 }
 
 // ------------------------------ Convert i32 <=> f32
 
-SIMD_INLINE f32x1 f32_from_i32(const i32x1 v) {
-  return f32x1(static_cast<float>(v));
+SIMD_INLINE scalar<float> f32_from_i32(const scalar<int32_t> v) {
+  return scalar<float>(static_cast<float>(v));
 }
 // Approximation of round-to-nearest for numbers representable as int32_t.
-SIMD_INLINE i32x1 i32_from_f32(const f32x1 v) {
+SIMD_INLINE scalar<int32_t> i32_from_f32(const scalar<float> v) {
   const float f = v;
   const float bias = f < 0.0f ? -0.5f : 0.5f;
-  return i32x1(f + bias);
+  return scalar<int32_t>(f + bias);
 }
 
 // ------------------------------ Cast to/from floating-point representation
 
-SIMD_INLINE f32x1 float_from_bits(const i32x1 v) {
+SIMD_INLINE scalar<float> float_from_bits(const scalar<int32_t> v) {
   float f;
-  CopyBytes(v, &f);
-  return f32x1(f);
+  CopyBytes<4>(&v, &f);
+  return scalar<float>(f);
 }
-SIMD_INLINE i32x1 bits_from_float(const f32x1 v) {
+SIMD_INLINE scalar<int32_t> bits_from_float(const scalar<float> v) {
   int32_t i;
-  CopyBytes(v, &i);
-  return i32x1(i);
+  CopyBytes<4>(&v, &i);
+  return scalar<int32_t>(i);
 }
 
-SIMD_INLINE f64x1 float_from_bits(const i64x1 v) {
+SIMD_INLINE scalar<double> float_from_bits(const scalar<int64_t> v) {
   double f;
-  CopyBytes(v, &f);
-  return f64x1(f);
+  CopyBytes<8>(&v, &f);
+  return scalar<double>(f);
 }
-SIMD_INLINE i64x1 bits_from_float(const f64x1 v) {
+SIMD_INLINE scalar<int64_t> bits_from_float(const scalar<double> v) {
   int64_t i;
-  CopyBytes(v, &i);
-  return i64x1(i);
+  CopyBytes<8>(&v, &i);
+  return scalar<int64_t>(i);
 }
 
 // "Extensions": useful but quite performance-portable operations. We add
@@ -447,11 +468,8 @@ namespace ext {
 
 // Sum of all lanes, i.e. the only one.
 template <typename T>
-SIMD_INLINE vec1<T> horz_sum(const vec1<T> v0) {
+SIMD_INLINE scalar<T> horz_sum(const scalar<T> v0) {
   return v0;
-}
-SIMD_INLINE vec1<uint64_t> horz_sum(const u8x1 v0) {
-  return vec1<uint64_t>(int(v0));
 }
 
 }  // namespace ext
@@ -459,34 +477,34 @@ SIMD_INLINE vec1<uint64_t> horz_sum(const u8x1 v0) {
 // ================================================== COMPARE
 
 // Comparisons fill a lane with 1-bits if the condition is true, else 0.
-template <class V>
-V ComparisonResult(const bool result) {
-  typename V::T ret;
+template <typename T>
+scalar<T> ComparisonResult(const bool result) {
+  T ret;
   SetBytes(result ? 0xFF : 0, &ret);
-  return V(ret);
+  return scalar<T>(ret);
 }
 
 template <typename T>
-SIMD_INLINE vec1<T> operator==(const vec1<T> a, const vec1<T> b) {
-  return ComparisonResult<vec1<T>>(T(a) == T(b));
+SIMD_INLINE scalar<T> operator==(const scalar<T> a, const scalar<T> b) {
+  return ComparisonResult<T>(T(a) == T(b));
 }
 
 template <typename T>
-SIMD_INLINE vec1<T> operator<(const vec1<T> a, const vec1<T> b) {
-  return ComparisonResult<vec1<T>>(T(a) < T(b));
+SIMD_INLINE scalar<T> operator<(const scalar<T> a, const scalar<T> b) {
+  return ComparisonResult<T>(T(a) < T(b));
 }
 template <typename T>
-SIMD_INLINE vec1<T> operator>(const vec1<T> a, const vec1<T> b) {
-  return ComparisonResult<vec1<T>>(T(a) > T(b));
+SIMD_INLINE scalar<T> operator>(const scalar<T> a, const scalar<T> b) {
+  return ComparisonResult<T>(T(a) > T(b));
 }
 
 template <typename T>
-SIMD_INLINE vec1<T> operator<=(const vec1<T> a, const vec1<T> b) {
-  return ComparisonResult<vec1<T>>(T(a) <= T(b));
+SIMD_INLINE scalar<T> operator<=(const scalar<T> a, const scalar<T> b) {
+  return ComparisonResult<T>(T(a) <= T(b));
 }
 template <typename T>
-SIMD_INLINE vec1<T> operator>=(const vec1<T> a, const vec1<T> b) {
-  return ComparisonResult<vec1<T>>(T(a) >= T(b));
+SIMD_INLINE scalar<T> operator>=(const scalar<T> a, const scalar<T> b) {
+  return ComparisonResult<T>(T(a) >= T(b));
 }
 
 // "Extensions": useful but quite performance-portable operations. We add
@@ -496,15 +514,15 @@ namespace ext {
 // Returns a bit array of the most significant bit of each byte in "v", i.e.
 // sum_i=0..15 of (v[i] >> 7) << i; v[0] is the least-significant byte of "v".
 // This is useful for testing/branching based on comparison results.
-SIMD_INLINE uint32_t movemask(const u8x1 v) { return v >> 7; }
+SIMD_INLINE uint32_t movemask(const scalar<uint8_t> v) { return v >> 7; }
 
 // Returns the most significant bit of each float/double lane (see above).
-SIMD_INLINE uint32_t movemask(const f32x1 v) { return v < 0.0f; }
-SIMD_INLINE uint32_t movemask(const f64x1 v) { return v < 0.0; }
+SIMD_INLINE uint32_t movemask(const scalar<float> v) { return v < 0.0f; }
+SIMD_INLINE uint32_t movemask(const scalar<double> v) { return v < 0.0; }
 
 // Returns whether all lanes are equal to zero. Supported for all integer T.
 template <typename T>
-SIMD_INLINE bool all_zero(const vec1<T> v) {
+SIMD_INLINE bool all_zero(const scalar<T> v) {
   return static_cast<T>(v) == 0;
 }
 
@@ -515,30 +533,30 @@ SIMD_INLINE bool all_zero(const vec1<T> v) {
 template <typename Bits>
 struct BitwiseOp {
   template <typename T, class Op>
-  vec1<T> operator()(const vec1<T> a, const vec1<T> b, const Op& op) const {
+  scalar<T> operator()(const scalar<T> a, const scalar<T> b, const Op& op) const {
     static_assert(sizeof(T) == sizeof(Bits), "Float/int size mismatch");
     Bits ia, ib;
-    CopyBytes(a, &ia);
-    CopyBytes(b, &ib);
+    CopyBytes<sizeof(Bits)>(&a, &ia);
+    CopyBytes<sizeof(Bits)>(&b, &ib);
     ia = op(ia, ib);
     T ret;
-    CopyBytes(ia, &ret);
-    return vec1<T>(ret);
+    CopyBytes<sizeof(Bits)>(&ia, &ret);
+    return scalar<T>(ret);
   }
 };
 
 // ------------------------------ Bitwise AND
 
 template <typename T>
-SIMD_INLINE vec1<T> operator&(const vec1<T> a, const vec1<T> b) {
-  return vec1<T>(T(a) & T(b));
+SIMD_INLINE scalar<T> operator&(const scalar<T> a, const scalar<T> b) {
+  return scalar<T>(T(a) & T(b));
 }
 template <>
-SIMD_INLINE f32x1 operator&(const f32x1 a, const f32x1 b) {
+SIMD_INLINE scalar<float> operator&(const scalar<float> a, const scalar<float> b) {
   return BitwiseOp<int32_t>()(a, b, [](int32_t i, int32_t j) { return i & j; });
 }
 template <>
-SIMD_INLINE f64x1 operator&(const f64x1 a, const f64x1 b) {
+SIMD_INLINE scalar<double> operator&(const scalar<double> a, const scalar<double> b) {
   return BitwiseOp<int64_t>()(a, b, [](int64_t i, int64_t j) { return i & j; });
 }
 
@@ -546,16 +564,16 @@ SIMD_INLINE f64x1 operator&(const f64x1 a, const f64x1 b) {
 
 // Returns ~a & b.
 template <typename T>
-SIMD_INLINE vec1<T> andnot(const vec1<T> a, const vec1<T> b) {
-  return vec1<T>(~T(a) & T(b));
+SIMD_INLINE scalar<T> andnot(const scalar<T> a, const scalar<T> b) {
+  return scalar<T>(~T(a) & T(b));
 }
 template <>
-SIMD_INLINE f32x1 andnot(const f32x1 a, const f32x1 b) {
+SIMD_INLINE scalar<float> andnot(const scalar<float> a, const scalar<float> b) {
   return BitwiseOp<int32_t>()(a, b,
                               [](int32_t i, int32_t j) { return ~i & j; });
 }
 template <>
-SIMD_INLINE f64x1 andnot(const f64x1 a, const f64x1 b) {
+SIMD_INLINE scalar<double> andnot(const scalar<double> a, const scalar<double> b) {
   return BitwiseOp<int64_t>()(a, b,
                               [](int64_t i, int64_t j) { return ~i & j; });
 }
@@ -563,177 +581,131 @@ SIMD_INLINE f64x1 andnot(const f64x1 a, const f64x1 b) {
 // ------------------------------ Bitwise OR
 
 template <typename T>
-SIMD_INLINE vec1<T> operator|(const vec1<T> a, const vec1<T> b) {
-  return vec1<T>(T(a) | T(b));
+SIMD_INLINE scalar<T> operator|(const scalar<T> a, const scalar<T> b) {
+  return scalar<T>(T(a) | T(b));
 }
 template <>
-SIMD_INLINE f32x1 operator|(const f32x1 a, const f32x1 b) {
+SIMD_INLINE scalar<float> operator|(const scalar<float> a, const scalar<float> b) {
   return BitwiseOp<int32_t>()(a, b, [](int32_t i, int32_t j) { return i | j; });
 }
 template <>
-SIMD_INLINE f64x1 operator|(const f64x1 a, const f64x1 b) {
+SIMD_INLINE scalar<double> operator|(const scalar<double> a, const scalar<double> b) {
   return BitwiseOp<int64_t>()(a, b, [](int64_t i, int64_t j) { return i | j; });
 }
 
 // ------------------------------ Bitwise XOR
 
 template <typename T>
-SIMD_INLINE vec1<T> operator^(const vec1<T> a, const vec1<T> b) {
-  return vec1<T>(T(a) ^ T(b));
+SIMD_INLINE scalar<T> operator^(const scalar<T> a, const scalar<T> b) {
+  return scalar<T>(T(a) ^ T(b));
 }
 template <>
-SIMD_INLINE f32x1 operator^(const f32x1 a, const f32x1 b) {
+SIMD_INLINE scalar<float> operator^(const scalar<float> a, const scalar<float> b) {
   return BitwiseOp<int32_t>()(a, b, [](int32_t i, int32_t j) { return i ^ j; });
 }
 template <>
-SIMD_INLINE f64x1 operator^(const f64x1 a, const f64x1 b) {
+SIMD_INLINE scalar<double> operator^(const scalar<double> a, const scalar<double> b) {
   return BitwiseOp<int64_t>()(a, b, [](int64_t i, int64_t j) { return i ^ j; });
 }
 
-// ================================================== LOAD/STORE
+// ================================================== MEMORY
 
-// ------------------------------ Load all lanes
+// ------------------------------ Load
 
 template <typename T>
-SIMD_INLINE vec1<T> load(vec1<T>, const T* SIMD_RESTRICT aligned) {
+SIMD_INLINE scalar<T> load(Scalar<T>, const T* SIMD_RESTRICT aligned) {
   T t;
-  CopyBytes(*aligned, &t);
-  return vec1<T>(t);
+  CopyBytes<sizeof(T)>(aligned, &t);
+  return scalar<T>(t);
 }
 
 template <typename T>
-SIMD_INLINE vec1<T> load_unaligned(const vec1<T> v, const T* SIMD_RESTRICT p) {
-  return load(v, p);
+SIMD_INLINE scalar<T> load_unaligned(Scalar<T> d, const T* SIMD_RESTRICT p) {
+  return load(d, p);
 }
 
 // no load_dup128: that requires at least 128-bit vectors.
 
-// ------------------------------ Store all lanes
+// ------------------------------ Store
 
 template <typename T>
-SIMD_INLINE void store(const vec1<T> v, T* SIMD_RESTRICT aligned) {
+SIMD_INLINE void store(const scalar<T> v, Scalar<T>, T* SIMD_RESTRICT aligned) {
   const T t = v;
-  CopyBytes(t, aligned);
+  CopyBytes<sizeof(T)>(&t, aligned);
 }
 
 template <typename T>
-SIMD_INLINE void store_unaligned(const vec1<T> v, T* SIMD_RESTRICT p) {
-  return store(v, p);
+SIMD_INLINE void store_unaligned(const scalar<T> v, Scalar<T> d,
+                                 T* SIMD_RESTRICT p) {
+  return store(v, d, p);
 }
 
 // ------------------------------ "Non-temporal" stores
 
 template <typename T>
-SIMD_INLINE void stream(const vec1<T> v, T* SIMD_RESTRICT aligned) {
-  return store(v, aligned);
+SIMD_INLINE void stream(const scalar<T> v, Scalar<T> d,
+                        T* SIMD_RESTRICT aligned) {
+  return store(v, d, aligned);
 }
 
 // ================================================== SWIZZLE
 
-// ------------------------------ Shift vector by constant #bytes
-
-// 0x10..01, kBytes = 1 => 0x0F..0100
-template <int kBytes, typename T>
-SIMD_INLINE vec1<T> shift_bytes_left(const vec1<T> v) {
-  static_assert(0 <= kBytes && kBytes <= sizeof(v), "Invalid kBytes");
-  const vec1<T> lh[2] = {set1(vec1<T>(), T(0)), v};
-  T ret;
-  CopyBytesWithOffset(lh[0], sizeof(v) - kBytes, &ret);
-  return vec1<T>(ret);
-}
-
-// 0x10..01, kBytes = 1 => 0x0010..02
-template <int kBytes, typename T>
-SIMD_INLINE vec1<T> shift_bytes_right(const vec1<T> v) {
-  static_assert(0 <= kBytes && kBytes <= sizeof(v), "Invalid kBytes");
-  const vec1<T> lh[2] = {v, set1(vec1<T>(), T(0))};
-  T ret;
-  CopyBytesWithOffset(lh[0], kBytes, &ret);
-  return vec1<T>(ret);
-}
-
-// ------------------------------ Extract from 2x 128-bit at constant offset
-
-// Extracts a vector from <hi, lo> by skipping the least-significant kBytes.
-template <int kBytes, typename T>
-SIMD_INLINE vec1<T> extract_concat_bytes(const vec1<T> hi, const vec1<T> lo) {
-  static_assert(0 <= kBytes && kBytes <= sizeof(lo), "Invalid kBytes");
-  const vec1<T> lh[2] = {lo, hi};
-  T ret;
-  CopyBytesWithOffset(lh[0], kBytes, &ret);
-  return vec1<T>(ret);
-}
+// Unsupported: shift_bytes_*, extract_concat_bytes, interleave_*, other_half,
+// shuffle_*, sums_of_u8x8, horz_sum - these require more than one lane and/or
+// actual 128-bit vectors.
 
 // ------------------------------ Broadcast/splat any lane
 
 template <int kLane, typename T>
-SIMD_INLINE vec1<T> broadcast(const vec1<T> v) {
+SIMD_INLINE scalar<T> broadcast(const scalar<T> v) {
   static_assert(kLane == 0, "Scalar only has one lane");
   return v;
 }
 
-// ------------------------------ Shuffle bytes with variable indices
+// ------------------------------ Zip/unpack
 
-// Returns vector of bytes[from[i]]. "from" must be valid indices in [0, 16).
-template <typename T>
-SIMD_INLINE vec1<T> shuffle_bytes(const vec1<T> v, const vec1<T> from) {
-  T v_lanes;
-  store(v, &v_lanes);
-  T from_lanes;
-  store(from, &from_lanes);
-  const uint8_t* v_bytes = reinterpret_cast<const uint8_t*>(v_lanes);
-  const uint8_t* from_bytes = reinterpret_cast<const uint8_t*>(from_lanes);
-  T ret = 0;
-  uint8_t* out_bytes = reinterpret_cast<uint8_t*>(&ret);
-  for (size_t i = 0; i < sizeof(vec1<T>); ++i) {
-    const int index = from_bytes[i];
-    out_bytes[i] = index < sizeof(vec1<T>) ? v_bytes[index] : 0;
-  }
-  return vec1<T>(ret);
+SIMD_INLINE scalar<uint16_t> zip_lo(const scalar<uint8_t> a,
+                                  const scalar<uint8_t> b) {
+  return scalar<uint16_t>((uint32_t(b) << 8) + uint32_t(a));
 }
-
-// ------------------------------ Zip/interleave/unpack
-
-// interleave_* are not supported because they return two lanes.
-
-SIMD_INLINE u16x1 zip_lo(const u8x1 a, const u8x1 b) {
-  return u16x1((uint32_t(b) << 8) + uint32_t(a));
+SIMD_INLINE scalar<uint32_t> zip_lo(const scalar<uint16_t> a,
+                                  const scalar<uint16_t> b) {
+  return scalar<uint32_t>((uint32_t(b) << 16) + uint32_t(a));
 }
-SIMD_INLINE u32x1 zip_lo(const u16x1 a, const u16x1 b) {
-  return u32x1((uint32_t(b) << 16) + uint32_t(a));
+SIMD_INLINE scalar<uint64_t> zip_lo(const scalar<uint32_t> a,
+                                  const scalar<uint32_t> b) {
+  return scalar<uint64_t>((uint64_t(b) << 32) + uint64_t(a));
 }
-SIMD_INLINE u64x1 zip_lo(const u32x1 a, const u32x1 b) {
-  return u64x1((uint64_t(b) << 32) + uint64_t(a));
+SIMD_INLINE scalar<int16_t> zip_lo(const scalar<int8_t> a, const scalar<int8_t> b) {
+  return scalar<int16_t>((int32_t(b) << 8) + int32_t(a));
 }
-SIMD_INLINE i16x1 zip_lo(const i8x1 a, const i8x1 b) {
-  return i16x1((int32_t(b) << 8) + int32_t(a));
+SIMD_INLINE scalar<int32_t> zip_lo(const scalar<int16_t> a, const scalar<int16_t> b) {
+  return scalar<int32_t>((int32_t(b) << 16) + int32_t(a));
 }
-SIMD_INLINE i32x1 zip_lo(const i16x1 a, const i16x1 b) {
-  return i32x1((int32_t(b) << 16) + int32_t(a));
-}
-SIMD_INLINE i64x1 zip_lo(const i32x1 a, const i32x1 b) {
-  return i64x1((int64_t(b) << 32) + int64_t(a));
+SIMD_INLINE scalar<int64_t> zip_lo(const scalar<int32_t> a, const scalar<int32_t> b) {
+  return scalar<int64_t>((int64_t(b) << 32) + int64_t(a));
 }
 
 template <typename T>
-SIMD_INLINE auto zip_hi(const vec1<T> a, const vec1<T> b)
+SIMD_INLINE auto zip_hi(const scalar<T> a, const scalar<T> b)
     -> decltype(zip_lo(a, b)) {
   return zip_lo(a, b);
 }
 
 // ------------------------------ Convert
 
-template <typename ToT, class FromV>
-SIMD_INLINE vec1<ToT> convert_to(ToT, const FromV from) {
-  const Lane<FromV> t = from;
-  return vec1<ToT>(static_cast<ToT>(t));
+template <typename FromT, typename ToT>
+SIMD_INLINE scalar<ToT> convert_to(Desc<ToT, 1, NONE>,
+                                   const scalar<FromT> from) {
+  const FromT t = from;
+  return scalar<ToT>(static_cast<ToT>(t));
 }
 
 // ------------------------------ Select/blend
 
 // Returns mask ? b : a. Each lane of "mask" must equal T(0) or ~T(0).
 template <typename T>
-SIMD_INLINE vec1<T> select(const vec1<T> a, const vec1<T> b,
-                           const vec1<T> mask) {
+SIMD_INLINE scalar<T> select(const scalar<T> a, const scalar<T> b,
+                           const scalar<T> mask) {
   return (mask & b) | andnot(mask, a);
 }

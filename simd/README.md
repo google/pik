@@ -6,10 +6,9 @@ immediate usability with current compilers.
 
 ## Current status
 
-Implemented for SSE4, AVX2 and scalar (portable) targets, each with unit tests.
+Implemented for scalar/SSE4/AVX2/ARMv8 targets, each with unit tests.
 
-`blaze build -c opt simd:all &&
-blaze-bin/simd/simd_test`
+`make -j8 && bin/simd_test`
 
 ## Design philosophy
 
@@ -53,8 +52,7 @@ blaze-bin/simd/simd_test`
     library-specified vector width. This will result in better code when vector
     sizes increase, and matches the direction taken by ARM SVE and RiscV
     hardware. However, some applications may require fixed sizes, so we also
-    support vectors of 128-bit size on all platforms, and 256-bit vectors in
-    AVX2-specific applications.
+    guarantee support for 128-bit vectors in each instruction set.
 
 *   The API and its implementation should be usable and efficient with commonly
     used compilers. Some of our open-source users cannot upgrade, so we need to
@@ -83,28 +81,27 @@ blaze-bin/simd/simd_test`
 
 *   The core API should be compact and easy to learn. We provide only the few
     dozen operations which are necessary and sufficient for most of the 150+
-    SIMD applications we examined. As a result, the quick_reference card in
-    `g3doc/` is only 6 pages long.
+    SIMD applications we examined. As a result, quick_reference.md is only 7
+    pages long.
 
 ## Differences versus [P0214R5 proposal](https://goo.gl/zKW4SA)
 
 1.  Adding widely used and portable operations such as `average`, `mul_even`,
     and `shuffle`.
 
-1.  Adding the concept of half-vectors, which are often used in existing ARM
+1.  Adding the concept of vector 'parts', which are often used in existing ARM
     and x86 code.
 
 1.  Avoiding the need for non-native vectors. By contrast, P0214R5's `simd_cast`
     returns `fixed_size<>` vectors which are more expensive to access because
     they reside on the stack. We can avoid this plus additional overhead on
     ARM/AVX2 by defining width-expanding operations as functions of a vector
-    subset, e.g. promoting half a vector of `uint8_t` lanes to one full vector
-    of `uint16_t`, or demoting a full vector to a half vector with half-width
-    lanes.
+    part, e.g. promoting half a vector of `uint8_t` lanes to one full vector of
+    `uint16_t`, or demoting full vectors to half vectors with half-width lanes.
 
 1.  Guaranteeing access to the underlying intrinsic vector type. P0214R5 only
-    'encourages' implementations to allow a static_cast. We provide conversions
-    to ensure all platform-specific features can be used.
+    'encourages' implementations to allow a `static_cast`. We provide
+    conversions to ensure all platform-specific features can be used.
 
 1.  Enabling safe runtime dispatch and inlining in the same binary. P0214R5 is
     based on the Vc library, which does not provide assistance for linking
@@ -116,12 +113,12 @@ blaze-bin/simd/simd_test`
     multiple flags on recent compilers, and defending against ODR violations on
     older compilers (see HOWTO section below).
 
-1.  Using built-in PPC vector types without any wrapper. This leads to much
+1.  Using built-in PPC vector types without a wrapper class. This leads to much
     better code generation with GCC 4.8: https://godbolt.org/g/KYp7ew.
-    By contrast, P0214R5 requires a wrapper class. We avoid this by using only
-    the member operators provided by the PPC vectors; all other functions and
-    typedefs are non-members and the user-visible `vec<T, Target>` interface is
-    an alias template.
+    By contrast, P0214R5 requires a wrapper. We avoid this by using only the
+    member operators provided by the PPC vectors; all other functions and
+    typedefs are non-members and the user-visible `Vec<T, N, Target>` interface
+    is an alias template.
 
 *   Omitting inefficient or non-performance-portable operations such as `hmax`,
     `operator[]`, and unsupported integer comparisons. Applications can often
@@ -169,23 +166,53 @@ and/or instruction sets from the same source, and improves runtime dispatch.
 We are unaware of any existing vector libraries with support for safely bundling
 code targeting multiple instruction sets into the same binary (see HOWTO below).
 
+### Overloaded function API
+
+Most C++ vector APIs rely on class templates. However, two PPC compilers
+including GCC 4.8 generate inefficient code for classes with a SIMD vector
+member: an [extra load/store for every function argument/return
+value](https://godbolt.org/g/KYp7ew). To avoid this overhead, we use built-in
+vector types on PPC. These provide overloaded arithmetic operators but do not
+allow member functions/typedefs such as `size()` or `value_type`. We instead
+rely on overloaded functions.
+
+Because full vectors and parts are synonyms on PPC, we need an additional tag
+argument for disambiguation. Any function template with multiple return types
+uses a descriptor argument to specify the return type. For example, the return
+type of `setzero(Desc<T, N, Target>)` is `Vec<T, N, Target>`. For brevity,
+`Desc` is abbreviated to `D` for template arguments and `d` in lvalues.
+
+It may seem preferable to write `setzero<D>()` rather than `setzero(D())`, but
+there are technical difficulties. We prefer generic implementations where
+possible rather than overloading for every single `T`. Because C++ does not
+allow partial specialization of function templates, we need multiple overloads:
+one primary template per target. Thus, functions cannot be invoked using
+template syntax. Can we instead add a wrapper function template that calls the
+appropriate overload? Unfortunately, the new compiler support for avoiding
+dangerous per-file `-mavx2` requires per-function annotations, and these
+attributes are not generic. Thus, a wrapper into which SIMD functions are
+inlined cannot be a function, because it would also need a target-specific
+attribute. A macro `SETZERO(D)` could work, but this is hardly more clear than a
+normal function with arguments. Note that descriptors occur often, so user code
+can define a `const Full<float> d;` and then write `setzero(d)`.
+
 ## Use cases and HOWTO
 
 *   Older compilers, single instruction set per platform: compile with a
     `COPTS_REQUIRE_?` plus `COPTS_ENABLE_?`; use fixed-size 128-bit vectors
-    (`vec128` or `f32x4`) or width-agnostic `vec<float>`.
+    (`Vec<float, 4>`, `f32x4`) or generic `Full<float>::V`.
 
 *   Older compilers, runtime dispatch: one library per instruction set, each
     compiled with a `COPTS_ENABLE_?` and `COPTS_REQUIRE_?`. The libraries
     can be built from the same source by instantiating a template that uses
-    width-agnostic SIMD (`vec<uint8_t, SIMD_TARGET>`).
+    width-agnostic SIMD (`Full<uint8_t, SIMD_TARGET>`).
     Use `dispatch::Run` to choose the best available implementation at runtime.
     Prevent ODR violations by ensuring functions are inlined or defined within
     `SIMD_NAMESPACE`. This can be verified using binutils.
 
 *   Newer compilers (GCC 4.9+, Clang 3.9+), single instruction set per platform:
     compile with `COPTS_ENABLE_?`, add `SIMD_ATTR` to any functions using SIMD,
-    use `vec*<T>` (e.g. `vec256`) or its aliases (`f32x8`).
+    use `Full<T>` or fixed-size aliases (`f32x4`).
 
 *   Newer compilers (GCC 4.9+, Clang 3.9+), runtime dispatch: compile with
     `COPTS_ENABLE_*`, add `SIMD_ATTR_?` to functions using that instruction set,
@@ -210,20 +237,54 @@ It contains few tests; the main purpose is to demonstrate compilation without
 ## Example source code
 
 ```c++
+void FloorLog2(const uint8_t* SIMD_RESTRICT values,
+               uint8_t* SIMD_RESTRICT log2) {
+  const Full<int32_t> d32;
+  const Part<uint8_t, d32.N> d8;
+
+  const auto u8 = load(d8, values);
+  const auto bits = bits_from_float(f32_from_i32(convert_to(d32, u8)));
+  const auto exponent = shift_right<23>(bits) - set1(d32, 127);
+  store(convert_to(d8, exponent), d8, log2);
+}
+```
+
+This generates the following SSE4 and AVX2 code, as shown by IACA:
+```
+ p0  p1  p5
+|   |   | 1 | CP | pmovzxbd xmm1, dword [rsp+0x25c]
+|   | 1 |   |    | cvtdq2ps xmm1, xmm1
+| 1 |   |   |    | psrad xmm1, 0x17
+|   | 1 |   |    | paddd xmm1, xmm0
+|   |   | 1 | CP | packusdw xmm1, xmm0
+|   |   | 1 | CP | packuswb xmm1, xmm0
+|   |   |   |    | movd [rsp+0x45c], xmm1
+
+|   |   | 1 | CP | vpmovzxbd ymm1, qword [rsp+0x228]
+|   | 1 |   |    | vcvtdq2ps ymm1, ymm1
+| 1 |   |   |    | vpsrad ymm1, ymm1, 0x17
+|   | 1 |   |    | vpaddd ymm1, ymm1, ymm0
+|   |   | 1 | CP | vpackusdw ymm1, ymm1, ymm0
+|   |   | 1 | CP | vpermq ymm1, ymm1, 0xe8
+|   |   | 1 | CP | vpackuswb xmm1, xmm1, xmm0
+|   |   |   |    | vmovq [rsp+0x448], xmm1
+```
+
+```c++
 void Copy(const uint8_t* SIMD_RESTRICT from, const size_t size,
           uint8_t* SIMD_RESTRICT to) {
-  // Width-agnostic (library-specified NumLanes)
-  using V = vec<uint8_t>;
+  // Width-agnostic (library-specified N)
+  const Full<uint8_t> d;
   size_t i = 0;
-  for (; i + NumLanes<V>() <= size; i += NumLanes<V>()) {
-    const auto bytes = load(V(), from + i);
-    store(bytes, to + i);
+  for (; i + d.N <= size; i += d.N) {
+    const auto bytes = load(d, from + i);
+    store(bytes, d, to + i);
   }
 
-  for (; i < size; i += NumLanes<vec1<uint8_t>>()) {
+  for (; i < size; ++i) {
     // (Same loop body as above, could factor into a shared template)
-    const auto bytes = load(vec1<uint8_t>(), from + i);
-    store(bytes, to + i);
+    const auto bytes = load(Scalar<uint8_t>(), from + i);
+    store(bytes, Scalar<uint8_t>(), to + i);
   }
 }
 ```
@@ -233,23 +294,14 @@ void MulAdd(const T* SIMD_RESTRICT mul_array, const T* SIMD_RESTRICT add_array,
             const size_t size, T* SIMD_RESTRICT x_array) {
   // Type-agnostic (caller-specified lane type) and width-agnostic (uses
   // best available instruction set).
-  using V = vec<T>;
-  for (size_t i = 0; i < size; i += NumLanes<V>()) {
-    const auto mul = load(V(), mul_array + i);
-    const auto add = load(V(), add_array + i);
-    auto x = load(V(), x_array + i);
+  const Full<T> d;
+  for (size_t i = 0; i < size; i += d.N) {
+    const auto mul = load(d, mul_array + i);
+    const auto add = load(d, add_array + i);
+    auto x = load(d, x_array + i);
     x = mul_add(mul, x, add);
-    store(x, x_array + i);
+    store(x, d, x_array + i);
   }
-}
-```
-
-```c++
-int GetMostSignificantBits(const uint8_t* SIMD_RESTRICT from) {
-  // Fixed-size, can use template or type alias.
-  static_assert(sizeof(vec128<uint8_t>) == sizeof(u8x16), "Size mismatch");
-  const auto bytes = load(u8x16(), from);
-  return ext::movemask(bytes);  // 16 bits, one from each byte
 }
 ```
 

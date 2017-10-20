@@ -43,20 +43,20 @@ namespace {
 // supported by the current CPU. The implementation doesn't care exactly which
 // instruction set it is (width-agnostic).
 
-// Loops from [i, size), NumLanes<V>() at a time. This template avoids
-// repeating code for V and vec1. Returns the next i, and assumes "i" is
-// appropriately aligned for V.
-template <class V, typename T>
+// Loops from [i, size), d.N at a time. This template avoids repeating code for
+// V and scalar. Returns the next i, and assumes "i" is aligned for V.
+template <class D, typename T>
 SIMD_ATTR SIMD_INLINE size_t MulAddLoop(const T* SIMD_RESTRICT mul_array,
                                         const T* SIMD_RESTRICT add_array,
                                         size_t i, const size_t size,
                                         T* SIMD_RESTRICT x_array) {
-  for (; i + NumLanes<V>() <= size; i += NumLanes<V>()) {
-    const auto mul = load(V(), mul_array + i);
-    const auto add = load(V(), add_array + i);
-    auto x = load(V(), x_array + i);
+  const D d;
+  for (; i + d.N <= size; i += d.N) {
+    const auto mul = load(d, mul_array + i);
+    const auto add = load(d, add_array + i);
+    auto x = load(d, x_array + i);
     x = mul_add(mul, x, add);
-    store(x, x_array + i);
+    store(x, d, x_array + i);
   }
   return i;
 }
@@ -67,12 +67,12 @@ template <typename T>
 SIMD_ATTR SIMD_INLINE void MulAdd(const T* SIMD_RESTRICT mul,
                                   const T* SIMD_RESTRICT add, const size_t size,
                                   T* SIMD_RESTRICT x) {
-  using V = vec<T, SIMD_TARGET>;
-  printf("MulAdd %s\n", vec_name<V>());
+  using D = Full<T>;
+  printf("MulAdd %s\n", vec_name<D>());
   size_t i = 0;
   // Clang generates only load, store and FMA instructions if size is constexpr.
-  i = MulAddLoop<V>(mul, add, i, size, x);
-  MulAddLoop<vec1<T>>(mul, add, i, size, x);
+  i = MulAddLoop<D>(mul, add, i, size, x);
+  MulAddLoop<Scalar<T>>(mul, add, i, size, x);
 }
 
 // Generates input data and verifies the result. Note: top-level functions
@@ -99,15 +99,15 @@ SIMD_ATTR SIMD_NOINLINE void TestMulAdd() {
 
 // Generic implementation, "instantiated" for all supported instruction sets.
 // Cannot be a function - that would require different SIMD_ATTR_*.
-#define TEST_LOAD_STORE(vec_template)      \
-  using V = vec_template<int32_t>;         \
-  constexpr size_t N = NumLanes<V>();      \
-  SIMD_ALIGN int32_t lanes[N];             \
-  std::iota(lanes, lanes + N, 1);          \
-  auto v = load(V(), lanes);               \
-  SIMD_ALIGN int32_t lanes2[N];            \
-  store(v, lanes2);                        \
-  for (size_t i = 0; i < N; ++i) {         \
+#define TEST_LOAD_STORE(target)            \
+  using D = Full<int32_t, Target>;         \
+  constexpr size_t d.N = D::d.N;           \
+  SIMD_ALIGN int32_t lanes[d.N];           \
+  std::iota(lanes, lanes + d.N, 1);        \
+  auto v = load(D(), lanes);               \
+  SIMD_ALIGN int32_t lanes2[d.N];          \
+  store(v, D(), lanes2);                   \
+  for (size_t i = 0; i < d.N; ++i) {       \
     if (lanes[i] != lanes2[i]) {           \
       printf("Mismatch in lane %zu\n", i); \
       SIMD_TRAP();                         \
@@ -115,17 +115,17 @@ SIMD_ATTR SIMD_NOINLINE void TestMulAdd() {
   }
 
 SIMD_ATTR_AVX2 SIMD_NOINLINE void TestLoadStore_AVX2() {
-  TEST_LOAD_STORE(vec256);
+  TEST_LOAD_STORE(AVX2);
   printf("AVX2 ok\n");
 }
 
 SIMD_ATTR_SSE4 SIMD_NOINLINE void TestLoadStore_SSE4() {
-  TEST_LOAD_STORE(vec128);
+  TEST_LOAD_STORE(SSE4);
   printf("SSE4 ok\n");
 }
 
 void TestLoadStore_Portable() {
-  TEST_LOAD_STORE(vec1);
+  TEST_LOAD_STORE(NONE);
   printf("Portable ok\n");
 }
 

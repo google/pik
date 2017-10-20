@@ -81,10 +81,11 @@ struct Header {
 // Returns an upper bound on the number of bytes needed to store a Header.
 size_t MaxCompressedHeaderSize();
 
-bool LoadHeader(BitSource* const PIK_RESTRICT source,
+// Returns end of "from".
+const uint8_t* LoadHeader(const uint8_t* from,
                 Header* const PIK_RESTRICT header);
 
-bool StoreHeader(const Header& header, BitSink* const PIK_RESTRICT sink);
+uint8_t* StoreHeader(const Header& header, uint8_t* to);
 
 // A "section" is optional metadata that is only read from/written to the
 // compressed stream if needed. Adding sections is the only way to extend
@@ -133,13 +134,13 @@ struct Sections {
 size_t MaxCompressedSectionsSize(const Sections& sections);
 
 const uint8_t* const PIK_RESTRICT
-LoadSections(BitSource* const PIK_RESTRICT source,
+LoadSections(SIMD_NAMESPACE::BitSource* const PIK_RESTRICT source,
              Sections* const PIK_RESTRICT sections);
 
 // "max_bytes" is the return value of MaxCompressedSectionsSize.
-uint8_t* const PIK_RESTRICT StoreSections(const Sections& sections,
-                                          const size_t max_bytes,
-                                          BitSink* const PIK_RESTRICT sink);
+uint8_t* const PIK_RESTRICT
+StoreSections(const Sections& sections, const size_t max_bytes,
+              SIMD_NAMESPACE::BitSink* const PIK_RESTRICT sink);
 
 #pragma pack(pop)
 

@@ -26,6 +26,9 @@
 
 namespace pik {
 
+using SIMD_NAMESPACE::BitSink;
+using SIMD_NAMESPACE::BitSource;
+
 // Coder for 32-bit integers. Encodes the number of value bits using 2-bit
 // selectors. This is faster to decode and denser than Exp-Golomb or Gamma
 // codes when the approximate distribution is known, and both small and
@@ -241,28 +244,35 @@ size_t MaxCompressedHeaderSize() {
   return size + 8;  // plus BitSink safety margin.
 }
 
-bool LoadHeader(BitSource* const PIK_RESTRICT source,
-                Header* const PIK_RESTRICT header) {
-  if (!Magic::Verify(source)) {
-    return PIK_FAILURE("Wrong magic bytes.");
+const uint8_t* LoadHeader(const uint8_t* from,
+                          Header* const PIK_RESTRICT header) {
+  BitSource source(from);
+
+  if (!Magic::Verify(&source)) {
+    PIK_NOTIFY_ERROR("Wrong magic bytes.");
+    return nullptr;
   }
 
-  FieldReader reader(source);
+  FieldReader reader(&source);
   header->VisitFields(&reader);
-  return true;
+  return source.Finalize();
 }
 
-bool StoreHeader(const Header& header_const,
-                 BitSink* const PIK_RESTRICT sink) {
+uint8_t* StoreHeader(const Header& header_const, uint8_t* to) {
   // VisitFields requires a non-const pointer, but we do not actually
   // modify the underlying memory.
   Header* const PIK_RESTRICT header = const_cast<Header*>(&header_const);
 
-  Magic::Store(sink);
+  BitSink sink(to);
+  Magic::Store(&sink);
 
-  FieldWriter writer(sink);
+  FieldWriter writer(&sink);
   header->VisitFields(&writer);
-  return writer.OK() ? true : PIK_FAILURE("Range exceeded.");
+  if (!writer.OK()) {
+    PIK_NOTIFY_ERROR("Range exceeded.");
+    return nullptr;
+  }
+  return sink.Finalize();
 }
 
 // Indicates which sections are present in the stream. This is required for

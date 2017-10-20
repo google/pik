@@ -15,9 +15,13 @@
 #ifndef SIMD_SIMD_TEST_TARGET_H_
 #define SIMD_SIMD_TEST_TARGET_H_
 
+// WARNING: this header is included from translation units compiled with
+// different flags. To prevent ODR violations, all functions defined here or
+// in dependent headers must be inlined and/or within namespace SIMD_NAMESPACE.
+
 namespace pik {
 
-typedef void (*NotifyFailure)(int line, const char* vec, int lane,
+typedef void (*NotifyFailure)(int target, int line, const char* vec, int lane,
                               const char* expected, const char* actual);
 
 // Call via ForeachTarget(SimdTest()). Calls "notify_failure" on every test
