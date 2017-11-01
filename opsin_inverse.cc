@@ -23,7 +23,7 @@ namespace pik {
 
 void CenteredOpsinToSrgb(const Image3F& opsin, Image3B* srgb) {
   using namespace SIMD_NAMESPACE;
-  const Full<float> d;
+  const Full<float, SIMD_TARGET> d;
   const auto lut_scale = set1(d, 16.0f);
   const uint8_t* PIK_RESTRICT lut_plus = LinearToSrgb8TablePlusQuarter();
   const uint8_t* PIK_RESTRICT lut_minus = LinearToSrgb8TableMinusQuarter();
@@ -36,12 +36,12 @@ void CenteredOpsinToSrgb(const Image3F& opsin, Image3B* srgb) {
       const auto valx = load(d, &row_in[0][x]) + set1(d, kXybCenter[0]);
       const auto valy = load(d, &row_in[1][x]) + set1(d, kXybCenter[1]);
       const auto valb = load(d, &row_in[2][x]) + set1(d, kXybCenter[2]);
-      Full<float>::V out_r, out_g, out_b;
+      Full<float, SIMD_TARGET>::V out_r, out_g, out_b;
       XybToRgb(d, valx, valy, valb, &out_r, &out_g, &out_b);
-      const Full<int32_t> di;
-      store(i32_from_f32(out_r * lut_scale), di, &buf[0][0]);
-      store(i32_from_f32(out_g * lut_scale), di, &buf[1][0]);
-      store(i32_from_f32(out_b * lut_scale), di, &buf[2][0]);
+      const Full<int32_t, SIMD_TARGET> di;
+      store(nearest_int(out_r * lut_scale), di, &buf[0][0]);
+      store(nearest_int(out_g * lut_scale), di, &buf[1][0]);
+      store(nearest_int(out_b * lut_scale), di, &buf[2][0]);
       const int xy = x + y;
       for (int k = 0; k < d.N; ++k) {
         const uint8_t* PIK_RESTRICT lut = (xy + k) % 2 ? lut_plus : lut_minus;
@@ -55,7 +55,7 @@ void CenteredOpsinToSrgb(const Image3F& opsin, Image3B* srgb) {
 
 void CenteredOpsinToSrgb(const Image3F& opsin, Image3U* srgb) {
   using namespace SIMD_NAMESPACE;
-  const Full<float> d;
+  const Full<float, SIMD_TARGET> d;
   const auto scale_to_16bit = set1(d, 257.0f);
   *srgb = Image3U(opsin.xsize(), opsin.ysize());
   for (int y = 0; y < srgb->ysize(); ++y) {
@@ -65,16 +65,16 @@ void CenteredOpsinToSrgb(const Image3F& opsin, Image3U* srgb) {
       const auto valx = load(d, &row_in[0][x]) + set1(d, kXybCenter[0]);
       const auto valy = load(d, &row_in[1][x]) + set1(d, kXybCenter[1]);
       const auto valb = load(d, &row_in[2][x]) + set1(d, kXybCenter[2]);
-      Full<float>::V out_r, out_g, out_b;
+      Full<float, SIMD_TARGET>::V out_r, out_g, out_b;
       XybToRgb(d, valx, valy, valb, &out_r, &out_g, &out_b);
       out_r = LinearToSrgbPoly(d, out_r) * scale_to_16bit;
       out_g = LinearToSrgbPoly(d, out_g) * scale_to_16bit;
       out_b = LinearToSrgbPoly(d, out_b) * scale_to_16bit;
       // Half-vectors of half-width lanes.
-      const Part<uint16_t, d.N> d16;
-      const auto u16_r = convert_to(d16, i32_from_f32(out_r));
-      const auto u16_g = convert_to(d16, i32_from_f32(out_g));
-      const auto u16_b = convert_to(d16, i32_from_f32(out_b));
+      const Part<uint16_t, d.N, SIMD_TARGET> d16;
+      const auto u16_r = convert_to(d16, nearest_int(out_r));
+      const auto u16_g = convert_to(d16, nearest_int(out_g));
+      const auto u16_b = convert_to(d16, nearest_int(out_b));
       store(u16_r, d16, &row_out[0][x]);
       store(u16_g, d16, &row_out[1][x]);
       store(u16_b, d16, &row_out[2][x]);
@@ -84,7 +84,7 @@ void CenteredOpsinToSrgb(const Image3F& opsin, Image3U* srgb) {
 
 void CenteredOpsinToSrgb(const Image3F& opsin, Image3F* srgb) {
   using namespace SIMD_NAMESPACE;
-  const Full<float> d;
+  const Full<float, SIMD_TARGET> d;
   *srgb = Image3F(opsin.xsize(), opsin.ysize());
   for (int y = 0; y < srgb->ysize(); ++y) {
     auto row_in = opsin.Row(y);
@@ -93,7 +93,7 @@ void CenteredOpsinToSrgb(const Image3F& opsin, Image3F* srgb) {
       const auto valx = load(d, &row_in[0][x]) + set1(d, kXybCenter[0]);
       const auto valy = load(d, &row_in[1][x]) + set1(d, kXybCenter[1]);
       const auto valb = load(d, &row_in[2][x]) + set1(d, kXybCenter[2]);
-      Full<float>::V out_r, out_g, out_b;
+      Full<float, SIMD_TARGET>::V out_r, out_g, out_b;
       XybToRgb(d, valx, valy, valb, &out_r, &out_g, &out_b);
       store(out_r, d, &row_out[0][x]);
       store(out_g, d, &row_out[1][x]);
@@ -108,16 +108,16 @@ Image3B OpsinDynamicsInverse(const Image3F& opsin) {
     auto row_in = opsin.Row(y);
     auto row_out = srgb.Row(y);
     using namespace SIMD_NAMESPACE;
-    const Full<float> d;
+    const Full<float, SIMD_TARGET> d;
     for (size_t x = 0; x < opsin.xsize(); x += d.N) {
-      Full<float>::V r, g, b;
+      Full<float, SIMD_TARGET>::V r, g, b;
       XybToRgb(d, load(d, row_in[0] + x), load(d, row_in[1] + x),
                load(d, row_in[2] + x), &r, &g, &b);
-      const Part<uint8_t, d.N> d8;
+      const Part<uint8_t, d.N, SIMD_TARGET> d8;
       // TODO(janwas): 8-bit precision would suffice.
-      const auto u8_r = convert_to(d8, i32_from_f32(LinearToSrgbPoly(d, r)));
-      const auto u8_g = convert_to(d8, i32_from_f32(LinearToSrgbPoly(d, g)));
-      const auto u8_b = convert_to(d8, i32_from_f32(LinearToSrgbPoly(d, b)));
+      const auto u8_r = convert_to(d8, nearest_int(LinearToSrgbPoly(d, r)));
+      const auto u8_g = convert_to(d8, nearest_int(LinearToSrgbPoly(d, g)));
+      const auto u8_b = convert_to(d8, nearest_int(LinearToSrgbPoly(d, b)));
       store(u8_r, d8, &row_out[0][x]);
       store(u8_g, d8, &row_out[1][x]);
       store(u8_b, d8, &row_out[2][x]);
@@ -129,7 +129,7 @@ Image3B OpsinDynamicsInverse(const Image3F& opsin) {
 Image3F LinearFromOpsin(const Image3F& opsin) {
   Image3F srgb(opsin.xsize(), opsin.ysize());
   using namespace SIMD_NAMESPACE;
-  const Full<float> d;
+  const Full<float, SIMD_TARGET> d;
   for (size_t y = 0; y < opsin.ysize(); ++y) {
     auto row_in = opsin.Row(y);
     auto row_out = srgb.Row(y);
@@ -137,7 +137,7 @@ Image3F LinearFromOpsin(const Image3F& opsin) {
       const auto vx = load(d, row_in[0] + x);
       const auto vy = load(d, row_in[1] + x);
       const auto vb = load(d, row_in[2] + x);
-      Full<float>::V r, g, b;
+      Full<float, SIMD_TARGET>::V r, g, b;
       XybToRgb(d, vx, vy, vb, &r, &g, &b);
       store(r, d, row_out[0] + x);
       store(g, d, row_out[1] + x);

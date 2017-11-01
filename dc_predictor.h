@@ -36,10 +36,9 @@
 
 namespace pik {
 
-// Inputs undergo non-linear transforms, so we need more than 16 bits.
-// We must avoid floating-point arithmetic because results may (slightly)
+// Prefer to avoid floating-point arithmetic because results may (slightly)
 // differ depending on the compiler and platform.
-using DC = int32_t;
+using DC = int16_t;
 
 // Predicts "dc" coefficients from their neighbors and stores the resulting
 // "residuals" into a preallocated image. The predictors are optimized for the

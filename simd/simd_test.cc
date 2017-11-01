@@ -14,6 +14,9 @@
 
 // Facade/dispatcher for calling all supported SimdTest instantiations.
 
+#ifndef SIMD_ENABLE
+#define SIMD_ENABLE ~0  // allow all targets (if supported)
+#endif
 #include "simd/simd.h"
 #include <stdio.h>
 #include "simd/dispatch.h"

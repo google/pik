@@ -31,6 +31,8 @@
 #include <string.h>  // memcpy
 #include <string>
 
+#include "simd/simd.h"
+
 namespace pik {
 
 #if PIK_ARCH_X64
@@ -82,7 +84,8 @@ uint32_t ApicId() {
 }
 
 float X64_Reciprocal12(const float x) {
-  return _mm_cvtss_f32(_mm_rcp_ss(_mm_load_ss(&x)));
+  const SIMD_NAMESPACE::Part<float, 1, SIMD_TARGET> d;
+  return get_part(d, rcp_approx(set_part(d, x)));
 }
 
 #endif  // PIK_ARCH_X64

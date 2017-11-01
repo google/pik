@@ -16,7 +16,7 @@
 // (No include guard nor namespace: this is included from the middle of simd.h.)
 
 // Avoid compile errors when generating deps.mk.
-#ifndef SIMD_DEPS
+#if SIMD_DEPS == 0
 
 template <typename T, size_t N>
 struct raw_arm8;
@@ -164,7 +164,7 @@ template <typename T, size_t N = ARM8::NumLanes<T>()>
 struct dup128x1 {
   using Raw = typename raw_arm8<T, N>::type;
 
-  explicit dup128x1(const Raw v) : raw(v) {}
+  explicit dup128x1(const Raw raw) : raw(raw) {}
 
   Raw raw;
 };
@@ -172,19 +172,12 @@ struct dup128x1 {
 template <typename T, size_t N = ARM8::NumLanes<T>()>
 class vec_arm8 {
   using Raw = typename raw_arm8<T, N>::type;
-  static constexpr size_t kBytes = N * sizeof(T);
-  static_assert((kBytes & (kBytes - 1)) == 0, "Size must be 2^j bytes");
-  static_assert(kBytes == 0 || (4 <= kBytes && kBytes <= 16), "Invalid size");
 
  public:
   SIMD_INLINE vec_arm8() {}
   vec_arm8(const vec_arm8&) = default;
   vec_arm8& operator=(const vec_arm8&) = default;
-  SIMD_INLINE explicit vec_arm8(const Raw v) : raw(v) {}
-
-  // Used by non-member functions; avoids verbose .raw() for each argument and
-  // reduces Clang compile time of the test by 10-20%.
-  SIMD_INLINE operator Raw() const { return raw; }  // NOLINT
+  SIMD_INLINE explicit vec_arm8(const Raw raw) : raw(raw) {}
 
   // Compound assignment. Only usable if there is a corresponding non-member
   // binary operator overload. For example, only f32 and f64 support division.
@@ -218,6 +211,11 @@ struct VecT<T, N, ARM8> {
   using type = vec_arm8<T, N>;
 };
 
+template <typename T>
+struct Dup128T<T, ARM8> {
+  using type = dup128x1<T>;
+};
+
 using u8x16 = vec_arm8<uint8_t, 16>;
 using u16x8 = vec_arm8<uint16_t, 8>;
 using u32x4 = vec_arm8<uint32_t, 4>;
@@ -248,115 +246,224 @@ using i16x2 = vec_arm8<int16_t, 2>;
 using i32x1 = vec_arm8<int32_t, 1>;
 using f32x1 = vec_arm8<float, 1>;
 
-template <typename T>
-struct shift_left_count {
-  vec_arm8<T> raw;
-};
+// ------------------------------ Cast
 
-template <typename T>
-struct shift_right_count {
-  vec_arm8<T> raw;
-};
+// cast_to_u8
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> cast_to_u8(Desc<uint8_t, N, ARM8>,
+                                            vec_arm8<uint8_t, N> v) {
+  return v;
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> cast_to_u8(Desc<uint8_t, N, ARM8>,
+                                            vec_arm8<uint16_t, N / 2> v) {
+  return vec_arm8<uint8_t, N>(vreinterpretq_u8_u16(v.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> cast_to_u8(Desc<uint8_t, N, ARM8>,
+                                            vec_arm8<uint32_t, N / 4> v) {
+  return vec_arm8<uint8_t, N>(vreinterpretq_u8_u32(v.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> cast_to_u8(Desc<uint8_t, N, ARM8>,
+                                            vec_arm8<uint64_t, N / 8> v) {
+  return vec_arm8<uint8_t, N>(vreinterpretq_u8_u64(v.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> cast_to_u8(Desc<uint8_t, N, ARM8>,
+                                            vec_arm8<int8_t, N> v) {
+  return vec_arm8<uint8_t, N>(vreinterpretq_u8_s8(v.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> cast_to_u8(Desc<uint8_t, N, ARM8>,
+                                            vec_arm8<int16_t, N / 2> v) {
+  return vec_arm8<uint8_t, N>(vreinterpretq_u8_s16(v.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> cast_to_u8(Desc<uint8_t, N, ARM8>,
+                                            vec_arm8<int32_t, N / 4> v) {
+  return vec_arm8<uint8_t, N>(vreinterpretq_u8_s32(v.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> cast_to_u8(Desc<uint8_t, N, ARM8>,
+                                            vec_arm8<int64_t, N / 8> v) {
+  return vec_arm8<uint8_t, N>(vreinterpretq_u8_s64(v.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> cast_to_u8(Desc<uint8_t, N, ARM8>,
+                                            vec_arm8<float, N / 4> v) {
+  return vec_arm8<uint8_t, N>(vreinterpretq_u8_f32(v.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> cast_to_u8(Desc<uint8_t, N, ARM8>,
+                                            vec_arm8<double, N / 8> v) {
+  return vec_arm8<uint8_t, N>(vreinterpretq_u8_f64(v.raw));
+}
+
+// cast_u8_to
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> cast_u8_to(Desc<uint8_t, N, ARM8>,
+                                            vec_arm8<uint8_t, N> v) {
+  return v;
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<uint16_t, N> cast_u8_to(Desc<uint16_t, N, ARM8>,
+                                             vec_arm8<uint8_t, N * 2> v) {
+  return vec_arm8<uint16_t, N>(vreinterpretq_u16_u8(v.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<uint32_t, N> cast_u8_to(Desc<uint32_t, N, ARM8>,
+                                             vec_arm8<uint8_t, N * 4> v) {
+  return vec_arm8<uint32_t, N>(vreinterpretq_u32_u8(v.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<uint64_t, N> cast_u8_to(Desc<uint64_t, N, ARM8>,
+                                             vec_arm8<uint8_t, N * 8> v) {
+  return vec_arm8<uint64_t, N>(vreinterpretq_u64_u8(v.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<int8_t, N> cast_u8_to(Desc<int8_t, N, ARM8>,
+                                           vec_arm8<uint8_t, N> v) {
+  return vec_arm8<int8_t, N>(vreinterpretq_s8_u8(v.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<int16_t, N> cast_u8_to(Desc<int16_t, N, ARM8>,
+                                            vec_arm8<uint8_t, N * 2> v) {
+  return vec_arm8<int16_t, N>(vreinterpretq_s16_u8(v.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<int32_t, N> cast_u8_to(Desc<int32_t, N, ARM8>,
+                                            vec_arm8<uint8_t, N * 4> v) {
+  return vec_arm8<int32_t, N>(vreinterpretq_s32_u8(v.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<int64_t, N> cast_u8_to(Desc<int64_t, N, ARM8>,
+                                            vec_arm8<uint8_t, N * 8> v) {
+  return vec_arm8<int64_t, N>(vreinterpretq_s64_u8(v.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> cast_u8_to(Desc<float, N, ARM8>,
+                                          vec_arm8<uint8_t, N * 4> v) {
+  return vec_arm8<float, N>(vreinterpretq_f32_u8(v.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> cast_u8_to(Desc<double, N, ARM8>,
+                                           vec_arm8<uint8_t, N * 8> v) {
+  return vec_arm8<double, N>(vreinterpretq_f64_u8(v.raw));
+}
+
+// cast_to
+template <typename T, size_t N, typename FromT>
+SIMD_INLINE vec_arm8<T, N> cast_to(
+    Desc<T, N, ARM8> d, vec_arm8<FromT, N * sizeof(T) / sizeof(FromT)> v) {
+  const auto u8 = cast_to_u8(Desc<uint8_t, N * sizeof(T), ARM8>(), v);
+  return cast_u8_to(d, u8);
+}
 
 // ------------------------------ Set
 
 // Returns a vector with all lanes set to "t".
-SIMD_INLINE u8x16 set1(Full<uint8_t, ARM8>, const uint8_t t) {
-  return u8x16(vdupq_n_u8(t));
+SIMD_INLINE vec_arm8<uint8_t> set1(Full<uint8_t, ARM8>, const uint8_t t) {
+  return vec_arm8<uint8_t>(vdupq_n_u8(t));
 }
-SIMD_INLINE u16x8 set1(Full<uint16_t, ARM8>, const uint16_t t) {
-  return u16x8(vdupq_n_u16(t));
+SIMD_INLINE vec_arm8<uint16_t> set1(Full<uint16_t, ARM8>, const uint16_t t) {
+  return vec_arm8<uint16_t>(vdupq_n_u16(t));
 }
-SIMD_INLINE u32x4 set1(Full<uint32_t, ARM8>, const uint32_t t) {
-  return u32x4(vdupq_n_u32(t));
+SIMD_INLINE vec_arm8<uint32_t> set1(Full<uint32_t, ARM8>, const uint32_t t) {
+  return vec_arm8<uint32_t>(vdupq_n_u32(t));
 }
-SIMD_INLINE u64x2 set1(Full<uint64_t, ARM8>, const uint64_t t) {
-  return u64x2(vdupq_n_u64(t));
+SIMD_INLINE vec_arm8<uint64_t> set1(Full<uint64_t, ARM8>, const uint64_t t) {
+  return vec_arm8<uint64_t>(vdupq_n_u64(t));
 }
-SIMD_INLINE i8x16 set1(Full<int8_t, ARM8>, const int8_t t) {
-  return i8x16(vdupq_n_s8(t));
+SIMD_INLINE vec_arm8<int8_t> set1(Full<int8_t, ARM8>, const int8_t t) {
+  return vec_arm8<int8_t>(vdupq_n_s8(t));
 }
-SIMD_INLINE i16x8 set1(Full<int16_t, ARM8>, const int16_t t) {
-  return i16x8(vdupq_n_s16(t));
+SIMD_INLINE vec_arm8<int16_t> set1(Full<int16_t, ARM8>, const int16_t t) {
+  return vec_arm8<int16_t>(vdupq_n_s16(t));
 }
-SIMD_INLINE i32x4 set1(Full<int32_t, ARM8>, const int32_t t) {
-  return i32x4(vdupq_n_s32(t));
+SIMD_INLINE vec_arm8<int32_t> set1(Full<int32_t, ARM8>, const int32_t t) {
+  return vec_arm8<int32_t>(vdupq_n_s32(t));
 }
-SIMD_INLINE i64x2 set1(Full<int64_t, ARM8>, const int64_t t) {
-  return i64x2(vdupq_n_s64(t));
+SIMD_INLINE vec_arm8<int64_t> set1(Full<int64_t, ARM8>, const int64_t t) {
+  return vec_arm8<int64_t>(vdupq_n_s64(t));
 }
-SIMD_INLINE f32x4 set1(Full<float, ARM8>, const float t) {
-  return f32x4(vdupq_n_f32(t));
+SIMD_INLINE vec_arm8<float> set1(Full<float, ARM8>, const float t) {
+  return vec_arm8<float>(vdupq_n_f32(t));
 }
-SIMD_INLINE f64x2 set1(Full<double, ARM8>, const double t) {
-  return f64x2(vdupq_n_f64(t));
+SIMD_INLINE vec_arm8<double> set1(Full<double, ARM8>, const double t) {
+  return vec_arm8<double>(vdupq_n_f64(t));
 }
 
 // 64
-SIMD_INLINE u8x8 set1(Desc<uint8_t, 8, ARM8>, const uint8_t t) {
-  return u8x8(vdup_n_u8(t));
+SIMD_INLINE vec_arm8<uint8_t, 8> set1(Desc<uint8_t, 8, ARM8>, const uint8_t t) {
+  return vec_arm8<uint8_t, 8>(vdup_n_u8(t));
 }
-SIMD_INLINE u16x4 set1(Desc<uint16_t, 4, ARM8>, const uint16_t t) {
-  return u16x4(vdup_n_u16(t));
+SIMD_INLINE vec_arm8<uint16_t, 4> set1(Desc<uint16_t, 4, ARM8>,
+                                       const uint16_t t) {
+  return vec_arm8<uint16_t, 4>(vdup_n_u16(t));
 }
-SIMD_INLINE u32x2 set1(Desc<uint32_t, 2, ARM8>, const uint32_t t) {
-  return u32x2(vdup_n_u32(t));
+SIMD_INLINE vec_arm8<uint32_t, 2> set1(Desc<uint32_t, 2, ARM8>,
+                                       const uint32_t t) {
+  return vec_arm8<uint32_t, 2>(vdup_n_u32(t));
 }
-SIMD_INLINE u64x1 set1(Desc<uint64_t, 1, ARM8>, const uint64_t t) {
-  return u64x1(vdup_n_u64(t));
+SIMD_INLINE vec_arm8<uint64_t, 1> set1(Desc<uint64_t, 1, ARM8>,
+                                       const uint64_t t) {
+  return vec_arm8<uint64_t, 1>(vdup_n_u64(t));
 }
-SIMD_INLINE i8x8 set1(Desc<int8_t, 8, ARM8>, const int8_t t) {
-  return i8x8(vdup_n_s8(t));
+SIMD_INLINE vec_arm8<int8_t, 8> set1(Desc<int8_t, 8, ARM8>, const int8_t t) {
+  return vec_arm8<int8_t, 8>(vdup_n_s8(t));
 }
-SIMD_INLINE i16x4 set1(Desc<int16_t, 4, ARM8>, const int16_t t) {
-  return i16x4(vdup_n_s16(t));
+SIMD_INLINE vec_arm8<int16_t, 4> set1(Desc<int16_t, 4, ARM8>, const int16_t t) {
+  return vec_arm8<int16_t, 4>(vdup_n_s16(t));
 }
-SIMD_INLINE i32x2 set1(Desc<int32_t, 2, ARM8>, const int32_t t) {
-  return i32x2(vdup_n_s32(t));
+SIMD_INLINE vec_arm8<int32_t, 2> set1(Desc<int32_t, 2, ARM8>, const int32_t t) {
+  return vec_arm8<int32_t, 2>(vdup_n_s32(t));
 }
-SIMD_INLINE i64x1 set1(Desc<int64_t, 1, ARM8>, const int64_t t) {
-  return i64x1(vdup_n_s64(t));
+SIMD_INLINE vec_arm8<int64_t, 1> set1(Desc<int64_t, 1, ARM8>, const int64_t t) {
+  return vec_arm8<int64_t, 1>(vdup_n_s64(t));
 }
-SIMD_INLINE f32x2 set1(Desc<float, 2, ARM8>, const float t) {
-  return f32x2(vdup_n_f32(t));
+SIMD_INLINE vec_arm8<float, 2> set1(Desc<float, 2, ARM8>, const float t) {
+  return vec_arm8<float, 2>(vdup_n_f32(t));
 }
-SIMD_INLINE f64x1 set1(Desc<double, 1, ARM8>, const double t) {
-  return f64x1(vdup_n_f64(t));
+SIMD_INLINE vec_arm8<double, 1> set1(Desc<double, 1, ARM8>, const double t) {
+  return vec_arm8<double, 1>(vdup_n_f64(t));
 }
 
 // 32
-SIMD_INLINE u8x4 set1(Desc<uint8_t, 4, ARM8>, const uint8_t t) {
-  return u8x4(vdup_n_u8(t));
+SIMD_INLINE vec_arm8<uint8_t, 4> set1(Desc<uint8_t, 4, ARM8>, const uint8_t t) {
+  return vec_arm8<uint8_t, 4>(vdup_n_u8(t));
 }
-SIMD_INLINE u16x2 set1(Desc<uint16_t, 2, ARM8>, const uint16_t t) {
-  return u16x2(vdup_n_u16(t));
+SIMD_INLINE vec_arm8<uint16_t, 2> set1(Desc<uint16_t, 2, ARM8>,
+                                       const uint16_t t) {
+  return vec_arm8<uint16_t, 2>(vdup_n_u16(t));
 }
-SIMD_INLINE u32x1 set1(Desc<uint32_t, 1, ARM8>, const uint32_t t) {
-  return u32x1(vdup_n_u32(t));
+SIMD_INLINE vec_arm8<uint32_t, 1> set1(Desc<uint32_t, 1, ARM8>,
+                                       const uint32_t t) {
+  return vec_arm8<uint32_t, 1>(vdup_n_u32(t));
 }
-SIMD_INLINE i8x4 set1(Desc<int8_t, 4, ARM8>, const int8_t t) {
-  return i8x4(vdup_n_s8(t));
+SIMD_INLINE vec_arm8<int8_t, 4> set1(Desc<int8_t, 4, ARM8>, const int8_t t) {
+  return vec_arm8<int8_t, 4>(vdup_n_s8(t));
 }
-SIMD_INLINE i16x2 set1(Desc<int16_t, 2, ARM8>, const int16_t t) {
-  return i16x2(vdup_n_s16(t));
+SIMD_INLINE vec_arm8<int16_t, 2> set1(Desc<int16_t, 2, ARM8>, const int16_t t) {
+  return vec_arm8<int16_t, 2>(vdup_n_s16(t));
 }
-SIMD_INLINE i32x1 set1(Desc<int32_t, 1, ARM8>, const int32_t t) {
-  return i32x1(vdup_n_s32(t));
+SIMD_INLINE vec_arm8<int32_t, 1> set1(Desc<int32_t, 1, ARM8>, const int32_t t) {
+  return vec_arm8<int32_t, 1>(vdup_n_s32(t));
 }
-SIMD_INLINE f32x1 set1(Desc<float, 1, ARM8>, const float t) {
-  return f32x1(vdup_n_f32(t));
+SIMD_INLINE vec_arm8<float, 1> set1(Desc<float, 1, ARM8>, const float t) {
+  return vec_arm8<float, 1>(vdup_n_f32(t));
 }
 
 // Returns an all-zero vector.
 template <typename T, size_t N>
-SIMD_INLINE Vec<T, N, ARM8> setzero(Desc<T, N, ARM8> d) {
+SIMD_INLINE vec_arm8<T, N> setzero(Desc<T, N, ARM8> d) {
   return set1(d, 0);
 }
 
 // Returns a vector with lane i=[0, N) set to "first" + i. Unique per-lane
 // values are required to detect lane-crossing bugs.
 template <typename T, size_t N, typename T2>
-SIMD_INLINE Vec<T, N, ARM8> iota(Desc<T, N, ARM8> d, const T2 first) {
+SIMD_INLINE vec_arm8<T, N> iota(Desc<T, N, ARM8> d, const T2 first) {
   SIMD_ALIGN T lanes[N];
   for (size_t i = 0; i < N; ++i) {
     lanes[i] = first + i;
@@ -364,151 +471,122 @@ SIMD_INLINE Vec<T, N, ARM8> iota(Desc<T, N, ARM8> d, const T2 first) {
   return load(d, lanes);
 }
 
-// Returns a vector/part with value "t".
-template <typename T, size_t N>
-SIMD_INLINE Vec<T, N, ARM8> set(Desc<T, N, ARM8> d, const T t) {
-  return set1(d, t);
-}
-
-// Gets the single value stored in a vector/part.
-template <typename T, size_t N>
-SIMD_INLINE T get(Desc<T, N, ARM8> d, const Vec<T, N, ARM8> v) {
-  // TODO(janwas): more efficient implementation?
-  SIMD_ALIGN T ret[N];
-  store(v, d, &ret);
-  return ret[0];
-}
-
-// Returns part of a vector (unspecified whether upper or lower).
-SIMD_INLINE u8x8 any_part(Desc<uint8_t, 8, ARM8>, const u8x16 v) {
-  return u8x8(vget_low_u8(v));
-}
-SIMD_INLINE u16x4 any_part(Desc<uint16_t, 4, ARM8>, const u16x8 v) {
-  return u16x4(vget_low_u16(v));
-}
-SIMD_INLINE u32x2 any_part(Desc<uint32_t, 2, ARM8>, const u32x4 v) {
-  return u32x2(vget_low_u32(v));
-}
-SIMD_INLINE u64x1 any_part(Desc<uint64_t, 1, ARM8>, const u64x2 v) {
-  return u64x1(vget_low_u64(v));
-}
-SIMD_INLINE i8x8 any_part(Desc<int8_t, 8>, const i8x16 v) {
-  return i8x8(vget_low_s8(v));
-}
-SIMD_INLINE i16x4 any_part(Desc<int16_t, 4>, const i16x8 v) {
-  return i16x4(vget_low_s16(v));
-}
-SIMD_INLINE i32x2 any_part(Desc<int32_t, 2>, const i32x4 v) {
-  return i32x2(vget_low_s32(v));
-}
-SIMD_INLINE i64x1 any_part(Desc<int64_t, 1>, const i64x2 v) {
-  return i64x1(vget_low_s64(v));
-}
-SIMD_INLINE f32x2 any_part(Desc<float, 2>, const f32x4 v) {
-  return f32x2(vget_low_f32(v));
-}
-SIMD_INLINE f64x1 any_part(Desc<double, 1>, const f64x2 v) {
-  return f64x1(vget_low_f64(v));
-}
-
-SIMD_INLINE u8x4 any_part(Desc<uint8_t, 4, ARM8>, const u8x16 v) {
-  return u8x4(vget_low_u8(v));
-}
-SIMD_INLINE u16x2 any_part(Desc<uint16_t, 2, ARM8>, const u16x8 v) {
-  return u16x2(vget_low_u16(v));
-}
-SIMD_INLINE u32x1 any_part(Desc<uint32_t, 1, ARM8>, const u32x4 v) {
-  return u32x1(vget_low_u32(v));
-}
-SIMD_INLINE i8x4 any_part(Desc<int8_t, 4, ARM8>, const i8x16 v) {
-  return i8x4(vget_low_s8(v));
-}
-SIMD_INLINE i16x2 any_part(Desc<int16_t, 2, ARM8>, const i16x8 v) {
-  return i16x2(vget_low_s16(v));
-}
-SIMD_INLINE i32x1 any_part(Desc<int32_t, 1, ARM8>, const i32x4 v) {
-  return i32x1(vget_low_s32(v));
-}
-SIMD_INLINE f32x1 any_part(Desc<float, 1, ARM8>, const f32x4 v) {
-  return f32x1(vget_low_f32(v));
-}
-
 // ================================================== ARITHMETIC
 
 // ------------------------------ Addition
 
 // Unsigned
-SIMD_INLINE u8x16 operator+(const u8x16 a, const u8x16 b) {
-  return u8x16(vaddq_u8(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> operator+(const vec_arm8<uint8_t, N> a,
+                                           const vec_arm8<uint8_t, N> b) {
+  return vec_arm8<uint8_t, N>(vaddq_u8(a.raw, b.raw));
 }
-SIMD_INLINE u16x8 operator+(const u16x8 a, const u16x8 b) {
-  return u16x8(vaddq_u16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint16_t, N> operator+(const vec_arm8<uint16_t, N> a,
+                                            const vec_arm8<uint16_t, N> b) {
+  return vec_arm8<uint16_t, N>(vaddq_u16(a.raw, b.raw));
 }
-SIMD_INLINE u32x4 operator+(const u32x4 a, const u32x4 b) {
-  return u32x4(vaddq_u32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint32_t, N> operator+(const vec_arm8<uint32_t, N> a,
+                                            const vec_arm8<uint32_t, N> b) {
+  return vec_arm8<uint32_t, N>(vaddq_u32(a.raw, b.raw));
 }
-SIMD_INLINE u64x2 operator+(const u64x2 a, const u64x2 b) {
-  return u64x2(vaddq_u64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint64_t, N> operator+(const vec_arm8<uint64_t, N> a,
+                                            const vec_arm8<uint64_t, N> b) {
+  return vec_arm8<uint64_t, N>(vaddq_u64(a.raw, b.raw));
 }
 
 // Signed
-SIMD_INLINE i8x16 operator+(const i8x16 a, const i8x16 b) {
-  return i8x16(vaddq_s8(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int8_t, N> operator+(const vec_arm8<int8_t, N> a,
+                                          const vec_arm8<int8_t, N> b) {
+  return vec_arm8<int8_t, N>(vaddq_s8(a.raw, b.raw));
 }
-SIMD_INLINE i16x8 operator+(const i16x8 a, const i16x8 b) {
-  return i16x8(vaddq_s16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int16_t, N> operator+(const vec_arm8<int16_t, N> a,
+                                           const vec_arm8<int16_t, N> b) {
+  return vec_arm8<int16_t, N>(vaddq_s16(a.raw, b.raw));
 }
-SIMD_INLINE i32x4 operator+(const i32x4 a, const i32x4 b) {
-  return i32x4(vaddq_s32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int32_t, N> operator+(const vec_arm8<int32_t, N> a,
+                                           const vec_arm8<int32_t, N> b) {
+  return vec_arm8<int32_t, N>(vaddq_s32(a.raw, b.raw));
 }
-SIMD_INLINE i64x2 operator+(const i64x2 a, const i64x2 b) {
-  return i64x2(vaddq_s64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int64_t, N> operator+(const vec_arm8<int64_t, N> a,
+                                           const vec_arm8<int64_t, N> b) {
+  return vec_arm8<int64_t, N>(vaddq_s64(a.raw, b.raw));
 }
 
 // Float
-SIMD_INLINE f32x4 operator+(const f32x4 a, const f32x4 b) {
-  return f32x4(vaddq_f32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> operator+(const vec_arm8<float, N> a,
+                                         const vec_arm8<float, N> b) {
+  return vec_arm8<float, N>(vaddq_f32(a.raw, b.raw));
 }
-SIMD_INLINE f64x2 operator+(const f64x2 a, const f64x2 b) {
-  return f64x2(vaddq_f64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> operator+(const vec_arm8<double, N> a,
+                                          const vec_arm8<double, N> b) {
+  return vec_arm8<double, N>(vaddq_f64(a.raw, b.raw));
 }
 
 // ------------------------------ Subtraction
 
 // Unsigned
-SIMD_INLINE u8x16 operator-(const u8x16 a, const u8x16 b) {
-  return u8x16(vsubq_u8(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> operator-(const vec_arm8<uint8_t, N> a,
+                                           const vec_arm8<uint8_t, N> b) {
+  return vec_arm8<uint8_t, N>(vsubq_u8(a.raw, b.raw));
 }
-SIMD_INLINE u16x8 operator-(const u16x8 a, const u16x8 b) {
-  return u16x8(vsubq_u16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint16_t, N> operator-(const vec_arm8<uint16_t, N> a,
+                                            const vec_arm8<uint16_t, N> b) {
+  return vec_arm8<uint16_t, N>(vsubq_u16(a.raw, b.raw));
 }
-SIMD_INLINE u32x4 operator-(const u32x4 a, const u32x4 b) {
-  return u32x4(vsubq_u32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint32_t, N> operator-(const vec_arm8<uint32_t, N> a,
+                                            const vec_arm8<uint32_t, N> b) {
+  return vec_arm8<uint32_t, N>(vsubq_u32(a.raw, b.raw));
 }
-SIMD_INLINE u64x2 operator-(const u64x2 a, const u64x2 b) {
-  return u64x2(vsubq_u64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint64_t, N> operator-(const vec_arm8<uint64_t, N> a,
+                                            const vec_arm8<uint64_t, N> b) {
+  return vec_arm8<uint64_t, N>(vsubq_u64(a.raw, b.raw));
 }
 
 // Signed
-SIMD_INLINE i8x16 operator-(const i8x16 a, const i8x16 b) {
-  return i8x16(vsubq_s8(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int8_t, N> operator-(const vec_arm8<int8_t, N> a,
+                                          const vec_arm8<int8_t, N> b) {
+  return vec_arm8<int8_t, N>(vsubq_s8(a.raw, b.raw));
 }
-SIMD_INLINE i16x8 operator-(const i16x8 a, const i16x8 b) {
-  return i16x8(vsubq_s16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int16_t, N> operator-(const vec_arm8<int16_t, N> a,
+                                           const vec_arm8<int16_t, N> b) {
+  return vec_arm8<int16_t, N>(vsubq_s16(a.raw, b.raw));
 }
-SIMD_INLINE i32x4 operator-(const i32x4 a, const i32x4 b) {
-  return i32x4(vsubq_s32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int32_t, N> operator-(const vec_arm8<int32_t, N> a,
+                                           const vec_arm8<int32_t, N> b) {
+  return vec_arm8<int32_t, N>(vsubq_s32(a.raw, b.raw));
 }
-SIMD_INLINE i64x2 operator-(const i64x2 a, const i64x2 b) {
-  return i64x2(vsubq_s64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int64_t, N> operator-(const vec_arm8<int64_t, N> a,
+                                           const vec_arm8<int64_t, N> b) {
+  return vec_arm8<int64_t, N>(vsubq_s64(a.raw, b.raw));
 }
 
 // Float
-SIMD_INLINE f32x4 operator-(const f32x4 a, const f32x4 b) {
-  return f32x4(vsubq_f32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> operator-(const vec_arm8<float, N> a,
+                                         const vec_arm8<float, N> b) {
+  return vec_arm8<float, N>(vsubq_f32(a.raw, b.raw));
 }
-SIMD_INLINE f64x2 operator-(const f64x2 a, const f64x2 b) {
-  return f64x2(vsubq_f64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> operator-(const vec_arm8<double, N> a,
+                                          const vec_arm8<double, N> b) {
+  return vec_arm8<double, N>(vsubq_f64(a.raw, b.raw));
 }
 
 // ------------------------------ Saturating addition
@@ -516,19 +594,27 @@ SIMD_INLINE f64x2 operator-(const f64x2 a, const f64x2 b) {
 // Returns a + b clamped to the destination range.
 
 // Unsigned
-SIMD_INLINE u8x16 add_sat(const u8x16 a, const u8x16 b) {
-  return u8x16(vqaddq_u8(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> add_sat(const vec_arm8<uint8_t, N> a,
+                                         const vec_arm8<uint8_t, N> b) {
+  return vec_arm8<uint8_t, N>(vqaddq_u8(a.raw, b.raw));
 }
-SIMD_INLINE u16x8 add_sat(const u16x8 a, const u16x8 b) {
-  return u16x8(vqaddq_u16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint16_t, N> add_sat(const vec_arm8<uint16_t, N> a,
+                                          const vec_arm8<uint16_t, N> b) {
+  return vec_arm8<uint16_t, N>(vqaddq_u16(a.raw, b.raw));
 }
 
 // Signed
-SIMD_INLINE i8x16 add_sat(const i8x16 a, const i8x16 b) {
-  return i8x16(vqaddq_s8(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int8_t, N> add_sat(const vec_arm8<int8_t, N> a,
+                                        const vec_arm8<int8_t, N> b) {
+  return vec_arm8<int8_t, N>(vqaddq_s8(a.raw, b.raw));
 }
-SIMD_INLINE i16x8 add_sat(const i16x8 a, const i16x8 b) {
-  return i16x8(vqaddq_s16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int16_t, N> add_sat(const vec_arm8<int16_t, N> a,
+                                         const vec_arm8<int16_t, N> b) {
+  return vec_arm8<int16_t, N>(vqaddq_s16(a.raw, b.raw));
 }
 
 // ------------------------------ Saturating subtraction
@@ -536,19 +622,27 @@ SIMD_INLINE i16x8 add_sat(const i16x8 a, const i16x8 b) {
 // Returns a - b clamped to the destination range.
 
 // Unsigned
-SIMD_INLINE u8x16 sub_sat(const u8x16 a, const u8x16 b) {
-  return u8x16(vqsubq_u8(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> sub_sat(const vec_arm8<uint8_t, N> a,
+                                         const vec_arm8<uint8_t, N> b) {
+  return vec_arm8<uint8_t, N>(vqsubq_u8(a.raw, b.raw));
 }
-SIMD_INLINE u16x8 sub_sat(const u16x8 a, const u16x8 b) {
-  return u16x8(vqsubq_u16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint16_t, N> sub_sat(const vec_arm8<uint16_t, N> a,
+                                          const vec_arm8<uint16_t, N> b) {
+  return vec_arm8<uint16_t, N>(vqsubq_u16(a.raw, b.raw));
 }
 
 // Signed
-SIMD_INLINE i8x16 sub_sat(const i8x16 a, const i8x16 b) {
-  return i8x16(vqsubq_s8(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int8_t, N> sub_sat(const vec_arm8<int8_t, N> a,
+                                        const vec_arm8<int8_t, N> b) {
+  return vec_arm8<int8_t, N>(vqsubq_s8(a.raw, b.raw));
 }
-SIMD_INLINE i16x8 sub_sat(const i16x8 a, const i16x8 b) {
-  return i16x8(vqsubq_s16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int16_t, N> sub_sat(const vec_arm8<int16_t, N> a,
+                                         const vec_arm8<int16_t, N> b) {
+  return vec_arm8<int16_t, N>(vqsubq_s16(a.raw, b.raw));
 }
 
 // ------------------------------ Average
@@ -556,314 +650,438 @@ SIMD_INLINE i16x8 sub_sat(const i16x8 a, const i16x8 b) {
 // Returns (a + b + 1) / 2
 
 // Unsigned
-SIMD_INLINE u8x16 avg(const u8x16 a, const u8x16 b) {
-  return u8x16(vrhaddq_u8(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> avg(const vec_arm8<uint8_t, N> a,
+                                     const vec_arm8<uint8_t, N> b) {
+  return vec_arm8<uint8_t, N>(vrhaddq_u8(a.raw, b.raw));
 }
-SIMD_INLINE u16x8 avg(const u16x8 a, const u16x8 b) {
-  return u16x8(vrhaddq_u16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint16_t, N> avg(const vec_arm8<uint16_t, N> a,
+                                      const vec_arm8<uint16_t, N> b) {
+  return vec_arm8<uint16_t, N>(vrhaddq_u16(a.raw, b.raw));
+}
+
+// ------------------------------ Absolute value
+
+// Returns absolute value, except that LimitsMin() maps to LimitsMax() + 1.
+template <size_t N>
+SIMD_INLINE vec_arm8<int8_t, N> abs(const vec_arm8<int8_t, N> v) {
+  return vec_arm8<int8_t, N>(vabs_s8(v.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<int16_t, N> abs(const vec_arm8<int16_t, N> v) {
+  return vec_arm8<int16_t, N>(vabs_s16(v.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<int32_t, N> abs(const vec_arm8<int32_t, N> v) {
+  return vec_arm8<int32_t, N>(vabs_s32(v.raw));
 }
 
 // ------------------------------ Shift lanes by constant #bits
 
 // Unsigned
-template <int kBits>
-SIMD_INLINE u16x8 shift_left(const u16x8 v) {
-  return u16x8(vshlq_n_u16(v, kBits));
+template <int kBits, size_t N>
+SIMD_INLINE vec_arm8<uint16_t, N> shift_left(const vec_arm8<uint16_t, N> v) {
+  return vec_arm8<uint16_t, N>(vshlq_n_u16(v.raw, kBits));
 }
-template <int kBits>
-SIMD_INLINE u16x8 shift_right(const u16x8 v) {
-  return u16x8(vshrq_n_u16(v, kBits));
+template <int kBits, size_t N>
+SIMD_INLINE vec_arm8<uint16_t, N> shift_right(const vec_arm8<uint16_t, N> v) {
+  return vec_arm8<uint16_t, N>(vshrq_n_u16(v.raw, kBits));
 }
-template <int kBits>
-SIMD_INLINE u32x4 shift_left(const u32x4 v) {
-  return u32x4(vshlq_n_u32(v, kBits));
+template <int kBits, size_t N>
+SIMD_INLINE vec_arm8<uint32_t, N> shift_left(const vec_arm8<uint32_t, N> v) {
+  return vec_arm8<uint32_t, N>(vshlq_n_u32(v.raw, kBits));
 }
-template <int kBits>
-SIMD_INLINE u32x4 shift_right(const u32x4 v) {
-  return u32x4(vshrq_n_u32(v, kBits));
+template <int kBits, size_t N>
+SIMD_INLINE vec_arm8<uint32_t, N> shift_right(const vec_arm8<uint32_t, N> v) {
+  return vec_arm8<uint32_t, N>(vshrq_n_u32(v.raw, kBits));
 }
-template <int kBits>
-SIMD_INLINE u64x2 shift_left(const u64x2 v) {
-  return u64x2(vshlq_n_u64(v, kBits));
+template <int kBits, size_t N>
+SIMD_INLINE vec_arm8<uint64_t, N> shift_left(const vec_arm8<uint64_t, N> v) {
+  return vec_arm8<uint64_t, N>(vshlq_n_u64(v.raw, kBits));
 }
-template <int kBits>
-SIMD_INLINE u64x2 shift_right(const u64x2 v) {
-  return u64x2(vshrq_n_u64(v, kBits));
+template <int kBits, size_t N>
+SIMD_INLINE vec_arm8<uint64_t, N> shift_right(const vec_arm8<uint64_t, N> v) {
+  return vec_arm8<uint64_t, N>(vshrq_n_u64(v.raw, kBits));
 }
 
 // Signed (no i64 shr)
-template <int kBits>
-SIMD_INLINE i16x8 shift_left(const i16x8 v) {
-  return i16x8(vshlq_n_s16(v, kBits));
+template <int kBits, size_t N>
+SIMD_INLINE vec_arm8<int16_t, N> shift_left(const vec_arm8<int16_t, N> v) {
+  return vec_arm8<int16_t, N>(vshlq_n_s16(v.raw, kBits));
 }
-template <int kBits>
-SIMD_INLINE i16x8 shift_right(const i16x8 v) {
-  return i16x8(vshrq_n_s16(v, kBits));
+template <int kBits, size_t N>
+SIMD_INLINE vec_arm8<int16_t, N> shift_right(const vec_arm8<int16_t, N> v) {
+  return vec_arm8<int16_t, N>(vshrq_n_s16(v.raw, kBits));
 }
-template <int kBits>
-SIMD_INLINE i32x4 shift_left(const i32x4 v) {
-  return i32x4(vshlq_n_s32(v, kBits));
+template <int kBits, size_t N>
+SIMD_INLINE vec_arm8<int32_t, N> shift_left(const vec_arm8<int32_t, N> v) {
+  return vec_arm8<int32_t, N>(vshlq_n_s32(v.raw, kBits));
 }
-template <int kBits>
-SIMD_INLINE i32x4 shift_right(const i32x4 v) {
-  return i32x4(vshrq_n_s32(v, kBits));
+template <int kBits, size_t N>
+SIMD_INLINE vec_arm8<int32_t, N> shift_right(const vec_arm8<int32_t, N> v) {
+  return vec_arm8<int32_t, N>(vshrq_n_s32(v.raw, kBits));
 }
-template <int kBits>
-SIMD_INLINE i64x2 shift_left(const i64x2 v) {
-  return i64x2(vshlq_n_s64(v, kBits));
+template <int kBits, size_t N>
+SIMD_INLINE vec_arm8<int64_t, N> shift_left(const vec_arm8<int64_t, N> v) {
+  return vec_arm8<int64_t, N>(vshlq_n_s64(v.raw, kBits));
 }
 
 // ------------------------------ Shift lanes by same variable #bits
 
 // Extra overhead, use _var instead unless SSE4 support is required.
 
-template <typename T>
-SIMD_INLINE shift_left_count<T> set_shift_left_count(Full<T, ARM8> d,
-                                                     const int bits) {
-  return shift_left_count<T>{set1(d, bits)};
+template <typename T, size_t N>
+struct shift_left_count {
+  vec_arm8<T> v;
+};
+
+template <typename T, size_t N>
+struct shift_right_count {
+  vec_arm8<T> v;
+};
+
+template <typename T, size_t N>
+SIMD_INLINE shift_left_count<T, N> set_shift_left_count(Desc<T, N, ARM8> d,
+                                                        const int bits) {
+  return shift_left_count<T, N>{set1(d, bits)};
 }
 
-template <typename T>
-SIMD_INLINE shift_right_count<T> set_shift_right_count(Full<T, ARM8> d,
-                                                       const int bits) {
-  return shift_right_count<T>{set1(d, -bits)};
+template <typename T, size_t N>
+SIMD_INLINE shift_right_count<T, N> set_shift_right_count(Desc<T, N, ARM8> d,
+                                                          const int bits) {
+  return shift_right_count<T, N>{set1(d, -bits)};
 }
 
 // Unsigned (no u8)
-SIMD_INLINE u16x8 shift_left_same(const u16x8 v,
-                                  const shift_left_count<uint16_t> bits) {
-  return u16x8(vshlq_u16(v, bits.raw));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint16_t, N> shift_left_same(
+    const vec_arm8<uint16_t, N> v, const shift_left_count<uint16_t, N> bits) {
+  return vec_arm8<uint16_t, N>(vshlq_u16(v.raw, bits.v.raw));
 }
-SIMD_INLINE u16x8 shift_right_same(const u16x8 v,
-                                   const shift_right_count<uint16_t> bits) {
-  return u16x8(vshlq_u16(v, bits.raw));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint16_t, N> shift_right_same(
+    const vec_arm8<uint16_t, N> v, const shift_right_count<uint16_t, N> bits) {
+  return vec_arm8<uint16_t, N>(vshlq_u16(v.raw, bits.v.raw));
 }
-SIMD_INLINE u32x4 shift_left_same(const u32x4 v,
-                           const shift_left_count<uint32_t> bits) {
-  return u32x4(vshlq_u32(v, bits.raw));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint32_t, N> shift_left_same(
+    const vec_arm8<uint32_t, N> v, const shift_left_count<uint32_t, N> bits) {
+  return vec_arm8<uint32_t, N>(vshlq_u32(v.raw, bits.v.raw));
 }
-SIMD_INLINE u32x4 shift_right_same(const u32x4 v,
-                           const shift_right_count<uint32_t> bits) {
-  return u32x4(vshlq_u32(v, bits.raw));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint32_t, N> shift_right_same(
+    const vec_arm8<uint32_t, N> v, const shift_right_count<uint32_t, N> bits) {
+  return vec_arm8<uint32_t, N>(vshlq_u32(v.raw, bits.v.raw));
 }
-SIMD_INLINE u64x2 shift_left_same(const u64x2 v,
-                           const shift_left_count<uint64_t> bits) {
-  return u64x2(vshlq_u64(v, bits.raw));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint64_t, N> shift_left_same(
+    const vec_arm8<uint64_t, N> v, const shift_left_count<uint64_t, N> bits) {
+  return vec_arm8<uint64_t, N>(vshlq_u64(v.raw, bits.v.raw));
 }
-SIMD_INLINE u64x2 shift_right_same(const u64x2 v,
-                           const shift_right_count<uint64_t> bits) {
-  return u64x2(vshlq_u64(v, bits.raw));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint64_t, N> shift_right_same(
+    const vec_arm8<uint64_t, N> v, const shift_right_count<uint64_t, N> bits) {
+  return vec_arm8<uint64_t, N>(vshlq_u64(v.raw, bits.v.raw));
 }
 
 // Signed (no i8,i64)
-SIMD_INLINE i16x8 shift_left_same(const i16x8 v,
-                                  const shift_left_count<int16_t> bits) {
-  return i16x8(vshlq_s16(v, bits.raw));
+template <size_t N>
+SIMD_INLINE vec_arm8<int16_t, N> shift_left_same(
+    const vec_arm8<int16_t, N> v, const shift_left_count<int16_t, N> bits) {
+  return vec_arm8<int16_t, N>(vshlq_s16(v.raw, bits.v.raw));
 }
-SIMD_INLINE i16x8 shift_right_same(const i16x8 v,
-                                   const shift_right_count<int16_t> bits) {
-  return i16x8(vshlq_s16(v, bits.raw));
+template <size_t N>
+SIMD_INLINE vec_arm8<int16_t, N> shift_right_same(
+    const vec_arm8<int16_t, N> v, const shift_right_count<int16_t, N> bits) {
+  return vec_arm8<int16_t, N>(vshlq_s16(v.raw, bits.v.raw));
 }
-SIMD_INLINE i32x4 shift_left_same(const i32x4 v,
-                           const shift_left_count<int32_t> bits) {
-  return i32x4(vshlq_s32(v, bits.raw));
+template <size_t N>
+SIMD_INLINE vec_arm8<int32_t, N> shift_left_same(
+    const vec_arm8<int32_t, N> v, const shift_left_count<int32_t, N> bits) {
+  return vec_arm8<int32_t, N>(vshlq_s32(v.raw, bits.v.raw));
 }
-SIMD_INLINE i32x4 shift_right_same(const i32x4 v,
-                           const shift_right_count<int32_t> bits) {
-  return i32x4(vshlq_s32(v, bits.raw));
+template <size_t N>
+SIMD_INLINE vec_arm8<int32_t, N> shift_right_same(
+    const vec_arm8<int32_t, N> v, const shift_right_count<int32_t, N> bits) {
+  return vec_arm8<int32_t, N>(vshlq_s32(v.raw, bits.v.raw));
 }
-SIMD_INLINE i64x2 shift_left_same(const i64x2 v,
-                           const shift_left_count<int64_t> bits) {
-  return i64x2(vshlq_s64(v, bits.raw));
+template <size_t N>
+SIMD_INLINE vec_arm8<int64_t, N> shift_left_same(
+    const vec_arm8<int64_t, N> v, const shift_left_count<int64_t, N> bits) {
+  return vec_arm8<int64_t, N>(vshlq_s64(v.raw, bits.v.raw));
 }
 
 // ------------------------------ Shift lanes by independent variable #bits
 
 // Unsigned (no u8,u16)
-SIMD_INLINE u32x4 shift_left_var(const u32x4 v, const u32x4 bits) {
-  return u32x4(vshlq_u32(v, bits.raw));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint32_t, N> shift_left_var(
+    const vec_arm8<uint32_t, N> v, const vec_arm8<uint32_t, N> bits) {
+  return vec_arm8<uint32_t, N>(vshlq_u32(v.raw, bits.raw));
 }
-SIMD_INLINE u32x4 shift_right_var(const u32x4 v, const u32x4 bits) {
-  return u32x4(vshlq_u32(v, vnegq_s32(vreinterpretq_s32_u32(bits.raw))));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint32_t, N> shift_right_var(
+    const vec_arm8<uint32_t, N> v, const vec_arm8<uint32_t, N> bits) {
+  return vec_arm8<uint32_t, N>(
+      vshlq_u32(v.raw, vnegq_s32(vreinterpretq_s32_u32(bits.raw))));
 }
-SIMD_INLINE u64x2 shift_left_var(const u64x2 v, const u64x2 bits) {
-  return u64x2(vshlq_u64(v, bits.raw));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint64_t, N> shift_left_var(
+    const vec_arm8<uint64_t, N> v, const vec_arm8<uint64_t, N> bits) {
+  return vec_arm8<uint64_t, N>(vshlq_u64(v.raw, bits.raw));
 }
-SIMD_INLINE u64x2 shift_right_var(const u64x2 v, const u64x2 bits) {
-  return u64x2(vshlq_u64(v, vnegq_s64(vreinterpretq_s64_u64(bits.raw))));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint64_t, N> shift_right_var(
+    const vec_arm8<uint64_t, N> v, const vec_arm8<uint64_t, N> bits) {
+  return vec_arm8<uint64_t, N>(
+      vshlq_u64(v.raw, vnegq_s64(vreinterpretq_s64_u64(bits.raw))));
 }
 
 // Signed (no i8,i16)
-SIMD_INLINE i32x4 shift_left_var(const i32x4 v, const i32x4 bits) {
-  return i32x4(vshlq_s32(v, bits.raw));
+template <size_t N>
+SIMD_INLINE vec_arm8<int32_t, N> shift_left_var(
+    const vec_arm8<int32_t, N> v, const vec_arm8<int32_t, N> bits) {
+  return vec_arm8<int32_t, N>(vshlq_s32(v.raw, bits.raw));
 }
-SIMD_INLINE i32x4 shift_right_var(const i32x4 v, const i32x4 bits) {
-  return i32x4(vshlq_s32(v, vnegq_s32(bits.raw)));
+template <size_t N>
+SIMD_INLINE vec_arm8<int32_t, N> shift_right_var(
+    const vec_arm8<int32_t, N> v, const vec_arm8<int32_t, N> bits) {
+  return vec_arm8<int32_t, N>(vshlq_s32(v.raw, vnegq_s32(bits.raw)));
 }
-SIMD_INLINE i64x2 shift_left_var(const i64x2 v, const i64x2 bits) {
-  return i64x2(vshlq_s64(v, bits.raw));
+template <size_t N>
+SIMD_INLINE vec_arm8<int64_t, N> shift_left_var(
+    const vec_arm8<int64_t, N> v, const vec_arm8<int64_t, N> bits) {
+  return vec_arm8<int64_t, N>(vshlq_s64(v.raw, bits.raw));
 }
 
 // ------------------------------ Minimum
 
 // Unsigned (no u64)
-SIMD_INLINE u8x16 min(const u8x16 a, const u8x16 b) {
-  return u8x16(vminq_u8(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> min(const vec_arm8<uint8_t, N> a,
+                                     const vec_arm8<uint8_t, N> b) {
+  return vec_arm8<uint8_t, N>(vminq_u8(a.raw, b.raw));
 }
-SIMD_INLINE u16x8 min(const u16x8 a, const u16x8 b) {
-  return u16x8(vminq_u16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint16_t, N> min(const vec_arm8<uint16_t, N> a,
+                                      const vec_arm8<uint16_t, N> b) {
+  return vec_arm8<uint16_t, N>(vminq_u16(a.raw, b.raw));
 }
-SIMD_INLINE u32x4 min(const u32x4 a, const u32x4 b) {
-  return u32x4(vminq_u32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint32_t, N> min(const vec_arm8<uint32_t, N> a,
+                                      const vec_arm8<uint32_t, N> b) {
+  return vec_arm8<uint32_t, N>(vminq_u32(a.raw, b.raw));
 }
 
 // Signed (no i64)
-SIMD_INLINE i8x16 min(const i8x16 a, const i8x16 b) {
-  return i8x16(vminq_s8(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int8_t, N> min(const vec_arm8<int8_t, N> a,
+                                    const vec_arm8<int8_t, N> b) {
+  return vec_arm8<int8_t, N>(vminq_s8(a.raw, b.raw));
 }
-SIMD_INLINE i16x8 min(const i16x8 a, const i16x8 b) {
-  return i16x8(vminq_s16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int16_t, N> min(const vec_arm8<int16_t, N> a,
+                                     const vec_arm8<int16_t, N> b) {
+  return vec_arm8<int16_t, N>(vminq_s16(a.raw, b.raw));
 }
-SIMD_INLINE i32x4 min(const i32x4 a, const i32x4 b) {
-  return i32x4(vminq_s32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int32_t, N> min(const vec_arm8<int32_t, N> a,
+                                     const vec_arm8<int32_t, N> b) {
+  return vec_arm8<int32_t, N>(vminq_s32(a.raw, b.raw));
 }
 
 // Float
-SIMD_INLINE f32x4 min(const f32x4 a, const f32x4 b) {
-  return f32x4(vminq_f32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> min(const vec_arm8<float, N> a,
+                                   const vec_arm8<float, N> b) {
+  return vec_arm8<float, N>(vminq_f32(a.raw, b.raw));
 }
-SIMD_INLINE f64x2 min(const f64x2 a, const f64x2 b) {
-  return f64x2(vminq_f64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> min(const vec_arm8<double, N> a,
+                                    const vec_arm8<double, N> b) {
+  return vec_arm8<double, N>(vminq_f64(a.raw, b.raw));
 }
 
 // ------------------------------ Maximum
 
 // Unsigned (no u64)
-SIMD_INLINE u8x16 max(const u8x16 a, const u8x16 b) {
-  return u8x16(vmaxq_u8(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> max(const vec_arm8<uint8_t, N> a,
+                                     const vec_arm8<uint8_t, N> b) {
+  return vec_arm8<uint8_t, N>(vmaxq_u8(a.raw, b.raw));
 }
-SIMD_INLINE u16x8 max(const u16x8 a, const u16x8 b) {
-  return u16x8(vmaxq_u16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint16_t, N> max(const vec_arm8<uint16_t, N> a,
+                                      const vec_arm8<uint16_t, N> b) {
+  return vec_arm8<uint16_t, N>(vmaxq_u16(a.raw, b.raw));
 }
-SIMD_INLINE u32x4 max(const u32x4 a, const u32x4 b) {
-  return u32x4(vmaxq_u32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint32_t, N> max(const vec_arm8<uint32_t, N> a,
+                                      const vec_arm8<uint32_t, N> b) {
+  return vec_arm8<uint32_t, N>(vmaxq_u32(a.raw, b.raw));
 }
 
 // Signed (no i64)
-SIMD_INLINE i8x16 max(const i8x16 a, const i8x16 b) {
-  return i8x16(vmaxq_s8(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int8_t, N> max(const vec_arm8<int8_t, N> a,
+                                    const vec_arm8<int8_t, N> b) {
+  return vec_arm8<int8_t, N>(vmaxq_s8(a.raw, b.raw));
 }
-SIMD_INLINE i16x8 max(const i16x8 a, const i16x8 b) {
-  return i16x8(vmaxq_s16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int16_t, N> max(const vec_arm8<int16_t, N> a,
+                                     const vec_arm8<int16_t, N> b) {
+  return vec_arm8<int16_t, N>(vmaxq_s16(a.raw, b.raw));
 }
-SIMD_INLINE i32x4 max(const i32x4 a, const i32x4 b) {
-  return i32x4(vmaxq_s32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int32_t, N> max(const vec_arm8<int32_t, N> a,
+                                     const vec_arm8<int32_t, N> b) {
+  return vec_arm8<int32_t, N>(vmaxq_s32(a.raw, b.raw));
 }
 
 // Float
-SIMD_INLINE f32x4 max(const f32x4 a, const f32x4 b) {
-  return f32x4(vmaxq_f32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> max(const vec_arm8<float, N> a,
+                                   const vec_arm8<float, N> b) {
+  return vec_arm8<float, N>(vmaxq_f32(a.raw, b.raw));
 }
-SIMD_INLINE f64x2 max(const f64x2 a, const f64x2 b) {
-  return f64x2(vmaxq_f64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> max(const vec_arm8<double, N> a,
+                                    const vec_arm8<double, N> b) {
+  return vec_arm8<double, N>(vmaxq_f64(a.raw, b.raw));
 }
 
 // ------------------------------ Integer multiplication
 
 // Unsigned
-SIMD_INLINE u16x8 operator*(const u16x8 a, const u16x8 b) {
-  return u16x8(vmulq_u16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint16_t, N> operator*(const vec_arm8<uint16_t, N> a,
+                                            const vec_arm8<uint16_t, N> b) {
+  return vec_arm8<uint16_t, N>(vmulq_u16(a.raw, b.raw));
 }
-SIMD_INLINE u32x4 operator*(const u32x4 a, const u32x4 b) {
-  return u32x4(vmulq_u32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint32_t, N> operator*(const vec_arm8<uint32_t, N> a,
+                                            const vec_arm8<uint32_t, N> b) {
+  return vec_arm8<uint32_t, N>(vmulq_u32(a.raw, b.raw));
 }
 
 // Signed
-SIMD_INLINE i16x8 operator*(const i16x8 a, const i16x8 b) {
-  return i16x8(vmulq_s16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int16_t, N> operator*(const vec_arm8<int16_t, N> a,
+                                           const vec_arm8<int16_t, N> b) {
+  return vec_arm8<int16_t, N>(vmulq_s16(a.raw, b.raw));
 }
-SIMD_INLINE i32x4 operator*(const i32x4 a, const i32x4 b) {
-  return i32x4(vmulq_s32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int32_t, N> operator*(const vec_arm8<int32_t, N> a,
+                                           const vec_arm8<int32_t, N> b) {
+  return vec_arm8<int32_t, N>(vmulq_s32(a.raw, b.raw));
 }
 
-// "Extensions": useful but quite performance-portable operations. We add
+// "Extensions": useful but not quite performance-portable operations. We add
 // functions to this namespace in multiple places.
 namespace ext {
 
 // Returns the upper 16 bits of a * b in each lane.
-SIMD_INLINE i16x8 mulhi(const i16x8 a, const i16x8 b) {
-  int32x4_t rlo = vmull_s16(vget_low_s16(a), vget_low_s16(b));
-  int32x4_t rhi = vmull_high_s16(a, b);
-  return i16x8(vuzp2q_s16(vreinterpretq_s16_s32(rlo),
-                          vreinterpretq_s16_s32(rhi)));
+template <size_t N>
+SIMD_INLINE vec_arm8<int16_t, N> mulhi(const vec_arm8<int16_t, N> a,
+                                       const vec_arm8<int16_t, N> b) {
+  int32x4_t rlo = vmull_s16(vget_low_s16(a.raw), vget_low_s16(b.raw));
+  int32x4_t rhi = vmull_high_s16(a.raw, b.raw);
+  return vec_arm8<int16_t, N>(
+      vuzp2q_s16(vreinterpretq_s16_s32(rlo), vreinterpretq_s16_s32(rhi)));
 }
 
 }  // namespace ext
 
 // Multiplies even lanes (0, 2 ..) and places the double-wide result into
 // even and the upper half into its odd neighbor lane.
-SIMD_INLINE i64x2 mul_even(const i32x4 a, const i32x4 b) {
-  int32x4_t a_packed = vuzp1q_s32(a, a);
-  int32x4_t b_packed = vuzp1q_s32(b, b);
-  return i64x2(vmull_s32(vget_low_s32(a_packed), vget_low_s32(b_packed)));
+SIMD_INLINE vec_arm8<int64_t> mul_even(const vec_arm8<int32_t> a,
+                                       const vec_arm8<int32_t> b) {
+  int32x4_t a_packed = vuzp1q_s32(a.raw, a.raw);
+  int32x4_t b_packed = vuzp1q_s32(b.raw, b.raw);
+  return vec_arm8<int64_t>(
+      vmull_s32(vget_low_s32(a_packed), vget_low_s32(b_packed)));
 }
-SIMD_INLINE u64x2 mul_even(const u32x4 a, const u32x4 b) {
-  uint32x4_t a_packed = vuzp1q_u32(a, a);
-  uint32x4_t b_packed = vuzp1q_u32(b, b);
-  return u64x2(vmull_u32(vget_low_u32(a_packed), vget_low_u32(b_packed)));
+SIMD_INLINE vec_arm8<uint64_t> mul_even(const vec_arm8<uint32_t> a,
+                                        const vec_arm8<uint32_t> b) {
+  uint32x4_t a_packed = vuzp1q_u32(a.raw, a.raw);
+  uint32x4_t b_packed = vuzp1q_u32(b.raw, b.raw);
+  return vec_arm8<uint64_t>(
+      vmull_u32(vget_low_u32(a_packed), vget_low_u32(b_packed)));
 }
 
 // ------------------------------ Floating-point mul / div
 
-SIMD_INLINE f32x4 operator*(const f32x4 a, const f32x4 b) {
-  return f32x4(vmulq_f32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> operator*(const vec_arm8<float, N> a,
+                                         const vec_arm8<float, N> b) {
+  return vec_arm8<float, N>(vmulq_f32(a.raw, b.raw));
 }
-SIMD_INLINE f64x2 operator*(const f64x2 a, const f64x2 b) {
-  return f64x2(vmulq_f64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> operator*(const vec_arm8<double, N> a,
+                                          const vec_arm8<double, N> b) {
+  return vec_arm8<double, N>(vmulq_f64(a.raw, b.raw));
 }
 
-SIMD_INLINE f32x4 operator/(const f32x4 a, const f32x4 b) {
-  return f32x4(vdivq_f32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> operator/(const vec_arm8<float, N> a,
+                                         const vec_arm8<float, N> b) {
+  return vec_arm8<float, N>(vdivq_f32(a.raw, b.raw));
 }
-SIMD_INLINE f64x2 operator/(const f64x2 a, const f64x2 b) {
-  return f64x2(vdivq_f64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> operator/(const vec_arm8<double, N> a,
+                                          const vec_arm8<double, N> b) {
+  return vec_arm8<double, N>(vdivq_f64(a.raw, b.raw));
 }
 
 // Approximate reciprocal
-SIMD_INLINE f32x4 rcp_approx(const f32x4 v) {
-  return f32x4(vrecpeq_f32(v));
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> rcp_approx(const vec_arm8<float, N> v) {
+  return vec_arm8<float, N>(vrecpeq_f32(v.raw));
 }
 
 // ------------------------------ Floating-point multiply-add variants
 
 // Returns mul * x + add
-SIMD_INLINE f32x4 mul_add(const f32x4 mul, const f32x4 x,
-                                         const f32x4 add) {
-  return f32x4(vmlaq_f32(add, mul, x));
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> mul_add(const vec_arm8<float, N> mul,
+                                       const vec_arm8<float, N> x,
+                                       const vec_arm8<float, N> add) {
+  return vec_arm8<float, N>(vmlaq_f32(add.raw, mul.raw, x.raw));
 }
-SIMD_INLINE f64x2 mul_add(const f64x2 mul, const f64x2 x,
-                                         const f64x2 add) {
-  return f64x2(vmlaq_f64(add, mul, x));
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> mul_add(const vec_arm8<double, N> mul,
+                                        const vec_arm8<double, N> x,
+                                        const vec_arm8<double, N> add) {
+  return vec_arm8<double, N>(vmlaq_f64(add.raw, mul.raw, x.raw));
 }
 
 // Returns mul * x - sub
-SIMD_INLINE f32x4 mul_sub(const f32x4 mul, const f32x4 x,
-                                         const f32x4 sub) {
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> mul_sub(const vec_arm8<float, N> mul,
+                                       const vec_arm8<float, N> x,
+                                       const vec_arm8<float, N> sub) {
   return mul * x - sub;
 }
-SIMD_INLINE f64x2 mul_sub(const f64x2 mul, const f64x2 x,
-                                         const f64x2 sub) {
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> mul_sub(const vec_arm8<double, N> mul,
+                                        const vec_arm8<double, N> x,
+                                        const vec_arm8<double, N> sub) {
   return mul * x - sub;
 }
 
 // Returns add - mul * x
-SIMD_INLINE f32x4 nmul_add(const f32x4 mul, const f32x4 x,
-                                          const f32x4 add) {
-  return f32x4(vmlsq_f32(add, mul, x));
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> nmul_add(const vec_arm8<float, N> mul,
+                                        const vec_arm8<float, N> x,
+                                        const vec_arm8<float, N> add) {
+  return vec_arm8<float, N>(vmlsq_f32(add.raw, mul.raw, x.raw));
 }
-SIMD_INLINE f64x2 nmul_add(const f64x2 mul, const f64x2 x,
-                                          const f64x2 add) {
-  return f64x2(vmlsq_f64(add, mul, x));
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> nmul_add(const vec_arm8<double, N> mul,
+                                         const vec_arm8<double, N> x,
+                                         const vec_arm8<double, N> add) {
+  return vec_arm8<double, N>(vmlsq_f64(add.raw, mul.raw, x.raw));
 }
 
 // nmul_sub would require an additional negate of mul or x.
@@ -871,74 +1089,51 @@ SIMD_INLINE f64x2 nmul_add(const f64x2 mul, const f64x2 x,
 // ------------------------------ Floating-point square root
 
 // Full precision square root
-SIMD_INLINE f32x4 sqrt(const f32x4 v) {
-  return f32x4(vsqrtq_f32(v));
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> sqrt(const vec_arm8<float, N> v) {
+  return vec_arm8<float, N>(vsqrtq_f32(v.raw));
 }
-SIMD_INLINE f64x2 sqrt(const f64x2 v) {
-  return f64x2(vsqrtq_f64(v));
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> sqrt(const vec_arm8<double, N> v) {
+  return vec_arm8<double, N>(vsqrtq_f64(v.raw));
 }
 
 // Approximate reciprocal square root
-SIMD_INLINE f32x4 rsqrt_approx(const f32x4 v) {
-  return f32x4(vrsqrteq_f32(v));
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> rsqrt_approx(const vec_arm8<float, N> v) {
+  return vec_arm8<float, N>(vrsqrteq_f32(v.raw));
 }
 
 // ------------------------------ Floating-point rounding
 
 // Toward nearest integer
-SIMD_INLINE f32x4 round_nearest(const f32x4 v) {
-  return f32x4(vrndnq_f32(v));
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> round_nearest(const vec_arm8<float, N> v) {
+  return vec_arm8<float, N>(vrndnq_f32(v.raw));
 }
-SIMD_INLINE f64x2 round_nearest(const f64x2 v) {
-  return f64x2(vrndnq_f64(v));
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> round_nearest(const vec_arm8<double, N> v) {
+  return vec_arm8<double, N>(vrndnq_f64(v.raw));
 }
 
 // Toward +infinity, aka ceiling
-SIMD_INLINE f32x4 round_pos_inf(const f32x4 v) {
-  return f32x4(vrndpq_f32(v));
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> round_pos_inf(const vec_arm8<float, N> v) {
+  return vec_arm8<float, N>(vrndpq_f32(v.raw));
 }
-SIMD_INLINE f64x2 round_pos_inf(const f64x2 v) {
-  return f64x2(vrndpq_f64(v));
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> round_pos_inf(const vec_arm8<double, N> v) {
+  return vec_arm8<double, N>(vrndpq_f64(v.raw));
 }
 
 // Toward -infinity, aka floor
-SIMD_INLINE f32x4 round_neg_inf(const f32x4 v) {
-  return f32x4(vrndmq_f32(v));
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> round_neg_inf(const vec_arm8<float, N> v) {
+  return vec_arm8<float, N>(vrndmq_f32(v.raw));
 }
-SIMD_INLINE f64x2 round_neg_inf(const f64x2 v) {
-  return f64x2(vrndmq_f64(v));
-}
-
-// ------------------------------ Convert i32 <=> f32
-
-SIMD_INLINE f32x4 f32_from_i32(const i32x4 v) {
-  return f32x4(vcvtq_f32_s32(v));
-}
-// Uses current rounding mode, which defaults to round-to-nearest.
-SIMD_INLINE i32x4 i32_from_f32(const f32x4 v) {
-  return i32x4(vcvtnq_s32_f32(v));
-}
-
-// ------------------------------ Cast to/from floating-point representation
-
-SIMD_INLINE f32x4 float_from_bits(const u32x4 v) {
-  return f32x4(vreinterpretq_f32_u32(v));
-}
-SIMD_INLINE f32x4 float_from_bits(const i32x4 v) {
-  return f32x4(vreinterpretq_f32_s32(v));
-}
-SIMD_INLINE i32x4 bits_from_float(const f32x4 v) {
-  return i32x4(vreinterpretq_s32_f32(v));
-}
-
-SIMD_INLINE f64x2 float_from_bits(const u64x2 v) {
-  return f64x2(vreinterpretq_f64_u64(v));
-}
-SIMD_INLINE f64x2 float_from_bits(const i64x2 v) {
-  return f64x2(vreinterpretq_f64_s64(v));
-}
-SIMD_INLINE i64x2 bits_from_float(const f64x2 v) {
-  return i64x2(vreinterpretq_s64_f64(v));
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> round_neg_inf(const vec_arm8<double, N> v) {
+  return vec_arm8<double, N>(vrndmq_f64(v.raw));
 }
 
 // ================================================== COMPARE
@@ -948,379 +1143,484 @@ SIMD_INLINE i64x2 bits_from_float(const f64x2 v) {
 // ------------------------------ Equality
 
 // Unsigned
-SIMD_INLINE u8x16 operator==(const u8x16 a, const u8x16 b) {
-  return u8x16(vceqq_u8(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> operator==(const vec_arm8<uint8_t, N> a,
+                                            const vec_arm8<uint8_t, N> b) {
+  return vec_arm8<uint8_t, N>(vceqq_u8(a.raw, b.raw));
 }
-SIMD_INLINE u16x8 operator==(const u16x8 a, const u16x8 b) {
-  return u16x8(vceqq_u16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint16_t, N> operator==(const vec_arm8<uint16_t, N> a,
+                                             const vec_arm8<uint16_t, N> b) {
+  return vec_arm8<uint16_t, N>(vceqq_u16(a.raw, b.raw));
 }
-SIMD_INLINE u32x4 operator==(const u32x4 a, const u32x4 b) {
-  return u32x4(vceqq_u32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint32_t, N> operator==(const vec_arm8<uint32_t, N> a,
+                                             const vec_arm8<uint32_t, N> b) {
+  return vec_arm8<uint32_t, N>(vceqq_u32(a.raw, b.raw));
 }
-SIMD_INLINE u64x2 operator==(const u64x2 a, const u64x2 b) {
-  return u64x2(vceqq_u64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint64_t, N> operator==(const vec_arm8<uint64_t, N> a,
+                                             const vec_arm8<uint64_t, N> b) {
+  return vec_arm8<uint64_t, N>(vceqq_u64(a.raw, b.raw));
 }
 
 // Signed
-SIMD_INLINE i8x16 operator==(const i8x16 a, const i8x16 b) {
-  return i8x16(vceqq_s8(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int8_t, N> operator==(const vec_arm8<int8_t, N> a,
+                                           const vec_arm8<int8_t, N> b) {
+  return vec_arm8<int8_t, N>(vceqq_s8(a.raw, b.raw));
 }
-SIMD_INLINE i16x8 operator==(const i16x8 a, const i16x8 b) {
-  return i16x8(vceqq_s16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int16_t, N> operator==(const vec_arm8<int16_t, N> a,
+                                            const vec_arm8<int16_t, N> b) {
+  return vec_arm8<int16_t, N>(vceqq_s16(a.raw, b.raw));
 }
-SIMD_INLINE i32x4 operator==(const i32x4 a, const i32x4 b) {
-  return i32x4(vceqq_s32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int32_t, N> operator==(const vec_arm8<int32_t, N> a,
+                                            const vec_arm8<int32_t, N> b) {
+  return vec_arm8<int32_t, N>(vceqq_s32(a.raw, b.raw));
 }
-SIMD_INLINE i64x2 operator==(const i64x2 a, const i64x2 b) {
-  return i64x2(vceqq_s64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int64_t, N> operator==(const vec_arm8<int64_t, N> a,
+                                            const vec_arm8<int64_t, N> b) {
+  return vec_arm8<int64_t, N>(vceqq_s64(a.raw, b.raw));
 }
 
 // Float
-SIMD_INLINE f32x4 operator==(const f32x4 a, const f32x4 b) {
-  return f32x4(vceqq_f32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> operator==(const vec_arm8<float, N> a,
+                                          const vec_arm8<float, N> b) {
+  return vec_arm8<float, N>(vceqq_f32(a.raw, b.raw));
 }
-SIMD_INLINE f64x2 operator==(const f64x2 a, const f64x2 b) {
-  return f64x2(vceqq_f64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> operator==(const vec_arm8<double, N> a,
+                                           const vec_arm8<double, N> b) {
+  return vec_arm8<double, N>(vceqq_f64(a.raw, b.raw));
 }
 
 // ------------------------------ Strict inequality
 
 // Signed/float <
-SIMD_INLINE i8x16 operator<(const i8x16 a, const i8x16 b) {
-  return i8x16(vcltq_s8(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int8_t, N> operator<(const vec_arm8<int8_t, N> a,
+                                          const vec_arm8<int8_t, N> b) {
+  return vec_arm8<int8_t, N>(vcltq_s8(a.raw, b.raw));
 }
-SIMD_INLINE i16x8 operator<(const i16x8 a, const i16x8 b) {
-  return i16x8(vcltq_s16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int16_t, N> operator<(const vec_arm8<int16_t, N> a,
+                                           const vec_arm8<int16_t, N> b) {
+  return vec_arm8<int16_t, N>(vcltq_s16(a.raw, b.raw));
 }
-SIMD_INLINE i32x4 operator<(const i32x4 a, const i32x4 b) {
-  return i32x4(vcltq_s32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int32_t, N> operator<(const vec_arm8<int32_t, N> a,
+                                           const vec_arm8<int32_t, N> b) {
+  return vec_arm8<int32_t, N>(vcltq_s32(a.raw, b.raw));
 }
-SIMD_INLINE i64x2 operator<(const i64x2 a, const i64x2 b) {
-  return i64x2(vcltq_s64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int64_t, N> operator<(const vec_arm8<int64_t, N> a,
+                                           const vec_arm8<int64_t, N> b) {
+  return vec_arm8<int64_t, N>(vcltq_s64(a.raw, b.raw));
 }
-SIMD_INLINE f32x4 operator<(const f32x4 a, const f32x4 b) {
-  return f32x4(vcltq_f32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> operator<(const vec_arm8<float, N> a,
+                                         const vec_arm8<float, N> b) {
+  return vec_arm8<float, N>(vcltq_f32(a.raw, b.raw));
 }
-SIMD_INLINE f64x2 operator<(const f64x2 a, const f64x2 b) {
-  return f64x2(vcltq_f64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> operator<(const vec_arm8<double, N> a,
+                                          const vec_arm8<double, N> b) {
+  return vec_arm8<double, N>(vcltq_f64(a.raw, b.raw));
 }
 
 // Signed/float >
-SIMD_INLINE i8x16 operator>(const i8x16 a, const i8x16 b) {
-  return i8x16(vcgtq_s8(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int8_t, N> operator>(const vec_arm8<int8_t, N> a,
+                                          const vec_arm8<int8_t, N> b) {
+  return vec_arm8<int8_t, N>(vcgtq_s8(a.raw, b.raw));
 }
-SIMD_INLINE i16x8 operator>(const i16x8 a, const i16x8 b) {
-  return i16x8(vcgtq_s16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int16_t, N> operator>(const vec_arm8<int16_t, N> a,
+                                           const vec_arm8<int16_t, N> b) {
+  return vec_arm8<int16_t, N>(vcgtq_s16(a.raw, b.raw));
 }
-SIMD_INLINE i32x4 operator>(const i32x4 a, const i32x4 b) {
-  return i32x4(vcgtq_s32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int32_t, N> operator>(const vec_arm8<int32_t, N> a,
+                                           const vec_arm8<int32_t, N> b) {
+  return vec_arm8<int32_t, N>(vcgtq_s32(a.raw, b.raw));
 }
-SIMD_INLINE i64x2 operator>(const i64x2 a, const i64x2 b) {
-  return i64x2(vcgtq_s64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int64_t, N> operator>(const vec_arm8<int64_t, N> a,
+                                           const vec_arm8<int64_t, N> b) {
+  return vec_arm8<int64_t, N>(vcgtq_s64(a.raw, b.raw));
 }
-SIMD_INLINE f32x4 operator>(const f32x4 a, const f32x4 b) {
-  return f32x4(vcgtq_f32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> operator>(const vec_arm8<float, N> a,
+                                         const vec_arm8<float, N> b) {
+  return vec_arm8<float, N>(vcgtq_f32(a.raw, b.raw));
 }
-SIMD_INLINE f64x2 operator>(const f64x2 a, const f64x2 b) {
-  return f64x2(vcgtq_f64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> operator>(const vec_arm8<double, N> a,
+                                          const vec_arm8<double, N> b) {
+  return vec_arm8<double, N>(vcgtq_f64(a.raw, b.raw));
 }
 
 // ------------------------------ Weak inequality
 
 // Float <= >=
-SIMD_INLINE f32x4 operator<=(const f32x4 a, const f32x4 b) {
-  return f32x4(vcleq_f32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> operator<=(const vec_arm8<float, N> a,
+                                          const vec_arm8<float, N> b) {
+  return vec_arm8<float, N>(vcleq_f32(a.raw, b.raw));
 }
-SIMD_INLINE f64x2 operator<=(const f64x2 a, const f64x2 b) {
-  return f64x2(vcleq_f64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> operator<=(const vec_arm8<double, N> a,
+                                           const vec_arm8<double, N> b) {
+  return vec_arm8<double, N>(vcleq_f64(a.raw, b.raw));
 }
-SIMD_INLINE f32x4 operator>=(const f32x4 a, const f32x4 b) {
-  return f32x4(vcgeq_f32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> operator>=(const vec_arm8<float, N> a,
+                                          const vec_arm8<float, N> b) {
+  return vec_arm8<float, N>(vcgeq_f32(a.raw, b.raw));
 }
-SIMD_INLINE f64x2 operator>=(const f64x2 a, const f64x2 b) {
-  return f64x2(vcgeq_f64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> operator>=(const vec_arm8<double, N> a,
+                                           const vec_arm8<double, N> b) {
+  return vec_arm8<double, N>(vcgeq_f64(a.raw, b.raw));
 }
-
-// "Extensions": useful but quite performance-portable operations. We add
-// functions to this namespace in multiple places.
-namespace ext {
-
-// Returns a bit array of the most significant bit of each byte in "v", i.e.
-// sum_i=0..15 of (v[i] >> 7) << i; v[0] is the least-significant byte of "v".
-// This is useful for testing/branching based on comparison results.
-SIMD_INLINE uint32_t movemask(const u8x16 v) {
-  static constexpr uint8x16_t kCollapseMask = {
-      1, 2, 4, 8, 0x10, 0x20, 0x40, 0x80,
-      1, 2, 4, 8, 0x10, 0x20, 0x40, 0x80,
-  };
-  int8x16_t signed_v = vreinterpretq_s8_u8(v);
-  int8x16_t signed_mask = vshrq_n_s8(signed_v, 7);
-  uint8x16_t values = vreinterpretq_u8_s8(signed_mask) & kCollapseMask;
-
-  uint8x8_t c0 = vget_low_u8(vpaddq_u8(values, values));
-  uint8x8_t c1 = vpadd_u8(c0, c0);
-  uint8x8_t c2 = vpadd_u8(c1, c1);
-
-  return vreinterpret_u16_u8(c2)[0];
-}
-
-// Returns the most significant bit of each float/double lane (see above).
-SIMD_INLINE uint32_t movemask(const f32x4 v) {
-  static constexpr uint32x4_t kCollapseMask = {
-    1, 2, 4, 8
-  };
-  int32x4_t signed_v = vreinterpretq_s32_f32(v);
-  int32x4_t signed_mask = vshrq_n_s32(signed_v, 31);
-  uint32x4_t values = vreinterpretq_u32_s32(signed_mask) & kCollapseMask;
-  return vaddvq_u32(values);
-}
-SIMD_INLINE uint32_t movemask(const f64x2 v) {
-  static constexpr uint64x2_t kCollapseMask = {
-    1, 2
-  };
-  int64x2_t signed_v = vreinterpretq_s64_f64(v);
-  int64x2_t signed_mask = vshrq_n_s64(signed_v, 63);
-  uint64x2_t values = vreinterpretq_u64_s64(signed_mask) & kCollapseMask;
-  return (uint32_t) vaddvq_u64(values);
-}
-
-// Returns whether all lanes are equal to zero. Supported for all integer V.
-SIMD_INLINE bool all_zero(const u64x2 v) {
-  uint32x2_t a = vqmovn_u64(v);
-  return vreinterpret_u64_u32(a)[0] == 0;
-}
-SIMD_INLINE bool all_zero(const i8x16 v) {
-  return all_zero(u64x2(vreinterpretq_u64_s8(v)));
-}
-SIMD_INLINE bool all_zero(const u8x16 v) {
-  return all_zero(u64x2(vreinterpretq_u64_u8(v)));
-}
-SIMD_INLINE bool all_zero(const i16x8 v) {
-  return all_zero(u64x2(vreinterpretq_u64_s16(v)));
-}
-SIMD_INLINE bool all_zero(const u16x8 v) {
-  return all_zero(u64x2(vreinterpretq_u64_u16(v)));
-}
-SIMD_INLINE bool all_zero(const i32x4 v) {
-  return all_zero(u64x2(vreinterpretq_u64_s32(v)));
-}
-SIMD_INLINE bool all_zero(const u32x4 v) {
-  return all_zero(u64x2(vreinterpretq_u64_u32(v)));
-}
-SIMD_INLINE bool all_zero(const i64x2 v) {
-  return all_zero(u64x2(vreinterpretq_u64_s64(v)));
-}
-SIMD_INLINE bool all_zero(const f32x4 v) {
-  return all_zero(u64x2(vreinterpretq_u64_f32(v)));
-}
-SIMD_INLINE bool all_zero(const f64x2 v) {
-  return all_zero(u64x2(vreinterpretq_u64_f64(v)));
-}
-
-}  // namespace ext
 
 // ================================================== LOGICAL
 
 // ------------------------------ Bitwise AND
 
-SIMD_INLINE i8x16 operator&(const i8x16 a, const i8x16 b) {
-  return i8x16(vandq_s8(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int8_t, N> operator&(const vec_arm8<int8_t, N> a,
+                                          const vec_arm8<int8_t, N> b) {
+  return vec_arm8<int8_t, N>(vandq_s8(a.raw, b.raw));
 }
-SIMD_INLINE u8x16 operator&(const u8x16 a, const u8x16 b) {
-  return u8x16(vandq_u8(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> operator&(const vec_arm8<uint8_t, N> a,
+                                           const vec_arm8<uint8_t, N> b) {
+  return vec_arm8<uint8_t, N>(vandq_u8(a.raw, b.raw));
 }
-SIMD_INLINE i16x8 operator&(const i16x8 a, const i16x8 b) {
-  return i16x8(vandq_s16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int16_t, N> operator&(const vec_arm8<int16_t, N> a,
+                                           const vec_arm8<int16_t, N> b) {
+  return vec_arm8<int16_t, N>(vandq_s16(a.raw, b.raw));
 }
-SIMD_INLINE u16x8 operator&(const u16x8 a, const u16x8 b) {
-  return u16x8(vandq_u16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint16_t, N> operator&(const vec_arm8<uint16_t, N> a,
+                                            const vec_arm8<uint16_t, N> b) {
+  return vec_arm8<uint16_t, N>(vandq_u16(a.raw, b.raw));
 }
-SIMD_INLINE i32x4 operator&(const i32x4 a, const i32x4 b) {
-  return i32x4(vandq_s32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int32_t, N> operator&(const vec_arm8<int32_t, N> a,
+                                           const vec_arm8<int32_t, N> b) {
+  return vec_arm8<int32_t, N>(vandq_s32(a.raw, b.raw));
 }
-SIMD_INLINE u32x4 operator&(const u32x4 a, const u32x4 b) {
-  return u32x4(vandq_u32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint32_t, N> operator&(const vec_arm8<uint32_t, N> a,
+                                            const vec_arm8<uint32_t, N> b) {
+  return vec_arm8<uint32_t, N>(vandq_u32(a.raw, b.raw));
 }
-SIMD_INLINE i64x2 operator&(const i64x2 a, const i64x2 b) {
-  return i64x2(vandq_s64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int64_t, N> operator&(const vec_arm8<int64_t, N> a,
+                                           const vec_arm8<int64_t, N> b) {
+  return vec_arm8<int64_t, N>(vandq_s64(a.raw, b.raw));
 }
-SIMD_INLINE u64x2 operator&(const u64x2 a, const u64x2 b) {
-  return u64x2(vandq_u64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint64_t, N> operator&(const vec_arm8<uint64_t, N> a,
+                                            const vec_arm8<uint64_t, N> b) {
+  return vec_arm8<uint64_t, N>(vandq_u64(a.raw, b.raw));
 }
-SIMD_INLINE f32x4 operator&(const f32x4 a, const f32x4 b) {
-  uint32x4_t a_int = vreinterpretq_u32_f32(a);
-  uint32x4_t b_int = vreinterpretq_u32_f32(b);
-  uint32x4_t r_int = vandq_u32(a_int, b_int);
-  return f32x4(vreinterpretq_f32_u32(r_int));
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> operator&(const vec_arm8<float, N> a,
+                                         const vec_arm8<float, N> b) {
+  const Full<uint32_t, ARM8> d;
+  return cast_to(Full<float, ARM8>(), cast_to(d, a) & cast_to(d, b));
 }
-SIMD_INLINE f64x2 operator&(const f64x2 a, const f64x2 b) {
-  uint64x2_t a_int = vreinterpretq_u64_f64(a);
-  uint64x2_t b_int = vreinterpretq_u64_f64(b);
-  uint64x2_t r_int = vandq_u64(a_int, b_int);
-  return f64x2(vreinterpretq_f64_u64(r_int));
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> operator&(const vec_arm8<double, N> a,
+                                          const vec_arm8<double, N> b) {
+  const Full<uint64_t, ARM8> d;
+  return cast_to(Full<double, ARM8>(), cast_to(d, a) & cast_to(d, b));
 }
 
 // ------------------------------ Bitwise AND-NOT
 
 // Returns ~not_mask & mask.
-SIMD_INLINE i8x16 andnot(const i8x16 not_mask, const i8x16 mask) {
-  return i8x16(vbicq_s8(mask, not_mask));
+template <size_t N>
+SIMD_INLINE vec_arm8<int8_t, N> andnot(const vec_arm8<int8_t, N> not_mask,
+                                       const vec_arm8<int8_t, N> mask) {
+  return vec_arm8<int8_t, N>(vbicq_s8(mask.raw, not_mask.raw));
 }
-SIMD_INLINE u8x16 andnot(const u8x16 not_mask, const u8x16 mask) {
-  return u8x16(vbicq_u8(mask, not_mask));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> andnot(const vec_arm8<uint8_t, N> not_mask,
+                                        const vec_arm8<uint8_t, N> mask) {
+  return vec_arm8<uint8_t, N>(vbicq_u8(mask.raw, not_mask.raw));
 }
-SIMD_INLINE i16x8 andnot(const i16x8 not_mask, const i16x8 mask) {
-  return i16x8(vbicq_s16(mask, not_mask));
+template <size_t N>
+SIMD_INLINE vec_arm8<int16_t, N> andnot(const vec_arm8<int16_t, N> not_mask,
+                                        const vec_arm8<int16_t, N> mask) {
+  return vec_arm8<int16_t, N>(vbicq_s16(mask.raw, not_mask.raw));
 }
-SIMD_INLINE u16x8 andnot(const u16x8 not_mask, const u16x8 mask) {
-  return u16x8(vbicq_u16(mask, not_mask));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint16_t, N> andnot(const vec_arm8<uint16_t, N> not_mask,
+                                         const vec_arm8<uint16_t, N> mask) {
+  return vec_arm8<uint16_t, N>(vbicq_u16(mask.raw, not_mask.raw));
 }
-SIMD_INLINE i32x4 andnot(const i32x4 not_mask, const i32x4 mask) {
-  return i32x4(vbicq_s32(mask, not_mask));
+template <size_t N>
+SIMD_INLINE vec_arm8<int32_t, N> andnot(const vec_arm8<int32_t, N> not_mask,
+                                        const vec_arm8<int32_t, N> mask) {
+  return vec_arm8<int32_t, N>(vbicq_s32(mask.raw, not_mask.raw));
 }
-SIMD_INLINE u32x4 andnot(const u32x4 not_mask, const u32x4 mask) {
-  return u32x4(vbicq_u32(mask, not_mask));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint32_t, N> andnot(const vec_arm8<uint32_t, N> not_mask,
+                                         const vec_arm8<uint32_t, N> mask) {
+  return vec_arm8<uint32_t, N>(vbicq_u32(mask.raw, not_mask.raw));
 }
-SIMD_INLINE i64x2 andnot(const i64x2 not_mask, const i64x2 mask) {
-  return i64x2(vbicq_s64(mask, not_mask));
+template <size_t N>
+SIMD_INLINE vec_arm8<int64_t, N> andnot(const vec_arm8<int64_t, N> not_mask,
+                                        const vec_arm8<int64_t, N> mask) {
+  return vec_arm8<int64_t, N>(vbicq_s64(mask.raw, not_mask.raw));
 }
-SIMD_INLINE u64x2 andnot(const u64x2 not_mask, const u64x2 mask) {
-  return u64x2(vbicq_u64(mask, not_mask));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint64_t, N> andnot(const vec_arm8<uint64_t, N> not_mask,
+                                         const vec_arm8<uint64_t, N> mask) {
+  return vec_arm8<uint64_t, N>(vbicq_u64(mask.raw, not_mask.raw));
 }
-SIMD_INLINE f32x4 andnot(const f32x4 not_mask, const f32x4 mask) {
-  uint32x4_t not_mask_int = vreinterpretq_u32_f32(not_mask);
-  uint32x4_t mask_int = vreinterpretq_u32_f32(mask);
-  uint32x4_t r_int = vbicq_u32(mask_int, not_mask_int);
-  return f32x4(vreinterpretq_f32_u32(r_int));
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> andnot(const vec_arm8<float, N> not_mask,
+                                      const vec_arm8<float, N> mask) {
+  const Desc<uint32_t, N, ARM8> du;
+  uint32x4_t ret = vbicq_u32(cast_to(du, mask).raw, cast_to(du, not_mask).raw);
+  return vec_arm8<float, N>(vreinterpretq_f32_u32(ret));
 }
-SIMD_INLINE f64x2 andnot(const f64x2 not_mask, const f64x2 mask) {
-  uint64x2_t not_mask_int = vreinterpretq_u64_f64(not_mask);
-  uint64x2_t mask_int = vreinterpretq_u64_f64(mask);
-  uint64x2_t r_int = vbicq_u64(mask_int, not_mask_int);
-  return f64x2(vreinterpretq_f64_u64(r_int));
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> andnot(const vec_arm8<double, N> not_mask,
+                                       const vec_arm8<double, N> mask) {
+  const Desc<uint64_t, N, ARM8> du;
+  uint64x2_t ret = vbicq_u64(cast_to(du, mask).raw, cast_to(du, not_mask).raw);
+  return vec_arm8<double, N>(vreinterpretq_f64_u64(ret));
 }
 
 // ------------------------------ Bitwise OR
 
-SIMD_INLINE i8x16 operator|(const i8x16 a, const i8x16 b) {
-  return i8x16(vorrq_s8(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int8_t, N> operator|(const vec_arm8<int8_t, N> a,
+                                          const vec_arm8<int8_t, N> b) {
+  return vec_arm8<int8_t, N>(vorrq_s8(a.raw, b.raw));
 }
-SIMD_INLINE u8x16 operator|(const u8x16 a, const u8x16 b) {
-  return u8x16(vorrq_u8(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> operator|(const vec_arm8<uint8_t, N> a,
+                                           const vec_arm8<uint8_t, N> b) {
+  return vec_arm8<uint8_t, N>(vorrq_u8(a.raw, b.raw));
 }
-SIMD_INLINE i16x8 operator|(const i16x8 a, const i16x8 b) {
-  return i16x8(vorrq_s16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int16_t, N> operator|(const vec_arm8<int16_t, N> a,
+                                           const vec_arm8<int16_t, N> b) {
+  return vec_arm8<int16_t, N>(vorrq_s16(a.raw, b.raw));
 }
-SIMD_INLINE u16x8 operator|(const u16x8 a, const u16x8 b) {
-  return u16x8(vorrq_u16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint16_t, N> operator|(const vec_arm8<uint16_t, N> a,
+                                            const vec_arm8<uint16_t, N> b) {
+  return vec_arm8<uint16_t, N>(vorrq_u16(a.raw, b.raw));
 }
-SIMD_INLINE i32x4 operator|(const i32x4 a, const i32x4 b) {
-  return i32x4(vorrq_s32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int32_t, N> operator|(const vec_arm8<int32_t, N> a,
+                                           const vec_arm8<int32_t, N> b) {
+  return vec_arm8<int32_t, N>(vorrq_s32(a.raw, b.raw));
 }
-SIMD_INLINE u32x4 operator|(const u32x4 a, const u32x4 b) {
-  return u32x4(vorrq_u32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint32_t, N> operator|(const vec_arm8<uint32_t, N> a,
+                                            const vec_arm8<uint32_t, N> b) {
+  return vec_arm8<uint32_t, N>(vorrq_u32(a.raw, b.raw));
 }
-SIMD_INLINE i64x2 operator|(const i64x2 a, const i64x2 b) {
-  return i64x2(vorrq_s64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int64_t, N> operator|(const vec_arm8<int64_t, N> a,
+                                           const vec_arm8<int64_t, N> b) {
+  return vec_arm8<int64_t, N>(vorrq_s64(a.raw, b.raw));
 }
-SIMD_INLINE u64x2 operator|(const u64x2 a, const u64x2 b) {
-  return u64x2(vorrq_u64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint64_t, N> operator|(const vec_arm8<uint64_t, N> a,
+                                            const vec_arm8<uint64_t, N> b) {
+  return vec_arm8<uint64_t, N>(vorrq_u64(a.raw, b.raw));
 }
-SIMD_INLINE f32x4 operator|(const f32x4 a, const f32x4 b) {
-  uint32x4_t a_int = vreinterpretq_u32_f32(a);
-  uint32x4_t b_int = vreinterpretq_u32_f32(b);
-  uint32x4_t r_int = vorrq_u32(a_int, b_int);
-  return f32x4(vreinterpretq_f32_u32(r_int));
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> operator|(const vec_arm8<float, N> a,
+                                         const vec_arm8<float, N> b) {
+  const Full<uint32_t, ARM8> d;
+  return cast_to(Full<float, ARM8>(), cast_to(d, a) | cast_to(d, b));
 }
-SIMD_INLINE f64x2 operator|(const f64x2 a, const f64x2 b) {
-  uint64x2_t a_int = vreinterpretq_u64_f64(a);
-  uint64x2_t b_int = vreinterpretq_u64_f64(b);
-  uint64x2_t r_int = vorrq_u64(a_int, b_int);
-  return f64x2(vreinterpretq_f64_u64(r_int));
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> operator|(const vec_arm8<double, N> a,
+                                          const vec_arm8<double, N> b) {
+  const Full<uint64_t, ARM8> d;
+  return cast_to(Full<double, ARM8>(), cast_to(d, a) & cast_to(d, b));
 }
 
 // ------------------------------ Bitwise XOR
 
-SIMD_INLINE i8x16 operator^(const i8x16 a, const i8x16 b) {
-  return i8x16(veorq_s8(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int8_t, N> operator^(const vec_arm8<int8_t, N> a,
+                                          const vec_arm8<int8_t, N> b) {
+  return vec_arm8<int8_t, N>(veorq_s8(a.raw, b.raw));
 }
-SIMD_INLINE u8x16 operator^(const u8x16 a, const u8x16 b) {
-  return u8x16(veorq_u8(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> operator^(const vec_arm8<uint8_t, N> a,
+                                           const vec_arm8<uint8_t, N> b) {
+  return vec_arm8<uint8_t, N>(veorq_u8(a.raw, b.raw));
 }
-SIMD_INLINE i16x8 operator^(const i16x8 a, const i16x8 b) {
-  return i16x8(veorq_s16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int16_t, N> operator^(const vec_arm8<int16_t, N> a,
+                                           const vec_arm8<int16_t, N> b) {
+  return vec_arm8<int16_t, N>(veorq_s16(a.raw, b.raw));
 }
-SIMD_INLINE u16x8 operator^(const u16x8 a, const u16x8 b) {
-  return u16x8(veorq_u16(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint16_t, N> operator^(const vec_arm8<uint16_t, N> a,
+                                            const vec_arm8<uint16_t, N> b) {
+  return vec_arm8<uint16_t, N>(veorq_u16(a.raw, b.raw));
 }
-SIMD_INLINE i32x4 operator^(const i32x4 a, const i32x4 b) {
-  return i32x4(veorq_s32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int32_t, N> operator^(const vec_arm8<int32_t, N> a,
+                                           const vec_arm8<int32_t, N> b) {
+  return vec_arm8<int32_t, N>(veorq_s32(a.raw, b.raw));
 }
-SIMD_INLINE u32x4 operator^(const u32x4 a, const u32x4 b) {
-  return u32x4(veorq_u32(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint32_t, N> operator^(const vec_arm8<uint32_t, N> a,
+                                            const vec_arm8<uint32_t, N> b) {
+  return vec_arm8<uint32_t, N>(veorq_u32(a.raw, b.raw));
 }
-SIMD_INLINE i64x2 operator^(const i64x2 a, const i64x2 b) {
-  return i64x2(veorq_s64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<int64_t, N> operator^(const vec_arm8<int64_t, N> a,
+                                           const vec_arm8<int64_t, N> b) {
+  return vec_arm8<int64_t, N>(veorq_s64(a.raw, b.raw));
 }
-SIMD_INLINE u64x2 operator^(const u64x2 a, const u64x2 b) {
-  return u64x2(veorq_u64(a, b));
+template <size_t N>
+SIMD_INLINE vec_arm8<uint64_t, N> operator^(const vec_arm8<uint64_t, N> a,
+                                            const vec_arm8<uint64_t, N> b) {
+  return vec_arm8<uint64_t, N>(veorq_u64(a.raw, b.raw));
 }
-SIMD_INLINE f32x4 operator^(const f32x4 a, const f32x4 b) {
-  uint32x4_t a_int = vreinterpretq_u32_f32(a);
-  uint32x4_t b_int = vreinterpretq_u32_f32(b);
-  uint32x4_t r_int = veorq_u32(a_int, b_int);
-  return f32x4(vreinterpretq_f32_u32(r_int));
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> operator^(const vec_arm8<float, N> a,
+                                         const vec_arm8<float, N> b) {
+  const Full<uint32_t, ARM8> d;
+  return cast_to(Full<float, ARM8>(), cast_to(d, a) ^ cast_to(d, b));
 }
-SIMD_INLINE f64x2 operator^(const f64x2 a, const f64x2 b) {
-  uint64x2_t a_int = vreinterpretq_u64_f64(a);
-  uint64x2_t b_int = vreinterpretq_u64_f64(b);
-  uint64x2_t r_int = veorq_u64(a_int, b_int);
-  return f64x2(vreinterpretq_f64_u64(r_int));
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> operator^(const vec_arm8<double, N> a,
+                                          const vec_arm8<double, N> b) {
+  const Full<uint64_t, ARM8> d;
+  return cast_to(Full<double, ARM8>(), cast_to(d, a) ^ cast_to(d, b));
+}
+
+// ------------------------------ Select/blend
+
+// Returns mask ? b : a. Due to ARM's semantics, each lane of "mask" must
+// equal T(0) or ~T(0) although x86 may only check the most significant bit.
+template <size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> select(const vec_arm8<uint8_t, N> a,
+                                        const vec_arm8<uint8_t, N> b,
+                                        const vec_arm8<uint8_t, N> mask) {
+  return vec_arm8<uint8_t, N>(vbslq_u8(mask.raw, b.raw, a.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<int8_t, N> select(const vec_arm8<int8_t, N> a,
+                                       const vec_arm8<int8_t, N> b,
+                                       const vec_arm8<int8_t, N> mask) {
+  return vec_arm8<int8_t, N>(vbslq_s8(mask.raw, b.raw, a.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<uint16_t, N> select(const vec_arm8<uint16_t, N> a,
+                                         const vec_arm8<uint16_t, N> b,
+                                         const vec_arm8<uint16_t, N> mask) {
+  return vec_arm8<uint16_t, N>(vbslq_u16(mask.raw, b.raw, a.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<int16_t, N> select(const vec_arm8<int16_t, N> a,
+                                        const vec_arm8<int16_t, N> b,
+                                        const vec_arm8<int16_t, N> mask) {
+  return vec_arm8<int16_t, N>(vbslq_s16(mask.raw, b.raw, a.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<uint32_t, N> select(const vec_arm8<uint32_t, N> a,
+                                         const vec_arm8<uint32_t, N> b,
+                                         const vec_arm8<uint32_t, N> mask) {
+  return vec_arm8<uint32_t, N>(vbslq_u32(mask.raw, b.raw, a.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<int32_t, N> select(const vec_arm8<int32_t, N> a,
+                                        const vec_arm8<int32_t, N> b,
+                                        const vec_arm8<int32_t, N> mask) {
+  return vec_arm8<int32_t, N>(vbslq_s32(mask.raw, b.raw, a.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<uint64_t, N> select(const vec_arm8<uint64_t, N> a,
+                                         const vec_arm8<uint64_t, N> b,
+                                         const vec_arm8<uint64_t, N> mask) {
+  return vec_arm8<uint64_t, N>(vbslq_u64(mask.raw, b.raw, a.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<int64_t, N> select(const vec_arm8<int64_t, N> a,
+                                        const vec_arm8<int64_t, N> b,
+                                        const vec_arm8<int64_t, N> mask) {
+  return vec_arm8<int64_t, N>(vbslq_s64(mask.raw, b.raw, a.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> select(const vec_arm8<float, N> a,
+                                      const vec_arm8<float, N> b,
+                                      const vec_arm8<float, N> mask) {
+  return vec_arm8<float, N>(vbslq_f32(mask.raw, b.raw, a.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> select(const vec_arm8<double, N> a,
+                                       const vec_arm8<double, N> b,
+                                       const vec_arm8<double, N> mask) {
+  return vec_arm8<double, N>(vbslq_f64(mask.raw, b.raw, a.raw));
 }
 
 // ================================================== MEMORY
 
 // ------------------------------ Load 128
 
-SIMD_INLINE u8x16 load_unaligned(Full<uint8_t, ARM8>,
-                                 const uint8_t* SIMD_RESTRICT aligned) {
-  return u8x16(vld1q_u8(aligned));
+SIMD_INLINE vec_arm8<uint8_t> load_unaligned(
+    Full<uint8_t, ARM8>, const uint8_t* SIMD_RESTRICT aligned) {
+  return vec_arm8<uint8_t>(vld1q_u8(aligned));
 }
-SIMD_INLINE u16x8 load_unaligned(Full<uint16_t, ARM8>,
-                                 const uint16_t* SIMD_RESTRICT aligned) {
-  return u16x8(vld1q_u16(aligned));
+SIMD_INLINE vec_arm8<uint16_t> load_unaligned(
+    Full<uint16_t, ARM8>, const uint16_t* SIMD_RESTRICT aligned) {
+  return vec_arm8<uint16_t>(vld1q_u16(aligned));
 }
-SIMD_INLINE u32x4 load_unaligned(Full<uint32_t, ARM8>,
-                                 const uint32_t* SIMD_RESTRICT aligned) {
-  return u32x4(vld1q_u32(aligned));
+SIMD_INLINE vec_arm8<uint32_t> load_unaligned(
+    Full<uint32_t, ARM8>, const uint32_t* SIMD_RESTRICT aligned) {
+  return vec_arm8<uint32_t>(vld1q_u32(aligned));
 }
-SIMD_INLINE u64x2 load_unaligned(Full<uint64_t, ARM8>,
-                                 const uint64_t* SIMD_RESTRICT aligned) {
-  return u64x2(vld1q_u64(aligned));
+SIMD_INLINE vec_arm8<uint64_t> load_unaligned(
+    Full<uint64_t, ARM8>, const uint64_t* SIMD_RESTRICT aligned) {
+  return vec_arm8<uint64_t>(vld1q_u64(aligned));
 }
-SIMD_INLINE i8x16 load_unaligned(Full<int8_t, ARM8>,
-                                 const int8_t* SIMD_RESTRICT aligned) {
-  return i8x16(vld1q_s8(aligned));
+SIMD_INLINE vec_arm8<int8_t> load_unaligned(
+    Full<int8_t, ARM8>, const int8_t* SIMD_RESTRICT aligned) {
+  return vec_arm8<int8_t>(vld1q_s8(aligned));
 }
-SIMD_INLINE i16x8 load_unaligned(Full<int16_t, ARM8>,
-                                 const int16_t* SIMD_RESTRICT aligned) {
-  return i16x8(vld1q_s16(aligned));
+SIMD_INLINE vec_arm8<int16_t> load_unaligned(
+    Full<int16_t, ARM8>, const int16_t* SIMD_RESTRICT aligned) {
+  return vec_arm8<int16_t>(vld1q_s16(aligned));
 }
-SIMD_INLINE i32x4 load_unaligned(Full<int32_t, ARM8>,
-                                 const int32_t* SIMD_RESTRICT aligned) {
-  return i32x4(vld1q_s32(aligned));
+SIMD_INLINE vec_arm8<int32_t> load_unaligned(
+    Full<int32_t, ARM8>, const int32_t* SIMD_RESTRICT aligned) {
+  return vec_arm8<int32_t>(vld1q_s32(aligned));
 }
-SIMD_INLINE i64x2 load_unaligned(Full<int64_t, ARM8>,
-                                 const int64_t* SIMD_RESTRICT aligned) {
-  return i64x2(vld1q_s64(aligned));
+SIMD_INLINE vec_arm8<int64_t> load_unaligned(
+    Full<int64_t, ARM8>, const int64_t* SIMD_RESTRICT aligned) {
+  return vec_arm8<int64_t>(vld1q_s64(aligned));
 }
-SIMD_INLINE f32x4 load_unaligned(Full<float, ARM8>,
-                                 const float* SIMD_RESTRICT aligned) {
-  return f32x4(vld1q_f32(aligned));
+SIMD_INLINE vec_arm8<float> load_unaligned(Full<float, ARM8>,
+                                           const float* SIMD_RESTRICT aligned) {
+  return vec_arm8<float>(vld1q_f32(aligned));
 }
-SIMD_INLINE f64x2 load_unaligned(Full<double, ARM8>,
-                                 const double* SIMD_RESTRICT aligned) {
-  return f64x2(vld1q_f64(aligned));
+SIMD_INLINE vec_arm8<double> load_unaligned(
+    Full<double, ARM8>, const double* SIMD_RESTRICT aligned) {
+  return vec_arm8<double>(vld1q_f64(aligned));
 }
 
 template <typename T>
@@ -1332,43 +1632,50 @@ SIMD_INLINE vec_arm8<T> load(Full<T, ARM8> d, const T* SIMD_RESTRICT p) {
 template <typename T>
 SIMD_INLINE dup128x1<T> load_dup128(Full<T, ARM8> d,
                                     const T* const SIMD_RESTRICT p) {
-  return dup128x1<T>(load_unaligned(d, p));
+  return dup128x1<T>(load_unaligned(d, p).raw);
 }
 
 // ------------------------------ Load 64
 
-SIMD_INLINE u8x8 load(Desc<uint8_t, 8, ARM8>, const uint8_t* SIMD_RESTRICT p) {
-  return u8x8(vld1_u8(p));
+SIMD_INLINE vec_arm8<uint8_t, 8> load(Desc<uint8_t, 8, ARM8>,
+                                      const uint8_t* SIMD_RESTRICT p) {
+  return vec_arm8<uint8_t, 8>(vld1_u8(p));
 }
-SIMD_INLINE u16x4 load(Desc<uint16_t, 4, ARM8>,
-                       const uint16_t* SIMD_RESTRICT p) {
-  return u16x4(vld1_u16(p));
+SIMD_INLINE vec_arm8<uint16_t, 4> load(Desc<uint16_t, 4, ARM8>,
+                                       const uint16_t* SIMD_RESTRICT p) {
+  return vec_arm8<uint16_t, 4>(vld1_u16(p));
 }
-SIMD_INLINE u32x2 load(Desc<uint32_t, 2, ARM8>,
-                       const uint32_t* SIMD_RESTRICT p) {
-  return u32x2(vld1_u32(p));
+SIMD_INLINE vec_arm8<uint32_t, 2> load(Desc<uint32_t, 2, ARM8>,
+                                       const uint32_t* SIMD_RESTRICT p) {
+  return vec_arm8<uint32_t, 2>(vld1_u32(p));
 }
-SIMD_INLINE u64x1 load(Desc<uint64_t, 1, ARM8>,
-                       const uint64_t* SIMD_RESTRICT p) {
-  return u64x1(vld1_u64(p));
+SIMD_INLINE vec_arm8<uint64_t, 1> load(Desc<uint64_t, 1, ARM8>,
+                                       const uint64_t* SIMD_RESTRICT p) {
+  return vec_arm8<uint64_t, 1>(vld1_u64(p));
 }
-SIMD_INLINE i8x8 load(Desc<int8_t, 8, ARM8>, const int8_t* SIMD_RESTRICT p) {
-  return i8x8(vld1_s8(p));
+SIMD_INLINE vec_arm8<int8_t, 8> load(Desc<int8_t, 8, ARM8>,
+                                     const int8_t* SIMD_RESTRICT p) {
+  return vec_arm8<int8_t, 8>(vld1_s8(p));
 }
-SIMD_INLINE i16x4 load(Desc<int16_t, 4, ARM8>, const int16_t* SIMD_RESTRICT p) {
-  return i16x4(vld1_s16(p));
+SIMD_INLINE vec_arm8<int16_t, 4> load(Desc<int16_t, 4, ARM8>,
+                                      const int16_t* SIMD_RESTRICT p) {
+  return vec_arm8<int16_t, 4>(vld1_s16(p));
 }
-SIMD_INLINE i32x2 load(Desc<int32_t, 2, ARM8>, const int32_t* SIMD_RESTRICT p) {
-  return i32x2(vld1_s32(p));
+SIMD_INLINE vec_arm8<int32_t, 2> load(Desc<int32_t, 2, ARM8>,
+                                      const int32_t* SIMD_RESTRICT p) {
+  return vec_arm8<int32_t, 2>(vld1_s32(p));
 }
-SIMD_INLINE i64x1 load(Desc<int64_t, 1, ARM8>, const int64_t* SIMD_RESTRICT p) {
-  return i64x1(vld1_s64(p));
+SIMD_INLINE vec_arm8<int64_t, 1> load(Desc<int64_t, 1, ARM8>,
+                                      const int64_t* SIMD_RESTRICT p) {
+  return vec_arm8<int64_t, 1>(vld1_s64(p));
 }
-SIMD_INLINE f32x2 load(Desc<float, 2, ARM8>, const float* SIMD_RESTRICT p) {
-  return f32x2(vld1_f32(p));
+SIMD_INLINE vec_arm8<float, 2> load(Desc<float, 2, ARM8>,
+                                    const float* SIMD_RESTRICT p) {
+  return vec_arm8<float, 2>(vld1_f32(p));
 }
-SIMD_INLINE f64x1 load(Desc<double, 1, ARM8>, const double* SIMD_RESTRICT p) {
-  return f64x1(vld1_f64(p));
+SIMD_INLINE vec_arm8<double, 1> load(Desc<double, 1, ARM8>,
+                                     const double* SIMD_RESTRICT p) {
+  return vec_arm8<double, 1>(vld1_f64(p));
 }
 
 // ------------------------------ Load 32
@@ -1380,91 +1687,99 @@ SIMD_INLINE f64x1 load(Desc<double, 1, ARM8>, const double* SIMD_RESTRICT p) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wuninitialized"
 
-SIMD_INLINE u8x4 load(Desc<uint8_t, 4, ARM8>, const uint8_t* SIMD_RESTRICT p) {
+SIMD_INLINE vec_arm8<uint8_t, 4> load(Desc<uint8_t, 4, ARM8>,
+                                      const uint8_t* SIMD_RESTRICT p) {
   uint32x2_t a;
   uint32x2_t b = vld1_lane_u32(reinterpret_cast<const uint32_t*>(p), a, 0);
-  return u8x4(vreinterpret_u8_u32(b));
+  return vec_arm8<uint8_t, 4>(vreinterpret_u8_u32(b));
 }
-SIMD_INLINE u16x2 load(Desc<uint16_t, 2, ARM8>,
-                       const uint16_t* SIMD_RESTRICT p) {
+SIMD_INLINE vec_arm8<uint16_t, 2> load(Desc<uint16_t, 2, ARM8>,
+                                       const uint16_t* SIMD_RESTRICT p) {
   uint32x2_t a;
   uint32x2_t b = vld1_lane_u32(reinterpret_cast<const uint32_t*>(p), a, 0);
-  return u16x2(vreinterpret_u16_u32(b));
+  return vec_arm8<uint16_t, 2>(vreinterpret_u16_u32(b));
 }
-SIMD_INLINE u32x1 load(Desc<uint32_t, 1, ARM8>,
-                       const uint32_t* SIMD_RESTRICT p) {
+SIMD_INLINE vec_arm8<uint32_t, 1> load(Desc<uint32_t, 1, ARM8>,
+                                       const uint32_t* SIMD_RESTRICT p) {
   uint32x2_t a;
   uint32x2_t b = vld1_lane_u32(p, a, 0);
-  return u32x1(b);
+  return vec_arm8<uint32_t, 1>(b);
 }
-SIMD_INLINE i8x4 load(Desc<int8_t, 4, ARM8>, const int8_t* SIMD_RESTRICT p) {
+SIMD_INLINE vec_arm8<int8_t, 4> load(Desc<int8_t, 4, ARM8>,
+                                     const int8_t* SIMD_RESTRICT p) {
   int32x2_t a;
   int32x2_t b = vld1_lane_s32(reinterpret_cast<const int32_t*>(p), a, 0);
-  return i8x4(vreinterpret_s8_s32(b));
+  return vec_arm8<int8_t, 4>(vreinterpret_s8_s32(b));
 }
-SIMD_INLINE i16x2 load(Desc<int16_t, 2, ARM8>, const int16_t* SIMD_RESTRICT p) {
+SIMD_INLINE vec_arm8<int16_t, 2> load(Desc<int16_t, 2, ARM8>,
+                                      const int16_t* SIMD_RESTRICT p) {
   int32x2_t a;
   int32x2_t b = vld1_lane_s32(reinterpret_cast<const int32_t*>(p), a, 0);
-  return i16x2(vreinterpret_s16_s32(b));
+  return vec_arm8<int16_t, 2>(vreinterpret_s16_s32(b));
 }
-SIMD_INLINE i32x1 load(Desc<int32_t, 1, ARM8>, const int32_t* SIMD_RESTRICT p) {
+SIMD_INLINE vec_arm8<int32_t, 1> load(Desc<int32_t, 1, ARM8>,
+                                      const int32_t* SIMD_RESTRICT p) {
   int32x2_t a;
   int32x2_t b = vld1_lane_s32(p, a, 0);
-  return i32x1(b);
+  return vec_arm8<int32_t, 1>(b);
 }
-SIMD_INLINE f32x1 load(Desc<float, 1, ARM8>, const float* SIMD_RESTRICT p) {
+SIMD_INLINE vec_arm8<float, 1> load(Desc<float, 1, ARM8>,
+                                    const float* SIMD_RESTRICT p) {
   float32x2_t a;
   float32x2_t b = vld1_lane_f32(p, a, 0);
-  return f32x1(b);
+  return vec_arm8<float, 1>(b);
 }
 
 #pragma clang diagnostic pop
 
 // ------------------------------ Store 128
 
-SIMD_INLINE void store_unaligned(const u8x16 v, Full<uint8_t, ARM8>,
+SIMD_INLINE void store_unaligned(const vec_arm8<uint8_t> v, Full<uint8_t, ARM8>,
                                  uint8_t* SIMD_RESTRICT aligned) {
-  vst1q_u8(aligned, v);
+  vst1q_u8(aligned, v.raw);
 }
-SIMD_INLINE void store_unaligned(const u16x8 v, Full<uint16_t, ARM8>,
+SIMD_INLINE void store_unaligned(const vec_arm8<uint16_t> v,
+                                 Full<uint16_t, ARM8>,
                                  uint16_t* SIMD_RESTRICT aligned) {
-  vst1q_u16(aligned, v);
+  vst1q_u16(aligned, v.raw);
 }
-SIMD_INLINE void store_unaligned(const u32x4 v, Full<uint32_t, ARM8>,
+SIMD_INLINE void store_unaligned(const vec_arm8<uint32_t> v,
+                                 Full<uint32_t, ARM8>,
                                  uint32_t* SIMD_RESTRICT aligned) {
-  vst1q_u32(aligned, v);
+  vst1q_u32(aligned, v.raw);
 }
-SIMD_INLINE void store_unaligned(const u64x2 v, Full<uint64_t, ARM8>,
+SIMD_INLINE void store_unaligned(const vec_arm8<uint64_t> v,
+                                 Full<uint64_t, ARM8>,
                                  uint64_t* SIMD_RESTRICT aligned) {
-  vst1q_u64(aligned, v);
+  vst1q_u64(aligned, v.raw);
 }
-SIMD_INLINE void store_unaligned(const i8x16 v, Full<int8_t, ARM8>,
+SIMD_INLINE void store_unaligned(const vec_arm8<int8_t> v, Full<int8_t, ARM8>,
                                  int8_t* SIMD_RESTRICT aligned) {
-  vst1q_s8(aligned, v);
+  vst1q_s8(aligned, v.raw);
 }
-SIMD_INLINE void store_unaligned(const i16x8 v, Full<int16_t, ARM8>,
+SIMD_INLINE void store_unaligned(const vec_arm8<int16_t> v, Full<int16_t, ARM8>,
                                  int16_t* SIMD_RESTRICT aligned) {
-  vst1q_s16(aligned, v);
+  vst1q_s16(aligned, v.raw);
 }
-SIMD_INLINE void store_unaligned(const i32x4 v, Full<int32_t, ARM8>,
+SIMD_INLINE void store_unaligned(const vec_arm8<int32_t> v, Full<int32_t, ARM8>,
                                  int32_t* SIMD_RESTRICT aligned) {
-  vst1q_s32(aligned, v);
+  vst1q_s32(aligned, v.raw);
 }
-SIMD_INLINE void store_unaligned(const i64x2 v, Full<int64_t, ARM8>,
+SIMD_INLINE void store_unaligned(const vec_arm8<int64_t> v, Full<int64_t, ARM8>,
                                  int64_t* SIMD_RESTRICT aligned) {
-  vst1q_s64(aligned, v);
+  vst1q_s64(aligned, v.raw);
 }
-SIMD_INLINE void store_unaligned(const f32x4 v, Full<float, ARM8>,
+SIMD_INLINE void store_unaligned(const vec_arm8<float> v, Full<float, ARM8>,
                                  float* SIMD_RESTRICT aligned) {
-  vst1q_f32(aligned, v);
+  vst1q_f32(aligned, v.raw);
 }
-SIMD_INLINE void store_unaligned(const f64x2 v, Full<double, ARM8>,
+SIMD_INLINE void store_unaligned(const vec_arm8<double> v, Full<double, ARM8>,
                                  double* SIMD_RESTRICT aligned) {
-  vst1q_f64(aligned, v);
+  vst1q_f64(aligned, v.raw);
 }
 
 template <typename T, size_t N>
-SIMD_INLINE void store(Vec<T, N, ARM8> v, Desc<T, N, ARM8> d,
+SIMD_INLINE void store(vec_arm8<T, N> v, Desc<T, N, ARM8> d,
                        T* SIMD_RESTRICT p) {
   store_unaligned(v, d, p);
 }
@@ -1477,80 +1792,80 @@ SIMD_INLINE void store(const dup128x1<T, N> v, Full<T, ARM8> d,
 
 // ------------------------------ Store 64
 
-SIMD_INLINE void store(const u8x8 v, Desc<uint8_t, 8, ARM8>,
+SIMD_INLINE void store(const vec_arm8<uint8_t, 8> v, Desc<uint8_t, 8, ARM8>,
                        uint8_t* SIMD_RESTRICT p) {
-  vst1_u8(p, v);
+  vst1_u8(p, v.raw);
 }
-SIMD_INLINE void store(const u16x4 v, Desc<uint16_t, 4, ARM8>,
+SIMD_INLINE void store(const vec_arm8<uint16_t, 4> v, Desc<uint16_t, 4, ARM8>,
                        uint16_t* SIMD_RESTRICT p) {
-  vst1_u16(p, v);
+  vst1_u16(p, v.raw);
 }
-SIMD_INLINE void store(const u32x2 v, Desc<uint32_t, 2, ARM8>,
+SIMD_INLINE void store(const vec_arm8<uint32_t, 2> v, Desc<uint32_t, 2, ARM8>,
                        uint32_t* SIMD_RESTRICT p) {
-  vst1_u32(p, v);
+  vst1_u32(p, v.raw);
 }
-SIMD_INLINE void store(const u64x1 v, Desc<uint64_t, 1, ARM8>,
+SIMD_INLINE void store(const vec_arm8<uint64_t, 1> v, Desc<uint64_t, 1, ARM8>,
                        uint64_t* SIMD_RESTRICT p) {
-  vst1_u64(p, v);
+  vst1_u64(p, v.raw);
 }
-SIMD_INLINE void store(const i8x8 v, Desc<int8_t, 8, ARM8>,
+SIMD_INLINE void store(const vec_arm8<int8_t, 8> v, Desc<int8_t, 8, ARM8>,
                        int8_t* SIMD_RESTRICT p) {
-  vst1_s8(p, v);
+  vst1_s8(p, v.raw);
 }
-SIMD_INLINE void store(const i16x4 v, Desc<int16_t, 4, ARM8>,
+SIMD_INLINE void store(const vec_arm8<int16_t, 4> v, Desc<int16_t, 4, ARM8>,
                        int16_t* SIMD_RESTRICT p) {
-  vst1_s16(p, v);
+  vst1_s16(p, v.raw);
 }
-SIMD_INLINE void store(const i32x2 v, Desc<int32_t, 2, ARM8>,
+SIMD_INLINE void store(const vec_arm8<int32_t, 2> v, Desc<int32_t, 2, ARM8>,
                        int32_t* SIMD_RESTRICT p) {
-  vst1_s32(p, v);
+  vst1_s32(p, v.raw);
 }
-SIMD_INLINE void store(const i64x1 v, Desc<int64_t, 1, ARM8>,
+SIMD_INLINE void store(const vec_arm8<int64_t, 1> v, Desc<int64_t, 1, ARM8>,
                        int64_t* SIMD_RESTRICT p) {
-  vst1_s64(p, v);
+  vst1_s64(p, v.raw);
 }
-SIMD_INLINE void store(const f32x2 v, Desc<float, 2, ARM8>,
+SIMD_INLINE void store(const vec_arm8<float, 2> v, Desc<float, 2, ARM8>,
                        float* SIMD_RESTRICT p) {
-  vst1_f32(p, v);
+  vst1_f32(p, v.raw);
 }
-SIMD_INLINE void store(const f64x1 v, Desc<double, 1, ARM8>,
+SIMD_INLINE void store(const vec_arm8<double, 1> v, Desc<double, 1, ARM8>,
                        double* SIMD_RESTRICT p) {
-  vst1_f64(p, v);
+  vst1_f64(p, v.raw);
 }
 
 // ------------------------------ Store 32
 
-SIMD_INLINE void store(const u8x4 v, Desc<uint8_t, 4, ARM8>,
+SIMD_INLINE void store(const vec_arm8<uint8_t, 4> v, Desc<uint8_t, 4, ARM8>,
                        uint8_t* SIMD_RESTRICT p) {
-  uint32x2_t a = vreinterpret_u32_u8(v);
+  uint32x2_t a = vreinterpret_u32_u8(v.raw);
   vst1_lane_u32(p, a, 0);
 }
-SIMD_INLINE void store(const u16x2 v, Desc<uint16_t, 2, ARM8>,
+SIMD_INLINE void store(const vec_arm8<uint16_t, 2> v, Desc<uint16_t, 2, ARM8>,
                        uint16_t* SIMD_RESTRICT p) {
-  uint32x2_t a = vreinterpret_u32_u16(v);
+  uint32x2_t a = vreinterpret_u32_u16(v.raw);
   vst1_lane_u32(p, a, 0);
 }
-SIMD_INLINE void store(const u32x1 v, Desc<uint32_t, 1, ARM8>,
+SIMD_INLINE void store(const vec_arm8<uint32_t, 1> v, Desc<uint32_t, 1, ARM8>,
                        uint32_t* SIMD_RESTRICT p) {
-  vst1_lane_u32(p, v, 0);
+  vst1_lane_u32(p, v.raw, 0);
 }
-SIMD_INLINE void store(const i8x4 v, Desc<int8_t, 4, ARM8>,
+SIMD_INLINE void store(const vec_arm8<int8_t, 4> v, Desc<int8_t, 4, ARM8>,
                        int8_t* SIMD_RESTRICT p) {
-  int32x2_t a = vreinterpret_s32_s8(v);
+  int32x2_t a = vreinterpret_s32_s8(v.raw);
   vst1_lane_s32(p, a, 0);
 }
-SIMD_INLINE void store(const i16x2 v, Desc<int16_t, 2, ARM8>,
+SIMD_INLINE void store(const vec_arm8<int16_t, 2> v, Desc<int16_t, 2, ARM8>,
                        int16_t* SIMD_RESTRICT p) {
-  int32x2_t a = vreinterpret_s32_s16(v);
+  int32x2_t a = vreinterpret_s32_s16(v.raw);
   vst1_lane_s32(p, a, 0);
 }
-SIMD_INLINE void store(const i32x1 v, Desc<int32_t, 1, ARM8>,
+SIMD_INLINE void store(const vec_arm8<int32_t, 1> v, Desc<int32_t, 1, ARM8>,
                        int32_t* SIMD_RESTRICT p) {
-  vst1_lane_s32(p, v, 0);
+  vst1_lane_s32(p, v.raw, 0);
 }
-SIMD_INLINE void store(const f32x1 v, Desc<float, 1, ARM8>,
+SIMD_INLINE void store(const vec_arm8<float, 1> v, Desc<float, 1, ARM8>,
                        float* SIMD_RESTRICT p) {
-  vst1_lane_f32(p, v, 0);
+  vst1_lane_f32(p, v.raw, 0);
 }
 
 // ------------------------------ Non-temporal stores
@@ -1563,127 +1878,176 @@ SIMD_INLINE void stream(const vec_arm8<T> v, Full<T, ARM8> d,
   store(v, d, aligned);
 }
 
+// ================================================== CONVERT
+
+// ------------------------------ Promotions (part w/ narrow lanes -> full)
+
+// Unsigned: zero-extend.
+SIMD_INLINE vec_arm8<uint16_t> convert_to(Full<uint16_t, ARM8>,
+                                          const vec_arm8<uint8_t, 8> v) {
+  return vec_arm8<uint16_t>(vmovl_u8(v.raw));
+}
+SIMD_INLINE vec_arm8<uint32_t> convert_to(Full<uint32_t, ARM8>,
+                                          const vec_arm8<uint8_t, 4> v) {
+  uint16x8_t a = vmovl_u8(v.raw);
+  return vec_arm8<uint32_t>(vmovl_u16(vget_low_u16(a)));
+}
+SIMD_INLINE vec_arm8<uint32_t> convert_to(Full<uint32_t, ARM8>,
+                                          const vec_arm8<uint16_t, 4> v) {
+  return vec_arm8<uint32_t>(vmovl_u16(v.raw));
+}
+SIMD_INLINE vec_arm8<uint64_t> convert_to(Full<uint64_t, ARM8>,
+                                          const vec_arm8<uint32_t, 2> v) {
+  return vec_arm8<uint64_t>(vmovl_u32(v.raw));
+}
+SIMD_INLINE vec_arm8<int16_t> convert_to(Full<int16_t, ARM8>,
+                                         const vec_arm8<uint8_t, 8> v) {
+  return vec_arm8<int16_t>(vmovl_u8(v.raw));
+}
+SIMD_INLINE vec_arm8<int32_t> convert_to(Full<int32_t, ARM8>,
+                                         const vec_arm8<uint8_t, 4> v) {
+  uint16x8_t a = vmovl_u8(v.raw);
+  return vec_arm8<int32_t>(vreinterpretq_s32_u16(vmovl_u16(vget_low_u16(a))));
+}
+SIMD_INLINE vec_arm8<int32_t> convert_to(Full<int32_t, ARM8>,
+                                         const vec_arm8<uint16_t, 4> v) {
+  return vec_arm8<int32_t>(vmovl_u16(v.raw));
+}
+
+// Signed: replicate sign bit.
+SIMD_INLINE vec_arm8<int16_t> convert_to(Full<int16_t, ARM8>,
+                                         const vec_arm8<int8_t, 8> v) {
+  return vec_arm8<int16_t>(vmovl_s8(v.raw));
+}
+SIMD_INLINE vec_arm8<int32_t> convert_to(Full<int32_t, ARM8>,
+                                         const vec_arm8<int8_t, 4> v) {
+  int16x8_t a = vmovl_s8(v.raw);
+  return vec_arm8<int32_t>(vmovl_s16(vget_low_s16(a)));
+}
+SIMD_INLINE vec_arm8<int32_t> convert_to(Full<int32_t, ARM8>,
+                                         const vec_arm8<int16_t, 4> v) {
+  return vec_arm8<int32_t>(vmovl_s16(v.raw));
+}
+SIMD_INLINE vec_arm8<int64_t> convert_to(Full<int64_t, ARM8>,
+                                         const vec_arm8<int32_t, 2> v) {
+  return vec_arm8<int64_t>(vmovl_s32(v.raw));
+}
+
+// ------------------------------ Demotions (full -> part w/ narrow lanes)
+
+SIMD_INLINE vec_arm8<uint16_t, 4> convert_to(Part<uint16_t, 4, ARM8>,
+                                             const vec_arm8<int32_t> v) {
+  return vec_arm8<uint16_t, 4>(vqmovun_s32(v.raw));
+}
+SIMD_INLINE vec_arm8<uint8_t, 8> convert_to(Part<uint8_t, 8, ARM8>,
+                                            const vec_arm8<uint16_t> v) {
+  return vec_arm8<uint8_t, 8>(vqmovn_u16(v.raw));
+}
+
+SIMD_INLINE vec_arm8<uint8_t, 8> convert_to(Part<uint8_t, 8, ARM8>,
+                                            const vec_arm8<int16_t> v) {
+  return vec_arm8<uint8_t, 8>(vqmovun_s16(v.raw));
+}
+
+SIMD_INLINE vec_arm8<int16_t, 4> convert_to(Part<int16_t, 4, ARM8>,
+                                            const vec_arm8<int32_t> v) {
+  return vec_arm8<int16_t, 4>(vqmovn_s32(v.raw));
+}
+SIMD_INLINE vec_arm8<int8_t, 8> convert_to(Part<int8_t, 8, ARM8>,
+                                           const vec_arm8<int16_t> v) {
+  return vec_arm8<int8_t, 8>(vqmovn_s16(v.raw));
+}
+
+// In the following convert_to functions, |b| is purposely undefined.
+// The value a needs to be extended to 128 bits so that vqmovn can be
+// used and |b| is undefined so that no extra overhead is introduced.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wuninitialized"
+
+SIMD_INLINE vec_arm8<uint8_t, 4> convert_to(Part<uint8_t, 4, ARM8>,
+                                            const vec_arm8<int32_t> v) {
+  vec_arm8<uint16_t, 4> a = convert_to(Desc<uint16_t, 4, ARM8>(), v);
+  vec_arm8<uint16_t, 4> b;
+  uint16x8_t c = vcombine_u16(a.raw, b.raw);
+  return vec_arm8<uint8_t, 4>(vqmovn_u16(c));
+}
+
+SIMD_INLINE vec_arm8<int8_t, 4> convert_to(Part<int8_t, 4, ARM8>,
+                                           const vec_arm8<int32_t> v) {
+  vec_arm8<int16_t, 4> a = convert_to(Desc<int16_t, 4, ARM8>(), v);
+  vec_arm8<int16_t, 4> b;
+  uint16x8_t c = vcombine_s16(a.raw, b.raw);
+  return vec_arm8<int8_t, 4>(vqmovn_s16(c));
+}
+
+#pragma clang diagnostic pop
+
+// ------------------------------ Convert i32 <=> f32
+
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> convert_to(Part<float, N, ARM8>,
+                                          const vec_arm8<int32_t, N> v) {
+  return vec_arm8<float, N>(vcvtq_f32_s32(v.raw));
+}
+// Truncates (rounds toward zero).
+template <size_t N>
+SIMD_INLINE vec_arm8<int32_t, N> convert_to(Part<int32_t, N, ARM8>,
+                                            const vec_arm8<float, N> v) {
+  return vec_arm8<int32_t, N>(vcvtq_s32_f32(v.raw));
+}
+
+template <size_t N>
+SIMD_INLINE vec_arm8<int32_t, N> nearest_int(const vec_arm8<float, N> v) {
+  return vec_arm8<int32_t, N>(vcvtnq_s32_f32(v.raw));
+}
+
 // ================================================== SWIZZLE
 
 // ------------------------------ 'Extract' other half (see any_part)
 
 // These copy hi into lo
-SIMD_INLINE u8x8 other_half(const u8x16 v) { return u8x8(vget_high_u8(v.raw)); }
-SIMD_INLINE i8x8 other_half(const i8x16 v) { return i8x8(vget_high_s8(v.raw)); }
-SIMD_INLINE u16x4 other_half(const u16x8 v) {
-  return u16x4(vget_high_u16(v.raw));
+SIMD_INLINE vec_arm8<uint8_t, 8> other_half(const vec_arm8<uint8_t> v) {
+  return vec_arm8<uint8_t, 8>(vget_high_u8(v.raw));
 }
-SIMD_INLINE i16x4 other_half(const i16x8 v) {
-  return i16x4(vget_high_s16(v.raw));
+SIMD_INLINE vec_arm8<int8_t, 8> other_half(const vec_arm8<int8_t> v) {
+  return vec_arm8<int8_t, 8>(vget_high_s8(v.raw));
 }
-SIMD_INLINE u32x2 other_half(const u32x4 v) {
-  return u32x2(vget_high_u32(v.raw));
+SIMD_INLINE vec_arm8<uint16_t, 4> other_half(const vec_arm8<uint16_t> v) {
+  return vec_arm8<uint16_t, 4>(vget_high_u16(v.raw));
 }
-SIMD_INLINE i32x2 other_half(const i32x4 v) {
-  return i32x2(vget_high_s32(v.raw));
+SIMD_INLINE vec_arm8<int16_t, 4> other_half(const vec_arm8<int16_t> v) {
+  return vec_arm8<int16_t, 4>(vget_high_s16(v.raw));
 }
-SIMD_INLINE u64x1 other_half(const u64x2 v) {
-  return u64x1(vget_high_u64(v.raw));
+SIMD_INLINE vec_arm8<uint32_t, 2> other_half(const vec_arm8<uint32_t> v) {
+  return vec_arm8<uint32_t, 2>(vget_high_u32(v.raw));
 }
-SIMD_INLINE i64x1 other_half(const i64x2 v) {
-  return i64x1(vget_high_s64(v.raw));
+SIMD_INLINE vec_arm8<int32_t, 2> other_half(const vec_arm8<int32_t> v) {
+  return vec_arm8<int32_t, 2>(vget_high_s32(v.raw));
 }
-SIMD_INLINE f32x2 other_half(const f32x4 v) {
-  return f32x2(vget_high_f32(v.raw));
+SIMD_INLINE vec_arm8<uint64_t, 1> other_half(const vec_arm8<uint64_t> v) {
+  return vec_arm8<uint64_t, 1>(vget_high_u64(v.raw));
 }
-SIMD_INLINE f64x1 other_half(const f64x2 v) {
-  return f64x1(vget_high_f64(v.raw));
+SIMD_INLINE vec_arm8<int64_t, 1> other_half(const vec_arm8<int64_t> v) {
+  return vec_arm8<int64_t, 1>(vget_high_s64(v.raw));
+}
+SIMD_INLINE vec_arm8<float, 2> other_half(const vec_arm8<float> v) {
+  return vec_arm8<float, 2>(vget_high_f32(v.raw));
+}
+SIMD_INLINE vec_arm8<double, 1> other_half(const vec_arm8<double> v) {
+  return vec_arm8<double, 1>(vget_high_f64(v.raw));
 }
 
 // ------------------------------ Extract from 2x 128-bit at constant offset
 
 // Extracts 128 bits from <hi, lo> by skipping the least-significant kBytes.
-template <int kBytes>
-SIMD_INLINE u8x16 extract_concat_bytes(const u8x16 hi,
-                                       const u8x16 lo) {
+template <int kBytes, typename T>
+SIMD_INLINE vec_arm8<T> extract_concat_bytes(const vec_arm8<T> hi,
+                                             const vec_arm8<T> lo) {
   static_assert(0 < kBytes && kBytes < 16, "kBytes must be in [1, 15]");
-  return u8x16(vextq_u8(lo, hi, kBytes));
-}
-template <int kBytes>
-SIMD_INLINE i8x16 extract_concat_bytes(const i8x16 hi,
-                                       const i8x16 lo) {
-  static_assert(0 < kBytes && kBytes < 16, "kBytes must be in [1, 15]");
-  uint8x16_t u8hi = vreinterpretq_u8_s8(hi);
-  uint8x16_t u8lo = vreinterpretq_u8_s8(lo);
-  uint8x16_t r = vextq_u8(u8lo, u8hi, kBytes);
-  return i8x16(vreinterpretq_s8_u8(r));
-}
-template <int kBytes>
-SIMD_INLINE i16x8 extract_concat_bytes(const i16x8 hi,
-                                       const i16x8 lo) {
-  static_assert(0 < kBytes && kBytes < 16, "kBytes must be in [1, 15]");
-  uint8x16_t u8hi = vreinterpretq_u8_s16(hi);
-  uint8x16_t u8lo = vreinterpretq_u8_s16(lo);
-  uint8x16_t r = vextq_u8(u8lo, u8hi, kBytes);
-  return i16x8(vreinterpretq_s16_u8(r));
-}
-template <int kBytes>
-SIMD_INLINE u16x8 extract_concat_bytes(const u16x8 hi,
-                                       const u16x8 lo) {
-  static_assert(0 < kBytes && kBytes < 16, "kBytes must be in [1, 15]");
-  uint8x16_t u8hi = vreinterpretq_u8_u16(hi);
-  uint8x16_t u8lo = vreinterpretq_u8_u16(lo);
-  uint8x16_t r = vextq_u8(u8lo, u8hi, kBytes);
-  return u16x8(vreinterpretq_u16_u8(r));
-}
-template <int kBytes>
-SIMD_INLINE i32x4 extract_concat_bytes(const i32x4 hi,
-                                       const i32x4 lo) {
-  static_assert(0 < kBytes && kBytes < 16, "kBytes must be in [1, 15]");
-  uint8x16_t u8hi = vreinterpretq_u8_s32(hi);
-  uint8x16_t u8lo = vreinterpretq_u8_s32(lo);
-  uint8x16_t r = vextq_u8(u8lo, u8hi, kBytes);
-  return i32x4(vreinterpretq_s32_u8(r));
-}
-template <int kBytes>
-SIMD_INLINE u32x4 extract_concat_bytes(const u32x4 hi,
-                                       const u32x4 lo) {
-  static_assert(0 < kBytes && kBytes < 16, "kBytes must be in [1, 15]");
-  uint8x16_t u8hi = vreinterpretq_u8_u32(hi);
-  uint8x16_t u8lo = vreinterpretq_u8_u32(lo);
-  uint8x16_t r = vextq_u8(u8lo, u8hi, kBytes);
-  return u32x4(vreinterpretq_u32_u8(r));
-}
-template <int kBytes>
-SIMD_INLINE i64x2 extract_concat_bytes(const i64x2 hi,
-                                       const i64x2 lo) {
-  static_assert(0 < kBytes && kBytes < 16, "kBytes must be in [1, 15]");
-  uint8x16_t u8hi = vreinterpretq_u8_s64(hi);
-  uint8x16_t u8lo = vreinterpretq_u8_s64(lo);
-  uint8x16_t r = vextq_u8(u8lo, u8hi, kBytes);
-  return i64x2(vreinterpretq_s64_u8(r));
-}
-template <int kBytes>
-SIMD_INLINE u64x2 extract_concat_bytes(const u64x2 hi,
-                                       const u64x2 lo) {
-  static_assert(0 < kBytes && kBytes < 16, "kBytes must be in [1, 15]");
-  uint8x16_t u8hi = vreinterpretq_u8_u64(hi);
-  uint8x16_t u8lo = vreinterpretq_u8_u64(lo);
-  uint8x16_t r = vextq_u8(u8lo, u8hi, kBytes);
-  return u64x2(vreinterpretq_u64_u8(r));
-}
-template <int kBytes>
-SIMD_INLINE f32x4 extract_concat_bytes(const f32x4 hi,
-                                       const f32x4 lo) {
-  static_assert(0 < kBytes && kBytes < 16, "kBytes must be in [1, 15]");
-  uint8x16_t u8hi = vreinterpretq_u8_f32(hi);
-  uint8x16_t u8lo = vreinterpretq_u8_f32(lo);
-  uint8x16_t r = vextq_u8(u8lo, u8hi, kBytes);
-  return f32x4(vreinterpretq_f32_u8(r));
-}
-template <int kBytes>
-SIMD_INLINE f64x2 extract_concat_bytes(const f64x2 hi,
-                                       const f64x2 lo) {
-  static_assert(0 < kBytes && kBytes < 16, "kBytes must be in [1, 15]");
-  uint8x16_t u8hi = vreinterpretq_u8_f64(hi);
-  uint8x16_t u8lo = vreinterpretq_u8_f64(lo);
-  uint8x16_t r = vextq_u8(u8lo, u8hi, kBytes);
-  return f64x2(vreinterpretq_f64_u8(r));
+  const Full<uint8_t, ARM8> d8;
+  return cast_to(Full<T, ARM8>(),
+                 vec_arm8<uint8_t>(vextq_u8(cast_to(d8, lo).raw,
+                                            cast_to(d8, hi).raw, kBytes)));
 }
 
 // ------------------------------ Shift vector by constant #bytes
@@ -1704,89 +2068,66 @@ SIMD_INLINE vec_arm8<T, N> shift_bytes_right(const vec_arm8<T, N> v) {
 
 // Unsigned
 template <int kLane>
-SIMD_INLINE u32x4 broadcast(const u32x4 v) {
+SIMD_INLINE vec_arm8<uint16_t> broadcast(const vec_arm8<uint16_t> v) {
   static_assert(0 <= kLane && kLane < 4, "Invalid lane");
-  return u32x4(vdupq_laneq_u32(v, kLane));
+  return vec_arm8<uint16_t>(vdupq_laneq_u16(v.raw, kLane));
 }
 template <int kLane>
-SIMD_INLINE u64x2 broadcast(const u64x2 v) {
+SIMD_INLINE vec_arm8<uint32_t> broadcast(const vec_arm8<uint32_t> v) {
+  static_assert(0 <= kLane && kLane < 4, "Invalid lane");
+  return vec_arm8<uint32_t>(vdupq_laneq_u32(v.raw, kLane));
+}
+template <int kLane>
+SIMD_INLINE vec_arm8<uint64_t> broadcast(const vec_arm8<uint64_t> v) {
   static_assert(0 <= kLane && kLane < 2, "Invalid lane");
-  return u64x2(vdupq_laneq_u64(v, kLane));
+  return vec_arm8<uint64_t>(vdupq_laneq_u64(v.raw, kLane));
 }
 
 // Signed
 template <int kLane>
-SIMD_INLINE i32x4 broadcast(const i32x4 v) {
+SIMD_INLINE vec_arm8<int16_t> broadcast(const vec_arm8<int16_t> v) {
   static_assert(0 <= kLane && kLane < 4, "Invalid lane");
-  return i32x4(vdupq_laneq_s32(v, kLane));
+  return vec_arm8<int16_t>(vdupq_laneq_s16(v.raw, kLane));
 }
 template <int kLane>
-SIMD_INLINE i64x2 broadcast(const i64x2 v) {
+SIMD_INLINE vec_arm8<int32_t> broadcast(const vec_arm8<int32_t> v) {
+  static_assert(0 <= kLane && kLane < 4, "Invalid lane");
+  return vec_arm8<int32_t>(vdupq_laneq_s32(v.raw, kLane));
+}
+template <int kLane>
+SIMD_INLINE vec_arm8<int64_t> broadcast(const vec_arm8<int64_t> v) {
   static_assert(0 <= kLane && kLane < 2, "Invalid lane");
-  return i64x2(vdupq_laneq_s64(v, kLane));
+  return vec_arm8<int64_t>(vdupq_laneq_s64(v.raw, kLane));
 }
 
 // Float
 template <int kLane>
-SIMD_INLINE f32x4 broadcast(const f32x4 v) {
+SIMD_INLINE vec_arm8<float> broadcast(const vec_arm8<float> v) {
   static_assert(0 <= kLane && kLane < 4, "Invalid lane");
-  return f32x4(vdupq_laneq_f32(v, kLane));
+  return vec_arm8<float>(vdupq_laneq_f32(v.raw, kLane));
 }
 template <int kLane>
-SIMD_INLINE f64x2 broadcast(const f64x2 v) {
+SIMD_INLINE vec_arm8<double> broadcast(const vec_arm8<double> v) {
   static_assert(0 <= kLane && kLane < 2, "Invalid lane");
-  return f64x2(vdupq_laneq_f64(v, kLane));
+  return vec_arm8<double>(vdupq_laneq_f64(v.raw, kLane));
 }
 
 // ------------------------------ Shuffle bytes with variable indices
 
-template <size_t N>
-SIMD_INLINE Vec<uint8_t, N, ARM8> cast_to(Desc<uint8_t, N, ARM8>, u8x16 v) {
-  return v;
-}
-template <size_t N>
-SIMD_INLINE Vec<uint8_t, N, ARM8> cast_to(Desc<uint8_t, N, ARM8>, u16x8 v) {
-  return Vec<uint8_t, N, ARM8>(vreinterpretq_u8_u16(v));
-}
-template <size_t N>
-SIMD_INLINE Vec<uint8_t, N, ARM8> cast_to(Desc<uint8_t, N, ARM8>, u32x4 v) {
-  return Vec<uint8_t, N, ARM8>(vreinterpretq_u8_u32(v));
-}
-template <size_t N>
-SIMD_INLINE Vec<uint8_t, N, ARM8> cast_to(Desc<uint8_t, N, ARM8>, u64x2 v) {
-  return Vec<uint8_t, N, ARM8>(vreinterpretq_u8_u64(v));
-}
-
-template <size_t N>
-SIMD_INLINE Vec<uint8_t, N, ARM8> cast_to(Desc<uint8_t, N, ARM8>, i8x16 v) {
-  return Vec<uint8_t, N, ARM8>(vreinterpretq_u8_s8(v));
-}
-template <size_t N>
-SIMD_INLINE Vec<uint8_t, N, ARM8> cast_to(Desc<uint8_t, N, ARM8>, i16x8 v) {
-  return Vec<uint8_t, N, ARM8>(vreinterpretq_u8_s16(v));
-}
-template <size_t N>
-SIMD_INLINE Vec<uint8_t, N, ARM8> cast_to(Desc<uint8_t, N, ARM8>, i32x4 v) {
-  return Vec<uint8_t, N, ARM8>(vreinterpretq_u8_s32(v));
-}
-template <size_t N>
-SIMD_INLINE Vec<uint8_t, N, ARM8> cast_to(Desc<uint8_t, N, ARM8>, i64x2 v) {
-  return Vec<uint8_t, N, ARM8>(vreinterpretq_u8_s32(v));
-}
-
 // Returns vector of bytes[from[i]]. "from" is also interpreted as bytes:
 // either valid indices in [0, 16) or >= 0x80 to zero the i-th output byte.
-// TODO(janwas): replace with template<class V, class VI> that casts args?
 template <typename T, typename TI>
 SIMD_INLINE vec_arm8<T> shuffle_bytes(const vec_arm8<T> bytes,
                                       const vec_arm8<TI> from) {
-  const Full<uint8_t> d8;
-  return vec_arm8<T>(vqtbl1q_u8(cast_to(d8, bytes), cast_to(d8, from)));
+  const Full<uint8_t, ARM8> d8;
+  return cast_to(Full<T, ARM8>(),
+                 vec_arm8<uint8_t>(vqtbl1q_u8(cast_to(d8, bytes).raw,
+                                              cast_to(d8, from).raw)));
 }
 
 // ------------------------------ Hard-coded shuffles
 
-// Notation: let i32x4 have lanes 3,2,1,0 (0 is least-significant).
+// Notation: let vec_arm8<int32_t> have lanes 3,2,1,0 (0 is least-significant).
 // shuffle_0321 rotates one lane to the right (the previous least-significant
 // lane is now most-significant). These could also be implemented via
 // extract_concat_bytes but the shuffle_abcd notation is more convenient.
@@ -1813,303 +2154,395 @@ SIMD_INLINE vec_arm8<T> shuffle_2103(const vec_arm8<T> v) {
   return extract_concat_bytes<12>(v, v);
 }
 
+// Reverse
+template <typename T>
+SIMD_INLINE vec_arm8<T> shuffle_0123(const vec_arm8<T> v) {
+  // TODO(janwas): more efficient implementation?
+  static constexpr uint8_t bytes[16] = {15, 14, 13, 12, 11, 10, 9, 8,
+                                        7,  6,  5,  4,  3,  2,  1, 0};
+  return shuffle_bytes(v, load(Full<uint8_t, ARM8>(), bytes));
+}
+
 // ------------------------------ Interleave lanes
 
 // Interleaves lanes from halves of the 128-bit blocks of "a" (which provides
 // the least-significant lane) and "b". To concatenate two half-width integers
 // into one, use zip_lo/hi instead (also works with scalar).
 
-SIMD_INLINE u8x16 interleave_lo(const u8x16 a, const u8x16 b) {
-  return u8x16(vzip1q_u8(a, b));
+SIMD_INLINE vec_arm8<uint8_t> interleave_lo(const vec_arm8<uint8_t> a,
+                                            const vec_arm8<uint8_t> b) {
+  return vec_arm8<uint8_t>(vzip1q_u8(a.raw, b.raw));
 }
-SIMD_INLINE u16x8 interleave_lo(const u16x8 a, const u16x8 b) {
-  return u16x8(vzip1q_u16(a, b));
+SIMD_INLINE vec_arm8<uint16_t> interleave_lo(const vec_arm8<uint16_t> a,
+                                             const vec_arm8<uint16_t> b) {
+  return vec_arm8<uint16_t>(vzip1q_u16(a.raw, b.raw));
 }
-SIMD_INLINE u32x4 interleave_lo(const u32x4 a, const u32x4 b) {
-  return u32x4(vzip1q_u32(a, b));
+SIMD_INLINE vec_arm8<uint32_t> interleave_lo(const vec_arm8<uint32_t> a,
+                                             const vec_arm8<uint32_t> b) {
+  return vec_arm8<uint32_t>(vzip1q_u32(a.raw, b.raw));
 }
-SIMD_INLINE u64x2 interleave_lo(const u64x2 a, const u64x2 b) {
-  return u64x2(vzip1q_u64(a, b));
-}
-
-SIMD_INLINE i8x16 interleave_lo(const i8x16 a, const i8x16 b) {
-  return i8x16(vzip1q_s8(a, b));
-}
-SIMD_INLINE i16x8 interleave_lo(const i16x8 a, const i16x8 b) {
-  return i16x8(vzip1q_s16(a, b));
-}
-SIMD_INLINE i32x4 interleave_lo(const i32x4 a, const i32x4 b) {
-  return i32x4(vzip1q_s32(a, b));
-}
-SIMD_INLINE i64x2 interleave_lo(const i64x2 a, const i64x2 b) {
-  return i64x2(vzip1q_s64(a, b));
+SIMD_INLINE vec_arm8<uint64_t> interleave_lo(const vec_arm8<uint64_t> a,
+                                             const vec_arm8<uint64_t> b) {
+  return vec_arm8<uint64_t>(vzip1q_u64(a.raw, b.raw));
 }
 
-SIMD_INLINE f32x4 interleave_lo(const f32x4 a, const f32x4 b) {
-  return f32x4(vzip1q_f32(a, b));
+SIMD_INLINE vec_arm8<int8_t> interleave_lo(const vec_arm8<int8_t> a,
+                                           const vec_arm8<int8_t> b) {
+  return vec_arm8<int8_t>(vzip1q_s8(a.raw, b.raw));
 }
-SIMD_INLINE f64x2 interleave_lo(const f64x2 a, const f64x2 b) {
-  return f64x2(vzip1q_f64(a, b));
+SIMD_INLINE vec_arm8<int16_t> interleave_lo(const vec_arm8<int16_t> a,
+                                            const vec_arm8<int16_t> b) {
+  return vec_arm8<int16_t>(vzip1q_s16(a.raw, b.raw));
 }
-
-SIMD_INLINE u8x16 interleave_hi(const u8x16 a, const u8x16 b) {
-  return u8x16(vzip2q_u8(a, b));
+SIMD_INLINE vec_arm8<int32_t> interleave_lo(const vec_arm8<int32_t> a,
+                                            const vec_arm8<int32_t> b) {
+  return vec_arm8<int32_t>(vzip1q_s32(a.raw, b.raw));
 }
-SIMD_INLINE u16x8 interleave_hi(const u16x8 a, const u16x8 b) {
-  return u16x8(vzip2q_u16(a, b));
-}
-SIMD_INLINE u32x4 interleave_hi(const u32x4 a, const u32x4 b) {
-  return u32x4(vzip2q_u32(a, b));
-}
-SIMD_INLINE u64x2 interleave_hi(const u64x2 a, const u64x2 b) {
-  return u64x2(vzip2q_u64(a, b));
+SIMD_INLINE vec_arm8<int64_t> interleave_lo(const vec_arm8<int64_t> a,
+                                            const vec_arm8<int64_t> b) {
+  return vec_arm8<int64_t>(vzip1q_s64(a.raw, b.raw));
 }
 
-SIMD_INLINE i8x16 interleave_hi(const i8x16 a, const i8x16 b) {
-  return i8x16(vzip2q_s8(a, b));
+SIMD_INLINE vec_arm8<float> interleave_lo(const vec_arm8<float> a,
+                                          const vec_arm8<float> b) {
+  return vec_arm8<float>(vzip1q_f32(a.raw, b.raw));
 }
-SIMD_INLINE i16x8 interleave_hi(const i16x8 a, const i16x8 b) {
-  return i16x8(vzip2q_s16(a, b));
-}
-SIMD_INLINE i32x4 interleave_hi(const i32x4 a, const i32x4 b) {
-  return i32x4(vzip2q_s32(a, b));
-}
-SIMD_INLINE i64x2 interleave_hi(const i64x2 a, const i64x2 b) {
-  return i64x2(vzip2q_s64(a, b));
+SIMD_INLINE vec_arm8<double> interleave_lo(const vec_arm8<double> a,
+                                           const vec_arm8<double> b) {
+  return vec_arm8<double>(vzip1q_f64(a.raw, b.raw));
 }
 
-SIMD_INLINE f32x4 interleave_hi(const f32x4 a, const f32x4 b) {
-  return f32x4(vzip2q_f32(a, b));
+SIMD_INLINE vec_arm8<uint8_t> interleave_hi(const vec_arm8<uint8_t> a,
+                                            const vec_arm8<uint8_t> b) {
+  return vec_arm8<uint8_t>(vzip2q_u8(a.raw, b.raw));
 }
-SIMD_INLINE f64x2 interleave_hi(const f64x2 a, const f64x2 b) {
-  return f64x2(vzip2q_s64(a, b));
+SIMD_INLINE vec_arm8<uint16_t> interleave_hi(const vec_arm8<uint16_t> a,
+                                             const vec_arm8<uint16_t> b) {
+  return vec_arm8<uint16_t>(vzip2q_u16(a.raw, b.raw));
+}
+SIMD_INLINE vec_arm8<uint32_t> interleave_hi(const vec_arm8<uint32_t> a,
+                                             const vec_arm8<uint32_t> b) {
+  return vec_arm8<uint32_t>(vzip2q_u32(a.raw, b.raw));
+}
+SIMD_INLINE vec_arm8<uint64_t> interleave_hi(const vec_arm8<uint64_t> a,
+                                             const vec_arm8<uint64_t> b) {
+  return vec_arm8<uint64_t>(vzip2q_u64(a.raw, b.raw));
+}
+
+SIMD_INLINE vec_arm8<int8_t> interleave_hi(const vec_arm8<int8_t> a,
+                                           const vec_arm8<int8_t> b) {
+  return vec_arm8<int8_t>(vzip2q_s8(a.raw, b.raw));
+}
+SIMD_INLINE vec_arm8<int16_t> interleave_hi(const vec_arm8<int16_t> a,
+                                            const vec_arm8<int16_t> b) {
+  return vec_arm8<int16_t>(vzip2q_s16(a.raw, b.raw));
+}
+SIMD_INLINE vec_arm8<int32_t> interleave_hi(const vec_arm8<int32_t> a,
+                                            const vec_arm8<int32_t> b) {
+  return vec_arm8<int32_t>(vzip2q_s32(a.raw, b.raw));
+}
+SIMD_INLINE vec_arm8<int64_t> interleave_hi(const vec_arm8<int64_t> a,
+                                            const vec_arm8<int64_t> b) {
+  return vec_arm8<int64_t>(vzip2q_s64(a.raw, b.raw));
+}
+
+SIMD_INLINE vec_arm8<float> interleave_hi(const vec_arm8<float> a,
+                                          const vec_arm8<float> b) {
+  return vec_arm8<float>(vzip2q_f32(a.raw, b.raw));
+}
+SIMD_INLINE vec_arm8<double> interleave_hi(const vec_arm8<double> a,
+                                           const vec_arm8<double> b) {
+  return vec_arm8<double>(vzip2q_s64(a.raw, b.raw));
 }
 
 //// ------------------------------ Zip lanes
 //
 //// Same as interleave_*, except that the return lanes are double-width
-/// integers; / this is necessary because the single-lane scalar cannot return two
-/// values.
+/// integers; / this is necessary because the single-lane scalar cannot return
+/// two values.
 //
-// SIMD_INLINE u16x8 zip_lo(const u8x16 a, const u8x16 b) {
-//  return u16x8(_mm_unpacklo_epi8(a, b));
+// SIMD_INLINE vec_arm8<uint16_t> zip_lo(const vec_arm8<uint8_t> a, const
+// vec_arm8<uint8_t> b) {
+//  return vec_arm8<uint16_t>(_mm_unpacklo_epi8(a.raw, b.raw));
 //}
-// SIMD_INLINE u32x4 zip_lo(const u16x8 a, const u16x8 b) {
-//  return u32x4(_mm_unpacklo_epi16(a, b));
+// SIMD_INLINE vec_arm8<uint32_t> zip_lo(const vec_arm8<uint16_t> a, const
+// vec_arm8<uint16_t> b) {
+//  return vec_arm8<uint32_t>(_mm_unpacklo_epi16(a.raw, b.raw));
 //}
-// SIMD_INLINE u64x2 zip_lo(const u32x4 a, const u32x4 b) {
-//  return u64x2(_mm_unpacklo_epi32(a, b));
-//}
-//
-// SIMD_INLINE i16x8 zip_lo(const i8x16 a, const i8x16 b) {
-//  return i16x8(_mm_unpacklo_epi8(a, b));
-//}
-// SIMD_INLINE i32x4 zip_lo(const i16x8 a, const i16x8 b) {
-//  return i32x4(_mm_unpacklo_epi16(a, b));
-//}
-// SIMD_INLINE i64x2 zip_lo(const i32x4 a, const i32x4 b) {
-//  return i64x2(_mm_unpacklo_epi32(a, b));
+// SIMD_INLINE vec_arm8<uint64_t> zip_lo(const vec_arm8<uint32_t> a, const
+// vec_arm8<uint32_t> b) {
+//  return vec_arm8<uint64_t>(_mm_unpacklo_epi32(a.raw, b.raw));
 //}
 //
-// SIMD_INLINE u16x8 zip_hi(const u8x16 a, const u8x16 b) {
-//  return u16x8(_mm_unpackhi_epi8(a, b));
+// SIMD_INLINE vec_arm8<int16_t> zip_lo(const vec_arm8<int8_t> a, const
+// vec_arm8<int8_t> b) {
+//  return vec_arm8<int16_t>(_mm_unpacklo_epi8(a.raw, b.raw));
 //}
-// SIMD_INLINE u32x4 zip_hi(const u16x8 a, const u16x8 b) {
-//  return u32x4(_mm_unpackhi_epi16(a, b));
+// SIMD_INLINE vec_arm8<int32_t> zip_lo(const vec_arm8<int16_t> a, const
+// vec_arm8<int16_t> b) {
+//  return vec_arm8<int32_t>(_mm_unpacklo_epi16(a.raw, b.raw));
 //}
-// SIMD_INLINE u64x2 zip_hi(const u32x4 a, const u32x4 b) {
-//  return u64x2(_mm_unpackhi_epi32(a, b));
-//}
-//
-// SIMD_INLINE i16x8 zip_hi(const i8x16 a, const i8x16 b) {
-//  return i16x8(_mm_unpackhi_epi8(a, b));
-//}
-// SIMD_INLINE i32x4 zip_hi(const i16x8 a, const i16x8 b) {
-//  return i32x4(_mm_unpackhi_epi16(a, b));
-//}
-// SIMD_INLINE i64x2 zip_hi(const i32x4 a, const i32x4 b) {
-//  return i64x2(_mm_unpackhi_epi32(a, b));
+// SIMD_INLINE vec_arm8<int64_t> zip_lo(const vec_arm8<int32_t> a, const
+// vec_arm8<int32_t> b) {
+//  return vec_arm8<int64_t>(_mm_unpacklo_epi32(a.raw, b.raw));
 //}
 //
-// ------------------------------ Promotions (part w/ narrow lanes -> full)
+// SIMD_INLINE vec_arm8<uint16_t> zip_hi(const vec_arm8<uint8_t> a, const
+// vec_arm8<uint8_t> b) {
+//  return vec_arm8<uint16_t>(_mm_unpackhi_epi8(a.raw, b.raw));
+//}
+// SIMD_INLINE vec_arm8<uint32_t> zip_hi(const vec_arm8<uint16_t> a, const
+// vec_arm8<uint16_t> b) {
+//  return vec_arm8<uint32_t>(_mm_unpackhi_epi16(a.raw, b.raw));
+//}
+// SIMD_INLINE vec_arm8<uint64_t> zip_hi(const vec_arm8<uint32_t> a, const
+// vec_arm8<uint32_t> b) {
+//  return vec_arm8<uint64_t>(_mm_unpackhi_epi32(a.raw, b.raw));
+//}
+//
+// SIMD_INLINE vec_arm8<int16_t> zip_hi(const vec_arm8<int8_t> a, const
+// vec_arm8<int8_t> b) {
+//  return vec_arm8<int16_t>(_mm_unpackhi_epi8(a.raw, b.raw));
+//}
+// SIMD_INLINE vec_arm8<int32_t> zip_hi(const vec_arm8<int16_t> a, const
+// vec_arm8<int16_t> b) {
+//  return vec_arm8<int32_t>(_mm_unpackhi_epi16(a.raw, b.raw));
+//}
+// SIMD_INLINE vec_arm8<int64_t> zip_hi(const vec_arm8<int32_t> a, const
+// vec_arm8<int32_t> b) {
+//  return vec_arm8<int64_t>(_mm_unpackhi_epi32(a.raw, b.raw));
+//}
+//
 
-// Unsigned: zero-extend.
-SIMD_INLINE u16x8 convert_to(Full<uint16_t, ARM8>, const u8x8 v) {
-  return u16x8(vmovl_u8(v));
-}
-SIMD_INLINE u32x4 convert_to(Full<uint32_t, ARM8>, const u8x4 v) {
-  uint16x8_t a = vmovl_u8(v);
-  return u32x4(vmovl_u16(vget_low_u16(a)));
-}
-SIMD_INLINE u32x4 convert_to(Full<uint32_t, ARM8>, const u16x4 v) {
-  return u32x4(vmovl_u16(v));
-}
-SIMD_INLINE u64x2 convert_to(Full<uint64_t, ARM8>, const u32x2 v) {
-  return u64x2(vmovl_u32(v));
-}
-SIMD_INLINE i16x8 convert_to(Full<int16_t, ARM8>, const u8x8 v) {
-  return i16x8(vreinterpretq_s16_u16(vmovl_u8(v)));
-}
-SIMD_INLINE i32x4 convert_to(Full<int32_t, ARM8>, const u8x4 v) {
-  uint16x8_t a = vmovl_u8(v);
-  return i32x4(vreinterpretq_s32_u16(vmovl_u16(vget_low_u16(a))));
-}
-SIMD_INLINE i32x4 convert_to(Full<int32_t, ARM8>, const u16x4 v) {
-  return i32x4(vmovl_u16(v));
-}
+// ------------------------------ Parts
 
-// Signed: replicate sign bit.
-SIMD_INLINE i16x8 convert_to(Full<int16_t, ARM8>, const i8x8 v) {
-  return i16x8(vmovl_s8(v));
-}
-SIMD_INLINE i32x4 convert_to(Full<int32_t, ARM8>, const i8x4 v) {
-  int16x8_t a = vmovl_s8(v);
-  return i32x4(vmovl_s16(vget_low_s16(a)));
-}
-SIMD_INLINE i32x4 convert_to(Full<int32_t, ARM8>, const i16x4 v) {
-  return i32x4(vmovl_s16(v));
-}
-SIMD_INLINE i64x2 convert_to(Full<int64_t, ARM8>, const i32x2 v) {
-  return i64x2(vmovl_s32(v));
+// Returns a part with value "t".
+template <typename T>
+SIMD_INLINE vec_arm8<T, 1> set_part(Desc<T, 1, ARM8> d, const T t) {
+  return set1(d, t);
 }
 
-// ------------------------------ Demotions (full -> part w/ narrow lanes)
-
-SIMD_INLINE u16x4 convert_to(Desc<uint16_t, 4, ARM8>, const i32x4 v) {
-  return u16x4(vqmovun_s32(v));
-}
-SIMD_INLINE u8x8 convert_to(Desc<uint8_t, 8, ARM8>, const u16x8 v) {
-  return u8x8(vqmovn_u16(v));
-}
-
-SIMD_INLINE u8x8 convert_to(Desc<uint8_t, 8, ARM8>, const i16x8 v) {
-  return u8x8(vqmovun_s16(v));
+// Gets the single value stored in a vector/part.
+template <typename T, size_t N>
+SIMD_INLINE T get_part(Desc<T, 1, ARM8> d, const vec_arm8<T, N> v) {
+  // TODO(janwas): more efficient implementation?
+  SIMD_ALIGN T ret[N];
+  store(v, Desc<T, N, ARM8>(), &ret);
+  return ret[0];
 }
 
-SIMD_INLINE i16x4 convert_to(Desc<int16_t, 4, ARM8>, const i32x4 v) {
-  return i16x4(vqmovn_s32(v));
+// Returns part of a vector (unspecified whether upper or lower).
+SIMD_INLINE vec_arm8<uint8_t, 8> any_part(Desc<uint8_t, 8, ARM8>,
+                                          const vec_arm8<uint8_t> v) {
+  return vec_arm8<uint8_t, 8>(vget_low_u8(v.raw));
 }
-SIMD_INLINE i8x8 convert_to(Desc<int8_t, 8, ARM8>, const i16x8 v) {
-  return i8x8(vqmovn_s16(v));
+SIMD_INLINE vec_arm8<uint16_t, 4> any_part(Desc<uint16_t, 4, ARM8>,
+                                           const vec_arm8<uint16_t> v) {
+  return vec_arm8<uint16_t, 4>(vget_low_u16(v.raw));
+}
+SIMD_INLINE vec_arm8<uint32_t, 2> any_part(Desc<uint32_t, 2, ARM8>,
+                                           const vec_arm8<uint32_t> v) {
+  return vec_arm8<uint32_t, 2>(vget_low_u32(v.raw));
+}
+SIMD_INLINE vec_arm8<uint64_t, 1> any_part(Desc<uint64_t, 1, ARM8>,
+                                           const vec_arm8<uint64_t> v) {
+  return vec_arm8<uint64_t, 1>(vget_low_u64(v.raw));
+}
+SIMD_INLINE vec_arm8<int8_t, 8> any_part(Desc<int8_t, 8, ARM8>,
+                                         const vec_arm8<int8_t> v) {
+  return vec_arm8<int8_t, 8>(vget_low_s8(v.raw));
+}
+SIMD_INLINE vec_arm8<int16_t, 4> any_part(Desc<int16_t, 4, ARM8>,
+                                          const vec_arm8<int16_t> v) {
+  return vec_arm8<int16_t, 4>(vget_low_s16(v.raw));
+}
+SIMD_INLINE vec_arm8<int32_t, 2> any_part(Desc<int32_t, 2, ARM8>,
+                                          const vec_arm8<int32_t> v) {
+  return vec_arm8<int32_t, 2>(vget_low_s32(v.raw));
+}
+SIMD_INLINE vec_arm8<int64_t, 1> any_part(Desc<int64_t, 1, ARM8>,
+                                          const vec_arm8<int64_t> v) {
+  return vec_arm8<int64_t, 1>(vget_low_s64(v.raw));
+}
+SIMD_INLINE vec_arm8<float, 2> any_part(Desc<float, 2, ARM8>,
+                                        const vec_arm8<float> v) {
+  return vec_arm8<float, 2>(vget_low_f32(v.raw));
+}
+SIMD_INLINE vec_arm8<double, 1> any_part(Desc<double, 1, ARM8>,
+                                         const vec_arm8<double> v) {
+  return vec_arm8<double, 1>(vget_low_f64(v.raw));
 }
 
-// In the following convert_to functions, |b| is purposely undefined.
-// The value a needs to be extended to 128 bits so that vqmovn can be
-// used and |b| is undefined so that no extra overhead is introduced.
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wuninitialized"
-
-SIMD_INLINE u8x4 convert_to(Desc<uint8_t, 4, ARM8>, const i32x4 v) {
-  u16x4 a = convert_to(Desc<uint16_t, 4, ARM8>(), v);
-  u16x4 b;
-  uint16x8_t c = vcombine_u16(a, b);
-  return u8x4(vqmovn_u16(c));
+SIMD_INLINE vec_arm8<uint8_t, 4> any_part(Desc<uint8_t, 4, ARM8>,
+                                          const vec_arm8<uint8_t> v) {
+  return vec_arm8<uint8_t, 4>(vget_low_u8(v.raw));
+}
+SIMD_INLINE vec_arm8<uint16_t, 2> any_part(Desc<uint16_t, 2, ARM8>,
+                                           const vec_arm8<uint16_t> v) {
+  return vec_arm8<uint16_t, 2>(vget_low_u16(v.raw));
+}
+SIMD_INLINE vec_arm8<uint32_t, 1> any_part(Desc<uint32_t, 1, ARM8>,
+                                           const vec_arm8<uint32_t> v) {
+  return vec_arm8<uint32_t, 1>(vget_low_u32(v.raw));
+}
+SIMD_INLINE vec_arm8<int8_t, 4> any_part(Desc<int8_t, 4, ARM8>,
+                                         const vec_arm8<int8_t> v) {
+  return vec_arm8<int8_t, 4>(vget_low_s8(v.raw));
+}
+SIMD_INLINE vec_arm8<int16_t, 2> any_part(Desc<int16_t, 2, ARM8>,
+                                          const vec_arm8<int16_t> v) {
+  return vec_arm8<int16_t, 2>(vget_low_s16(v.raw));
+}
+SIMD_INLINE vec_arm8<int32_t, 1> any_part(Desc<int32_t, 1, ARM8>,
+                                          const vec_arm8<int32_t> v) {
+  return vec_arm8<int32_t, 1>(vget_low_s32(v.raw));
+}
+SIMD_INLINE vec_arm8<float, 1> any_part(Desc<float, 1, ARM8>,
+                                        const vec_arm8<float> v) {
+  return vec_arm8<float, 1>(vget_low_f32(v.raw));
 }
 
-SIMD_INLINE i8x4 convert_to(Desc<int8_t, 4, ARM8>, const i32x4 v) {
-  i16x4 a = convert_to(Desc<int16_t, 4, ARM8>(), v);
-  i16x4 b;
-  uint16x8_t c = vcombine_s16(a, b);
-  return i8x4(vqmovn_s16(c));
+// Returns full vector with the given part's lane broadcasted. Note that
+// callers cannot use broadcast directly because part lane order is undefined.
+template <int kLane, typename T, size_t N>
+SIMD_INLINE vec_arm8<T> broadcast_part(Full<T, ARM8>, const vec_arm8<T, N> v) {
+  static_assert(0 <= kLane && kLane < N, "Invalid lane");
+  return broadcast<kLane>(vec_arm8<T>(v.raw));
 }
 
-#pragma clang diagnostic pop
+// ------------------------------ Blocks
 
-// ------------------------------ Select/blend
+// Single block => already broadcasted/interleaved.
+template <typename T>
+SIMD_INLINE dup128x1<T> broadcast_block(const vec_arm8<T> v) {
+  return dup128x1<T>(v.raw);
+}
 
-// Returns mask ? b : a. Due to ARM's semantics, each lane of "mask" must
-// equal T(0) or ~T(0) although x86 may only check the most significant bit.
-SIMD_INLINE u8x16 select(const u8x16 a,
-                         const u8x16 b,
-                         const u8x16 mask) {
-  return u8x16(vbslq_u8(mask, b, a));
+// hiH,hiL loH,loL |-> hiL,loL (= lower halves)
+template <typename T>
+SIMD_INLINE vec_arm8<T> concat_lo_lo(const vec_arm8<T> hi,
+                                     const vec_arm8<T> lo) {
+  const Full<uint64_t, ARM8> d64;
+  return cast_to(Full<T, ARM8>(),
+                 interleave_lo(cast_to(d64, lo), cast_to(d64, hi)));
 }
-SIMD_INLINE i8x16 select(const i8x16 a,
-                         const i8x16 b,
-                         const i8x16 mask) {
-  return i8x16(vbslq_s8(mask, b, a));
+
+// hiH,hiL loH,loL |-> hiH,loH (= upper halves)
+template <typename T>
+SIMD_INLINE vec_arm8<T> concat_hi_hi(const vec_arm8<T> hi,
+                                     const vec_arm8<T> lo) {
+  const Full<uint64_t, ARM8> d64;
+  return cast_to(Full<T, ARM8>(),
+                 interleave_hi(cast_to(d64, lo), cast_to(d64, hi)));
 }
-SIMD_INLINE u16x8 select(const u16x8 a,
-                         const u16x8 b,
-                         const u16x8 mask) {
-  return u16x8(vbslq_u16(mask, b, a));
+
+// hiH,hiL loH,loL |-> hiL,loH (= inner halves)
+template <typename T>
+SIMD_INLINE vec_arm8<T> concat_lo_hi(const vec_arm8<T> hi,
+                                     const vec_arm8<T> lo) {
+  return extract_concat_bytes<8>(hi, lo);
 }
-SIMD_INLINE i16x8 select(const i16x8 a,
-                         const i16x8 b,
-                         const i16x8 mask) {
-  return i16x8(vbslq_s16(mask, b, a));
+
+// hiH,hiL loH,loL |-> hiH,loL (= outer halves)
+template <typename T>
+SIMD_INLINE vec_arm8<T> concat_hi_lo(const vec_arm8<T> hi,
+                                     const vec_arm8<T> lo) {
+  // TODO(janwas): more efficient implementation?
+  SIMD_ALIGN const uint8_t mask[16] = {
+      0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0};
+  return select(hi, lo,
+                cast_to(Full<T, ARM8>(), load(Full<uint8_t, ARM8>(), mask)));
 }
-SIMD_INLINE u32x4 select(const u32x4 a,
-                         const u32x4 b,
-                         const u32x4 mask) {
-  return u32x4(vbslq_u32(mask, b, a));
-}
-SIMD_INLINE i32x4 select(const i32x4 a,
-                         const i32x4 b,
-                         const i32x4 mask) {
-  return i32x4(vbslq_s32(mask, b, a));
-}
-SIMD_INLINE u64x2 select(const u64x2 a,
-                         const u64x2 b,
-                         const u64x2 mask) {
-  return u64x2(vbslq_u64(mask, b, a));
-}
-SIMD_INLINE i64x2 select(const i64x2 a,
-                         const i64x2 b,
-                         const i64x2 mask) {
-  return i64x2(vbslq_s64(mask, b, a));
-}
-SIMD_INLINE f32x4 select(const f32x4 a,
-                         const f32x4 b,
-                         const f32x4 mask) {
-  return f32x4(vbslq_f32(mask, b, a));
-}
-SIMD_INLINE f64x2 select(const f64x2 a,
-                         const f64x2 b,
-                         const f64x2 mask) {
-  return f64x2(vbslq_f64(mask, b, a));
-}
+
+// ================================================== MISC
 
 // ------------------------------ AES cipher
 
 // One round of AES. "round_key" is a constant for breaking the symmetry of AES
 // (ensures previously equal columns differ afterwards).
-SIMD_INLINE u8x16 aes_round(const u8x16 state,
-                            const u8x16 round_key) {
-  return u8x16(vaesmcq_u8(vaeseq_u8(state, round_key)));
+SIMD_INLINE vec_arm8<uint8_t> aes_round(const vec_arm8<uint8_t> state,
+                                        const vec_arm8<uint8_t> round_key) {
+  return vec_arm8<uint8_t>(vaesmcq_u8(vaeseq_u8(state.raw, round_key.raw)));
+}
+
+// "Extensions": useful but not quite performance-portable operations. We add
+// functions to this namespace in multiple places.
+namespace ext {
+
+// ------------------------------ movemask
+
+// Returns a bit array of the most significant bit of each byte in "v", i.e.
+// sum_i=0..15 of (v[i] >> 7) << i; v[0] is the least-significant byte of "v".
+// This is useful for testing/branching based on comparison results.
+SIMD_INLINE uint32_t movemask(const vec_arm8<uint8_t> v) {
+  static constexpr uint8x16_t kCollapseMask = {
+      1, 2, 4, 8, 0x10, 0x20, 0x40, 0x80, 1, 2, 4, 8, 0x10, 0x20, 0x40, 0x80,
+  };
+  int8x16_t signed_v = vreinterpretq_s8_u8(v.raw);
+  int8x16_t signed_mask = vshrq_n_s8(signed_v, 7);
+  uint8x16_t values = vreinterpretq_u8_s8(signed_mask) & kCollapseMask;
+
+  uint8x8_t c0 = vget_low_u8(vpaddq_u8(values, values));
+  uint8x8_t c1 = vpadd_u8(c0, c0);
+  uint8x8_t c2 = vpadd_u8(c1, c1);
+
+  return vreinterpret_u16_u8(c2)[0];
+}
+
+// Returns the most significant bit of each float/double lane (see above).
+SIMD_INLINE uint32_t movemask(const vec_arm8<float> v) {
+  static constexpr uint32x4_t kCollapseMask = {1, 2, 4, 8};
+  int32x4_t signed_v = vreinterpretq_s32_f32(v.raw);
+  int32x4_t signed_mask = vshrq_n_s32(signed_v, 31);
+  uint32x4_t values = vreinterpretq_u32_s32(signed_mask) & kCollapseMask;
+  return vaddvq_u32(values);
+}
+SIMD_INLINE uint32_t movemask(const vec_arm8<double> v) {
+  static constexpr uint64x2_t kCollapseMask = {1, 2};
+  int64x2_t signed_v = vreinterpretq_s64_f64(v.raw);
+  int64x2_t signed_mask = vshrq_n_s64(signed_v, 63);
+  uint64x2_t values = vreinterpretq_u64_s64(signed_mask) & kCollapseMask;
+  return (uint32_t)vaddvq_u64(values);
+}
+
+// ------------------------------ all_zero
+
+// Returns whether all lanes are equal to zero.
+template <typename T>
+SIMD_INLINE bool all_zero(const vec_arm8<T> v) {
+  const auto v64 = cast_to(Full<uint64_t, ARM8>(), v);
+  uint32x2_t a = vqmovn_u64(v64.raw);
+  return vreinterpret_u64_u32(a)[0] == 0;
 }
 
 // ------------------------------ Horizontal sum (reduction)
 
-// "Extensions": useful but quite performance-portable operations. We add
-// functions to this namespace in multiple places.
-namespace ext {
-
 // Returns 64-bit sums of 8-byte groups.
-SIMD_INLINE u64x2 sums_of_u8x8(const u8x16 v) {
-  uint16x8_t a = vpaddlq_u8(v);
+SIMD_INLINE vec_arm8<uint64_t> sums_of_u8x8(
+    const vec_arm8<uint8_t> v) {
+  uint16x8_t a = vpaddlq_u8(v.raw);
   uint32x4_t b = vpaddlq_u16(a);
-  return u64x2(vpaddlq_u32(b));
+  return vec_arm8<uint64_t>(vpaddlq_u32(b));
 }
 
 // Supported for 32b and 64b vector types. Returns the sum in each lane.
-SIMD_INLINE u32x4 horz_sum(const u32x4 v) {
-  return u32x4(vdupq_n_u32(vaddvq_u32(v)));
+SIMD_INLINE vec_arm8<uint32_t> horz_sum(const vec_arm8<uint32_t> v) {
+  return vec_arm8<uint32_t>(vdupq_n_u32(vaddvq_u32(v.raw)));
 }
-SIMD_INLINE i32x4 horz_sum(const i32x4 v) {
-  return i32x4(vdupq_n_s32(vaddvq_s32(v)));
+SIMD_INLINE vec_arm8<int32_t> horz_sum(const vec_arm8<int32_t> v) {
+  return vec_arm8<int32_t>(vdupq_n_s32(vaddvq_s32(v.raw)));
 }
-SIMD_INLINE u64x2 horz_sum(const u64x2 v) {
-  return u64x2(vdupq_n_u64(vaddvq_u64(v)));
+SIMD_INLINE vec_arm8<float> horz_sum(const vec_arm8<float> v) {
+  return vec_arm8<float>(vdupq_n_f32(vaddvq_f32(v.raw)));
 }
-SIMD_INLINE i64x2 horz_sum(const i64x2 v) {
-  return i64x2(vdupq_n_s64(vaddvq_s64(v)));
+SIMD_INLINE vec_arm8<uint64_t> horz_sum(const vec_arm8<uint64_t> v) {
+  return vec_arm8<uint64_t>(vdupq_n_u64(vaddvq_u64(v.raw)));
 }
-SIMD_INLINE f32x4 horz_sum(const f32x4 v) {
-  return f32x4(vdupq_n_f32(vaddvq_f32(v)));
+SIMD_INLINE vec_arm8<int64_t> horz_sum(const vec_arm8<int64_t> v) {
+  return vec_arm8<int64_t>(vdupq_n_s64(vaddvq_s64(v.raw)));
 }
-SIMD_INLINE f64x2 horz_sum(const f64x2 v) {
-  return f64x2(vdupq_n_f64(vaddvq_f64(v)));
+SIMD_INLINE vec_arm8<double> horz_sum(const vec_arm8<double> v) {
+  return vec_arm8<double>(vdupq_n_f64(vaddvq_f64(v.raw)));
 }
 
 }  // namespace ext

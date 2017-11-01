@@ -29,9 +29,7 @@ struct scalar {
   SIMD_INLINE scalar() {}
   scalar(const scalar&) = default;
   scalar& operator=(const scalar&) = default;
-  SIMD_INLINE explicit scalar(const T lane) : lane(lane) {}
-
-  SIMD_INLINE operator T() const { return lane; }  // NOLINT
+  SIMD_INLINE explicit scalar(const T t) : raw(t) {}
 
   SIMD_INLINE scalar& operator*=(const scalar other) {
     return *this = (*this * other);
@@ -55,13 +53,28 @@ struct scalar {
     return *this = (*this ^ other);
   }
 
-  T lane;
+  T raw;
 };
 
 template <typename T>
 struct VecT<T, 1, NONE> {
   using type = scalar<T>;
 };
+
+template <typename T>
+struct Dup128T<T, NONE> {
+  using type = void;  // unsupported but required for simd.h to compile.
+};
+
+// ------------------------------ Cast
+
+template <typename T, typename FromT>
+SIMD_INLINE scalar<T> cast_to(Scalar<T>, scalar<FromT> v) {
+  static_assert(sizeof(T) <= sizeof(FromT), "Promoting is undefined");
+  T to;
+  CopyBytes<sizeof(FromT)>(&v.raw, &to);
+  return scalar<T>(to);
+}
 
 // ------------------------------ Set
 
@@ -80,31 +93,36 @@ SIMD_INLINE scalar<T> iota(Scalar<T>, const T2 first) {
   return scalar<T>(first);
 }
 
-template <typename T, typename T2>
-SIMD_INLINE scalar<T> set(Scalar<T>, const T2 t) {
-  return scalar<T>(t);
-}
-
-template <typename T>
-SIMD_INLINE T get(Scalar<T>, const scalar<T> v) {
-  return static_cast<T>(v);
-}
-
-template <typename T>
-SIMD_INLINE scalar<T> any_part(Scalar<T>, const scalar<T> v) {
-  return v;
-}
-
 // ================================================== ARITHMETIC
 
 template <typename T>
 SIMD_INLINE scalar<T> operator+(const scalar<T> a, const scalar<T> b) {
-  return scalar<T>(T(a) + T(b));
+  const uint64_t a64 = static_cast<int64_t>(a.raw);
+  const uint64_t b64 = static_cast<int64_t>(b.raw);
+  return scalar<T>((a64 + b64) & ~T(0));
+}
+SIMD_INLINE scalar<float> operator+(const scalar<float> a,
+                                    const scalar<float> b) {
+  return scalar<float>(a.raw + b.raw);
+}
+SIMD_INLINE scalar<double> operator+(const scalar<double> a,
+                                     const scalar<double> b) {
+  return scalar<double>(a.raw + b.raw);
 }
 
 template <typename T>
 SIMD_INLINE scalar<T> operator-(const scalar<T> a, const scalar<T> b) {
-  return scalar<T>(T(a) - T(b));
+  const uint64_t a64 = static_cast<int64_t>(a.raw);
+  const uint64_t b64 = static_cast<int64_t>(b.raw);
+  return scalar<T>((a64 - b64) & ~T(0));
+}
+SIMD_INLINE scalar<float> operator-(const scalar<float> a,
+                                    const scalar<float> b) {
+  return scalar<float>(a.raw - b.raw);
+}
+SIMD_INLINE scalar<double> operator-(const scalar<double> a,
+                                     const scalar<double> b) {
+  return scalar<double>(a.raw - b.raw);
 }
 
 // ------------------------------ Saturating addition
@@ -114,20 +132,20 @@ SIMD_INLINE scalar<T> operator-(const scalar<T> a, const scalar<T> b) {
 // Unsigned
 SIMD_INLINE scalar<uint8_t> add_sat(const scalar<uint8_t> a,
                                   const scalar<uint8_t> b) {
-  return scalar<uint8_t>(SIMD_MIN(SIMD_MAX(0, int(a) + int(b)), 255));
+  return scalar<uint8_t>(SIMD_MIN(SIMD_MAX(0, a.raw + b.raw), 255));
 }
 SIMD_INLINE scalar<uint16_t> add_sat(const scalar<uint16_t> a,
                                    const scalar<uint16_t> b) {
-  return scalar<uint16_t>(SIMD_MIN(SIMD_MAX(0, int(a) + int(b)), 65535));
+  return scalar<uint16_t>(SIMD_MIN(SIMD_MAX(0, a.raw + b.raw), 65535));
 }
 
 // Signed
 SIMD_INLINE scalar<int8_t> add_sat(const scalar<int8_t> a, const scalar<int8_t> b) {
-  return scalar<int8_t>(SIMD_MIN(SIMD_MAX(-128, int(a) + int(b)), 127));
+  return scalar<int8_t>(SIMD_MIN(SIMD_MAX(-128, a.raw + b.raw), 127));
 }
 SIMD_INLINE scalar<int16_t> add_sat(const scalar<int16_t> a,
                                   const scalar<int16_t> b) {
-  return scalar<int16_t>(SIMD_MIN(SIMD_MAX(-32768, int(a) + int(b)), 32767));
+  return scalar<int16_t>(SIMD_MIN(SIMD_MAX(-32768, a.raw + b.raw), 32767));
 }
 
 // ------------------------------ Saturating subtraction
@@ -137,20 +155,20 @@ SIMD_INLINE scalar<int16_t> add_sat(const scalar<int16_t> a,
 // Unsigned
 SIMD_INLINE scalar<uint8_t> sub_sat(const scalar<uint8_t> a,
                                   const scalar<uint8_t> b) {
-  return scalar<uint8_t>(SIMD_MIN(SIMD_MAX(0, int(a) - int(b)), 255));
+  return scalar<uint8_t>(SIMD_MIN(SIMD_MAX(0, a.raw - b.raw), 255));
 }
 SIMD_INLINE scalar<uint16_t> sub_sat(const scalar<uint16_t> a,
                                    const scalar<uint16_t> b) {
-  return scalar<uint16_t>(SIMD_MIN(SIMD_MAX(0, int(a) - int(b)), 65535));
+  return scalar<uint16_t>(SIMD_MIN(SIMD_MAX(0, a.raw - b.raw), 65535));
 }
 
 // Signed
 SIMD_INLINE scalar<int8_t> sub_sat(const scalar<int8_t> a, const scalar<int8_t> b) {
-  return scalar<int8_t>(SIMD_MIN(SIMD_MAX(-128, int(a) - int(b)), 127));
+  return scalar<int8_t>(SIMD_MIN(SIMD_MAX(-128, a.raw - b.raw), 127));
 }
 SIMD_INLINE scalar<int16_t> sub_sat(const scalar<int16_t> a,
                                   const scalar<int16_t> b) {
-  return scalar<int16_t>(SIMD_MIN(SIMD_MAX(-32768, int(a) - int(b)), 32767));
+  return scalar<int16_t>(SIMD_MIN(SIMD_MAX(-32768, a.raw - b.raw), 32767));
 }
 
 // ------------------------------ Average
@@ -158,10 +176,18 @@ SIMD_INLINE scalar<int16_t> sub_sat(const scalar<int16_t> a,
 // Returns (a + b + 1) / 2
 
 SIMD_INLINE scalar<uint8_t> avg(const scalar<uint8_t> a, const scalar<uint8_t> b) {
-  return scalar<uint8_t>((a + b + 1) / 2);
+  return scalar<uint8_t>((a.raw + b.raw + 1) / 2);
 }
 SIMD_INLINE scalar<uint16_t> avg(const scalar<uint16_t> a, const scalar<uint16_t> b) {
-  return scalar<uint16_t>((a + b + 1) / 2);
+  return scalar<uint16_t>((a.raw + b.raw + 1) / 2);
+}
+
+// ------------------------------ Absolute value
+
+template <typename T>
+SIMD_INLINE scalar<T> abs(const scalar<T> a) {
+  const T i = a.raw;
+  return (i >= 0 || i == LimitsMin<T>()) ? a : scalar<T>(-i);
 }
 
 // ------------------------------ Shift lanes by constant #bits
@@ -169,13 +195,13 @@ SIMD_INLINE scalar<uint16_t> avg(const scalar<uint16_t> a, const scalar<uint16_t
 template <int kBits, typename T>
 SIMD_INLINE scalar<T> shift_left(const scalar<T> v) {
   static_assert(0 <= kBits && kBits < sizeof(T) * 8, "Invalid shift");
-  return scalar<T>(T(v) << kBits);
+  return scalar<T>(v.raw << kBits);
 }
 
 template <int kBits, typename T>
 SIMD_INLINE scalar<T> shift_right(const scalar<T> v) {
   static_assert(0 <= kBits && kBits < sizeof(T) * 8, "Invalid shift");
-  return scalar<T>(T(v) >> kBits);
+  return scalar<T>(v.raw >> kBits);
 }
 
 // ------------------------------ Shift lanes by same variable #bits
@@ -195,12 +221,12 @@ SIMD_INLINE scalar_shift_right_count set_shift_right_count(Scalar<T>,
 template <typename T>
 SIMD_INLINE scalar<T> shift_left_same(const scalar<T> v,
                                       const scalar_shift_left_count bits) {
-  return scalar<T>(T(v) << bits.count);
+  return scalar<T>(v.raw << bits.count);
 }
 template <typename T>
 SIMD_INLINE scalar<T> shift_right_same(const scalar<T> v,
                                        const scalar_shift_right_count bits) {
-  return scalar<T>(T(v) >> bits.count);
+  return scalar<T>(v.raw >> bits.count);
 }
 
 // ------------------------------ Shift lanes by independent variable #bits
@@ -208,23 +234,23 @@ SIMD_INLINE scalar<T> shift_right_same(const scalar<T> v,
 // Single-lane => same as above except for the argument type.
 template <typename T>
 SIMD_INLINE scalar<T> shift_left_var(const scalar<T> v, const scalar<T> bits) {
-  return scalar<T>(T(v) << T(bits));
+  return scalar<T>(v.raw << bits.raw);
 }
 template <typename T>
 SIMD_INLINE scalar<T> shift_right_var(const scalar<T> v, const scalar<T> bits) {
-  return scalar<T>(T(v) >> T(bits));
+  return scalar<T>(v.raw >> bits.raw);
 }
 
 // ------------------------------ min/max
 
 template <typename T>
 SIMD_INLINE scalar<T> min(const scalar<T> a, const scalar<T> b) {
-  return scalar<T>(SIMD_MIN(a, b));
+  return scalar<T>(SIMD_MIN(a.raw, b.raw));
 }
 
 template <typename T>
 SIMD_INLINE scalar<T> max(const scalar<T> a, const scalar<T> b) {
-  return scalar<T>(SIMD_MAX(a, b));
+  return scalar<T>(SIMD_MAX(a.raw, b.raw));
 }
 
 // Returns the closest value to v within [lo, hi].
@@ -239,31 +265,31 @@ SIMD_INLINE scalar<T> clamp(const scalar<T> v, const scalar<T> lo,
 template <typename T>
 SIMD_INLINE scalar<T> operator*(const scalar<T> a, const scalar<T> b) {
   if (IsFloat<T>()) {
-    return scalar<T>(static_cast<T>(double(a) * double(b)));
+    return scalar<T>(static_cast<T>(double(a.raw) * b.raw));
   } else if (IsSigned<T>()) {
-    return scalar<T>(static_cast<T>(int64_t(a) * int64_t(b)));
+    return scalar<T>(static_cast<T>(int64_t(a.raw) * b.raw));
   } else {
-    return scalar<T>(static_cast<T>(uint64_t(a) * uint64_t(b)));
+    return scalar<T>(static_cast<T>(uint64_t(a.raw) * b.raw));
   }
 }
 
 template <typename T>
 SIMD_INLINE scalar<T> operator/(const scalar<T> a, const scalar<T> b) {
-  return scalar<T>(T(a) / T(b));
+  return scalar<T>(a.raw / b.raw);
 }
 
-// "Extensions": useful but quite performance-portable operations. We add
+// "Extensions": useful but not quite performance-portable operations. We add
 // functions to this namespace in multiple places.
 namespace ext {
 
 // Returns the upper 16 bits of a * b in each lane.
 SIMD_INLINE scalar<int16_t> mulhi(const scalar<int16_t> a, const scalar<int16_t> b) {
-  return scalar<int16_t>((int32_t(a) * int32_t(b)) >> 16);
+  return scalar<int16_t>((a.raw * b.raw) >> 16);
 }
 
 // Returns (((a * b) >> 14) + 1) >> 1.
 SIMD_INLINE scalar<int16_t> mulhrs(const scalar<int16_t> a, const scalar<int16_t> b) {
-  const int rounded = ((int16_t(a) * int16_t(b)) + (1 << 14)) >> 15;
+  const int rounded = ((a.raw * b.raw) + (1 << 14)) >> 15;
   const int clamped = SIMD_MIN(SIMD_MAX(-32768, rounded), 32767);
   return scalar<int16_t>(clamped);
 }
@@ -273,18 +299,18 @@ SIMD_INLINE scalar<int16_t> mulhrs(const scalar<int16_t> a, const scalar<int16_t
 // Multiplies even lanes (0, 2 ..) and returns the double-wide result.
 SIMD_INLINE scalar<int64_t> mul_even(const scalar<int32_t> a,
                                    const scalar<int32_t> b) {
-  const int64_t a64 = a;
-  return scalar<int64_t>(a64 * int32_t(b));
+  const int64_t a64 = a.raw;
+  return scalar<int64_t>(a64 * b.raw);
 }
 SIMD_INLINE scalar<uint64_t> mul_even(const scalar<uint32_t> a,
                                     const scalar<uint32_t> b) {
-  const uint64_t a64 = a;
-  return scalar<uint64_t>(a64 * uint32_t(b));
+  const uint64_t a64 = a.raw;
+  return scalar<uint64_t>(a64 * b.raw);
 }
 
 // Approximate reciprocal
 SIMD_INLINE scalar<float> rcp_approx(const scalar<float> v) {
-  return scalar<float>(1.0f / float(v));
+  return scalar<float>(1.0f / v.raw);
 }
 
 // ------------------------------ Floating-point multiply-add variants
@@ -313,7 +339,7 @@ SIMD_INLINE scalar<T> nmul_add(const scalar<T> mul, const scalar<T> x,
 
 // Approximate reciprocal square root
 SIMD_INLINE scalar<float> rsqrt_approx(const scalar<float> v) {
-  float f = v;
+  float f = v.raw;
   const float half = f * 0.5f;
   uint32_t bits;
   CopyBytes<4>(&f, &bits);
@@ -329,23 +355,19 @@ SIMD_INLINE scalar<float> sqrt(const scalar<float> v) {
   return rsqrt_approx(v) * v;
 }
 SIMD_INLINE scalar<double> sqrt(const scalar<double> v) {
-  const double f = v;
-  const float s = sqrt(scalar<float>(f));
-  return scalar<double>(s);
+  return scalar<double>(sqrt(scalar<float>(v.raw)).raw);
 }
 
 // ------------------------------ Floating-point rounding
 
 // Approximation of round-to-nearest for numbers representable as integers.
 SIMD_INLINE scalar<float> round_nearest(const scalar<float> v) {
-  const float f = v;
-  const float bias = f < 0.0f ? -0.5f : 0.5f;
-  return scalar<float>(static_cast<int32_t>(f + bias));
+  const float bias = v.raw < 0.0f ? -0.5f : 0.5f;
+  return scalar<float>(static_cast<int32_t>(v.raw + bias));
 }
 SIMD_INLINE scalar<double> round_nearest(const scalar<double> v) {
-  const double f = v;
-  const double bias = f < 0.0 ? -0.5 : 0.5;
-  return scalar<double>(static_cast<int64_t>(f + bias));
+  const double bias = v.raw < 0.0 ? -0.5 : 0.5;
+  return scalar<double>(static_cast<int64_t>(v.raw + bias));
 }
 
 template <typename Float, typename Bits, int kMantissaBits, int kExponentBits,
@@ -355,7 +377,7 @@ V Ceiling(const V v) {
   const Bits kMantissaMask = (1ull << kMantissaBits) - 1;
   const Bits kBias = kExponentMask / 2;
 
-  Float f = v;
+  Float f = v.raw;
   const bool positive = f > 0.0f;
 
   Bits bits;
@@ -386,7 +408,7 @@ V Floor(const V v) {
   const Bits kMantissaMask = (1ull << kMantissaBits) - 1;
   const Bits kBias = kExponentMask / 2;
 
-  Float f = v;
+  Float f = v.raw;
   const bool negative = f < 0.0f;
 
   Bits bits;
@@ -426,54 +448,6 @@ SIMD_INLINE scalar<double> round_neg_inf(const scalar<double> v) {
   return Floor<double, uint64_t, 52, 11>(v);
 }
 
-// ------------------------------ Convert i32 <=> f32
-
-SIMD_INLINE scalar<float> f32_from_i32(const scalar<int32_t> v) {
-  return scalar<float>(static_cast<float>(v));
-}
-// Approximation of round-to-nearest for numbers representable as int32_t.
-SIMD_INLINE scalar<int32_t> i32_from_f32(const scalar<float> v) {
-  const float f = v;
-  const float bias = f < 0.0f ? -0.5f : 0.5f;
-  return scalar<int32_t>(f + bias);
-}
-
-// ------------------------------ Cast to/from floating-point representation
-
-SIMD_INLINE scalar<float> float_from_bits(const scalar<int32_t> v) {
-  float f;
-  CopyBytes<4>(&v, &f);
-  return scalar<float>(f);
-}
-SIMD_INLINE scalar<int32_t> bits_from_float(const scalar<float> v) {
-  int32_t i;
-  CopyBytes<4>(&v, &i);
-  return scalar<int32_t>(i);
-}
-
-SIMD_INLINE scalar<double> float_from_bits(const scalar<int64_t> v) {
-  double f;
-  CopyBytes<8>(&v, &f);
-  return scalar<double>(f);
-}
-SIMD_INLINE scalar<int64_t> bits_from_float(const scalar<double> v) {
-  int64_t i;
-  CopyBytes<8>(&v, &i);
-  return scalar<int64_t>(i);
-}
-
-// "Extensions": useful but quite performance-portable operations. We add
-// functions to this namespace in multiple places.
-namespace ext {
-
-// Sum of all lanes, i.e. the only one.
-template <typename T>
-SIMD_INLINE scalar<T> horz_sum(const scalar<T> v0) {
-  return v0;
-}
-
-}  // namespace ext
-
 // ================================================== COMPARE
 
 // Comparisons fill a lane with 1-bits if the condition is true, else 0.
@@ -486,47 +460,26 @@ scalar<T> ComparisonResult(const bool result) {
 
 template <typename T>
 SIMD_INLINE scalar<T> operator==(const scalar<T> a, const scalar<T> b) {
-  return ComparisonResult<T>(T(a) == T(b));
+  return ComparisonResult<T>(a.raw == b.raw);
 }
 
 template <typename T>
 SIMD_INLINE scalar<T> operator<(const scalar<T> a, const scalar<T> b) {
-  return ComparisonResult<T>(T(a) < T(b));
+  return ComparisonResult<T>(a.raw < b.raw);
 }
 template <typename T>
 SIMD_INLINE scalar<T> operator>(const scalar<T> a, const scalar<T> b) {
-  return ComparisonResult<T>(T(a) > T(b));
+  return ComparisonResult<T>(a.raw > b.raw);
 }
 
 template <typename T>
 SIMD_INLINE scalar<T> operator<=(const scalar<T> a, const scalar<T> b) {
-  return ComparisonResult<T>(T(a) <= T(b));
+  return ComparisonResult<T>(a.raw <= b.raw);
 }
 template <typename T>
 SIMD_INLINE scalar<T> operator>=(const scalar<T> a, const scalar<T> b) {
-  return ComparisonResult<T>(T(a) >= T(b));
+  return ComparisonResult<T>(a.raw >= b.raw);
 }
-
-// "Extensions": useful but quite performance-portable operations. We add
-// functions to this namespace in multiple places.
-namespace ext {
-
-// Returns a bit array of the most significant bit of each byte in "v", i.e.
-// sum_i=0..15 of (v[i] >> 7) << i; v[0] is the least-significant byte of "v".
-// This is useful for testing/branching based on comparison results.
-SIMD_INLINE uint32_t movemask(const scalar<uint8_t> v) { return v >> 7; }
-
-// Returns the most significant bit of each float/double lane (see above).
-SIMD_INLINE uint32_t movemask(const scalar<float> v) { return v < 0.0f; }
-SIMD_INLINE uint32_t movemask(const scalar<double> v) { return v < 0.0; }
-
-// Returns whether all lanes are equal to zero. Supported for all integer T.
-template <typename T>
-SIMD_INLINE bool all_zero(const scalar<T> v) {
-  return static_cast<T>(v) == 0;
-}
-
-}  // namespace ext
 
 // ================================================== LOGICAL
 
@@ -549,7 +502,7 @@ struct BitwiseOp {
 
 template <typename T>
 SIMD_INLINE scalar<T> operator&(const scalar<T> a, const scalar<T> b) {
-  return scalar<T>(T(a) & T(b));
+  return scalar<T>(a.raw & b.raw);
 }
 template <>
 SIMD_INLINE scalar<float> operator&(const scalar<float> a, const scalar<float> b) {
@@ -565,7 +518,7 @@ SIMD_INLINE scalar<double> operator&(const scalar<double> a, const scalar<double
 // Returns ~a & b.
 template <typename T>
 SIMD_INLINE scalar<T> andnot(const scalar<T> a, const scalar<T> b) {
-  return scalar<T>(~T(a) & T(b));
+  return scalar<T>(~a.raw & b.raw);
 }
 template <>
 SIMD_INLINE scalar<float> andnot(const scalar<float> a, const scalar<float> b) {
@@ -582,7 +535,7 @@ SIMD_INLINE scalar<double> andnot(const scalar<double> a, const scalar<double> b
 
 template <typename T>
 SIMD_INLINE scalar<T> operator|(const scalar<T> a, const scalar<T> b) {
-  return scalar<T>(T(a) | T(b));
+  return scalar<T>(a.raw | b.raw);
 }
 template <>
 SIMD_INLINE scalar<float> operator|(const scalar<float> a, const scalar<float> b) {
@@ -597,7 +550,7 @@ SIMD_INLINE scalar<double> operator|(const scalar<double> a, const scalar<double
 
 template <typename T>
 SIMD_INLINE scalar<T> operator^(const scalar<T> a, const scalar<T> b) {
-  return scalar<T>(T(a) ^ T(b));
+  return scalar<T>(a.raw ^ b.raw);
 }
 template <>
 SIMD_INLINE scalar<float> operator^(const scalar<float> a, const scalar<float> b) {
@@ -606,6 +559,15 @@ SIMD_INLINE scalar<float> operator^(const scalar<float> a, const scalar<float> b
 template <>
 SIMD_INLINE scalar<double> operator^(const scalar<double> a, const scalar<double> b) {
   return BitwiseOp<int64_t>()(a, b, [](int64_t i, int64_t j) { return i ^ j; });
+}
+
+// ------------------------------ Select/blend
+
+// Returns mask ? b : a. Each lane of "mask" must equal T(0) or ~T(0).
+template <typename T>
+SIMD_INLINE scalar<T> select(const scalar<T> a, const scalar<T> b,
+                             const scalar<T> mask) {
+  return (mask & b) | andnot(mask, a);
 }
 
 // ================================================== MEMORY
@@ -630,8 +592,7 @@ SIMD_INLINE scalar<T> load_unaligned(Scalar<T> d, const T* SIMD_RESTRICT p) {
 
 template <typename T>
 SIMD_INLINE void store(const scalar<T> v, Scalar<T>, T* SIMD_RESTRICT aligned) {
-  const T t = v;
-  CopyBytes<sizeof(T)>(&t, aligned);
+  CopyBytes<sizeof(T)>(&v.raw, aligned);
 }
 
 template <typename T>
@@ -646,6 +607,31 @@ template <typename T>
 SIMD_INLINE void stream(const scalar<T> v, Scalar<T> d,
                         T* SIMD_RESTRICT aligned) {
   return store(v, d, aligned);
+}
+
+// ================================================== CONVERT
+
+template <typename FromT, typename ToT>
+SIMD_INLINE scalar<ToT> convert_to(Desc<ToT, 1, NONE>,
+                                   const scalar<FromT> from) {
+  return scalar<ToT>(from.raw);
+}
+
+SIMD_INLINE scalar<float> convert_to(Scalar<float>, const scalar<int32_t> v) {
+  return scalar<float>(v.raw);
+}
+
+// Truncates (rounds toward zero).
+SIMD_INLINE scalar<int32_t> convert_to(Scalar<int32_t>, const scalar<float> v) {
+  const float f = v.raw;
+  return scalar<int32_t>(f);
+}
+
+// Approximation of round-to-nearest for numbers representable as int32_t.
+SIMD_INLINE scalar<int32_t> nearest_int(const scalar<float> v) {
+  const float f = v.raw;
+  const float bias = f < 0.0f ? -0.5f : 0.5f;
+  return scalar<int32_t>(f + bias);
 }
 
 // ================================================== SWIZZLE
@@ -666,24 +652,24 @@ SIMD_INLINE scalar<T> broadcast(const scalar<T> v) {
 
 SIMD_INLINE scalar<uint16_t> zip_lo(const scalar<uint8_t> a,
                                   const scalar<uint8_t> b) {
-  return scalar<uint16_t>((uint32_t(b) << 8) + uint32_t(a));
+  return scalar<uint16_t>((uint32_t(b.raw) << 8) + a.raw);
 }
 SIMD_INLINE scalar<uint32_t> zip_lo(const scalar<uint16_t> a,
                                   const scalar<uint16_t> b) {
-  return scalar<uint32_t>((uint32_t(b) << 16) + uint32_t(a));
+  return scalar<uint32_t>((uint32_t(b.raw) << 16) + a.raw);
 }
 SIMD_INLINE scalar<uint64_t> zip_lo(const scalar<uint32_t> a,
                                   const scalar<uint32_t> b) {
-  return scalar<uint64_t>((uint64_t(b) << 32) + uint64_t(a));
+  return scalar<uint64_t>((uint64_t(b.raw) << 32) + a.raw);
 }
 SIMD_INLINE scalar<int16_t> zip_lo(const scalar<int8_t> a, const scalar<int8_t> b) {
-  return scalar<int16_t>((int32_t(b) << 8) + int32_t(a));
+  return scalar<int16_t>((uint32_t(b.raw) << 8) + a.raw);
 }
 SIMD_INLINE scalar<int32_t> zip_lo(const scalar<int16_t> a, const scalar<int16_t> b) {
-  return scalar<int32_t>((int32_t(b) << 16) + int32_t(a));
+  return scalar<int32_t>((uint32_t(b.raw) << 16) + a.raw);
 }
 SIMD_INLINE scalar<int64_t> zip_lo(const scalar<int32_t> a, const scalar<int32_t> b) {
-  return scalar<int64_t>((int64_t(b) << 32) + int64_t(a));
+  return scalar<int64_t>((uint64_t(b.raw) << 32) + a.raw);
 }
 
 template <typename T>
@@ -692,20 +678,54 @@ SIMD_INLINE auto zip_hi(const scalar<T> a, const scalar<T> b)
   return zip_lo(a, b);
 }
 
-// ------------------------------ Convert
+// ------------------------------ Parts
 
-template <typename FromT, typename ToT>
-SIMD_INLINE scalar<ToT> convert_to(Desc<ToT, 1, NONE>,
-                                   const scalar<FromT> from) {
-  const FromT t = from;
-  return scalar<ToT>(static_cast<ToT>(t));
+template <typename T, typename T2>
+SIMD_INLINE scalar<T> set_part(Scalar<T>, const T2 t) {
+  return scalar<T>(t);
 }
 
-// ------------------------------ Select/blend
-
-// Returns mask ? b : a. Each lane of "mask" must equal T(0) or ~T(0).
 template <typename T>
-SIMD_INLINE scalar<T> select(const scalar<T> a, const scalar<T> b,
-                           const scalar<T> mask) {
-  return (mask & b) | andnot(mask, a);
+SIMD_INLINE T get_part(Scalar<T>, const scalar<T> v) {
+  return v.raw;
 }
+
+template <typename T>
+SIMD_INLINE scalar<T> any_part(Scalar<T>, const scalar<T> v) {
+  return v;
+}
+
+template <int kLane, typename T>
+SIMD_INLINE scalar<T> broadcast_part(Scalar<T>, const scalar<T> v) {
+  static_assert(kLane == 0, "Invalid kLane");
+  return v;
+}
+
+// ================================================== MISC
+
+// "Extensions": useful but not quite performance-portable operations. We add
+// functions to this namespace in multiple places.
+namespace ext {
+
+// Returns a bit array of the most significant bit of each byte in "v", i.e.
+// sum_i=0..15 of (v[i] >> 7) << i; v[0] is the least-significant byte of "v".
+// This is useful for testing/branching based on comparison results.
+SIMD_INLINE uint32_t movemask(const scalar<uint8_t> v) { return v.raw >> 7; }
+
+// Returns the most significant bit of each float/double lane (see above).
+SIMD_INLINE uint32_t movemask(const scalar<float> v) { return v.raw < 0.0f; }
+SIMD_INLINE uint32_t movemask(const scalar<double> v) { return v.raw < 0.0; }
+
+// Returns whether all lanes are equal to zero. Supported for all integer T.
+template <typename T>
+SIMD_INLINE bool all_zero(const scalar<T> v) {
+  return v.raw == 0;
+}
+
+// Sum of all lanes, i.e. the only one.
+template <typename T>
+SIMD_INLINE scalar<T> horz_sum(const scalar<T> v0) {
+  return v0;
+}
+
+}  // namespace ext

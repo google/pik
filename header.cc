@@ -72,7 +72,7 @@ class U32Coder {
       }
     }
 
-    const int bits_required = 32 - PIK_LZCNT32(value);
+    const int bits_required = 32 - NumZeroBitsAboveMSB32(value);
     // kBits (except the zeros) are sorted in ascending order,
     // so choose the first selector that provides enough bits.
     for (int selector = 0; selector < 4; ++selector) {
@@ -290,7 +290,7 @@ class SectionBits {
   void Foreach(const Visitor& visitor) const {
     uint32_t remaining = bits_;
     while (remaining != 0) {
-      const int idx = PIK_TZCNT32(remaining);
+      const int idx = NumZeroBitsBelowLSB32Nonzero(remaining);
       visitor(idx);
       remaining &= remaining - 1;  // clear lowest
     }

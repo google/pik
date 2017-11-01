@@ -207,16 +207,17 @@ Image3F UpSample8x8BlurDCT(const Image3F& img, const float sigma) {
     for (int bx = 0; bx < xs; ++bx) {
       for (int c = 0; c < 3; ++c) {
         float* const PIK_RESTRICT block = &row[c][bx * 64];
-        // "Loop" over ix = [0, 8), one per lane.
         using namespace SIMD_NAMESPACE;
-        const Full<float> d;
-        const auto val0 = load(d, &row0[c][bx * 8]);
-        const auto val1 = load(d, &row1[c][bx * 8]);
-        const auto val2 = load(d, &row2[c][bx * 8]);
-        for (int iy = 0; iy < 8; ++iy) {
-          const auto val = (val0 * set1(d, w0[iy]) + val1 * set1(d, w1[iy]) +
-                            val2 * set1(d, w2[iy]));
-          store(val, d, &block[iy * 8]);
+        const Full<float, SIMD_TARGET> d;
+        for (int ix = 0; ix < 8; ix += d.N) {
+          const auto val0 = load(d, &row0[c][bx * 8 + ix]);
+          const auto val1 = load(d, &row1[c][bx * 8 + ix]);
+          const auto val2 = load(d, &row2[c][bx * 8 + ix]);
+          for (int iy = 0; iy < 8; ++iy) {
+            const auto val = (val0 * set1(d, w0[iy]) + val1 * set1(d, w1[iy]) +
+                              val2 * set1(d, w2[iy]));
+            store(val, d, &block[iy * 8 + ix]);
+          }
         }
         ComputeTransposedScaledBlockDCTFloat(block);
         block[0] = 0.0f;
@@ -285,20 +286,21 @@ Image3F UpSample4x4BlurDCT(const Image3F& img, const float sigma) {
     for (int bx = 0; bx < bxs; ++bx) {
       for (int c = 0; c < 3; ++c) {
         float* const PIK_RESTRICT block = &row[c][bx * 64];
-        // "Loop" over ix = [0, 8), one per lane.
         using namespace SIMD_NAMESPACE;
-        const Full<float> d;
-        const auto val0 = load(d, &row0[c][bx * 8]);
-        const auto val1 = load(d, &row1[c][bx * 8]);
-        const auto val2 = load(d, &row2[c][bx * 8]);
-        const auto val3 = load(d, &row3[c][bx * 8]);
-        for (int iy = 0; iy < 4; ++iy) {
-          const auto vala = (val0 * set1(d, w0[iy]) + val1 * set1(d, w1[iy]) +
-                             val2 * set1(d, w2[iy]));
-          const auto valb = (val1 * set1(d, w0[iy]) + val2 * set1(d, w1[iy]) +
-                             val3 * set1(d, w2[iy]));
-          store(vala, d, &block[iy * 8]);
-          store(valb, d, &block[iy * 8 + 32]);
+        const Full<float, SIMD_TARGET> d;
+        for (int ix = 0; ix < 8; ix += d.N) {
+          const auto val0 = load(d, &row0[c][bx * 8 + ix]);
+          const auto val1 = load(d, &row1[c][bx * 8 + ix]);
+          const auto val2 = load(d, &row2[c][bx * 8 + ix]);
+          const auto val3 = load(d, &row3[c][bx * 8 + ix]);
+          for (int iy = 0; iy < 4; ++iy) {
+            const auto vala = (val0 * set1(d, w0[iy]) + val1 * set1(d, w1[iy]) +
+                               val2 * set1(d, w2[iy]));
+            const auto valb = (val1 * set1(d, w0[iy]) + val2 * set1(d, w1[iy]) +
+                               val3 * set1(d, w2[iy]));
+            store(vala, d, &block[iy * 8 + ix]);
+            store(valb, d, &block[iy * 8 + 32 + ix]);
+          }
         }
         ComputeTransposedScaledBlockDCTFloat(block);
         block[0] = 0.0f;
@@ -311,9 +313,8 @@ Image3F UpSample4x4BlurDCT(const Image3F& img, const float sigma) {
   return out;
 }
 
-template <class D>
+template <int N>
 Image3F UpSampleBlur(const Image3F& img, const float sigma) {
-  constexpr size_t N = D::N;
   const int xs = img.xsize();
   const int ys = img.ysize();
   float w0[N] = { 0.0f };
@@ -370,16 +371,19 @@ Image3F UpSampleBlur(const Image3F& img, const float sigma) {
     auto row2 = blur_x.ConstRow(by_d);
     for (int bx = 0; bx < xs; ++bx) {
       for (int c = 0; c < 3; ++c) {
-        // "Loop" over ix = [0, N), one per lane.
         using namespace SIMD_NAMESPACE;
-        const D d;
-        const auto val0 = load(d, &row0[c][bx * N]);
-        const auto val1 = load(d, &row1[c][bx * N]);
-        const auto val2 = load(d, &row2[c][bx * N]);
-        for (int iy = 0; iy < N; ++iy) {
-          const auto val = (val0 * set1(d, w0[iy]) + val1 * set1(d, w1[iy]) +
-                            val2 * set1(d, w2[iy]));
-          store(val, d, &out.Row(by * N + iy)[c][bx * N]);
+        constexpr int kLanes =
+            SIMD_MIN(N, SIMD_TARGET::template NumLanes<float>());
+        const Part<float, kLanes, SIMD_TARGET> d;
+        for (int ix = 0; ix < N; ix += d.N) {
+          const auto val0 = load(d, &row0[c][bx * N + ix]);
+          const auto val1 = load(d, &row1[c][bx * N + ix]);
+          const auto val2 = load(d, &row2[c][bx * N + ix]);
+          for (int iy = 0; iy < N; ++iy) {
+            const auto val = (val0 * set1(d, w0[iy]) + val1 * set1(d, w1[iy]) +
+                              val2 * set1(d, w2[iy]));
+            store(val, d, &out.Row(by * N + iy)[c][bx * N + ix]);
+          }
         }
       }
     }
@@ -388,13 +392,11 @@ Image3F UpSampleBlur(const Image3F& img, const float sigma) {
 }
 
 Image3F UpSample8x8Blur(const Image3F& img, const float sigma) {
-  using D = SIMD_NAMESPACE::Full<float>;
-  return UpSampleBlur<D>(img, sigma);
+  return UpSampleBlur<8>(img, sigma);
 }
 
 Image3F UpSample4x4Blur(const Image3F& img, const float sigma) {
-  using D = SIMD_NAMESPACE::Part<float, 4>;
-  return UpSampleBlur<D>(img, sigma);
+  return UpSampleBlur<4>(img, sigma);
 }
 
 

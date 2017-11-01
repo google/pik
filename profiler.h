@@ -275,7 +275,7 @@ class Results {
 
  private:
 #if PIK_ARCH_X64
-  static bool SameOffset(const __m128i& zone, const size_t biased_offset) {
+  static bool SameOffset(const __m128i zone, const size_t biased_offset) {
     const uint64_t num_calls = _mm_cvtsi128_si64(zone);
     return (num_calls >> Accumulator::kNumCallBits) == biased_offset;
   }

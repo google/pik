@@ -15,81 +15,78 @@
 #ifndef SIMD_SIMD_H_
 #define SIMD_SIMD_H_
 
-// SIMD library facade: delegates to platform-specific headers (currently
-// scalar/SSE4/AVX2/ARMv8, later PPC8). To ensure performance portability,
-// the library only includes operations that are efficient on all platforms.
-//
-// WARNING: this header is included from translation units compiled with
+// Performance-portable SIMD API for SSE4/AVX2/ARMv8, later AVX-512 and PPC8.
+// Each operation is efficient on all platforms.
+
+// WARNING: this header may be included from translation units compiled with
 // different flags. To prevent ODR violations, all functions defined here or
 // in dependent headers must be inlined and/or within namespace SIMD_NAMESPACE.
 // The namespace name varies depending on compile flags, so this header requires
 // textual inclusion.
-
 #include <stddef.h>  // size_t
 #include "simd/port.h"
-#include "simd/util.h"  // must come after port.h
+#include "simd/util.h"
 
-// Summary of available types (T is the lane type, e.g. float):
-// Vec<T, N[, Target]> or Desc<T, N[, Target]>::V are aliases for a full vector
-//   of at least 128 bits, or N (=2^j) lane part, or scalar.
-//
-// PB[B]xN[N] are aliases for vectors/parts with a given lane type and count:
-//   P = lane type prefix: unsigned (u), signed (i), or floating-point (f);
-//   B[B] = number of bits per lane;
-//   N[N] = number of lanes: N[N] = 2^j, B[B] * N[N] <= 128.
+// Ensures an array is aligned and suitable for load()/store() functions.
+// Example: SIMD_ALIGN T lanes[V::N];
+#define SIMD_ALIGN alignas(32)
 
 namespace pik {
+#ifdef SIMD_NAMESPACE
 namespace SIMD_NAMESPACE {
+#endif
 
-// Platform-specific specializations with "type" alias; use via Vec<> below.
+// SIMD operations are implemented as overloaded functions selected using a
+// "descriptor" D := Desc<T, N[, Target]>. For example: `D::V setzero(D)`.
+// T is the lane type, N the number of lanes, Target is an instruction set
+// (e.g. SSE4), defaulting to the best available. The return type D::V is either
+// a full vector of at least 128 bits, an N-lane (=2^j) part, or a scalar.
+
+// Specialized in platform-specific headers; see Desc::V and Dup128.
 template <typename T, size_t N, class Target>
 struct VecT;
+template <typename T, class Target>
+struct Dup128T;
 
-// Alias for a vector/part/scalar: Vec<uint32_t, 1> = u32x1;
-// Vec<float, 1, NONE> = scalar<float>. This is the return type of initializers
-// such as setzero(). Parts and full vectors are distinct types on x86 to avoid
-// inadvertent conversions. By contrast, PPC parts are merely aliases for full
-// vectors to avoid wrapper overhead.
-template <typename T, size_t N, class Target = SIMD_TARGET>
-using Vec = typename VecT<T, N, Target>::type;
-
-// Descriptor: properties that uniquely identify a Vec. Used to select an
-// overloaded function, typically via Full/Part/Scalar aliases below.
-template <typename LaneT, size_t kLanes, class TargetT = SIMD_TARGET>
+// Descriptor: properties that uniquely identify a vector/part/scalar. Used to
+// select overloaded functions; see Full/Part/Scalar aliases below.
+template <typename LaneT, size_t kLanes, class TargetT>
 struct Desc {
   using T = LaneT;
   static constexpr size_t N = kLanes;
   using Target = TargetT;
 
-  using V = Vec<T, N, Target>;
+  // Alias for the actual vector data, e.g. scalar<float> for <float, 1, NONE>,
+  // returned by initializers such as setzero(). Parts and full vectors are
+  // distinct types on x86 to avoid inadvertent conversions. By contrast, PPC
+  // parts are merely aliases for full vectors to avoid wrapper overhead.
+  using V = typename VecT<T, N, Target>::type;
+
+  // Alias for a full vector whose 128-bit block(s) are all equal.
+  using Dup128 = typename Dup128T<T, Target>::type;
 
   static_assert((N & (N - 1)) == 0, "N must be a power of two");
-  static_assert(N == 1 || TargetT::value != SIMD_NONE, "Scalar must have N=1");
+  static_assert(N <= Target::template NumLanes<T>(), "N too large");
 };
 
 // Shorthand for a full vector.
-template <typename T, class Target = SIMD_TARGET>
+template <typename T, class Target>
 using Full = Desc<T, Target::template NumLanes<T>(), Target>;
 
-// Shorthand for a part (or full) vector. N=2^j. Note that MinTarget selects
+// Shorthand for a part (or full) vector. N=2^j. Note that PartTarget selects
 // a 128-bit Target when T and N are small enough (avoids additional AVX2
 // versions of SSE4 initializers/loads).
-template <typename T, size_t N>
-using Part = Desc<T, N, MinTarget<T, N>>;
+template <typename T, size_t N, class Target>
+using Part = Desc<T, N, PartTarget<T, N, Target>>;
 
 // Shorthand for a scalar; note that scalar<T> is the actual data class.
 template <typename T>
 using Scalar = Desc<T, 1, NONE>;
 
-// Returns size [bytes] of the valid lanes, not necessarily the same as the
-// underlying raw register.
-template <class D>
-constexpr size_t vec_size() {
-  return D::N * sizeof(typename D::T);
-}
-
-// Returns a name for the vector/part/scalar in PB[B][xN[N]] format (see above).
-// Useful for understanding which instantiation of a generic test failed.
+// Returns a name for the vector/part/scalar. The type prefix is u/i/f for
+// unsigned/signed/floating point, followed by the number of bits per lane;
+// then 'x' followed by the number of lanes. Example: u8x16. This is useful for
+// understanding which instantiation of a generic test failed.
 template <class D>
 inline const char* vec_name() {
   using T = typename D::T;
@@ -120,31 +117,28 @@ inline const char* vec_name() {
   return sizeof(T) == 1 ? name1 : name2;
 }
 
-// Ensures these dependencies are added to deps.mk. The inclusions have no
-// effect because the headers are empty #ifdef SIMD_DEPS.
-#ifdef SIMD_DEPS
-#include "simd/x86_avx2.h"
-#include "simd/x86_sse4.h"
-#include "simd/arm64_neon.h"
-#endif
+// Include all headers #if SIMD_DEPS to ensure they are added to deps.mk.
+// This has no other effect because the headers are empty #if SIMD_DEPS.
 
 // Also used by x86_avx2.h => must be included first.
-#if SIMD_ENABLE_SSE4
+#if SIMD_DEPS || (SIMD_ENABLE_SSE4 || SIMD_ENABLE_AVX2)
 #include "simd/x86_sse4.h"
 #endif
 
-#if SIMD_ENABLE_SSE4 && SIMD_ENABLE_AVX2
+#if SIMD_DEPS || SIMD_ENABLE_AVX2
 #include "simd/x86_avx2.h"
 #endif
 
-#if SIMD_ENABLE_ARM8
+#if SIMD_DEPS || SIMD_ENABLE_ARM8
 #include "simd/arm64_neon.h"
 #endif
 
 // Always available
 #include "simd/scalar.h"
 
+#ifdef SIMD_NAMESPACE
 }  // namespace SIMD_NAMESPACE
+#endif
 }  // namespace pik
 
 #endif  // SIMD_SIMD_H_

@@ -17,37 +17,59 @@
 #include <stddef.h>
 
 #include "compiler_specific.h"
-
-#if SIMD_ENABLE_AVX2
 #include "simd/simd.h"
 
 namespace pik {
 namespace SIMD_NAMESPACE {
 namespace {
-const Full<int32_t> d;
+constexpr size_t kNumPredictors = 8;
+using DI = Part<int16_t, kNumPredictors, SIMD_TARGET>;
+using DU = Part<uint16_t, kNumPredictors, SIMD_TARGET>;
+using D8 = Part<uint8_t, kNumPredictors * 2, SIMD_TARGET>;
 
 // Not the same as avg, which rounds rather than truncates!
 template <class V>
-static PIK_INLINE V Average(const V v0, const V v1) {
-  return shift_right<1>(v0 + v1);
+PIK_INLINE V Average(const V v0, const V v1) {
+  return shift_right<1>(add_sat(v0, v1));
 }
 
 // Clamps gradient to the min/max of n, w, l.
 template <class V>
-static PIK_INLINE V ClampedGradient(const V n, const V w, const V l) {
-  const V grad = n + w - l;
+PIK_INLINE V ClampedGradient(const V n, const V w, const V l) {
+  const V grad = sub_sat(add_sat(n, w), l);
   const V vmin = min(n, min(w, l));
   const V vmax = max(n, max(w, l));
   return min(max(vmin, grad), vmax);
 }
 
-static PIK_INLINE i32x8 AbsResidual(const i32x8 c, const i32x8 pred) {
-  return i32x8(_mm256_abs_epi32(c - pred));
+template <class V>
+PIK_INLINE V AbsResidual(const V c, const V pred) {
+  return abs(sub_sat(c, pred));
 }
 
-static PIK_INLINE u16x8 Costs16(const i32x8 costs) {
-  // Saturate to 16-bit for minpos.
-  return convert_to(Part<uint16_t, 8>(), costs);
+// Returns a shuffle mask for moving lane i to lane 0 (i = argmin abs_costs[i]).
+// This is used for selecting the best predictor(s).
+PIK_INLINE u8x16 ShuffleForMinCost(const DI::V abs_costs) {
+  const D8 d8;
+  // Replicates index16 returned from minpos into all bytes.
+  SIMD_ALIGN const uint8_t kIdx[16] = {2, 2, 2, 2, 2, 2, 2, 2,
+                                       2, 2, 2, 2, 2, 2, 2, 2};
+  // Offset for the most significant byte in each 16-bit pair.
+  SIMD_ALIGN const uint8_t kHighByte[16] = {0, 1, 0, 1, 0, 1, 0, 1,
+                                            0, 1, 0, 1, 0, 1, 0, 1};
+  const auto bytes_from_idx = load(d8, kIdx);
+  const auto high_byte = load(d8, kHighByte);
+  // Note: minpos is unsigned; LimitsMin (a large absolute value) will have a
+  // higher cost than any other value.
+  const auto idx_min = ext::minpos(cast_to(DU(), abs_costs));
+  const auto idx_idx = shuffle_bytes(idx_min, bytes_from_idx);
+  const auto byte_idx = idx_idx + idx_idx;  // shift left by 1 => byte index
+  return cast_to(d8, byte_idx) + high_byte;
+}
+
+// Return value is broadcasted into all lanes => caller can use any_part.
+PIK_INLINE DI::V SelectMinCost(const DI::V pred, const D8::V shuffle) {
+  return shuffle_bytes(pred, shuffle);
 }
 
 // Sliding window of "causal" (already decoded) pixels, plus simple functions
@@ -73,22 +95,23 @@ static PIK_INLINE u16x8 Costs16(const i32x8 costs) {
 // minpos(lanes) returns the lowest i with lanes[i] == min. We again retained
 // the permutation with the lowest encoding cost.
 class PixelNeighborsY {
-  using V = i32x8;
-
  public:
-  // LoadT/StoreT/compute single Y values.
-  using T = i32x4;
-  static PIK_INLINE T LoadT(const DC* const PIK_RESTRICT row, const size_t x) {
-    return set(Part<int32_t, 4>(), row[x]);
+  // Single Y value.
+  using PixelD = Part<int16_t, 1, SIMD_TARGET>;
+
+  static PIK_INLINE PixelD::V LoadPixel(const DC* const PIK_RESTRICT row,
+                                        const size_t x) {
+    return set_part(PixelD(), row[x]);
   }
 
-  static PIK_INLINE void StoreT(const T dc, DC* const PIK_RESTRICT row,
-                                const size_t x) {
-    row[x] = get(Part<int32_t, 4>(), dc);
+  static PIK_INLINE void StorePixel(const PixelD::V dc,
+                                    DC* const PIK_RESTRICT row,
+                                    const size_t x) {
+    row[x] = get_part(PixelD(), dc);
   }
 
-  static PIK_INLINE V Broadcast(const T dc) {
-    return V(_mm256_broadcastd_epi32(dc));
+  static PIK_INLINE DI::V Broadcast(const PixelD::V dc) {
+    return broadcast_part<0>(DI(), dc);
   }
 
   // Loads the neighborhood required for predicting at x = 2. This involves
@@ -98,6 +121,7 @@ class PixelNeighborsY {
                   const DC* const PIK_RESTRICT row_t,
                   const DC* const PIK_RESTRICT row_m,
                   const DC* const PIK_RESTRICT row_b) {
+    const DI d;
     const auto wl = set1(d, row_m[0]);
     const auto ww = set1(d, row_b[0]);
     tl_ = set1(d, row_t[1]);
@@ -109,12 +133,12 @@ class PixelNeighborsY {
   }
 
   // Estimates "cost" for each predictor by comparing with known n and w.
-  PIK_INLINE V PredictorCosts(const size_t x,
-                              const DC* const PIK_RESTRICT row_ym,
-                              const DC* const PIK_RESTRICT row_yb,
-                              const DC* const PIK_RESTRICT row_t) {
-    const V tr(Broadcast(LoadT(row_t, x + 1)));
-    const V costs =
+  PIK_INLINE DI::V PredictorCosts(const size_t x,
+                                  const DC* const PIK_RESTRICT row_ym,
+                                  const DC* const PIK_RESTRICT row_yb,
+                                  const DC* const PIK_RESTRICT row_t) {
+    const auto tr = Broadcast(LoadPixel(row_t, x + 1));
+    const auto costs =
         AbsResidual(n_, Predict(tn_, l_, tl_, tr)) + AbsResidual(w_, pred_w_);
     tl_ = tn_;
     tn_ = tr;
@@ -122,78 +146,71 @@ class PixelNeighborsY {
   }
 
   // Returns predictor for pixel c with min cost and updates pred_w_.
-  PIK_INLINE T PredictC(const T r, const V costs) {
-    const u16x8 idx_min(_mm_minpos_epu16(Costs16(costs)));
-    const u32x8 index_unscaled = u32x8(_mm256_broadcastd_epi32(idx_min));
-    const u32x8 index = shift_right<16>(index_unscaled);
-
-    const V pred_c = Predict(n_, w_, l_, Broadcast(r));
+  PIK_INLINE PixelD::V PredictC(const PixelD::V r, const DI::V costs) {
+    const auto pred_c = Predict(n_, w_, l_, Broadcast(r));
     pred_w_ = pred_c;
-
-    const V best(_mm256_permutevar8x32_epi32(pred_c, index));
-    return T(_mm256_castsi256_si128(best));
+    const auto shuffle = ShuffleForMinCost(costs);
+    return any_part(PixelD(), SelectMinCost(pred_c, shuffle));
   }
 
-  PIK_INLINE void Advance(const T r, const T c) {
+  PIK_INLINE void Advance(const PixelD::V r, const PixelD::V c) {
     l_ = n_;
     n_ = Broadcast(r);
     w_ = Broadcast(c);
   }
 
  private:
-  // Eight predictors for luminance (decreases coded size by ~0.5% vs four)
-  // 0: Average(w, n);
-  // 1: Average(Average(w, r), n);
-  // 2: Average(n, r);
-  // 3: Average(w, l);
-  // 4: Average(l, n);
-  // 5: w;
-  // 6: PredClampedGrad(n, w, l);
-  // 7: n;
   // All arguments are broadcasted.
-  static PIK_INLINE V Predict(const V n, const V w, const V l, const V r) {
-    const V rnrnrnrn(_mm256_unpacklo_epi32(n, r));
+  static PIK_INLINE DI::V Predict(const DI::V n, const DI::V w, const DI::V l,
+                                  const DI::V r) {
     // "x" are invalid/don't care lanes.
-    const V xxxnwrwn(_mm256_unpacklo_epi32(rnrnrnrn, w));
-    const V p76xxxxxx(_mm256_unpacklo_epi32(ClampedGradient(n, w, l), n));
-    const V xxxnwrww(_mm256_blend_epi32(xxxnwrwn, w, 0x01));
-    const V p765xxxxx(_mm256_blend_epi32(p76xxxxxx, w, 0x20));
-    const V xxxllnrn(_mm256_blend_epi32(rnrnrnrn, l, 0x18));
-    // The first five predictors are averages; "a" needs another Average.
-    const V pxxx432a0 = Average(xxxllnrn, xxxnwrww);
-    const V pxxxxxx1x = Average(pxxx432a0, n);  // = A(A(w, r), n)
-    const V p765432x0(_mm256_blend_epi32(pxxx432a0, p765xxxxx, 0xE0));
-    return V(_mm256_blend_epi32(p765432x0, pxxxxxx1x, 0x02));
+    const auto vRN = interleave_lo(n, r);
+    const auto v6 = ClampedGradient(n, w, l);
+    const auto vLLRN = extract_concat_bytes<12>(l, vRN);
+    const auto vNWNWNWNW = interleave_lo(w, n);
+    const auto vWxxxLLRN = concat_hi_lo(w, vLLRN);
+    const auto vAxxx4321 = Average(vNWNWNWNW, vWxxxLLRN);
+    const auto vx765xxxx = interleave_lo(vNWNWNWNW, v6);
+    const auto vx7654321 = concat_hi_lo(vx765xxxx, vAxxx4321);
+    const auto v0xxxxxxx = Average(vAxxx4321, r);
+    // Eight predictors for luminance (decreases coded size by ~0.5% vs four)
+    // 0: Average(Average(n, w), r);
+    // 1: Average(w, n);
+    // 2: Average(n, r);
+    // 3: Average(w, l);
+    // 4: Average(n, l);
+    // 5: w;
+    // 6: PredClampedGrad(n, w, l);
+    // 7: n;
+    return extract_concat_bytes<14>(vx7654321, v0xxxxxxx);
   }
 
-  V tl_;
-  V tn_;
-  V n_;
-  V w_;
-  V l_;
+  DI::V tl_;
+  DI::V tn_;
+  DI::V n_;
+  DI::V w_;
+  DI::V l_;
   // (30% overall speedup by reusing the current prediction as the next pred_w_)
-  V pred_w_;
+  DI::V pred_w_;
 };
 
 // Providing separate sets of predictors for the luminance and chrominance bands
 // reduces the magnitude of residuals, but differentiating between the
 // chrominance bands does not.
 class PixelNeighborsUV {
-  using V = i32x8;
-
  public:
-  // LoadT/StoreT/compute pairs of U, V.
-  using T = i32x4;
+  // UV (U in higher lane, V loaded first).
+  using PixelD = Part<int16_t, 2, SIMD_TARGET>;
 
-  // Returns 00UV.
-  static PIK_INLINE T LoadT(const DC* const PIK_RESTRICT row, const size_t x) {
-    return T(_mm_loadl_epi64(
-        reinterpret_cast<const __m128i * PIK_RESTRICT>(row + 2 * x)));
+  static PIK_INLINE PixelD::V LoadPixel(const DC* const PIK_RESTRICT row,
+                                        const size_t x) {
+    return load(PixelD(), row + 2 * x);
   }
 
-  static PIK_INLINE void StoreT(const T uv, DC* const PIK_RESTRICT row,
-                                const size_t x) {
-    _mm_storel_epi64(reinterpret_cast<__m128i * PIK_RESTRICT>(row + 2 * x), uv);
+  static PIK_INLINE void StorePixel(const PixelD::V uv,
+                                    DC* const PIK_RESTRICT row,
+                                    const size_t x) {
+    store(uv, PixelD(), row + 2 * x);
   }
 
   PixelNeighborsUV(const DC* const PIK_RESTRICT row_ym,
@@ -201,22 +218,23 @@ class PixelNeighborsUV {
                    const DC* const PIK_RESTRICT row_t,
                    const DC* const PIK_RESTRICT row_m,
                    const DC* const PIK_RESTRICT row_b) {
+    const DI d;
     yn_ = set1(d, row_ym[2]);
     yw_ = set1(d, row_yb[1]);
     yl_ = set1(d, row_ym[1]);
-    n_ = LoadT(row_m, 2);
-    w_ = LoadT(row_b, 1);
-    l_ = LoadT(row_m, 1);
+    n_ = LoadPixel(row_m, 2);
+    w_ = LoadPixel(row_b, 1);
+    l_ = LoadPixel(row_m, 1);
   }
 
   // Estimates "cost" for each predictor by comparing with known c from Y band.
-  PIK_INLINE V PredictorCosts(const size_t x,
-                              const DC* const PIK_RESTRICT row_ym,
-                              const DC* const PIK_RESTRICT row_yb,
-                              const DC* const PIK_RESTRICT) {
-    const V yr = set1(d, row_ym[x + 1]);
-    const V yc = set1(d, row_yb[x]);
-    const V costs = AbsResidual(yc, Predict(yn_, yw_, yl_, yr));
+  PIK_INLINE DI::V PredictorCosts(const size_t x,
+                                  const DC* const PIK_RESTRICT row_ym,
+                                  const DC* const PIK_RESTRICT row_yb,
+                                  const DC* const PIK_RESTRICT) {
+    const auto yr = set1(DI(), row_ym[x + 1]);
+    const auto yc = set1(DI(), row_yb[x]);
+    const auto costs = AbsResidual(yc, Predict(yn_, yw_, yl_, yr));
     yl_ = yn_;
     yn_ = yr;
     yw_ = yc;
@@ -224,70 +242,63 @@ class PixelNeighborsUV {
   }
 
   // Returns predictor for pixel c with min cost.
-  PIK_INLINE T PredictC(const T r, const V costs) const {
-    const u16x8 idx_min(_mm_minpos_epu16(Costs16(costs)));
-    const u32x8 index_unscaled = u32x8(_mm256_broadcastd_epi32(idx_min));
-    const u32x8 index = shift_right<16>(index_unscaled);
-
-    const V predictors_u =
+  PIK_INLINE PixelD::V PredictC(const PixelD::V r, const DI::V costs) const {
+    const DI::V pred_u =
         Predict(BroadcastU(n_), BroadcastU(w_), BroadcastU(l_), BroadcastU(r));
-    const V predictors_v =
+    const DI::V pred_v =
         Predict(BroadcastV(n_), BroadcastV(w_), BroadcastV(l_), BroadcastV(r));
-    // permutevar is faster than store + load_ss.
-    const V best_u(_mm256_permutevar8x32_epi32(predictors_u, index));
-    const V best_v(_mm256_permutevar8x32_epi32(predictors_v, index));
-    const T best_u128(_mm256_castsi256_si128(best_u));
-    const T best_v128(_mm256_castsi256_si128(best_v));
-    return T(_mm_unpacklo_epi32(best_v128, best_u128));
+    const auto shuffle = ShuffleForMinCost(costs);
+    const auto best_u = SelectMinCost(pred_u, shuffle);
+    const auto best_v = SelectMinCost(pred_v, shuffle);
+    return any_part(PixelD(), interleave_lo(best_v, best_u));
   }
 
-  PIK_INLINE void Advance(const T r, const T c) {
+  PIK_INLINE void Advance(const PixelD::V r, const PixelD::V c) {
     l_ = n_;
     n_ = r;
     w_ = c;
   }
 
  private:
-  static PIK_INLINE V BroadcastU(const T uv) {
-    const T u = shift_bytes_right<sizeof(DC)>(uv);
-    return V(_mm256_broadcastd_epi32(u));
+  static PIK_INLINE DI::V BroadcastU(const PixelD::V uv) {
+    return broadcast_part<1>(DI(), uv);
+  }
+  static PIK_INLINE DI::V BroadcastV(const PixelD::V uv) {
+    return broadcast_part<0>(DI(), uv);
   }
 
-  static PIK_INLINE V BroadcastV(const T uv) {
-    return V(_mm256_broadcastd_epi32(uv));
-  }
-
-  // Eight predictors for chrominance:
-  // 0: ClampedGrad(n, w, l);
-  // 1: n;
-  // 2: Average2(n, w);
-  // 3: Average2(Average2(w, r), n);
-  // 4: w;
-  // 5: Average2(n, r);
-  // 6: Average2(w, l);
-  // 7: r;
   // All arguments are broadcasted.
-  static PIK_INLINE V Predict(const V n, const V w, const V l, const V r) {
-    const V xxxxxxx0 = ClampedGradient(n, w, l);
+  static PIK_INLINE DI::V Predict(const DI::V n, const DI::V w, const DI::V l,
+                                  const DI::V r) {
     // "x" lanes are unused.
-    const V xxxxxx10(_mm256_unpacklo_epi32(xxxxxxx0, n));
-    const V rwrwrwrw(_mm256_unpacklo_epi32(w, r));
-    const V xlrxrwxx(_mm256_blend_epi32(rwrwrwrw, l, 0x40));
-    const V xwnxwnxx(_mm256_blend_epi32(w, n, 0x24));
-    // "a" requires further averaging.
-    const V x65xa2xx = Average(xlrxrwxx, xwnxwnxx);
-    const V x65xa210(_mm256_blend_epi32(x65xa2xx, xxxxxx10, 0x03));
-    const V xxxx3xxx = Average(x65xa210, n);
-    const V x65x3210(_mm256_blend_epi32(x65xa210, xxxx3xxx, 0x08));
-    return V(_mm256_blend_epi32(x65x3210, rwrwrwrw, 0x90));
+    const auto v0 = ClampedGradient(n, w, l);
+    const auto vRN = interleave_lo(n, r);
+    const auto vW0 = interleave_lo(v0, w);
+    const auto vLNN = extract_concat_bytes<12>(l, n);
+    const auto vWRWR = interleave_lo(r, w);
+    const auto vLNNW = extract_concat_bytes<14>(vLNN, w);
+    const auto vRWN0 = interleave_lo(vW0, vRN);
+    const auto v531A = Average(vLNNW, vWRWR);
+    const auto v6543210x = interleave_lo(v531A, vRWN0);
+    const auto v7 = Average(v531A, n);
+    // Eight predictors for chrominance:
+    // 0: ClampedGrad(n, w, l);
+    // 1: Average2(n, w);
+    // 2: n;
+    // 3: Average2(n, r);
+    // 4: w;
+    // 5: Average2(w, l);
+    // 6: r;
+    // 7: Average2(Average2(w, r), n);
+    return extract_concat_bytes<2>(v7, v6543210x);
   }
 
-  V yn_;
-  V yw_;
-  V yl_;
-  T n_;
-  T w_;
-  T l_;
+  DI::V yn_;
+  DI::V yw_;
+  DI::V yl_;
+  PixelD::V n_;
+  PixelD::V w_;
+  PixelD::V l_;
 };
 
 // Computes residuals of a fixed predictor (the preceding pixel W).
@@ -297,18 +308,20 @@ struct FixedW {
   static PIK_INLINE void Shrink(const size_t xsize,
                                 const DC* const PIK_RESTRICT dc,
                                 DC* const PIK_RESTRICT residuals) {
-    N::StoreT(N::LoadT(dc, 0), residuals, 0);
+    N::StorePixel(N::LoadPixel(dc, 0), residuals, 0);
     for (size_t x = 1; x < xsize; ++x) {
-      N::StoreT(N::LoadT(dc, x) - N::LoadT(dc, x - 1), residuals, x);
+      N::StorePixel(N::LoadPixel(dc, x) - N::LoadPixel(dc, x - 1), residuals,
+                    x);
     }
   }
 
   static PIK_INLINE void Expand(const size_t xsize,
                                 const DC* const PIK_RESTRICT residuals,
                                 DC* const PIK_RESTRICT dc) {
-    N::StoreT(N::LoadT(residuals, 0), dc, 0);
+    N::StorePixel(N::LoadPixel(residuals, 0), dc, 0);
     for (size_t x = 1; x < xsize; ++x) {
-      N::StoreT(N::LoadT(dc, x - 1) + N::LoadT(residuals, x), dc, x);
+      N::StorePixel(N::LoadPixel(dc, x - 1) + N::LoadPixel(residuals, x), dc,
+                    x);
     }
   }
 };
@@ -321,10 +334,12 @@ struct LeftBorder2 {
                                 const DC* const PIK_RESTRICT row_m,
                                 const DC* const PIK_RESTRICT row_b,
                                 DC* const PIK_RESTRICT residuals) {
-    N::StoreT(N::LoadT(row_b, 0) - N::LoadT(row_m, 0), residuals, 0);
+    N::StorePixel(N::LoadPixel(row_b, 0) - N::LoadPixel(row_m, 0), residuals,
+                  0);
     if (xsize >= 2) {
       // TODO(user): Clamped gradient should be slightly better here.
-      N::StoreT(N::LoadT(row_b, 1) - N::LoadT(row_b, 0), residuals, 1);
+      N::StorePixel(N::LoadPixel(row_b, 1) - N::LoadPixel(row_b, 0), residuals,
+                    1);
     }
   }
 
@@ -332,9 +347,11 @@ struct LeftBorder2 {
                                 const DC* const PIK_RESTRICT residuals,
                                 const DC* const PIK_RESTRICT row_m,
                                 DC* const PIK_RESTRICT row_b) {
-    N::StoreT(N::LoadT(row_m, 0) + N::LoadT(residuals, 0), row_b, 0);
+    N::StorePixel(N::LoadPixel(row_m, 0) + N::LoadPixel(residuals, 0), row_b,
+                  0);
     if (xsize >= 2) {
-      N::StoreT(N::LoadT(row_b, 0) + N::LoadT(residuals, 1), row_b, 1);
+      N::StorePixel(N::LoadPixel(row_b, 0) + N::LoadPixel(residuals, 1), row_b,
+                    1);
     }
   }
 };
@@ -347,8 +364,9 @@ struct RightBorder1 {
                                 DC* const PIK_RESTRICT residuals) {
     // TODO(user): Clamped gradient should be slightly better here.
     if (xsize >= 2) {
-      const auto res = N::LoadT(dc, xsize - 1) - N::LoadT(dc, xsize - 2);
-      N::StoreT(res, residuals, xsize - 1);
+      const auto res =
+          N::LoadPixel(dc, xsize - 1) - N::LoadPixel(dc, xsize - 2);
+      N::StorePixel(res, residuals, xsize - 1);
     }
   }
 
@@ -356,8 +374,9 @@ struct RightBorder1 {
                                 const DC* const PIK_RESTRICT residuals,
                                 DC* const PIK_RESTRICT dc) {
     if (xsize >= 2) {
-      const auto uv = N::LoadT(dc, xsize - 2) + N::LoadT(residuals, xsize - 1);
-      N::StoreT(uv, dc, xsize - 1);
+      const auto uv =
+          N::LoadPixel(dc, xsize - 2) + N::LoadPixel(residuals, xsize - 1);
+      N::StorePixel(uv, dc, xsize - 1);
     }
   }
 };
@@ -367,7 +386,7 @@ struct RightBorder1 {
 // pointers are unused and may be null if N = PixelNeighborsY.
 template <class N>
 class Adaptive {
-  using T = typename N::T;
+  using PixelV = typename N::PixelD::V;
 
  public:
   static void Shrink(const size_t xsize, const DC* const PIK_RESTRICT row_ym,
@@ -379,9 +398,9 @@ class Adaptive {
     LeftBorder2<N>::Shrink(xsize, row_m, row_b, residuals);
 
     ForeachPrediction(xsize, row_ym, row_yb, row_t, row_m, row_b,
-                      [row_b, residuals](const size_t x, const T pred) {
-                        const T c = N::LoadT(row_b, x);
-                        N::StoreT(c - pred, residuals, x);
+                      [row_b, residuals](const size_t x, const PixelV pred) {
+                        const auto c = N::LoadPixel(row_b, x);
+                        N::StorePixel(c - pred, residuals, x);
                         return c;
                       });
 
@@ -397,9 +416,9 @@ class Adaptive {
     LeftBorder2<N>::Expand(xsize, residuals, row_m, row_b);
 
     ForeachPrediction(xsize, row_ym, row_yb, row_t, row_m, row_b,
-                      [row_b, residuals](const size_t x, const T pred) {
-                        const T c = pred + N::LoadT(residuals, x);
-                        N::StoreT(c, row_b, x);
+                      [row_b, residuals](const size_t x, const PixelV pred) {
+                        const auto c = pred + N::LoadPixel(residuals, x);
+                        N::StorePixel(c, row_b, x);
                         return c;
                       });
 
@@ -422,10 +441,10 @@ class Adaptive {
     N neighbors(row_ym, row_yb, row_t, row_m, row_b);
     // PixelNeighborsY uses w at x - 1 => two pixel margin.
     for (size_t x = 2; x < xsize - 1; ++x) {
-      const T r = N::LoadT(row_m, x + 1);
-      const i32x8 costs = neighbors.PredictorCosts(x, row_ym, row_yb, row_t);
-      const T pred_c = neighbors.PredictC(r, costs);
-      const T c = func(x, pred_c);
+      const auto r = N::LoadPixel(row_m, x + 1);
+      const auto costs = neighbors.PredictorCosts(x, row_ym, row_yb, row_t);
+      const auto pred_c = neighbors.PredictC(r, costs);
+      const auto c = func(x, pred_c);
       neighbors.Advance(r, c);
     }
   }
@@ -513,9 +532,6 @@ void ExpandUV(const Image<DC>& dc_y, const Image<DC>& residuals,
 }  // namespace
 }  // namespace SIMD_NAMESPACE
 
-// WARNING: the current implementation requires AVX2 and doesn't yet support
-// dynamic dispatching.
-
 void ShrinkY(const Image<DC>& dc, Image<DC>* const PIK_RESTRICT residuals) {
   SIMD_NAMESPACE::ShrinkY(dc, residuals);
 }
@@ -535,5 +551,3 @@ void ExpandUV(const Image<DC>& dc_y, const Image<DC>& residuals,
 }
 
 }  // namespace pik
-
-#endif  // SIMD_ENABLE_AVX2

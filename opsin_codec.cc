@@ -78,8 +78,8 @@ Image3W PredictDC(const Image3W& coeffs) {
 }
 
 void UnpredictDC(Image3W* coeffs) {
-  Image<int32_t> dc_y(coeffs->xsize() / 64, coeffs->ysize());
-  Image<int32_t> dc_xz(coeffs->xsize() / 64 * 2, coeffs->ysize());
+  ImageW dc_y(coeffs->xsize() / 64, coeffs->ysize());
+  ImageW dc_xz(coeffs->xsize() / 64 * 2, coeffs->ysize());
 
   for (int y = 0; y < coeffs->ysize(); y++) {
     auto row = coeffs->Row(y);
@@ -93,8 +93,8 @@ void UnpredictDC(Image3W* coeffs) {
     }
   }
 
-  Image<int32_t> dc_y_out(coeffs->xsize() / 64, coeffs->ysize());
-  Image<int32_t> dc_xz_out(coeffs->xsize() / 64 * 2, coeffs->ysize());
+  ImageW dc_y_out(coeffs->xsize() / 64, coeffs->ysize());
+  ImageW dc_xz_out(coeffs->xsize() / 64 * 2, coeffs->ysize());
 
   ExpandY(dc_y, &dc_y_out);
   ExpandUV(dc_y_out, dc_xz, &dc_xz_out);

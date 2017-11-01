@@ -25,11 +25,8 @@
 
 #include "arch_specific.h"
 #include "compiler_specific.h"
+#include "simd/simd.h"
 #include "status.h"
-
-#if PIK_ARCH_X64
-#include <emmintrin.h>
-#endif
 
 namespace pik {
 
@@ -73,28 +70,22 @@ class CacheAligned {
   // Overwrites "to_items" without loading it into cache (read-for-ownership).
   // Copies kCacheLineSize bytes from/to naturally aligned addresses.
   template <typename T>
-  static void StreamCacheLine(const T* PIK_RESTRICT from_items,
-                              T* PIK_RESTRICT to_items) {
-#if PIK_ARCH_X64
-    static_assert(sizeof(__m128i) % sizeof(T) == 0, "Cannot divide");
-    const __m128i* const from = reinterpret_cast<const __m128i*>(from_items);
-    __m128i* const to = reinterpret_cast<__m128i*>(to_items);
+  static void StreamCacheLine(const T* PIK_RESTRICT from, T* PIK_RESTRICT to) {
+    static_assert(16 % sizeof(T) == 0, "T must fit in a lane");
+    const SIMD_NAMESPACE::Part<T, 16 / sizeof(T), SIMD_TARGET> d;
     PIK_COMPILER_FENCE;
-    const __m128i v0 = _mm_load_si128(from + 0);
-    const __m128i v1 = _mm_load_si128(from + 1);
-    const __m128i v2 = _mm_load_si128(from + 2);
-    const __m128i v3 = _mm_load_si128(from + 3);
+    const auto v0 = load(d, from + 0);
+    const auto v1 = load(d, from + 1);
+    const auto v2 = load(d, from + 2);
+    const auto v3 = load(d, from + 3);
     // Fences prevent the compiler from reordering loads/stores, which may
     // interfere with write-combining.
     PIK_COMPILER_FENCE;
-    _mm_stream_si128(to + 0, v0);
-    _mm_stream_si128(to + 1, v1);
-    _mm_stream_si128(to + 2, v2);
-    _mm_stream_si128(to + 3, v3);
+    stream(to + 0, d, v0);
+    stream(to + 1, d, v1);
+    stream(to + 2, d, v2);
+    stream(to + 3, d, v3);
     PIK_COMPILER_FENCE;
-#else
-    memcpy(to_items, from_items, kCacheLineSize);
-#endif
   }
 };
 

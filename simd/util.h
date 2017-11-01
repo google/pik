@@ -21,7 +21,9 @@
 #include "simd/port.h"
 
 namespace pik {
+#ifdef SIMD_NAMESPACE
 namespace SIMD_NAMESPACE {
+#endif
 
 // std::min/max.
 
@@ -195,6 +197,15 @@ SIMD_INLINE void stream(const uint64_t t, uint64_t* SIMD_RESTRICT aligned) {
 #endif
 }
 
+// Delays subsequent loads until prior loads are visible. On Intel CPUs, also
+// serves as a full fence (waits for all prior instructions to complete).
+// No effect on non-x86.
+SIMD_INLINE void load_fence() {
+#if SIMD_ARCH == SIMD_ARCH_X86
+  _mm_lfence();
+#endif
+}
+
 // Ensures previous weakly-ordered stores are visible. No effect on non-x86.
 SIMD_INLINE void store_fence() {
 #if SIMD_ARCH == SIMD_ARCH_X86
@@ -219,7 +230,9 @@ SIMD_INLINE void flush_cacheline(const void* p) {
 #endif
 }
 
+#ifdef SIMD_NAMESPACE
 }  // namespace SIMD_NAMESPACE
+#endif
 }  // namespace pik
 
 #endif  // SIMD_UTIL_H_

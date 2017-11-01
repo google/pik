@@ -53,18 +53,21 @@ SIMD_INLINE auto Run(Func&& func, Args&&... args)
         std::forward<Args>(args)...)) {
   const int supported = SupportedTargets();
   (void)supported;
-  // NOTE: do not check SIMD_ENABLE_*: SIMD_ENABLE might be zero in this
-  // translation unit, but the instantiation[s] can still be called.
-#if SIMD_ARCH == SIMD_ARCH_X86
+  // NOTE: check SIMD_ENABLE rather than SIMD_ENABLE_* because the latter may
+  // require additional build flags not specified for this translation unit.
+#if (SIMD_ENABLE & SIMD_AVX2) && (SIMD_ARCH == SIMD_ARCH_X86)
   if (supported & SIMD_AVX2) {
     return std::forward<Func>(func).template operator()<AVX2>(
         std::forward<Args>(args)...);
   }
+#endif
+#if (SIMD_ENABLE & SIMD_SSE4) && (SIMD_ARCH == SIMD_ARCH_X86)
   if (supported & SIMD_SSE4) {
     return std::forward<Func>(func).template operator()<SSE4>(
         std::forward<Args>(args)...);
   }
-#elif SIMD_ARCH == SIMD_ARCH_ARM
+#endif
+#if (SIMD_ENABLE & SIMD_ARM8) && (SIMD_ARCH == SIMD_ARCH_ARM)
   if (supported & SIMD_ARM8) {
     return std::forward<Func>(func).template operator()<ARM8>(
         std::forward<Args>(args)...);
@@ -79,18 +82,21 @@ SIMD_INLINE auto Run(Func&& func, Args&&... args)
 // (typically the return value of SupportedTargets).
 template <class Func, typename... Args>
 SIMD_INLINE void ForeachTarget(const int targets, Func&& func, Args&&... args) {
-  // NOTE: do not check SIMD_ENABLE_*: SIMD_ENABLE might be zero in this
-  // translation unit, but the instantiation[s] can still be called.
-#if SIMD_ARCH == SIMD_ARCH_X86
+  // NOTE: check SIMD_ENABLE rather than SIMD_ENABLE_* because the latter may
+  // require additional build flags not specified for this translation unit.
+#if (SIMD_ENABLE & SIMD_SSE4) && (SIMD_ARCH == SIMD_ARCH_X86)
   if (targets & SIMD_SSE4) {
     std::forward<Func>(func).template operator()<SSE4>(
         std::forward<Args>(args)...);
   }
+#endif
+#if (SIMD_ENABLE & SIMD_AVX2) && (SIMD_ARCH == SIMD_ARCH_X86)
   if (targets & SIMD_AVX2) {
     std::forward<Func>(func).template operator()<AVX2>(
         std::forward<Args>(args)...);
   }
-#elif SIMD_ARCH == SIMD_ARCH_ARM
+#endif
+#if (SIMD_ENABLE & SIMD_ARM8) && (SIMD_ARCH == SIMD_ARCH_ARM)
   if (targets & SIMD_ARM8) {
     std::forward<Func>(func).template operator()<ARM8>(
         std::forward<Args>(args)...);

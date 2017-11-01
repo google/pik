@@ -15,7 +15,7 @@
 #ifndef SIMD_SIMD_TEST_TARGET_H_
 #define SIMD_SIMD_TEST_TARGET_H_
 
-// WARNING: this header is included from translation units compiled with
+// WARNING: this header may be included from translation units compiled with
 // different flags. To prevent ODR violations, all functions defined here or
 // in dependent headers must be inlined and/or within namespace SIMD_NAMESPACE.
 

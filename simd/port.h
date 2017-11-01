@@ -20,35 +20,6 @@
 
 // Detects compiler/architecture and defines instruction sets.
 
-// Ensures an array is aligned and suitable for load()/store() functions.
-// Example: SIMD_ALIGN T lanes[V::N];
-#define SIMD_ALIGN alignas(32)
-
-// SIMD_TARGET_ATTR prerequisites on Clang/GCC: __has_attribute(target) does not
-// guarantee intrinsics are usable, hence we must check for specific versions.
-#if defined(__clang__)
-// Apple 8.2 == Clang 3.9
-#ifdef __apple_build_version__
-#if __clang_major__ > 8 || (__clang_major__ == 8 && __clang_minor__ >= 2)
-#define SIMD_HAVE_ATTR
-#endif
-// llvm.org Clang 3.9
-#elif __clang_major__ > 3 || (__clang_major__ == 3 && __clang_minor__ >= 9)
-#define SIMD_HAVE_ATTR
-#endif
-// GCC 4.9
-#elif defined(__GNUC__) && \
-    (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 9))
-#define SIMD_HAVE_ATTR
-#endif
-
-// TODO(janwas): re-enable once PIK functions have SIMD_ATTR annotations.
-#if 0 && defined(SIMD_HAVE_ATTR)
-#define SIMD_USE_ATTR 1
-#else
-#define SIMD_USE_ATTR 0
-#endif
-
 // Compiler-specific keywords
 #ifdef _MSC_VER
 #define SIMD_RESTRICT __restrict
@@ -64,11 +35,7 @@
 #define SIMD_NOINLINE inline __attribute__((noinline))
 #define SIMD_LIKELY(expr) __builtin_expect(!!(expr), 1)
 #define SIMD_TRAP __builtin_trap
-#if SIMD_USE_ATTR
 #define SIMD_TARGET_ATTR(feature_str) __attribute__((target(feature_str)))
-#else
-#define SIMD_TARGET_ATTR(feature_str)
-#endif
 
 #else
 #error "Unsupported compiler"
@@ -91,114 +58,114 @@
 // Instruction set bits are a compact encoding of zero or more targets used in
 // dispatch::Run and the SIMD_ENABLE macro.
 #define SIMD_NONE 0
-#if SIMD_ARCH == SIMD_ARCH_X86
 #define SIMD_AVX2 2
 #define SIMD_SSE4 4
 #define SIMD_AVX512 16
-#elif SIMD_ARCH == SIMD_ARCH_PPC
 #define SIMD_PPC 1  // v2.07 or 3
-#elif SIMD_ARCH == SIMD_ARCH_ARM
 #define SIMD_ARM8 8
-#endif
-
-// Target-specific attributes required by each instruction set, only required
-// #if SIMD_USE_ATTR.
-#define SIMD_ATTR_NONE
-#define SIMD_ATTR_SSE4 SIMD_TARGET_ATTR("sse4.2,aes,pclmul")
-#define SIMD_ATTR_AVX2 SIMD_TARGET_ATTR("avx,avx2,fma")
-#define SIMD_ATTR_ARM8
 
 // Default to portable mode (only scalar.h). This macro should only be set by
-// the build system and tested below; users check #if SIMD_ENABLE_* to decide
-// whether the instruction set is actually usable on this compiler.
+// the build system and tested below.
 #ifndef SIMD_ENABLE
 #define SIMD_ENABLE 0
 #endif
 
-#if SIMD_ARCH == SIMD_ARCH_X86
-
-// Enabled := (SIMD_USE_ATTR || -m flags) && SIMD_ENABLE bit set.
-
-#if SIMD_USE_ATTR || (defined(__SSE4_2__) && defined(__AES__))
-#define SIMD_ENABLE_SSE4 (SIMD_ENABLE & SIMD_SSE4)
-#else
-#define SIMD_ENABLE_SSE4 0
+// Disable attr mode unless users request it (requires recent compiler).
+#ifndef SIMD_USE_ATTR
+#define SIMD_USE_ATTR 0
 #endif
 
-#if SIMD_USE_ATTR || (defined(__AVX2__) && defined(__FMA__))
-#define SIMD_ENABLE_AVX2 (SIMD_ENABLE & SIMD_AVX2)
-#else
-#define SIMD_ENABLE_AVX2 0
+// If MSVC 2015 || SIMD_USE_ATTR, intrinsics are accessible if we're on the
+// same platform.
+#define SIMD_HAVE_AVX2 (SIMD_ARCH == SIMD_ARCH_X86)
+#define SIMD_HAVE_SSE4 (SIMD_ARCH == SIMD_ARCH_X86)
+#define SIMD_HAVE_AVX512 (SIMD_ARCH == SIMD_ARCH_X86)
+#define SIMD_HAVE_ARM8 (SIMD_ARCH == SIMD_ARCH_ARM)
+
+// .. otherwise, disallow intrinsics if -m flags are not specified.
+#if !defined(_MSC_VER) && !SIMD_USE_ATTR
+
+#if !defined(__SSE4_2__) || !defined(__AES__)
+#undef SIMD_HAVE_SSE4
+#define SIMD_HAVE_SSE4 0
+#endif  // SSE4
+
+#if !defined(__AVX2__) || !defined(__FMA__)
+#undef SIMD_HAVE_AVX2
+#define SIMD_HAVE_AVX2 0
+#endif  // AVX2
+
+#if !defined(__ARM_NEON)
+#undef SIMD_HAVE_ARM8
+#define SIMD_HAVE_ARM8 0
+#endif  // AVX2
+
 #endif
 
-#define SIMD_ENABLE_AVX512 0
+// Set ENABLE_XX shortcuts (for internal use).
+#define SIMD_ENABLE_SSE4 (SIMD_ENABLE & SIMD_SSE4) && SIMD_HAVE_SSE4
+#define SIMD_ENABLE_AVX2 (SIMD_ENABLE & SIMD_AVX2) && SIMD_HAVE_AVX2
+#define SIMD_ENABLE_AVX512 (SIMD_ENABLE & SIMD_AVX512) && SIMD_HAVE_AVX512
+#define SIMD_ENABLE_ARM8 (SIMD_ENABLE & SIMD_ARM8) && SIMD_HAVE_ARM8
 
-#elif SIMD_ARCH == SIMD_ARCH_ARM
-
-#if SIMD_USE_ATTR || (defined(__ARM_NEON))
-#define SIMD_ENABLE_ARM8 (SIMD_ENABLE & SIMD_ARM8)
-#else
-#define SIMD_ENABLE_ARM8 0
-#endif
-
-#endif  // SIMD_ARCH
-
-// Detects "best available" instruction set and includes their headers.
-// NOTE: system headers cannot be included from within SIMD_NAMESPACE because
-// of conflicts with other headers. ODR violations are avoided if all their
-// functions (static inline in Clang's library and extern inline in GCC's) are
-// inlined. SIMD_TARGET is for vec<T, SIMD_TARGET> and also used to define
-// SIMD_ATTR SIMD_BITS is the maximum vector size [bits], or zero if only
-// scalar.h is available.
+// Detects "best available" instruction set and includes their headers. NOTE:
+// system headers cannot be included from within SIMD_NAMESPACE due to conflicts
+// with other headers. ODR violations are avoided if all their functions (static
+// inline in Clang's library and extern inline in GCC's) are inlined.
 
 #if SIMD_ENABLE_AVX2
 #include <immintrin.h>
-#define SIMD_NAMESPACE avx2
 #define SIMD_TARGET AVX2
-#define SIMD_BITS 256
 
 #elif SIMD_ENABLE_SSE4
 #include <smmintrin.h>
-#include <wmmintrin.h>
-#define SIMD_NAMESPACE sse4
+#include <wmmintrin.h>  // AES
 #define SIMD_TARGET SSE4
-#define SIMD_BITS 128
 
 #elif SIMD_ARCH == SIMD_ARCH_X86
-// No instruction set enabled, but we still need "SSE2" for cache-control.
+// No instruction set enabled, but we still need the header for flush_cacheline.
 #include <emmintrin.h>
 #endif
 
 #if SIMD_ENABLE_ARM8
 #include <arm_neon.h>
-#define SIMD_NAMESPACE arm
 #define SIMD_TARGET ARM8
-#define SIMD_BITS 128
 #endif
 
-// Nothing enabled => only use scalar.h.
+// Nothing enabled => portable mode, only use scalar.h.
 #ifndef SIMD_TARGET
-#define SIMD_NAMESPACE none
 #define SIMD_TARGET NONE
-#define SIMD_BITS 0
 #endif
 
-#define SIMD_CONCAT(first, second) first##second
-// Required due to macro expansion rules.
-#define SIMD_EXPAND_CONCAT(first, second) SIMD_CONCAT(first, second)
+// Define macros based on the SIMD_TARGET _when those macros are expanded_.
+#define SIMD_CONCAT_IMPL(a, b) a##b
+#define SIMD_CONCAT(a, b) SIMD_CONCAT_IMPL(a, b)
 
-// Evaluates to nothing if !SIMD_USE_ATTR.
-#define SIMD_ATTR SIMD_EXPAND_CONCAT(SIMD_ATTR_, SIMD_TARGET)
+#define SIMD_ATTR_ARM8 SIMD_TARGET_ATTR("armv8-a+crypto")
+#define SIMD_ATTR_SSE4 SIMD_TARGET_ATTR("sse4.2,aes,pclmul")
+#define SIMD_ATTR_AVX2 SIMD_TARGET_ATTR("avx,avx2,fma")
+#define SIMD_ATTR_NONE
+#define SIMD_ATTR SIMD_CONCAT(SIMD_ATTR_, SIMD_TARGET)
 
-// SIMD_TARGET expands to one of the structs below (for specializing templates);
-// for the preprocessor, use this instead: #if SIMD_TARGET_VALUE == SIMD_SSE4.
-#define SIMD_TARGET_VALUE SIMD_EXPAND_CONCAT(SIMD_, SIMD_TARGET)
+
+#if SIMD_USE_ATTR
+// In attr mode, SIMD_TARGET is redefined for each expansion.
+#undef SIMD_TARGET
+
+#else
+#define SIMD_NAMESPACE SIMD_CONCAT(N_, SIMD_TARGET)
+#undef SIMD_TARGET_ATTR
+#define SIMD_TARGET_ATTR(feature_str)
+
+#endif
+
+#define SIMD_TARGET_VALUE SIMD_CONCAT(SIMD_, SIMD_TARGET)
 
 namespace pik {
 
 // Instruction set tag names used to specialize VecT - results in more
-// understandable mangled names than using SIMD_SSE4=4 directly. Must match
-// the SIMD_TARGET definitions above, and the suffixes of their SIMD_*.
+// understandable mangled names than using SIMD_SSE4=4 directly. Their names
+// must match the SIMD_TARGET definitions above.
 #if SIMD_ARCH == SIMD_ARCH_X86
 struct SSE4 {
   static constexpr int value = SIMD_SSE4;
@@ -247,21 +214,35 @@ struct NONE {
   }
 };
 
-// Default to SIMD_TARGET.
-template <bool kFitsIn128>
-struct MinTargetT {
-  using type = SIMD_TARGET;
+// Default: no change to Target. kBlocks = ceil(size / 16).
+template <size_t kBlocks, class Target>
+struct PartTargetT {
+  using type = Target;
 };
-// On x86, use XMM (less overhead) for all <= 128 bit vectors.
-#if SIMD_ARCH == SIMD_ARCH_X86 && SIMD_ENABLE_SSE4
+// Never override NONE.
 template <>
-struct MinTargetT<true> {
+struct PartTargetT<1, NONE> {
+  using type = NONE;
+};
+
+// On X86, it is cheaper to use small vectors (prefixes of larger registers)
+// when possible; this also reduces the number of overloaded functions.
+#if SIMD_ENABLE_SSE4
+template <class Target>
+struct PartTargetT<1, Target> {
   using type = SSE4;
 };
 #endif
-// Chooses the smallest/cheapest target, e.g. for Part<uint32_t, 1>.
-template <typename T, size_t N>
-using MinTarget = typename MinTargetT<(N * sizeof(T)) <= 16>::type;
+#if SIMD_ENABLE_AVX2
+template <class Target>
+struct PartTargetT<2, Target> {
+  using type = AVX2;
+};
+#endif
+
+template <typename T, size_t N, class Target>
+using PartTarget =
+    typename PartTargetT<(N * sizeof(T) + 15) / 16, Target>::type;
 
 }  // namespace pik
 

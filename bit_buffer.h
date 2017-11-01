@@ -41,7 +41,7 @@ namespace SIMD_NAMESPACE {
 
 // Accumulates variable-sized codes and writes them to memory in 32-bit units.
 class BitSink {
-  static const Part<uint64_t, 2> d;
+  static const Part<uint64_t, 1, SIMD_TARGET> d;
 
  public:
   // There are 32 lower bits to fill before reaching the upper bits.
@@ -53,14 +53,14 @@ class BitSink {
   template <int num_bits>
   void Insert(const uint64_t code) {
     buffer_ = shift_left<num_bits>(buffer_);
-    buffer_ |= set(d, code);
+    buffer_ |= set_part(d, code);
     upper_bits_used_ += num_bits;
   }
 
   // (Slightly less efficient code: num_bits is loaded into a vector.)
   void InsertVariableCount(const int num_bits, const uint64_t code) {
     buffer_ = shift_left_same(buffer_, set_shift_left_count(d, num_bits));
-    buffer_ |= set(d, code);
+    buffer_ |= set_part(d, code);
     upper_bits_used_ += num_bits;
   }
 
@@ -76,7 +76,7 @@ class BitSink {
   void Write32() {
     const auto oldest_32 =
         shift_right_same(buffer_, set_shift_right_count(d, upper_bits_used_));
-    const uint32_t out = PIK_BSWAP32(uint32_t(get(d, oldest_32)));
+    const uint32_t out = PIK_BSWAP32(uint32_t(get_part(d, oldest_32)));
     memcpy(write_pos_, &out, 4);
     write_pos_ += 4;
     upper_bits_used_ -= 32;
@@ -88,7 +88,7 @@ class BitSink {
     // Left-align oldest bit, inserting zeros at the bottom.
     buffer_ = shift_left_same(buffer_,
                               set_shift_left_count(d, 32 - upper_bits_used_));
-    const uint64_t out = PIK_BSWAP64(get(d, buffer_));
+    const uint64_t out = PIK_BSWAP64(get_part(d, buffer_));
 
     // Copy exactly the required number of bytes (other threads may be writing
     // at subsequent positions).
@@ -135,21 +135,21 @@ class BitSink {
   }
 
  private:
-  Part<uint64_t, 2>::V buffer_;
+  Part<uint64_t, 1, SIMD_TARGET>::V buffer_;
   int upper_bits_used_;
   uint8_t* PIK_RESTRICT write_pos_;
 };
 
 // Reads from memory in 64 or 32-bit units and extracts variable-size codes.
 class BitSource {
-  static const Part<uint64_t, 2> d;
+  static const Part<uint64_t, 1, SIMD_TARGET> d;
 
  public:
   // Reads exactly 64 bits.
   BitSource(const uint8_t* const PIK_RESTRICT from) : read_pos_(from + 8) {
     uint64_t bits;
     memcpy(&bits, from, 8);
-    buffer_ = set(d, PIK_BSWAP64(bits));
+    buffer_ = set_part(d, PIK_BSWAP64(bits));
     // There are 32 upper bits to extract before reaching the lower bits.
     lower_bits_extracted_ = -32;
   }
@@ -160,7 +160,7 @@ class BitSource {
   template <int num_bits>
   size_t Extract() {
     const auto bits = shift_right<64 - num_bits>(buffer_);
-    const uint64_t code = get(d, bits);
+    const uint64_t code = get_part(d, bits);
     buffer_ = shift_left<num_bits>(buffer_);
     lower_bits_extracted_ += num_bits;
     return code;
@@ -170,7 +170,7 @@ class BitSource {
   size_t ExtractVariableCount(const int num_bits) {
     const auto bits =
         shift_right_same(buffer_, set_shift_right_count(d, 64 - num_bits));
-    const uint64_t code = get(d, bits);
+    const uint64_t code = get_part(d, bits);
     buffer_ = shift_left_same(buffer_, set_shift_left_count(d, num_bits));
     lower_bits_extracted_ += num_bits;
     return code;
@@ -186,7 +186,7 @@ class BitSource {
     uint32_t bits;
     memcpy(&bits, read_pos_, 4);
     read_pos_ += 4;
-    const auto vbits = set(d, uint64_t(PIK_BSWAP32(bits)));
+    const auto vbits = set_part(d, uint64_t(PIK_BSWAP32(bits)));
     // The upper half may have had some zeros at the bottom, so match that.
     buffer_ += shift_left_same(vbits, shift);
     lower_bits_extracted_ -= 32;
@@ -199,7 +199,7 @@ class BitSource {
   }
 
  private:
-  Part<uint64_t, 2>::V buffer_;
+  Part<uint64_t, 1, SIMD_TARGET>::V buffer_;
   int lower_bits_extracted_;
   const uint8_t* PIK_RESTRICT read_pos_;
 };

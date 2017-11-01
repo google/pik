@@ -49,8 +49,8 @@ class Predictors {
       const V n = pos[neg_row_stride];
       const V l = pos[neg_row_stride + neg_col_stride];
       const V r = pos[neg_row_stride - neg_col_stride];
-      pred[0] = Average(w, n);
-      pred[1] = Average(Average(w, r), n);
+      pred[0] = Average(Average(n, w), r);
+      pred[1] = Average(w, n);
       pred[2] = Average(n, r);
       pred[3] = Average(w, l);
       pred[4] = Average(l, n);
@@ -72,13 +72,13 @@ class Predictors {
       const V l = pos[neg_row_stride + neg_col_stride];
       const V r = pos[neg_row_stride - neg_col_stride];
       pred[0] = ClampedGradient(n, w, l);
-      pred[1] = n;
-      pred[2] = Average(n, w);
-      pred[3] = Average(Average(w, r), n);
+      pred[1] = Average(n, w);
+      pred[2] = n;
+      pred[3] = Average(n, r);
       pred[4] = w;
-      pred[5] = Average(n, r);
-      pred[6] = Average(w, l);
-      pred[7] = r;
+      pred[5] = Average(w, l);
+      pred[6] = r;
+      pred[7] = Average(Average(w, r), n);
     }
   };
 

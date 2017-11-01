@@ -50,14 +50,17 @@ Implemented for scalar/SSE4/AVX2/ARMv8 targets, each with unit tests.
 *   "Width-agnostic" SIMD is more future-proof than user-specified fixed sizes.
     For example, valarray-like code can iterate over a 1D array with a
     library-specified vector width. This will result in better code when vector
-    sizes increase, and matches the direction taken by ARM SVE and RiscV
-    hardware. However, some applications may require fixed sizes, so we also
-    guarantee support for 128-bit vectors in each instruction set.
+    sizes increase, and matches the direction taken by
+    [ARM SVE](https://alastairreid.github.io/papers/sve-ieee-micro-2017.pdf) and
+    RiscV hardware as well as Agner Fog's
+    [ForwardCom instruction set proposal](https://goo.gl/CFizWu). However, some
+    applications may require fixed sizes, so we also guarantee support for
+    128-bit vectors in each instruction set.
 
 *   The API and its implementation should be usable and efficient with commonly
-    used compilers. Some of our open-source users cannot upgrade, so we need to
-    support 4-6 year old compilers (e.g. GCC 4.8). However, we take advantage of
-    newer features such as function-specific target attributes when available.
+used compilers. Some of our open-source users cannot upgrade, so we need to
+support 4-6 year old compilers (e.g. GCC 4.8). However, we take advantage of
+newer features such as function-specific target attributes when available.
 
 *   Efficient and safe runtime dispatch is important. Modules such as image or
     video codecs are typically embedded into larger applications such as
@@ -92,6 +95,9 @@ Implemented for scalar/SSE4/AVX2/ARMv8 targets, each with unit tests.
 1.  Adding the concept of vector 'parts', which are often used in existing ARM
     and x86 code.
 
+1.  Designing the API to avoid or minimize overhead on AVX2/AVX-512 caused by
+    crossing 128-bit 'block' boundaries.
+
 1.  Avoiding the need for non-native vectors. By contrast, P0214R5's `simd_cast`
     returns `fixed_size<>` vectors which are more expensive to access because
     they reside on the stack. We can avoid this plus additional overhead on
@@ -99,9 +105,9 @@ Implemented for scalar/SSE4/AVX2/ARMv8 targets, each with unit tests.
     part, e.g. promoting half a vector of `uint8_t` lanes to one full vector of
     `uint16_t`, or demoting full vectors to half vectors with half-width lanes.
 
-1.  Guaranteeing access to the underlying intrinsic vector type. P0214R5 only
-    'encourages' implementations to allow a `static_cast`. We provide
-    conversions to ensure all platform-specific features can be used.
+1.  Guaranteeing access to the underlying intrinsic vector type. This ensures
+    all platform-specific capabilities can be used. P0214R5 instead only
+    'encourages' implementations to provide an access.
 
 1.  Enabling safe runtime dispatch and inlining in the same binary. P0214R5 is
     based on the Vc library, which does not provide assistance for linking
@@ -117,8 +123,7 @@ Implemented for scalar/SSE4/AVX2/ARMv8 targets, each with unit tests.
     better code generation with GCC 4.8: https://godbolt.org/g/KYp7ew.
     By contrast, P0214R5 requires a wrapper. We avoid this by using only the
     member operators provided by the PPC vectors; all other functions and
-    typedefs are non-members and the user-visible `Vec<T, N, Target>` interface
-    is an alias template.
+    typedefs are non-members.
 
 *   Omitting inefficient or non-performance-portable operations such as `hmax`,
     `operator[]`, and unsupported integer comparisons. Applications can often
@@ -126,9 +131,11 @@ Implemented for scalar/SSE4/AVX2/ARMv8 targets, each with unit tests.
 
 *   Omitting `long double` types: these are not commonly available in hardware.
 
-*   Simple implementation, less than a tenth of the size of the Vc library
-    from which P0214 was derived (98,000 lines in https://github.com/VcDevel/Vc
-    according to the gloc Chrome extension).
+*   Ensuring signed integer overflow has well-defined semantics (wraparound).
+
+*   Simple header-only implementation and less than a tenth of the size of the
+    Vc library from which P0214 was derived (98,000 lines in
+    https://github.com/VcDevel/Vc according to the gloc Chrome extension).
 
 *   Avoiding hidden performance costs. P0214R5 allows implicit conversions from
     integer to float, which costs 3-4 cycles on x86. We make these conversions
@@ -154,7 +161,8 @@ and/or instruction sets from the same source, and improves runtime dispatch.
 *   UME::SIMD ([code](https://goo.gl/yPeVZx), [paper](https://goo.gl/2xpZrk))
     also adopts an explicit vectorization model with vector classes.
     However, it exposes the union of all platform capabilities, which makes the
-    API harder to learn (209-page spec) and reduces performance portability
+    API harder to learn (209-page spec) and implement (the estimated LOC count
+    is [500K](https://goo.gl/1THFRi)). The API is less performance-portable
     because it allows applications to use operations that are inefficient on
     other platforms.
 
@@ -179,7 +187,7 @@ rely on overloaded functions.
 Because full vectors and parts are synonyms on PPC, we need an additional tag
 argument for disambiguation. Any function template with multiple return types
 uses a descriptor argument to specify the return type. For example, the return
-type of `setzero(Desc<T, N, Target>)` is `Vec<T, N, Target>`. For brevity,
+type of `setzero(Desc<T, N, Target>)` is `Desc<T, N, Target>::V`. For brevity,
 `Desc` is abbreviated to `D` for template arguments and `d` in lvalues.
 
 It may seem preferable to write `setzero<D>()` rather than `setzero(D())`, but
@@ -194,56 +202,60 @@ attributes are not generic. Thus, a wrapper into which SIMD functions are
 inlined cannot be a function, because it would also need a target-specific
 attribute. A macro `SETZERO(D)` could work, but this is hardly more clear than a
 normal function with arguments. Note that descriptors occur often, so user code
-can define a `const Full<float> d;` and then write `setzero(d)`.
+can define a `const Full<float, SIMD_TARGET> d;` and then write `setzero(d)`.
 
 ## Use cases and HOWTO
 
-*   Older compilers, single instruction set per platform: compile with a
-    `COPTS_REQUIRE_?` plus `COPTS_ENABLE_?`; use fixed-size 128-bit vectors
-    (`Vec<float, 4>`, `f32x4`) or generic `Full<float>::V`.
+Applications may rely on 128-bit vectors, e.g. `Part<float, 4, SIMD_TARGET>::V`,
+or preferably use vectors of unspecified size `Full<float, SIMD_TARGET>::V`.
+Support from the build system may be required depending on the use case:
 
-*   Older compilers, runtime dispatch: one library per instruction set, each
-    compiled with a `COPTS_ENABLE_?` and `COPTS_REQUIRE_?`. The libraries
-    can be built from the same source by instantiating a template that uses
-    width-agnostic SIMD (`Full<uint8_t, SIMD_TARGET>`).
-    Use `dispatch::Run` to choose the best available implementation at runtime.
-    Prevent ODR violations by ensuring functions are inlined or defined within
-    `SIMD_NAMESPACE`. This can be verified using binutils.
+*   Older compilers, single instruction set per platform: compile normal C++
+    functions with `COPTS_REQUIRE_?` and `COPTS_ENABLE_?` flags.
 
-*   Newer compilers (GCC 4.9+, Clang 3.9+), single instruction set per platform:
-    compile with `COPTS_ENABLE_?`, add `SIMD_ATTR` to any functions using SIMD,
-    use `Full<T>` or fixed-size aliases (`f32x4`).
+*   Older compilers, runtime dispatch: compile the same source file multiple
+    times with target-specific flags (`COPTS_ENABLE_?` and `COPTS_REQUIRE_?`).
+    Dispatch requires functors with an `operator()` template, instantiated
+    for the current `SIMD_TARGET`. Use `dispatch::Run` to choose the best
+    available implementation at runtime. Prevent ODR violations by ensuring
+    functions are inlined or defined within `SIMD_NAMESPACE`. This can be
+    verified using binutils. Example: `simd_test.cc`.
 
-*   Newer compilers (GCC 4.9+, Clang 3.9+), runtime dispatch: compile with
-    `COPTS_ENABLE_*`, add `SIMD_ATTR_?` to functions using that instruction set,
-    select an implementation by checking CPU capabilities (e.g. with
-    `dispatch::SupportedTargets`). SSE4 and AVX2 code can coexist in the same
-    library/binary, but generating them from a single source requires macros or
-    `#include` because each function needs a distinct `SIMD_ATTR_*` attribute.
+*   Newer compilers (GCC 4.9+, Clang 3.9+, MSVC 2015), single instruction set
+    per platform: normal C++ functions with `SIMD_ATTR` annotation. Set
+    `SIMD_USE_ATTR=1` before including `simd.h`. Build with `COPTS_ENABLE_?`.
+
+*   Newer compilers (GCC 4.9+, Clang 3.9+, MSVC 2015), runtime dispatch: SIMD
+    code resides in a file, included once for each `SIMD_TARGET`, with
+    `SIMD_ATTR` annotations on each function. Build with `COPTS_ENABLE_*`.
+    Select an implementation e.g. via `dispatch::SupportedTargets`. Example:
+    `attr_test.cc`.
 
 ## Demos
 
-To compile on Unix systems: `make -j6`. We tested with Clang 3.4 and GCC 4.8.4.
+To compile on Unix systems: `make -j8`. We tested with Clang 3.4 and GCC 4.8.4.
 
 `bin/simd_test` prints a bitfield of instruction sets that were
 tested, e.g. `6` for SSE4=`4` and AVX2=`2`. The demo compiles the same source
 file once per enabled instruction set. This approach has relatively modest
 compiler requirements.
 
-`bin/custom_dispatcher_test` also prints messages for every instruction set.
-It contains few tests; the main purpose is to demonstrate compilation without
-`-mavx2` flags. This approach requires Clang 3.9+ or GCC 4.9+, or MSVC 2015+.
+`bin/attr_test_test` also prints messages for every instruction set. It
+demonstrates "attr mode" without `-mavx2` flags. This approach requires Clang
+3.9+ or GCC 4.9+, or MSVC 2015+.
 
 ## Example source code
 
 ```c++
 void FloorLog2(const uint8_t* SIMD_RESTRICT values,
                uint8_t* SIMD_RESTRICT log2) {
-  const Full<int32_t> d32;
-  const Part<uint8_t, d32.N> d8;
+  // Descriptors for all required data types:
+  const Full<int32_t, SIMD_TARGET> d32;
+  const Full<float, SIMD_TARGET> df;
+  const Part<uint8_t, d32.N, SIMD_TARGET> d8;
 
   const auto u8 = load(d8, values);
-  const auto bits = bits_from_float(f32_from_i32(convert_to(d32, u8)));
+  const auto bits = cast_to(d32, convert_to(df, convert_to(d32, u8)));
   const auto exponent = shift_right<23>(bits) - set1(d32, 127);
   store(convert_to(d8, exponent), d8, log2);
 }
@@ -274,7 +286,8 @@ This generates the following SSE4 and AVX2 code, as shown by IACA:
 void Copy(const uint8_t* SIMD_RESTRICT from, const size_t size,
           uint8_t* SIMD_RESTRICT to) {
   // Width-agnostic (library-specified N)
-  const Full<uint8_t> d;
+  const Full<uint8_t, SIMD_TARGET> d;
+  const Scalar<uint8_t> ds;
   size_t i = 0;
   for (; i + d.N <= size; i += d.N) {
     const auto bytes = load(d, from + i);
@@ -283,8 +296,8 @@ void Copy(const uint8_t* SIMD_RESTRICT from, const size_t size,
 
   for (; i < size; ++i) {
     // (Same loop body as above, could factor into a shared template)
-    const auto bytes = load(Scalar<uint8_t>(), from + i);
-    store(bytes, Scalar<uint8_t>(), to + i);
+    const auto bytes = load(ds, from + i);
+    store(bytes, ds, to + i);
   }
 }
 ```
@@ -294,7 +307,7 @@ void MulAdd(const T* SIMD_RESTRICT mul_array, const T* SIMD_RESTRICT add_array,
             const size_t size, T* SIMD_RESTRICT x_array) {
   // Type-agnostic (caller-specified lane type) and width-agnostic (uses
   // best available instruction set).
-  const Full<T> d;
+  const Full<T, SIMD_TARGET> d;
   for (size_t i = 0; i < size; i += d.N) {
     const auto mul = load(d, mul_array + i);
     const auto add = load(d, add_array + i);

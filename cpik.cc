@@ -29,10 +29,17 @@ namespace {
 // main() function, within namespace for convenience.
 int Compress(const char* pathname_in, const float butteraugli_distance,
              const char* pathname_out, const bool fast_mode) {
+#if SIMD_ENABLE_AVX2
   if ((dispatch::SupportedTargets() & SIMD_AVX2) == 0) {
     fprintf(stderr, "Cannot continue because CPU lacks AVX2/FMA support.\n");
     return 1;
   }
+#elif SIMD_ENABLE_SSE4
+  if ((dispatch::SupportedTargets() & SIMD_SSE4) == 0) {
+    fprintf(stderr, "Cannot continue because CPU lacks SSE4 support.\n");
+    return 1;
+  }
+#endif
 
   MetaImageF in = ReadMetaImageLinear(pathname_in);
   if (in.xsize() == 0 || in.ysize() == 0) {

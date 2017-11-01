@@ -56,10 +56,17 @@ bool LoadFile(const char* pathname, PaddedBytes* compressed) {
 
 template<typename ComponentType>
 int Decompress(const char* pathname_in, const char* pathname_out) {
+#if SIMD_ENABLE_AVX2
   if ((dispatch::SupportedTargets() & SIMD_AVX2) == 0) {
     fprintf(stderr, "Cannot continue because CPU lacks AVX2/FMA support.\n");
     return 1;
   }
+#elif SIMD_ENABLE_SSE4
+  if ((dispatch::SupportedTargets() & SIMD_SSE4) == 0) {
+    fprintf(stderr, "Cannot continue because CPU lacks SSE4 support.\n");
+    return 1;
+  }
+#endif
 
   PaddedBytes compressed;
   if (!LoadFile(pathname_in, &compressed)) {
