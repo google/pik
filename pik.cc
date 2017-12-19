@@ -241,9 +241,8 @@ void FindBestQuantization(const Image3F& opsin_orig,
     ImageMinMax(quant_field, &qmin, &qmax);
     if (quantizer->SetQuantField(kInitialQuantDC, quant_field)) {
       QuantizedCoeffs qcoeffs = ComputeCoefficients(
-          search_params, opsin, *quantizer);
-      Image3F recon = ReconOpsinImage(qcoeffs, *quantizer);
-      YToBTransform(ytob_map, ytob_dc, 1.0f / kYToBScale, &recon);
+          search_params, opsin, *quantizer, ytob_map, ytob_dc);
+      Image3F recon = ReconOpsinImage(qcoeffs, *quantizer, ytob_map, ytob_dc);
       Image3B srgb;
       CenteredOpsinToSrgb(recon, &srgb);
       comparator.Compare(srgb);
@@ -441,7 +440,8 @@ void ScaleToTargetSize(const Image3F& opsin,
   std::string candidate;
   for (int i = 0; i < 10; ++i) {
     ScaleQuantizationMap(quant_dc, quant_ac, scale_good, quantizer);
-    QuantizedCoeffs qcoeffs = ComputeCoefficients(cparams, opsin, *quantizer);
+    QuantizedCoeffs qcoeffs = ComputeCoefficients(cparams, opsin, *quantizer,
+                                                  ytob_map, ytob_dc);
     candidate = EncodeToBitstream(qcoeffs, *quantizer, noise_params, ytob_map,
                                   ytob_dc, false, nullptr);
     if (candidate.size() <= target_size) {
@@ -464,7 +464,8 @@ void ScaleToTargetSize(const Image3F& opsin,
     if (!ScaleQuantizationMap(quant_dc, quant_ac, scale, quantizer)) {
       break;
     }
-    QuantizedCoeffs qcoeffs = ComputeCoefficients(cparams, opsin, *quantizer);
+    QuantizedCoeffs qcoeffs = ComputeCoefficients(cparams, opsin, *quantizer,
+                                                  ytob_map, ytob_dc);
     candidate = EncodeToBitstream(qcoeffs, *quantizer, noise_params, ytob_map,
                                   ytob_dc, false, nullptr);
     if (candidate.size() <= target_size) {
@@ -492,7 +493,8 @@ void CompressToTargetSize(const Image3F& opsin_orig,
   for (int i = 0; i < 5; ++i) {
     FindBestQuantization(opsin_orig, opsin, cparams, dist_good,
                          ytob_map, ytob_dc, quantizer, aux_out);
-    QuantizedCoeffs qcoeffs = ComputeCoefficients(cparams, opsin, *quantizer);
+    QuantizedCoeffs qcoeffs = ComputeCoefficients(cparams, opsin, *quantizer,
+                                                  ytob_map, ytob_dc);
     candidate = EncodeToBitstream(qcoeffs, *quantizer, noise_params, ytob_map,
                                   ytob_dc, false, nullptr);
     if (candidate.size() <= target_size) {
@@ -521,7 +523,8 @@ void CompressToTargetSize(const Image3F& opsin_orig,
     float dist = 0.5f * (dist_bad + dist_good);
     FindBestQuantization(opsin_orig, opsin, cparams, dist,
                          ytob_map, ytob_dc, quantizer, aux_out);
-    QuantizedCoeffs qcoeffs = ComputeCoefficients(cparams, opsin, *quantizer);
+    QuantizedCoeffs qcoeffs = ComputeCoefficients(cparams, opsin, *quantizer,
+                                                  ytob_map, ytob_dc);
     candidate = EncodeToBitstream(qcoeffs, *quantizer, noise_params, ytob_map,
                                   ytob_dc, false, nullptr);
     if (candidate.size() <= target_size) {
@@ -735,7 +738,6 @@ bool OpsinToPik(const CompressParams& params, const MetaImageF& opsin_orig,
       params.target_size > 0) {
     FindBestYToBCorrelation(opsin, quantizer, &ytob_map, &ytob_dc);
   }
-  YToBTransform(ytob_map, ytob_dc, -1.0f / kYToBScale, &opsin);
   if (params.butteraugli_distance >= 0.0) {
     FindBestQuantization(opsin_orig.GetColor(), opsin, params,
                          params.butteraugli_distance, ytob_map, ytob_dc,
@@ -764,7 +766,8 @@ bool OpsinToPik(const CompressParams& params, const MetaImageF& opsin_orig,
     opsin = ReduceNoise(opsin);
   }
 
-  QuantizedCoeffs qcoeffs = ComputeCoefficients(params, opsin, quantizer);
+  QuantizedCoeffs qcoeffs = ComputeCoefficients(params, opsin, quantizer,
+                                                ytob_map, ytob_dc);
   std::string compressed_data = EncodeToBitstream(
       qcoeffs, quantizer, noise_params, ytob_map, ytob_dc,
       params.fast_mode, aux_out);
@@ -840,8 +843,7 @@ bool PikToPixelsT(const DecompressParams& params, const PaddedBytes& compressed,
     }
     byte_pos += bytes_read;
     PIK_ASSERT(byte_pos <= compressed.size());
-    Image3F opsin = ReconOpsinImage(qcoeffs, quantizer);
-    YToBTransform(ytob_map, ytob_dc, 1.0f / kYToBScale, &opsin);
+    Image3F opsin = ReconOpsinImage(qcoeffs, quantizer, ytob_map, ytob_dc);
     AddNoise(noise_params, &opsin);
     CenteredOpsinToSrgb(opsin, &planes);
     planes.ShrinkTo(header.xsize, header.ysize);

@@ -61,7 +61,7 @@ struct PikImageSizeInfo {
   std::vector<double> entropy_per_channel;
 };
 
-static const int kNumImageLayers = 6;
+static const int kNumImageLayers = 7;
 static const int kLayerHeader = 0;
 static const int kLayerOrder = 1;
 static const int kLayerAlpha = 2;

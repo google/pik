@@ -37,6 +37,7 @@ namespace {
 
 static const int kBlockEdge = 8;
 static const int kBlockSize = kBlockEdge * kBlockEdge;
+const float kYToBScale = 128.0f;
 
 }  // namespace
 
@@ -84,34 +85,19 @@ void CenterOpsinValues(Image3F* img) {
 void YToBTransform(const Image<int>& ytob_map,
                    const int ytob_dc,
                    const float factor,
-                   Image3F* opsin) {
-  const int bxsize = opsin->xsize() / kBlockEdge;
-  const int bysize = opsin->ysize() / kBlockEdge;
+                   Image3F* coeffs) {
+  const int bxsize = coeffs->xsize() / kBlockSize;
+  const int bysize = coeffs->ysize();
   for (int y = 0; y < bysize; ++y) {
-    const int yoff = y * kBlockEdge;
+    const float* const PIK_RESTRICT row_y = coeffs->ConstPlaneRow(1, y);
+    float* const PIK_RESTRICT row_b = coeffs->PlaneRow(2, y);
     for (int x = 0; x < bxsize; ++x) {
-      const int xoff = x * kBlockEdge;
-      const int ytob = ytob_map.Row(y / kTileInBlocks)[x / kTileInBlocks];
-      float dc_adj = 0.0f;
-      if (ytob != ytob_dc) {
-        float sum = 0.0f;
-        for (int iy = 0; iy < kBlockEdge; ++iy) {
-          const float* const PIK_RESTRICT row_y =
-              &opsin->ConstPlaneRow(1, yoff + iy)[xoff];
-          for (int ix = 0; ix < kBlockEdge; ++ix) {
-            sum += row_y[ix];
-          }
-        }
-        dc_adj = factor * (ytob_dc - ytob) * (sum / kBlockSize);
-      }
-      for (int iy = 0; iy < kBlockEdge; ++iy) {
-        const float* const PIK_RESTRICT row_y =
-            &opsin->ConstPlaneRow(1, yoff + iy)[xoff];
-        float* const PIK_RESTRICT row_b =
-            &opsin->PlaneRow(2, yoff + iy)[xoff];
-        for (int ix = 0; ix < kBlockEdge; ++ix) {
-          row_b[ix] += factor * ytob * row_y[ix] + dc_adj;
-        }
+      const int xoff = x * kBlockSize;
+      const float ytob_ac =
+          factor * ytob_map.Row(y / kTileInBlocks)[x / kTileInBlocks];
+      row_b[xoff] += factor * ytob_dc * row_y[xoff];
+      for (int k = 1; k < kBlockSize; ++k) {
+        row_b[xoff + k] += ytob_ac * row_y[xoff + k];
       }
     }
   }
@@ -150,7 +136,7 @@ void Adjust2x2ACFromDC(const Image3F& dc, const int direction,
 
 void ComputePredictionResiduals(const Quantizer& quantizer,
                                 Image3F* coeffs) {
- Image3W qcoeffs = QuantizeCoeffs(*coeffs, quantizer);
+  Image3W qcoeffs = QuantizeCoeffs(*coeffs, quantizer);
   Image3F dcoeffs = DequantizeCoeffs(qcoeffs, quantizer);
   Adjust2x2ACFromDC(DCImage(dcoeffs), -1, coeffs);
   qcoeffs = QuantizeCoeffs(*coeffs, quantizer);
@@ -163,9 +149,12 @@ void ComputePredictionResiduals(const Quantizer& quantizer,
 
 QuantizedCoeffs ComputeCoefficients(const CompressParams& params,
                                     const Image3F& opsin,
-                                    const Quantizer& quantizer) {
+                                    const Quantizer& quantizer,
+                                    const Image<int>& ytob_map,
+                                    const int ytob_dc) {
   Image3F coeffs = TransposedScaledDCT(opsin);
   ComputePredictionResiduals(quantizer, &coeffs);
+  YToBTransform(ytob_map, ytob_dc, -1.0f / kYToBScale, &coeffs);
   QuantizedCoeffs qcoeffs;
   qcoeffs.dct = QuantizeCoeffs(coeffs, quantizer);
   return qcoeffs;
@@ -265,7 +254,7 @@ std::string EncodeYToBMap(const Image<int>& ytob_map,
 }
 
 std::string EncodeToBitstream(const QuantizedCoeffs& qcoeffs,
-                              const Quantizer& quantizer,
+                             const Quantizer& quantizer,
                               const NoiseParams& noise_params,
                               const Image<int>& ytob_map,
                               const int ytob_dc,
@@ -374,8 +363,11 @@ bool DecodeFromBitstream(const uint8_t* data, const size_t data_size,
 }
 
 Image3F ReconOpsinImage(const QuantizedCoeffs& qcoeffs,
-                        const Quantizer& quantizer) {
+                        const Quantizer& quantizer,
+                        const Image<int>& ytob_map,
+                        const int ytob_dc) {
   Image3F dcoeffs = DequantizeCoeffs(qcoeffs.dct, quantizer);
+  YToBTransform(ytob_map, ytob_dc, 1.0f / kYToBScale, &dcoeffs);
   Adjust2x2ACFromDC(DCImage(dcoeffs), 1, &dcoeffs);
   Image3F pred = GetPixelSpaceImageFrom2x2Corners(dcoeffs);
   pred = UpSample4x4BlurDCT(pred, 1.5f);

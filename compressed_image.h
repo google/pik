@@ -31,11 +31,6 @@ Image3F AlignImage(const Image3F& in, const size_t N);
 
 void CenterOpsinValues(Image3F* img);
 
-void YToBTransform(const Image<int>& ytob_map,
-                   const int ytob_dc,
-                   const float factor,
-                   Image3F* opsin);
-
 struct QuantizedCoeffs {
   Image3W dct;
 };
@@ -43,9 +38,16 @@ struct QuantizedCoeffs {
 void ComputePredictionResiduals(const Quantizer& quantizer,
                                 Image3F* coeffs);
 
+void YToBTransform(const Image<int>& ytob_map,
+                   const int ytob_dc,
+                   const float factor,
+                   Image3F* coeffs);
+
 QuantizedCoeffs ComputeCoefficients(const CompressParams& params,
                                     const Image3F& opsin,
-                                    const Quantizer& quantizer);
+                                    const Quantizer& quantizer,
+                                    const Image<int>& ytob_map,
+                                    const int ytob_dc);
 
 std::string EncodeToBitstream(const QuantizedCoeffs& qcoeffs,
                               const Quantizer& quantizer,
@@ -65,7 +67,9 @@ bool DecodeFromBitstream(const uint8_t* data, const size_t data_size,
                          size_t* compressed_size);
 
 Image3F ReconOpsinImage(const QuantizedCoeffs& qcoeffs,
-                        const Quantizer& quantizer);
+                        const Quantizer& quantizer,
+                        const Image<int>& ytob_map,
+                        const int ytob_dc);
 
 }  // namespace pik
 
