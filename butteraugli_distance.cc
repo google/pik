@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 
+#include "alpha_blend.h"
 #include "butteraugli/butteraugli.h"
 #include "compiler_specific.h"
 #include "gamma_correct.h"
@@ -62,6 +63,32 @@ float ButteraugliDistance(const Image3B& rgb0, const Image3B& rgb1,
   return ButteraugliDistance(LinearFromSrgb(rgb0),
                              LinearFromSrgb(rgb1),
                              distmap_out);
+}
+
+float ButteraugliDistance(const MetaImageF& rgb0, const MetaImageF& rgb1,
+                          ImageF* distmap_out) {
+  if (!rgb0.HasAlpha() && !rgb1.HasAlpha()) {
+    return ButteraugliDistance(rgb0.GetColor(), rgb1.GetColor(), distmap_out);
+  }
+  ImageF distmap_black, distmap_white;
+  float dist_black = ButteraugliDistance(AlphaBlend(rgb0, 0),
+                                         AlphaBlend(rgb1, 0),
+                                         &distmap_black);
+  float dist_white = ButteraugliDistance(AlphaBlend(rgb0, 255),
+                                         AlphaBlend(rgb1, 255),
+                                         &distmap_white);
+  if (distmap_out != nullptr) {
+    const size_t xsize = rgb0.xsize();
+    const size_t ysize = rgb0.ysize();
+    *distmap_out = ImageF(xsize, ysize);
+    for (int y = 0; y < ysize; ++y) {
+      for (int x = 0; x < xsize; ++x) {
+        distmap_out->Row(y)[x] = std::max(distmap_black.Row(y)[x],
+                                          distmap_white.Row(y)[x]);
+      }
+    }
+  }
+  return std::max(dist_black, dist_white);
 }
 
 }  // namespace pik

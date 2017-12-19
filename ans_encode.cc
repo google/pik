@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "fast_log.h"
+#include "histogram.h"
 #include "histogram_encode.h"
 
 namespace pik {
@@ -43,22 +44,68 @@ void ANSBuildInfoTable(const int* counts, int alphabet_size,
   }
 }
 
+int EstimateDataBits(const int* histogram, const int* counts, size_t len) {
+  float sum = 0.0f;
+  int total_histogram = 0;
+  int total_counts = 0;
+  for (int i = 0; i < len; ++i) {
+    total_histogram += histogram[i];
+    total_counts += counts[i];
+    if (histogram[i] > 0) {
+      PIK_ASSERT(counts[i] > 0);
+      sum -= histogram[i] * FastLog2(counts[i]);
+    }
+  }
+  if (total_histogram > 0) {
+    PIK_ASSERT(total_counts == ANS_TAB_SIZE);
+    const int log2_total_counts = ANS_LOG_TAB_SIZE;
+    sum += total_histogram * log2_total_counts;
+  }
+  return static_cast<int>(sum + 1.0f);
+}
+
+int EstimateDataBitsFlat(const int* histogram, size_t len) {
+  const float flat_bits = FastLog2(len);
+  int total_histogram = 0;
+  for (int i = 0; i < len; ++i) {
+    total_histogram += histogram[i];
+  }
+  return static_cast<int>(total_histogram * flat_bits + 1.0);
+}
+
 }  // namespace
 
 void BuildAndStoreANSEncodingData(const int* histogram,
                                   int alphabet_size,
                                   ANSEncSymbolInfo* info,
                                   size_t* storage_ix, uint8_t* storage) {
+  PIK_ASSERT(alphabet_size <= ANS_TAB_SIZE);
   int num_symbols;
   int symbols[kMaxNumSymbolsForSmallCode] = { 0 };
   std::vector<int> counts(histogram, histogram + alphabet_size);
   int omit_pos;
-  NormalizeCounts(&counts[0], &omit_pos, alphabet_size, ANS_LOG_TAB_SIZE,
-                  &num_symbols, symbols);
-  ANSBuildInfoTable(&counts[0], alphabet_size, info);
+  PIK_CHECK(NormalizeCounts(counts.data(), &omit_pos, alphabet_size,
+                            ANS_LOG_TAB_SIZE, &num_symbols, symbols));
+  ANSBuildInfoTable(counts.data(), alphabet_size, info);
   if (storage_ix != nullptr && storage != nullptr) {
-    EncodeCounts(&counts[0], alphabet_size,
+    const int storage_ix0 = *storage_ix;
+    EncodeCounts(counts.data(), alphabet_size,
                  omit_pos, num_symbols, symbols, storage_ix, storage);
+    if (alphabet_size <= kMaxNumSymbolsForSmallCode) {
+      return;
+    }
+    // Let's see if we can do better in terms of histogram size + data size.
+    const int histo_bits = *storage_ix - storage_ix0;
+    const int data_bits = EstimateDataBits(histogram, counts.data(),
+                                           alphabet_size);
+    const int histo_bits_flat = ANS_LOG_TAB_SIZE + 2;
+    const int data_bits_flat = EstimateDataBitsFlat(histogram, alphabet_size);
+    if (histo_bits_flat + data_bits_flat < histo_bits + data_bits) {
+      counts = CreateFlatHistogram(alphabet_size, ANS_TAB_SIZE);
+      ANSBuildInfoTable(counts.data(), alphabet_size, info);
+      RewindStorage(storage_ix0, storage_ix, storage);
+      EncodeFlatHistogram(alphabet_size, storage_ix, storage);
+    }
   }
 }
 

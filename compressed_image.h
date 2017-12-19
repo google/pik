@@ -20,7 +20,9 @@
 #include <string>
 
 #include "image.h"
+#include "noise.h"
 #include "pik_info.h"
+#include "pik_params.h"
 #include "quantizer.h"
 
 namespace pik {
@@ -29,22 +31,35 @@ Image3F AlignImage(const Image3F& in, const size_t N);
 
 void CenterOpsinValues(Image3F* img);
 
-void YToBTransform(const float factor, Image3F* opsin);
+void YToBTransform(const Image<int>& ytob_map,
+                   const int ytob_dc,
+                   const float factor,
+                   Image3F* opsin);
 
-typedef Image3W QuantizedCoeffs;
+struct QuantizedCoeffs {
+  Image3W dct;
+};
 
-QuantizedCoeffs ComputeCoefficients(const Image3F& opsin,
+void ComputePredictionResiduals(const Quantizer& quantizer,
+                                Image3F* coeffs);
+
+QuantizedCoeffs ComputeCoefficients(const CompressParams& params,
+                                    const Image3F& opsin,
                                     const Quantizer& quantizer);
 
 std::string EncodeToBitstream(const QuantizedCoeffs& qcoeffs,
                               const Quantizer& quantizer,
-                              int ytob,
+                              const NoiseParams& noise_params,
+                              const Image<int>& ytob_map,
+                              const int ytob_dc,
                               bool fast_mode,
                               PikInfo* info);
 
 bool DecodeFromBitstream(const uint8_t* data, const size_t data_size,
                          const size_t xsize, const size_t ysize,
-                         int* ytob,
+                         Image<int>* ytob_map,
+                         int* ytob_dc,
+                         NoiseParams* noise_params,
                          Quantizer* quantizer,
                          QuantizedCoeffs* qcoeffs,
                          size_t* compressed_size);

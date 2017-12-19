@@ -89,8 +89,8 @@ newer features such as function-specific target attributes when available.
 
 ## Differences versus [P0214R5 proposal](https://goo.gl/zKW4SA)
 
-1.  Adding widely used and portable operations such as `average`, `mul_even`,
-    and `shuffle`.
+1.  Adding widely used and portable operations such as `andnot`, `average`,
+    bit-shift by immediates and `select`.
 
 1.  Adding the concept of vector 'parts', which are often used in existing ARM
     and x86 code.
@@ -202,13 +202,13 @@ attributes are not generic. Thus, a wrapper into which SIMD functions are
 inlined cannot be a function, because it would also need a target-specific
 attribute. A macro `SETZERO(D)` could work, but this is hardly more clear than a
 normal function with arguments. Note that descriptors occur often, so user code
-can define a `const Full<float, SIMD_TARGET> d;` and then write `setzero(d)`.
+can define a `const Full<float> d;` and then write `setzero(d)`.
 
 ## Use cases and HOWTO
 
-Applications may rely on 128-bit vectors, e.g. `Part<float, 4, SIMD_TARGET>::V`,
-or preferably use vectors of unspecified size `Full<float, SIMD_TARGET>::V`.
-Support from the build system may be required depending on the use case:
+Applications may rely on 128-bit vectors, e.g. `Part<float, 4>::V`, or
+preferably use vectors of unspecified size `Full<float>::V`. Support from the
+build system may be required depending on the use case:
 
 *   Older compilers, single instruction set per platform: compile normal C++
     functions with `COPTS_REQUIRE_?` and `COPTS_ENABLE_?` flags.
@@ -250,9 +250,9 @@ demonstrates "attr mode" without `-mavx2` flags. This approach requires Clang
 void FloorLog2(const uint8_t* SIMD_RESTRICT values,
                uint8_t* SIMD_RESTRICT log2) {
   // Descriptors for all required data types:
-  const Full<int32_t, SIMD_TARGET> d32;
-  const Full<float, SIMD_TARGET> df;
-  const Part<uint8_t, d32.N, SIMD_TARGET> d8;
+  const Full<int32_t> d32;
+  const Full<float> df;
+  const Part<uint8_t, d32.N> d8;
 
   const auto u8 = load(d8, values);
   const auto bits = cast_to(d32, convert_to(df, convert_to(d32, u8)));
@@ -262,6 +262,7 @@ void FloorLog2(const uint8_t* SIMD_RESTRICT values,
 ```
 
 This generates the following SSE4 and AVX2 code, as shown by IACA:
+
 ```
  p0  p1  p5
 |   |   | 1 | CP | pmovzxbd xmm1, dword [rsp+0x25c]
@@ -286,7 +287,7 @@ This generates the following SSE4 and AVX2 code, as shown by IACA:
 void Copy(const uint8_t* SIMD_RESTRICT from, const size_t size,
           uint8_t* SIMD_RESTRICT to) {
   // Width-agnostic (library-specified N)
-  const Full<uint8_t, SIMD_TARGET> d;
+  const Full<uint8_t> d;
   const Scalar<uint8_t> ds;
   size_t i = 0;
   for (; i + d.N <= size; i += d.N) {
@@ -307,7 +308,7 @@ void MulAdd(const T* SIMD_RESTRICT mul_array, const T* SIMD_RESTRICT add_array,
             const size_t size, T* SIMD_RESTRICT x_array) {
   // Type-agnostic (caller-specified lane type) and width-agnostic (uses
   // best available instruction set).
-  const Full<T, SIMD_TARGET> d;
+  const Full<T> d;
   for (size_t i = 0; i < size; i += d.N) {
     const auto mul = load(d, mul_array + i);
     const auto add = load(d, add_array + i);

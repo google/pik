@@ -61,11 +61,6 @@ struct VecT<T, 1, NONE> {
   using type = scalar<T>;
 };
 
-template <typename T>
-struct Dup128T<T, NONE> {
-  using type = void;  // unsupported but required for simd.h to compile.
-};
-
 // ------------------------------ Cast
 
 template <typename T, typename FromT>
@@ -91,6 +86,11 @@ SIMD_INLINE scalar<T> set1(Scalar<T>, const T2 t) {
 template <typename T, typename T2>
 SIMD_INLINE scalar<T> iota(Scalar<T>, const T2 first) {
   return scalar<T>(first);
+}
+
+template <typename T>
+SIMD_INLINE scalar<T> undefined(Scalar<T>) {
+  return scalar<T>();
 }
 
 // ================================================== ARITHMETIC
@@ -563,7 +563,20 @@ SIMD_INLINE scalar<double> operator^(const scalar<double> a, const scalar<double
 
 // ------------------------------ Select/blend
 
-// Returns mask ? b : a. Each lane of "mask" must equal T(0) or ~T(0).
+// Returns a mask for use by select().
+SIMD_INLINE scalar<float> selector_from_sign(const scalar<float> v) {
+  const Scalar<float> df;
+  const Scalar<int32_t> di;
+  return cast_to(df, shift_right<31>(cast_to(di, v)));
+}
+SIMD_INLINE scalar<double> selector_from_sign(const scalar<double> v) {
+  const Scalar<double> df;
+  const Scalar<int64_t> di;
+  return cast_to(df, shift_right<63>(cast_to(di, v)));
+}
+
+// Returns mask ? b : a. "mask" must either have been returned by
+// selector_from_mask, or callers must ensure its lanes are T(0) or ~T(0).
 template <typename T>
 SIMD_INLINE scalar<T> select(const scalar<T> a, const scalar<T> b,
                              const scalar<T> mask) {
@@ -625,6 +638,10 @@ SIMD_INLINE scalar<float> convert_to(Scalar<float>, const scalar<int32_t> v) {
 SIMD_INLINE scalar<int32_t> convert_to(Scalar<int32_t>, const scalar<float> v) {
   const float f = v.raw;
   return scalar<int32_t>(f);
+}
+
+SIMD_INLINE scalar<uint32_t> u32_from_u8(const scalar<uint8_t> v) {
+  return convert_to(Scalar<uint32_t>(), v);
 }
 
 // Approximation of round-to-nearest for numbers representable as int32_t.

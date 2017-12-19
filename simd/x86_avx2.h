@@ -34,16 +34,6 @@ struct raw_avx2<double> {
   using type = __m256d;
 };
 
-// All 128-bit blocks equal; returned from load_dup128.
-template <typename T>
-struct dup128x2 {
-  using Raw = typename raw_avx2<T>::type;
-
-  explicit dup128x2(const Raw raw) : raw(raw) {}
-
-  Raw raw;
-};
-
 template <typename T, size_t N = AVX2::NumLanes<T>()>
 class vec_avx2 {
   using Raw = typename raw_avx2<T>::type;
@@ -84,11 +74,6 @@ class vec_avx2 {
 template <typename T, size_t N>
 struct VecT<T, N, AVX2> {
   using type = vec_avx2<T, N>;
-};
-
-template <typename T>
-struct Dup128T<T, AVX2> {
-  using type = dup128x2<T>;
 };
 
 using u8x32 = vec_avx2<uint8_t, 32>;
@@ -223,6 +208,41 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> set1(Desc<double, N, AVX2>,
                                                     const double t) {
   return vec_avx2<double, N>(_mm256_set1_pd(t));
 }
+
+SIMD_DIAGNOSTICS(push)
+SIMD_DIAGNOSTICS_OFF(disable:4701, ignored "-Wuninitialized")
+
+// Returns a vector with uninitialized elements.
+template <typename T, size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> undefined(Desc<T, N, AVX2>) {
+#ifdef __clang__
+  return vec_avx2<T, N>(_mm256_undefined_si256());
+#else
+  __m256i raw;
+  return vec_avx2<T, N>(raw);
+#endif
+}
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float, N> undefined(Desc<float, N, AVX2>) {
+#ifdef __clang__
+  return vec_avx2<float, N>(_mm256_undefined_ps());
+#else
+  __m256 raw;
+  return vec_avx2<float, N>(raw);
+#endif
+}
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> undefined(
+    Desc<double, N, AVX2>) {
+#ifdef __clang__
+  return vec_avx2<double, N>(_mm256_undefined_pd());
+#else
+  __m256d raw;
+  return vec_avx2<double, N>(raw);
+#endif
+}
+
+SIMD_DIAGNOSTICS(pop)
 
 // ================================================== ARITHMETIC
 
@@ -745,6 +765,11 @@ namespace ext {
 
 // Returns the upper 16 bits of a * b in each lane.
 template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint16_t, N> mulhi(
+    const vec_avx2<uint16_t, N> a, const vec_avx2<uint16_t, N> b) {
+  return vec_avx2<uint16_t, N>(_mm256_mulhi_epu16(a.raw, b.raw));
+}
+template <size_t N>
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int16_t, N> mulhi(
     const vec_avx2<int16_t, N> a, const vec_avx2<int16_t, N> b) {
   return vec_avx2<int16_t, N>(_mm256_mulhi_epi16(a.raw, b.raw));
@@ -1136,8 +1161,16 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> operator^(
 
 // ------------------------------ Select/blend
 
-// Returns mask ? b : a. Due to ARM's semantics, each lane of "mask" must
-// equal T(0) or ~T(0) although x86 may only check the most significant bit.
+// Returns a mask for use by select().
+// blendv_ps/pd only check the sign bit, so this is a no-op on x86.
+template <typename T, size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> selector_from_sign(
+    const vec_avx2<T, N> v) {
+  return v;
+}
+
+// Returns mask ? b : a. "mask" must either have been returned by
+// selector_from_mask, or callers must ensure its lanes are T(0) or ~T(0).
 template <typename T, size_t N>
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> select(const vec_avx2<T, N> a,
                                                  const vec_avx2<T, N> b,
@@ -1181,6 +1214,7 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> load<double>(
 template <typename T>
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T> load_unaligned(
     Full<T, AVX2>, const T* SIMD_RESTRICT p) {
+  // TODO(janwas): _mm256_lddqu_si256?
   return vec_avx2<T>(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(p)));
 }
 template <>
@@ -1197,23 +1231,42 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> load_unaligned<double>(
 // Loads 128 bit and duplicates into both 128-bit halves. This avoids the
 // 3-cycle cost of moving data between 128-bit halves and avoids port 5.
 template <typename T>
-SIMD_ATTR_AVX2 SIMD_INLINE dup128x2<T> load_dup128(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T> load_dup128(
     Full<T, AVX2>, const T* const SIMD_RESTRICT p) {
+#if defined(__clang__) && !SIMD_USE_ATTR
+  // Clang 3.9 compiles _mm256_broadcastsi128_si256 and _mm256_broadcast_ps to
+  // VINSERTF128. If SIMD_USE_ATTR, we get "invalid output size for constraint".
+  __m256i out;
+  asm volatile("vbroadcasti128 %1, %[reg]" : [reg] "=v"(out) : "m"(p[0]));
+  return vec_avx2<T>(out);
+#else
   const Full<T, SSE4> d128;
-  // NOTE: Clang 3.9 generates VINSERTF128; 4 yields the desired VBROADCASTI128.
-  return dup128x2<T>(_mm256_broadcastsi128_si256(load(d128, p).raw));
+  return vec_avx2<T>(_mm256_broadcastsi128_si256(load_unaligned(d128, p).raw));
+#endif
 }
 template <>
-SIMD_ATTR_AVX2 SIMD_INLINE dup128x2<float> load_dup128(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float> load_dup128(
     Full<float, AVX2>, const float* const SIMD_RESTRICT p) {
-  return dup128x2<float>(
+#if defined(__clang__) && !SIMD_USE_ATTR
+  __m256 out;
+  asm volatile("vbroadcastf128 %1, %[reg]" : [reg] "=v"(out) : "m"(p[0]));
+  return vec_avx2<float>(out);
+#else
+  return vec_avx2<float>(
       _mm256_broadcast_ps(reinterpret_cast<const __m128*>(p)));
+#endif
 }
 template <>
-SIMD_ATTR_AVX2 SIMD_INLINE dup128x2<double> load_dup128(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> load_dup128(
     Full<double, AVX2>, const double* const SIMD_RESTRICT p) {
-  return dup128x2<double>(
+#if defined(__clang__) && !SIMD_USE_ATTR
+  __m256d out;
+  asm volatile("vbroadcastf128 %1, %[reg]" : [reg] "=v"(out) : "m"(p[0]));
+  return vec_avx2<double>(out);
+#else
+  return vec_avx2<double>(
       _mm256_broadcast_pd(reinterpret_cast<const __m128d*>(p)));
+#endif
 }
 
 // ------------------------------ Store
@@ -1237,12 +1290,6 @@ SIMD_ATTR_AVX2 SIMD_INLINE void store<double>(const vec_avx2<double> v,
 }
 
 template <typename T>
-SIMD_ATTR_AVX2 SIMD_INLINE void store(const dup128x2<T> v, Full<T, AVX2> d,
-                                      T* SIMD_RESTRICT aligned) {
-  return store(vec_avx2<T>(v.raw), d, aligned);
-}
-
-template <typename T>
 SIMD_ATTR_AVX2 SIMD_INLINE void store_unaligned(const vec_avx2<T> v,
                                                 Full<T, AVX2>,
                                                 T* SIMD_RESTRICT p) {
@@ -1258,13 +1305,6 @@ template <>
 SIMD_ATTR_AVX2 SIMD_INLINE void store_unaligned<double>(
     const vec_avx2<double> v, Full<double, AVX2>, double* SIMD_RESTRICT p) {
   _mm256_storeu_pd(p, v.raw);
-}
-
-template <typename T>
-SIMD_ATTR_AVX2 SIMD_INLINE void store_unaligned(const dup128x2<T> v,
-                                                Full<T, AVX2> d,
-                                                T* SIMD_RESTRICT p) {
-  return store_unaligned(vec_avx2<T>(v.raw), d, p);
 }
 
 // ------------------------------ Non-temporal stores
@@ -1288,6 +1328,16 @@ SIMD_ATTR_AVX2 SIMD_INLINE void stream<double>(const vec_avx2<double> v,
 }
 
 // ================================================== CONVERT
+
+// ------------------------------ Shuffle bytes with variable indices
+
+// Returns vector of bytes[from[i]]. "from" is also interpreted as bytes:
+// either valid indices in [0, 16) or >= 0x80 to zero the i-th output byte.
+template <typename T, typename TI, size_t N, size_t NI>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> shuffle_bytes(
+    const vec_avx2<T, N> bytes, const vec_avx2<TI, NI> from) {
+  return vec_avx2<T, N>(_mm256_shuffle_epi8(bytes.raw, from.raw));
+}
 
 // ------------------------------ Promotions (part w/ narrow lanes -> full)
 
@@ -1321,6 +1371,17 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int32_t> convert_to(Full<int32_t, AVX2>,
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint64_t> convert_to(Full<uint64_t, AVX2>,
                                                          const u32x4 v) {
   return vec_avx2<uint64_t>(_mm256_cvtepu32_epi64(v.raw));
+}
+
+// Special case for "v" with all blocks equal (e.g. from broadcast_block or
+// load_dup128): single-cycle latency instead of 3.
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint32_t> u32_from_u8(
+    const vec_avx2<uint8_t> v) {
+  const Full<uint32_t, AVX2> d32;
+  SIMD_ALIGN static constexpr uint32_t k32From8[8] = {
+      0xFFFFFF00UL, 0xFFFFFF01UL, 0xFFFFFF02UL, 0xFFFFFF03UL,
+      0xFFFFFF04UL, 0xFFFFFF05UL, 0xFFFFFF06UL, 0xFFFFFF07UL};
+  return shuffle_bytes(cast_to(d32, v), load(d32, k32From8));
 }
 
 // Signed: replicate sign bit.
@@ -1432,6 +1493,7 @@ SIMD_ATTR_AVX2 SIMD_INLINE f64x2 other_half(const vec_avx2<double> v) {
 template <int kBytes, typename T, size_t N>
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> shift_bytes_left(
     const vec_avx2<T, N> v) {
+  // This is the same operation as _mm256_bslli_epi128.
   return vec_avx2<T, N>(_mm256_slli_si256(v.raw, kBytes));
 }
 
@@ -1439,6 +1501,7 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> shift_bytes_left(
 template <int kBytes, typename T, size_t N>
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> shift_bytes_right(
     const vec_avx2<T, N> v) {
+  // This is the same operation as _mm256_bsrli_epi128.
   return vec_avx2<T, N>(_mm256_srli_si256(v.raw, kBytes));
 }
 
@@ -1521,16 +1584,6 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> broadcast(
   return vec_avx2<double>(_mm256_shuffle_pd(v.raw, v.raw, 15 * kLane));
 }
 
-// ------------------------------ Shuffle bytes with variable indices
-
-// Returns vector of bytes[from[i]]. "from" is also interpreted as bytes:
-// either valid indices in [0, 16) or >= 0x80 to zero the i-th output byte.
-template <typename T, typename TI, size_t N, size_t NI>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> shuffle_bytes(
-    const vec_avx2<T, N> bytes, const vec_avx2<TI, NI> from) {
-  return vec_avx2<T, N>(_mm256_shuffle_epi8(bytes.raw, from.raw));
-}
-
 // ------------------------------ Hard-coded shuffles
 
 // Notation: let vec_avx2<int32_t> have lanes 7,6,5,4,3,2,1,0 (0 is
@@ -1550,6 +1603,7 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int32_t> shuffle_1032(
 }
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float> shuffle_1032(
     const vec_avx2<float> v) {
+  // Shorter encoding than _mm256_permute_ps.
   return vec_avx2<float>(_mm256_shuffle_ps(v.raw, v.raw, 0x4E));
 }
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint64_t> shuffle_01(
@@ -1562,6 +1616,7 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int64_t> shuffle_01(
 }
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> shuffle_01(
     const vec_avx2<double> v) {
+  // Shorter encoding than _mm256_permute_pd.
   return vec_avx2<double>(_mm256_shuffle_pd(v.raw, v.raw, 5));
 }
 
@@ -1793,43 +1848,47 @@ template <int kLane, typename T, size_t N>
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T> broadcast_part(Full<T, AVX2>,
                                                       const vec_sse4<T, N> v) {
   static_assert(0 <= kLane && kLane < N, "Invalid lane");
-  const auto v128 = broadcast<kLane>(vec_sse4<T>(v.raw)).raw;
-  return vec_avx2<T>(
-      _mm256_inserti128_si256(_mm256_castsi128_si256(v128), v128, 1));
+  const auto v128 = broadcast<kLane>(vec_sse4<T>(v.raw));
+  // Same as _mm256_castsi128_si256, but with guaranteed zero-extension.
+  const auto lo = _mm256_zextsi128_si256(v128.raw);
+  // Same instruction as _mm256_permute2f128_si256.
+  return vec_avx2<T>(_mm256_permute2x128_si256(lo, lo, 0));
 }
 template <int kLane, size_t N>
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float> broadcast_part(
     Full<float, AVX2>, const vec_sse4<float, N> v) {
   static_assert(0 <= kLane && kLane < N, "Invalid lane");
   const auto v128 = broadcast<kLane>(vec_sse4<float>(v.raw)).raw;
-  return vec_avx2<float>(
-      _mm256_insertf128_ps(_mm256_castps128_ps256(v128), v128, 1));
+  // Same as _mm256_castps128_ps256, but with guaranteed zero-extension.
+  const auto lo = _mm256_zextps128_ps256(v128);
+  return vec_avx2<float>(_mm256_permute2f128_ps(lo, lo, 0));
 }
 template <int kLane, size_t N>
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> broadcast_part(
     Full<double, AVX2>, const vec_sse4<double, N> v) {
   static_assert(0 <= kLane && kLane < N, "Invalid lane");
   const auto v128 = broadcast<kLane>(vec_sse4<double>(v.raw)).raw;
-  return vec_avx2<double>(
-      _mm256_insertf128_pd(_mm256_castpd128_pd256(v128), v128, 1));
+  // Same as _mm256_castpd128_pd256, but with guaranteed zero-extension.
+  const auto lo = _mm256_zextpd128_pd256(v128);
+  return vec_avx2<double>(_mm256_permute2f128_pd(lo, lo, 0));
 }
 
 // ------------------------------ Blocks
 
 // H,L |-> L,L
 template <typename T>
-SIMD_ATTR_AVX2 SIMD_INLINE dup128x2<T> broadcast_block(const vec_avx2<T> v) {
-  return dup128x2<T>(_mm256_permute2x128_si256(v.raw, v.raw, 0));
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T> broadcast_block(const vec_avx2<T> v) {
+  return vec_avx2<T>(_mm256_permute2x128_si256(v.raw, v.raw, 0));
 }
 template <>
-SIMD_ATTR_AVX2 SIMD_INLINE dup128x2<float> broadcast_block(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float> broadcast_block(
     const vec_avx2<float> v) {
-  return dup128x2<float>(_mm256_permute2f128_ps(v.raw, v.raw, 0));
+  return vec_avx2<float>(_mm256_permute2f128_ps(v.raw, v.raw, 0));
 }
 template <>
-SIMD_ATTR_AVX2 SIMD_INLINE dup128x2<double> broadcast_block(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> broadcast_block(
     const vec_avx2<double> v) {
-  return dup128x2<double>(_mm256_permute2f128_pd(v.raw, v.raw, 0));
+  return vec_avx2<double>(_mm256_permute2f128_pd(v.raw, v.raw, 0));
 }
 
 // hiH,hiL loH,loL |-> hiL,loL (= lower halves)
@@ -1900,6 +1959,55 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> concat_hi_lo(
   return vec_avx2<double>(_mm256_blend_pd(hi.raw, lo.raw, 3));
 }
 
+// ------------------------------ Odd/even lanes
+
+template <typename T>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T> odd_even_impl(char (&sizeof_t)[1],
+                                                     const vec_avx2<T> a,
+                                                     const vec_avx2<T> b) {
+  const Full<T, AVX2> d;
+  const Full<uint8_t, AVX2> d8;
+  SIMD_ALIGN constexpr uint8_t mask[16] = {0xFF, 0, 0xFF, 0, 0xFF, 0, 0xFF, 0,
+                                           0xFF, 0, 0xFF, 0, 0xFF, 0, 0xFF, 0};
+  return select(a, b, cast_to(d, load_dup128(d8, mask)));
+}
+template <typename T>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T> odd_even_impl(char (&sizeof_t)[2],
+                                                     const vec_avx2<T> a,
+                                                     const vec_avx2<T> b) {
+  return vec_avx2<T>(_mm256_blend_epi16(a.raw, b.raw, 0x55));
+}
+template <typename T>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T> odd_even_impl(char (&sizeof_t)[4],
+                                                     const vec_avx2<T> a,
+                                                     const vec_avx2<T> b) {
+  return vec_avx2<T>(_mm256_blend_epi32(a.raw, b.raw, 0x55));
+}
+template <typename T>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T> odd_even_impl(char (&sizeof_t)[8],
+                                                     const vec_avx2<T> a,
+                                                     const vec_avx2<T> b) {
+  return vec_avx2<T>(_mm256_blend_epi32(a.raw, b.raw, 0x33));
+}
+
+template <typename T>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T> odd_even(const vec_avx2<T> a,
+                                                const vec_avx2<T> b) {
+  char sizeof_t[sizeof(T)];
+  return odd_even_impl(sizeof_t, a, b);
+}
+template <>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float> odd_even<float>(
+    const vec_avx2<float> a, const vec_avx2<float> b) {
+  return vec_avx2<float>(_mm256_blend_ps(a.raw, b.raw, 0x55));
+}
+
+template <>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> odd_even<double>(
+    const vec_avx2<double> a, const vec_avx2<double> b) {
+  return vec_avx2<double>(_mm256_blend_pd(a.raw, b.raw, 5));
+}
+
 // ================================================== MISC
 
 // aes_round already defined by x86_sse4.h.
@@ -1928,6 +2036,7 @@ SIMD_ATTR_AVX2 SIMD_INLINE uint32_t movemask(const vec_avx2<double> v) {
 // ------------------------------ all_zero
 
 // Returns whether all lanes are equal to zero. Supported for all integer V.
+// (Floating-point VTESTP* only test the sign bit!)
 template <typename T>
 SIMD_ATTR_AVX2 SIMD_INLINE bool all_zero(const vec_avx2<T> v) {
   return static_cast<bool>(_mm256_testz_si256(v.raw, v.raw));

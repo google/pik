@@ -208,7 +208,7 @@ Image3F UpSample8x8BlurDCT(const Image3F& img, const float sigma) {
       for (int c = 0; c < 3; ++c) {
         float* const PIK_RESTRICT block = &row[c][bx * 64];
         using namespace SIMD_NAMESPACE;
-        const Full<float, SIMD_TARGET> d;
+        const Full<float> d;
         for (int ix = 0; ix < 8; ix += d.N) {
           const auto val0 = load(d, &row0[c][bx * 8 + ix]);
           const auto val1 = load(d, &row1[c][bx * 8 + ix]);
@@ -287,7 +287,7 @@ Image3F UpSample4x4BlurDCT(const Image3F& img, const float sigma) {
       for (int c = 0; c < 3; ++c) {
         float* const PIK_RESTRICT block = &row[c][bx * 64];
         using namespace SIMD_NAMESPACE;
-        const Full<float, SIMD_TARGET> d;
+        const Full<float> d;
         for (int ix = 0; ix < 8; ix += d.N) {
           const auto val0 = load(d, &row0[c][bx * 8 + ix]);
           const auto val1 = load(d, &row1[c][bx * 8 + ix]);
@@ -374,7 +374,7 @@ Image3F UpSampleBlur(const Image3F& img, const float sigma) {
         using namespace SIMD_NAMESPACE;
         constexpr int kLanes =
             SIMD_MIN(N, SIMD_TARGET::template NumLanes<float>());
-        const Part<float, kLanes, SIMD_TARGET> d;
+        const Part<float, kLanes> d;
         for (int ix = 0; ix < N; ix += d.N) {
           const auto val0 = load(d, &row0[c][bx * N + ix]);
           const auto val1 = load(d, &row1[c][bx * N + ix]);

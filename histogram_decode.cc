@@ -62,6 +62,15 @@ bool ReadHistogram(int precision_bits, std::vector<int>* counts,
       (*counts)[symbols[1]] = (1 << precision_bits) - (*counts)[symbols[0]];
     }
   } else {
+    int is_flat = input->ReadBits(1);
+    if (is_flat == 1) {
+      int alphabet_size = input->ReadBits(precision_bits);
+      if (alphabet_size == 0) {
+        return PIK_FAILURE("Invalid alphabet size for flat histogram.");
+      }
+      *counts = CreateFlatHistogram(alphabet_size, 1 << precision_bits);
+      return true;
+    }
     int length = DecodeVarLenUint16(input) + 3;
     counts->resize(length);
     int total_count = 0;

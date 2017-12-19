@@ -1,6 +1,7 @@
 #ifndef PIK_PARAMS_H_
 #define PIK_PARAMS_H_
 
+#include <stddef.h>
 #include <stdint.h>
 
 namespace pik {
@@ -12,7 +13,9 @@ struct CompressParams {
   bool clear_metadata = false;
 
   float butteraugli_distance = -1.0f;
+  size_t target_size = 0;
   float target_bitrate = 0.0f;
+  bool target_size_search_fast_mode = false;
   // 0.0 means search for the adaptive quantization map that matches the
   // butteraugli distance, positive values mean quantize everywhere with that
   // value.
@@ -21,9 +24,10 @@ struct CompressParams {
   // find a trade-off between quality and file size that optimizes the
   // quality-adjusted-bits-per-pixel metric.
   bool fast_mode = false;
-  int max_butteraugli_iters = 100;
+  int max_butteraugli_iters = 200;
 
-  bool alpha_channel = false;
+  bool apply_noise = false;
+  bool denoise = false;
 
 };
 

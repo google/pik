@@ -12,24 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Common parameters that are needed for both the ANS entropy encoding and
-// decoding methods.
+#ifndef ALPHA_BLEND_H_
+#define ALPHA_BLEND_H_
 
-#ifndef ANS_PARAMS_H_
-#define ANS_PARAMS_H_
-
-#include <stdint.h>
-#include <cstdlib>
+#include "image.h"
 
 namespace pik {
 
-static const int kANSBufferSize = 1 << 16;
-
-#define ANS_LOG_TAB_SIZE 10
-#define ANS_TAB_SIZE (1 << ANS_LOG_TAB_SIZE)
-#define ANS_TAB_MASK (ANS_TAB_SIZE - 1)
-#define ANS_SIGNATURE 0x13    // Initial state, used as CRC.
+// img is in linear space, but blending happens in gamma-compressed space using
+// (gamma-compressed) grayscale background color, alpha image represents
+// weights of the sRGB colors in the [0 .. (1 << bit_depth) - 1] interval,
+// output image is in linear space
+ImageF AlphaBlend(const ImageF& img, const ImageU& alpha,
+                  int bit_depth, uint8_t background);
+Image3F AlphaBlend(const MetaImageF& img, uint8_t background);
 
 }  // namespace pik
 
-#endif  // ANS_PARAMS_H_
+#endif  // ALPHA_BLEND_H_

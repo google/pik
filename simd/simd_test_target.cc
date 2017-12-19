@@ -54,10 +54,9 @@ void AssertEqual(const T expected, const T actual, const int line = -1,
 
 #define ASSERT_EQ(expected, actual) AssertEqual(expected, actual, __LINE__)
 
-// Compare expected vector to vector (allow different types to support
-// comparing D::V and D::Dup128).
-template <class D, class V1, class V2>
-void AssertVecEqual(D d, const V1 expected, const V2 actual, const int line) {
+// Compare expected vector to vector.
+template <class D, class V>
+void AssertVecEqual(D d, const V expected, const V actual, const int line) {
   SIMD_ALIGN typename D::T expected_lanes[d.N];
   SIMD_ALIGN typename D::T actual_lanes[d.N];
   store(expected, d, expected_lanes);
@@ -81,7 +80,7 @@ void AssertVecEqual(D d, const typename D::T (&expected)[D::N], const V actual,
 
 template <class Test, typename T>
 void Call() {
-  Test().template operator()(T(), Full<T, SIMD_TARGET>());
+  Test().template operator()(T(), Full<T>());
 }
 
 // Calls Test::operator()(T, D) for each lane type.
@@ -120,9 +119,9 @@ namespace {
 void FloorLog2(const uint8_t* SIMD_RESTRICT values,
                uint8_t* SIMD_RESTRICT log2) {
   // Descriptors for all required data types:
-  const Full<int32_t, SIMD_TARGET> d32;
-  const Full<float, SIMD_TARGET> df;
-  const Part<uint8_t, d32.N, SIMD_TARGET> d8;
+  const Full<int32_t> d32;
+  const Full<float> df;
+  const Part<uint8_t, d32.N> d8;
 
   const auto u8 = load(d8, values);
   const auto bits = cast_to(d32, convert_to(df, convert_to(d32, u8)));
@@ -132,7 +131,7 @@ void FloorLog2(const uint8_t* SIMD_RESTRICT values,
 }  // namespace
 
 void TestFloorLog2() {
-  const size_t kStep = Full<int32_t, SIMD_TARGET>::N;
+  const size_t kStep = Full<int32_t>::N;
   const size_t kBytes = 32;
   static_assert(kBytes % kStep == 0, "Must be a multiple of kStep");
 
@@ -158,7 +157,7 @@ void TestFloorLog2() {
 void Copy(const uint8_t* SIMD_RESTRICT from, const size_t size,
           uint8_t* SIMD_RESTRICT to) {
   // Width-agnostic (library-specified N)
-  const Full<uint8_t, SIMD_TARGET> d;
+  const Full<uint8_t> d;
   const Scalar<uint8_t> ds;
   size_t i = 0;
   for (; i + d.N <= size; i += d.N) {
@@ -192,7 +191,7 @@ void MulAdd(const T* SIMD_RESTRICT mul_array, const T* SIMD_RESTRICT add_array,
             const size_t size, T* SIMD_RESTRICT x_array) {
   // Type-agnostic (caller-specified lane type) and width-agnostic (uses
   // best available instruction set).
-  const Full<T, SIMD_TARGET> d;
+  const Full<T> d;
   for (size_t i = 0; i < size; i += d.N) {
     const auto mul = load(d, mul_array + i);
     const auto add = load(d, add_array + i);
@@ -365,15 +364,26 @@ struct TestSet {
   void operator()(T, D d) const {
     // setzero
     const auto v0 = setzero(d);
-    T lanes[d.N] = {T(0)};
-    ASSERT_VEC_EQ(d, lanes, v0);
+    T expected[d.N] = {T(0)};
+    ASSERT_VEC_EQ(d, expected, v0);
 
     // set1
     const auto v2 = set1(d, T(2));
     for (size_t i = 0; i < d.N; ++i) {
-      lanes[i] = 2;
+      expected[i] = 2;
     }
-    ASSERT_VEC_EQ(d, lanes, v2);
+    ASSERT_VEC_EQ(d, expected, v2);
+
+    // iota
+    const auto vi = iota(d, T(5));
+    for (size_t i = 0; i < d.N; ++i) {
+      expected[i] = 5 + i;
+    }
+    ASSERT_VEC_EQ(d, expected, vi);
+
+    // undefined
+    const auto vu = undefined(d);
+    store(vu, d, expected);
   }
 };
 
@@ -399,7 +409,7 @@ struct TestHalf {
   void operator()(T, D d) const {
 #if SIMD_TARGET_VALUE != SIMD_NONE
     constexpr size_t N2 = (d.N + 1) / 2;
-    const Part<T, N2, SIMD_TARGET> d2;
+    const Part<T, N2> d2;
 
     const auto v1 = set1(d, 1);
     SIMD_ALIGN T lanes[d.N];
@@ -441,7 +451,7 @@ struct TestQuarterT {
   template <typename T, class D>
   void operator()(T, D d) const {
     constexpr size_t N4 = (d.N + 3) / 4;
-    const Part<T, N4, SIMD_TARGET> d4;
+    const Part<T, N4> d4;
 
     const auto v = iota(d, 1);
     SIMD_ALIGN T lanes[d.N];
@@ -986,8 +996,8 @@ struct TestMulHi16 {
 
 template <typename T1, typename T2>
 void TestMulEvenT() {
-  const Full<T1, SIMD_TARGET> d1;
-  const Full<T2, SIMD_TARGET> d2;  // wider type, half the lanes
+  const Full<T1> d1;
+  const Full<T2> d2;  // wider type, half the lanes
 
   const auto v0 = setzero(d1);
   ASSERT_VEC_EQ(d2, setzero(d2), mul_even(v0, v0));
@@ -1162,7 +1172,7 @@ struct TestRound {
 struct TestIntFromFloat {
   template <typename T, class D>
   void operator()(T, D d) const {
-    const Full<float, SIMD_TARGET> df;
+    const Full<float> df;
 
     // Integer positive
     ASSERT_VEC_EQ(d, iota(d, 4), convert_to(d, iota(df, 4.0f)));
@@ -1193,7 +1203,7 @@ struct TestIntFromFloat {
 struct TestFloatFromInt {
   template <typename T, class D>
   void operator()(T, D d) const {
-    const Full<int32_t, SIMD_TARGET> di;
+    const Full<int32_t> di;
 
     // Integer positive
     ASSERT_VEC_EQ(d, iota(d, 4.0f), convert_to(d, iota(di, 4)));
@@ -1219,7 +1229,7 @@ struct TestSumsOfU8 {
   template <typename T, class D>
   void operator()(T, D d) const {
 #if SIMD_TARGET_VALUE != SIMD_NONE
-    const Full<uint8_t, SIMD_TARGET> d8;
+    const Full<uint8_t> d8;
     SIMD_ALIGN uint8_t in_bytes[d8.N];
     uint64_t sums[d.N] = {0};
     for (size_t i = 0; i < d8.N; ++i) {
@@ -1324,7 +1334,7 @@ struct TestUnsignedCompare {
 struct TestFloatCompare {
   template <typename T, class D>
   void operator()(T, D d) const {
-    constexpr size_t N8 = Full<uint8_t, SIMD_TARGET>::N;
+    constexpr size_t N8 = Full<uint8_t>::N;
     const auto v2 = iota(d, 2);
     const auto v2b = iota(d, 2);
     const auto vn = iota(d, -T(d.N));
@@ -1357,7 +1367,7 @@ uint32_t ValidBits(D d, const uint32_t bits) {
 }
 
 void TestMovemask() {
-  const Full<uint8_t, SIMD_TARGET> d;
+  const Full<uint8_t> d;
   SIMD_ALIGN const uint8_t bytes[32] = {
       0x80, 0xFF, 0x7F, 0x00,  0x01, 0x10, 0x20, 0x40,
       0x80, 0x02, 0x04, 0x08,  0xC0, 0xC1, 0xFE, 0x0F,
@@ -1368,10 +1378,10 @@ void TestMovemask() {
 
   SIMD_ALIGN const float lanes[8] = {-1.0f,  1E30f, -0.0f, 1E-30f,
                                      1E-30f, -0.0f, 1E30f, -1.0f};
-  const Full<float, SIMD_TARGET> df;
+  const Full<float> df;
   ASSERT_EQ(ValidBits(df, 0xa5), ext::movemask(load(df, lanes)));
 
-  const Full<double, SIMD_TARGET> dd;
+  const Full<double> dd;
   SIMD_ALIGN const double lanes2[4] = {1E300, -1E-300, -0.0, 1E-10};
   ASSERT_EQ(ValidBits(dd, 6), ext::movemask(load(dd, lanes2)));
 }
@@ -1488,9 +1498,33 @@ struct TestSelect {
   }
 };
 
+struct TestSelectSign {
+  template <typename T, class D>
+  void operator()(T, D d) const {
+    RandomState rng = {1234};
+
+    SIMD_ALIGN T lanes1[d.N];
+    SIMD_ALIGN T lanes2[d.N];
+    SIMD_ALIGN T masks[d.N];
+    for (size_t i = 0; i < d.N; ++i) {
+      lanes1[i] = Random32(&rng);
+      lanes2[i] = Random32(&rng);
+      masks[i] = (Random32(&rng) & 1024) ? lanes1[i] : -lanes2[i];
+    }
+
+    SIMD_ALIGN T out_lanes[d.N];
+    const auto selector = selector_from_sign(load(d, masks));
+    store(select(load(d, lanes1), load(d, lanes2), selector), d, out_lanes);
+    for (size_t i = 0; i < d.N; ++i) {
+      ASSERT_EQ((masks[i] < T(0.0)) ? lanes2[i] : lanes1[i], out_lanes[i]);
+    }
+  }
+};
+
 void TestLogical() {
   ForeachLaneType<TestLogicalT>();
-    ForeachLaneType<TestSelect>();
+  ForeachLaneType<TestSelect>();
+  ForeachFloatLaneType<TestSelectSign>();
 }
 
 }  // namespace logical
@@ -1612,8 +1646,8 @@ struct TestCastT {
 
   template <typename FromT, typename ToT>
   void Test() const {
-    const Full<FromT, SIMD_TARGET> df;
-    const Full<ToT, SIMD_TARGET> dt;
+    const Full<FromT> df;
+    const Full<ToT> dt;
     const auto vf = iota(df, 1);
     const auto vt = cast_to(dt, vf);
     static_assert(sizeof(vf) == sizeof(vt), "Cast must return same size");
@@ -1672,9 +1706,9 @@ void TestCast() {
 
 template <typename FromT, typename ToT>
 void TestPromoteT() {
-  constexpr size_t N = Full<ToT, SIMD_TARGET>::N;
-  const Part<FromT, N, SIMD_TARGET> from_d;
-  const Full<ToT, SIMD_TARGET> to_d;
+  constexpr size_t N = Full<ToT>::N;
+  const Part<FromT, N> from_d;
+  const Full<ToT> to_d;
 
   const auto from = iota(from_d, 1);
   const auto from_n1 = set1(from_d, FromT(-1));
@@ -1692,9 +1726,9 @@ void TestPromoteT() {
 
 template <typename FromT, typename ToT>
 void TestDemoteT() {
-  constexpr size_t N = Full<FromT, SIMD_TARGET>::N;
-  const Full<FromT, SIMD_TARGET> from_d;
-  const Part<ToT, N, SIMD_TARGET> to_d;
+  constexpr size_t N = Full<FromT>::N;
+  const Full<FromT> from_d;
+  const Part<ToT, N> to_d;
 
   const auto from = iota(from_d, 1);
   const auto from_n1 = set1(from_d, FromT(ToT(-1)));
@@ -1712,9 +1746,9 @@ void TestDemoteT() {
 
 template <typename FromT, typename ToT>
 void TestDupPromoteT() {
-  constexpr size_t N = Full<ToT, SIMD_TARGET>::N;
-  const Part<FromT, N, SIMD_TARGET> from_d;
-  const Full<ToT, SIMD_TARGET> to_d;
+  constexpr size_t N = Full<ToT>::N;
+  const Part<FromT, N> from_d;
+  const Full<ToT> to_d;
 
   const auto from = iota(from_d, 1);
   const auto from_n1 = set1(from_d, FromT(-1));
@@ -1732,6 +1766,14 @@ void TestDupPromoteT() {
 
 void TestConvert() {
   TestCast();
+
+#if SIMD_TARGET_VALUE != SIMD_NONE
+  const Full<uint8_t> d8;
+  const Full<uint32_t> d32;
+  ASSERT_VEC_EQ(d32, iota(d32, 0), u32_from_u8(broadcast_block(iota(d8, 0))));
+  ASSERT_VEC_EQ(d32, iota(d32, 0x7F),
+                u32_from_u8(broadcast_block(iota(d8, 0x7F))));
+#endif
 
   // Promote: no u64,i64
   TestPromoteT<uint8_t, int16_t>();
@@ -1762,7 +1804,7 @@ struct TestShiftBytesT {
   template <typename T, class D>
   void operator()(T, D d) const {
 #if SIMD_TARGET_VALUE != SIMD_NONE
-    const Full<uint8_t, SIMD_TARGET> d8;
+    const Full<uint8_t> d8;
 
     // Zero remains zero
     const auto v0 = setzero(d);
@@ -1814,9 +1856,9 @@ void TestShiftBytes() {
 template <typename T, int kLane>
 struct TestBroadcastR {
   void operator()() const {
-    const Full<T, SIMD_TARGET> d;
+    const Full<T> d;
     SIMD_ALIGN T in_lanes[d.N] = {0};
-    constexpr size_t kVecN = Full<T, SIMD_TARGET>::N;
+    constexpr size_t kVecN = Full<T>::N;
     constexpr size_t kBlockN = SIMD_MIN(kVecN * sizeof(T), 16) / sizeof(T);
     // Need to set within each 128-bit block
     for (size_t block = 0; block < d.N; block += kBlockN) {
@@ -1842,7 +1884,7 @@ struct TestBroadcastR<T, -1> {
 
 template <typename T>
 void TestBroadcastT() {
-  constexpr size_t kVecN = Full<T, SIMD_TARGET>::N;
+  constexpr size_t kVecN = Full<T>::N;
   TestBroadcastR<T, SIMD_MIN(kVecN, 16 / sizeof(T)) - 1>()();
 }
 
@@ -1891,8 +1933,8 @@ struct TestInterleave {
 template <typename T, typename WideT>
 struct TestZipT {
   void operator()() const {
-    const Full<T, SIMD_TARGET> d;
-    const Full<WideT, SIMD_TARGET> dw;
+    const Full<T> d;
+    const Full<WideT> dw;
     SIMD_ALIGN T even_lanes[d.N];
     SIMD_ALIGN T odd_lanes[d.N];
     for (size_t i = 0; i < d.N; ++i) {
@@ -1936,8 +1978,8 @@ struct TestShuffleT {
 // Not supported by scalar.h (its vector size is always less than 16 bytes)
 #if SIMD_TARGET_VALUE != SIMD_NONE
     RandomState rng = {1234};
-    const Full<uint8_t, SIMD_TARGET> d8;
-    constexpr size_t N8 = Full<uint8_t, SIMD_TARGET>::N;
+    const Full<uint8_t> d8;
+    constexpr size_t N8 = Full<uint8_t>::N;
     SIMD_ALIGN uint8_t in_bytes[N8];
     for (size_t i = 0; i < N8; ++i) {
       in_bytes[i] = Random32(&rng) & 0xFF;
@@ -1974,7 +2016,7 @@ struct TestExtractR {
   void operator()() const {
 #if SIMD_TARGET_VALUE != SIMD_NONE
     const D d;
-    const Full<uint8_t, SIMD_TARGET> d8;
+    const Full<uint8_t> d8;
     const auto lo = cast_to(d, iota(d8, 1));
     const auto hi = cast_to(d, iota(d8, 1 + d8.N));
 
@@ -2153,6 +2195,21 @@ struct TestConcatHiLo {
   }
 };
 
+struct TestOddEven {
+  template <typename T, class D>
+  void operator()(T, D d) const {
+#if SIMD_TARGET_VALUE != SIMD_NONE
+    const auto even = iota(d, 1);
+    const auto odd = iota(d, 1 + d.N);
+    T expected[d.N];
+    for (size_t i = 0; i < d.N; ++i) {
+      expected[i] = 1 + i + ((i & 1) ? d.N : 0);
+    }
+    ASSERT_VEC_EQ(d, expected, odd_even(odd, even));
+#endif
+  }
+};
+
 void TestSwizzle() {
   TestShiftBytes();
   TestBroadcast();
@@ -2165,6 +2222,7 @@ void TestSwizzle() {
   ForeachLaneType<TestConcatHalves>();
   ForeachLaneType<TestConcatLoHi>();
   ForeachLaneType<TestConcatHiLo>();
+  ForeachLaneType<TestOddEven>();
 }
 
 }  // namespace swizzle

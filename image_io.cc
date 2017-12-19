@@ -76,11 +76,11 @@ bool ReadImage(ImageFormatPNM, const std::string& pathname, ImageB* image) {
 
   *image = ImageB(xsize, ysize);
   size_t bytes_read = 0;
-      for (size_t y = 0; y < ysize; ++y) {
-        bytes_read += fread(image->Row(y), 1, xsize, f);
-      }
-      PIK_CHECK(bytes_read == xsize * ysize);
-      return true;
+  for (size_t y = 0; y < ysize; ++y) {
+    bytes_read += fread(image->Row(y), 1, xsize, f);
+  }
+  PIK_CHECK(bytes_read == xsize * ysize);
+  return true;
 }
 
 bool ReadImage(ImageFormatPNM, const std::string& pathname, Image3B* image) {
@@ -336,6 +336,11 @@ bool ReadImage(ImageFormatY4M, const std::string& pathname, Image3U* image,
   return reader.ReadFrame(image);
 }
 
+bool WriteImage(ImageFormatY4M format, const ImageB& image,
+                const std::string& pathname) {
+  return PIK_FAILURE("Unsupported");
+}
+
 bool WriteImage(ImageFormatY4M format, const Image3B& image3,
                 const std::string& pathname) {
   FileWrapper f(pathname, "wb");
@@ -576,18 +581,18 @@ bool ReadPNGMetaImage(const std::string& pathname, const int bias,
       }
     }
     if (alpha_masked != (stride == 1 ? 255 : 65535)) {
-      image->AddAlpha();
+      image->AddAlpha(stride * 8);
       for (size_t y = 0; y < ysize; ++y) {
         const uint8_t* const PIK_RESTRICT interleaved_row = interleaved_rows[y];
-        auto rows = image->GetAlpha().Row(y);
+        uint16_t* const PIK_RESTRICT rows = image->GetAlpha().Row(y);
         if (stride == 1) {
           for (size_t x = 0; x < xsize; ++x) {
-            rows[x] = ReadFromU8<T>(&interleaved_row[2 * x + 1], bias);
+            rows[x] = interleaved_row[2 * x + 1];
           }
         } else {
           for (size_t x = 0; x < xsize; ++x) {
-            rows[x] =
-                ReadFromU16<T>(&interleaved_row[stride * (2 * x + 1)], bias);
+            rows[x] = ReadFromU16<uint16_t>(
+                &interleaved_row[stride * (2 * x + 1)], 0);
           }
         }
       }
@@ -639,18 +644,18 @@ bool ReadPNGMetaImage(const std::string& pathname, const int bias,
       }
     }
     if (alpha_masked != (stride == 1 ? 255 : 65535)) {
-      image->AddAlpha();
+      image->AddAlpha(stride * 8);
       for (size_t y = 0; y < ysize; ++y) {
         const uint8_t* const PIK_RESTRICT interleaved_row = interleaved_rows[y];
-        auto rows = image->GetAlpha().Row(y);
+        uint16_t* const PIK_RESTRICT rows = image->GetAlpha().Row(y);
         if (stride == 1) {
           for (size_t x = 0; x < xsize; ++x) {
-            rows[x] = ReadFromU8<T>(&interleaved_row[4 * x + 3], bias);
+            rows[x] = interleaved_row[4 * x + 3];
           }
         } else {
           for (size_t x = 0; x < xsize; ++x) {
-            rows[x] =
-                ReadFromU16<T>(&interleaved_row[stride * (4 * x + 3)], bias);
+            rows[x] = ReadFromU16<uint16_t>(
+                &interleaved_row[stride * (4 * x + 3)], 0);
           }
         }
       }
@@ -793,7 +798,7 @@ class PngWriter {
         row_buffer_[4 * x + 0] = rows[0][x];
         row_buffer_[4 * x + 1] = rows[1][x];
         row_buffer_[4 * x + 2] = rows[2][x];
-        row_buffer_[4 * x + 3] = image.GetAlpha().Row(y)[x];
+        row_buffer_[4 * x + 3] = image.GetAlpha().Row(y)[x] & 255;
       }
     } else {
       for (size_t x = 0; x < xsize_; ++x) {
@@ -1106,6 +1111,13 @@ bool ReadImage(ImageFormatJPG, const std::string& pathname, Image3B* rgb) {
 bool ReadImage(ImageFormatJPG, const uint8_t* buf, size_t size, Image3B* rgb) {
   JpegInput input(buf, size);
   return ReadJpegImage(input, rgb);
+}
+
+bool WriteImage(ImageFormatJPG, const ImageB&, const std::string&) {
+  return PIK_FAILURE("Unsupported");
+}
+bool WriteImage(ImageFormatJPG, const Image3B&, const std::string&) {
+  return PIK_FAILURE("Unsupported");
 }
 
 // Planes
@@ -1490,16 +1502,7 @@ class LinearLoader {
   template <class Format>
   void ConvertToLinearRGB(Format format, const MetaImageU& srgb) {
     ConvertToLinearRGB(format, srgb.GetColor());
-    if (srgb.HasAlpha()) {
-      linear_rgb_->AddAlpha();
-      for (size_t y = 0; y < srgb.ysize(); ++y) {
-        const uint16_t* const PIK_RESTRICT row_from = srgb.GetAlpha().Row(y);
-        float* const PIK_RESTRICT row_to = linear_rgb_->GetAlpha().Row(y);
-        for (size_t x = 0; x < srgb.xsize(); ++x) {
-          row_to[x] = (row_from[x] / 257.0f);
-        }
-      }
-    }
+    linear_rgb_->CopyAlpha(srgb);
   }
 
   // From 16-bit signed
@@ -1522,16 +1525,7 @@ class LinearLoader {
   template <class Format>
   void ConvertToLinearRGB(Format format, const MetaImageW& srgb) {
     ConvertToLinearRGB(format, srgb.GetColor());
-    if (srgb.HasAlpha()) {
-      linear_rgb_->AddAlpha();
-      for (size_t y = 0; y < srgb.ysize(); ++y) {
-        const int16_t* const PIK_RESTRICT row_from = srgb.GetAlpha().Row(y);
-        float* const PIK_RESTRICT row_to = linear_rgb_->GetAlpha().Row(y);
-        for (size_t x = 0; x < srgb.xsize(); ++x) {
-          row_to[x] = (static_cast<uint16_t>(row_from[x] / 257.0f));
-        }
-      }
-    }
+    linear_rgb_->CopyAlpha(srgb);
   }
 
   // From linear float (zero-copy)
@@ -1576,6 +1570,41 @@ Image3F ReadImage3Linear(const std::string& pathname) {
     PIK_NOTIFY_ERROR("Alpha channel not supported");
   }
   return std::move(meta.GetColor());
+}
+
+template <class ImageT>
+class LinearWriter {
+ public:
+  LinearWriter(const ImageT* linear, const std::string& pathname)
+      : linear_(linear), pathname_(pathname) {}
+
+  template <class Format>
+  bool operator()(const Format format) {
+    if (!Format::IsExtension(pathname_.c_str())) {
+      return false;
+    }
+
+    WriteImage(Format(), Srgb8FromLinear(*linear_), pathname_);
+    return true;
+  }
+
+ private:
+  const ImageT* const linear_;
+  const std::string pathname_;
+};
+
+void WriteImageLinear(const ImageF& linear, const std::string& pathname) {
+  LinearWriter<ImageF> writer(&linear, pathname);
+  if (!VisitFormats(&writer)) {
+    PIK_NOTIFY_ERROR("Unsupported image extension");
+  }
+}
+
+void WriteImageLinear(const Image3F& linear, const std::string& pathname) {
+  LinearWriter<Image3F> writer(&linear, pathname);
+  if (!VisitFormats(&writer)) {
+    PIK_NOTIFY_ERROR("Unsupported image extension");
+  }
 }
 
 template bool ReadImage<uint8_t>(ImageFormatPlanes, const std::string&,

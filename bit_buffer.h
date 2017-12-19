@@ -41,7 +41,7 @@ namespace SIMD_NAMESPACE {
 
 // Accumulates variable-sized codes and writes them to memory in 32-bit units.
 class BitSink {
-  static const Part<uint64_t, 1, SIMD_TARGET> d;
+  static const Part<uint64_t, 1> d;
 
  public:
   // There are 32 lower bits to fill before reaching the upper bits.
@@ -135,14 +135,14 @@ class BitSink {
   }
 
  private:
-  Part<uint64_t, 1, SIMD_TARGET>::V buffer_;
+  Part<uint64_t, 1>::V buffer_;
   int upper_bits_used_;
   uint8_t* PIK_RESTRICT write_pos_;
 };
 
 // Reads from memory in 64 or 32-bit units and extracts variable-size codes.
 class BitSource {
-  static const Part<uint64_t, 1, SIMD_TARGET> d;
+  static const Part<uint64_t, 1> d;
 
  public:
   // Reads exactly 64 bits.
@@ -199,7 +199,7 @@ class BitSource {
   }
 
  private:
-  Part<uint64_t, 1, SIMD_TARGET>::V buffer_;
+  Part<uint64_t, 1>::V buffer_;
   int lower_bits_extracted_;
   const uint8_t* PIK_RESTRICT read_pos_;
 };

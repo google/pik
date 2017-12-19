@@ -72,20 +72,25 @@ class CacheAligned {
   template <typename T>
   static void StreamCacheLine(const T* PIK_RESTRICT from, T* PIK_RESTRICT to) {
     static_assert(16 % sizeof(T) == 0, "T must fit in a lane");
-    const SIMD_NAMESPACE::Part<T, 16 / sizeof(T), SIMD_TARGET> d;
+#if SIMD_TARGET_VALUE != SIMD_NONE
+    constexpr size_t kLanes = 16 / sizeof(T);
+    const SIMD_NAMESPACE::Part<T, kLanes> d;
     PIK_COMPILER_FENCE;
-    const auto v0 = load(d, from + 0);
-    const auto v1 = load(d, from + 1);
-    const auto v2 = load(d, from + 2);
-    const auto v3 = load(d, from + 3);
+    const auto v0 = load(d, from + 0 * kLanes);
+    const auto v1 = load(d, from + 1 * kLanes);
+    const auto v2 = load(d, from + 2 * kLanes);
+    const auto v3 = load(d, from + 3 * kLanes);
     // Fences prevent the compiler from reordering loads/stores, which may
     // interfere with write-combining.
     PIK_COMPILER_FENCE;
-    stream(to + 0, d, v0);
-    stream(to + 1, d, v1);
-    stream(to + 2, d, v2);
-    stream(to + 3, d, v3);
+    stream(v0, d, to + 0 * kLanes);
+    stream(v1, d, to + 1 * kLanes);
+    stream(v2, d, to + 2 * kLanes);
+    stream(v3, d, to + 3 * kLanes);
     PIK_COMPILER_FENCE;
+#else
+    memcpy(to, from, kCacheLineSize);
+#endif
   }
 };
 

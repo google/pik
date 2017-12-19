@@ -74,9 +74,26 @@ PIK_INLINE void WriteBits(size_t n_bits, uint64_t bits, size_t *__restrict pos,
 #endif
 }
 
+PIK_INLINE void WriteZeroesToByteBoundary(size_t *__restrict pos,
+                                          uint8_t *__restrict array) {
+  const size_t nbits = ((*pos + 7) & ~7) - *pos;
+  WriteBits(nbits, 0, pos, array);
+  PIK_ASSERT(*pos % 8 == 0);
+}
+
 PIK_INLINE void WriteBitsPrepareStorage(size_t pos, uint8_t *array) {
   PIK_ASSERT((pos & 7) == 0);
   array[pos >> 3] = 0;
+}
+
+PIK_INLINE void RewindStorage(const size_t pos0,
+                              size_t *__restrict pos,
+                              uint8_t *__restrict array) {
+  PIK_ASSERT(pos0 <= *pos);
+  *pos = pos0;
+  static const uint8_t kRewindMasks[8] = { 0x0, 0x1, 0x3, 0x7,
+                                           0xf, 0x1f, 0x3f, 0x7f };
+  array[pos0 >> 3] &= kRewindMasks[pos0 & 7];
 }
 
 class BitWriter {

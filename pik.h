@@ -38,7 +38,7 @@ bool PixelsToPik(const CompressParams& params, const Image3F& linear,
                  PaddedBytes* compressed, PikInfo* aux_out);
 
 // The input image is an opsin dynamics image.
-bool OpsinToPik(const CompressParams& params, const Image3F& opsin,
+bool OpsinToPik(const CompressParams& params, const MetaImageF& opsin,
                 PaddedBytes* compressed, PikInfo* aux_out);
 
 

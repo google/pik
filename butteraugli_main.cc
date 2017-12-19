@@ -14,13 +14,13 @@ int main(int argc, char** argv) {
     return PrintArgHelp(argc, argv);
   }
 
-  pik::Image3F a = pik::ReadImage3Linear(argv[1]);
+  pik::MetaImageF a = pik::ReadMetaImageLinear(argv[1]);
   if (a.xsize() == 0) {
     fprintf(stderr, "Failed to read image from %s\n", argv[1]);
     return 1;
   }
 
-  pik::Image3F b = pik::ReadImage3Linear(argv[2]);
+  pik::MetaImageF b = pik::ReadMetaImageLinear(argv[2]);
   if (b.xsize() == 0) {
     fprintf(stderr, "Failed to read image from %s\n", argv[2]);
     return 1;

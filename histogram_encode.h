@@ -71,7 +71,7 @@ static const int kMaxNumSymbolsForSmallCode = 4;
 // Each count will all be rounded to multiples of
 // 1 << GetPopulationCountPrecision(count), except possibly for one. The index
 // of that count will be stored in *omit_pos.
-void NormalizeCounts(int* counts,
+bool NormalizeCounts(int* counts,
                      int* omit_pos,
                      const int length,
                      const int precision_bits,
@@ -92,6 +92,11 @@ void EncodeCounts(const int* counts,
                   const int* symbols,
                   size_t* storage_ix,
                   uint8_t* storage);
+
+// Stores the flat histogram created by CreateFlatHistogram() to the bit-stream.
+void EncodeFlatHistogram(const int alphabet_size,
+                         size_t* storage_ix,
+                         uint8_t* storage);
 
 }  // namespace pik
 

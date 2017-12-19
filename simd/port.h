@@ -28,14 +28,20 @@
 #define SIMD_LIKELY(expr) expr
 #define SIMD_TRAP __debugbreak
 #define SIMD_TARGET_ATTR(feature_str)
+#define SIMD_DIAGNOSTICS(tokens) __pragma(warning(tokens))
+#define SIMD_DIAGNOSTICS_OFF(msc, gcc) SIMD_DIAGNOSTICS(msc)
 
 #elif defined(__GNUC__) || defined(__clang__)
 #define SIMD_RESTRICT __restrict__
-#define SIMD_INLINE inline __attribute__((always_inline))
+#define SIMD_INLINE \
+  inline __attribute__((always_inline)) __attribute__((flatten))
 #define SIMD_NOINLINE inline __attribute__((noinline))
 #define SIMD_LIKELY(expr) __builtin_expect(!!(expr), 1)
 #define SIMD_TRAP __builtin_trap
 #define SIMD_TARGET_ATTR(feature_str) __attribute__((target(feature_str)))
+#define SIMD_PRAGMA(tokens) _Pragma (#tokens)
+#define SIMD_DIAGNOSTICS(tokens) SIMD_PRAGMA(GCC diagnostic tokens)
+#define SIMD_DIAGNOSTICS_OFF(msc, gcc) SIMD_DIAGNOSTICS(gcc)
 
 #else
 #error "Unsupported compiler"

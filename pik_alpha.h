@@ -24,21 +24,12 @@
 namespace pik {
 
 bool AlphaToPik(const CompressParams& params,
-    const ImageB& plane, size_t* bytepos, PaddedBytes* compressed);
-bool AlphaToPik(const CompressParams& params,
-    const ImageF& plane, size_t* bytepos, PaddedBytes* compressed);
-bool AlphaToPik(const CompressParams& params,
-    const ImageU& plane, size_t* bytepos, PaddedBytes* compressed);
+                const ImageU& plane, int bit_depth,
+                size_t* bytepos, PaddedBytes* compressed);
 
 bool PikToAlpha(const DecompressParams& params,
                 size_t bytepos, const PaddedBytes& compressed,
-                size_t* bytes_read, ImageB* plane);
-bool PikToAlpha(const DecompressParams& params,
-                size_t bytepos, const PaddedBytes& compressed,
-                size_t* bytes_read, ImageF* plane);
-bool PikToAlpha(const DecompressParams& params,
-                size_t bytepos, const PaddedBytes& compressed,
-                size_t* bytes_read, ImageU* plane);
+                size_t* bytes_read, int* bit_depth, ImageU* plane);
 
 }  // namespace pik
 

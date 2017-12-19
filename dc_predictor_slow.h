@@ -171,6 +171,46 @@ V MinCostPredict(const V* const PIK_RESTRICT dc, size_t x, size_t y,
              : MinCostPrediction<typename Predictors<V>::Y>(
                    dc, x, y, xsize, neg_col_stride, neg_row_stride);
 }
+
+// Drop-in replacements for dc_predictor functions
+template <typename DC>
+void SlowShrinkY(const Image<DC>& dc, Image<DC>* const PIK_RESTRICT residuals) {
+  const size_t xsize = dc.xsize();
+  const size_t ysize = dc.ysize();
+  for (size_t y = 0; y < ysize; y++) {
+    const DC* const PIK_RESTRICT row = dc.Row(y);
+    DC* const PIK_RESTRICT row_out = residuals->Row(y);
+    for (size_t x = 0; x < xsize; x++) {
+      DC pred = MinCostPredict(&row[x], x, y, xsize, -1,
+                               -dc.bytes_per_row() / sizeof(DC), false, 0);
+      row_out[x] = row[x] - pred;
+    }
+  }
+}
+
+template <typename DC>
+void SlowShrinkUV(const Image<DC>& dc_y, const Image<DC>& dc,
+                  Image<DC>* const PIK_RESTRICT residuals) {
+  // WARNING: dc and residuals have twice the xsize.
+  const size_t xsize = dc_y.xsize();
+  const size_t ysize = dc_y.ysize();
+  for (size_t y = 0; y < ysize; y++) {
+    const DC* const PIK_RESTRICT row = dc.Row(y);
+    const DC* const PIK_RESTRICT row_y = dc_y.Row(y);
+    DC* const PIK_RESTRICT row_out = residuals->Row(y);
+    for (size_t x = 0; x < xsize; x++) {
+      int predictor = GetUVPredictor(&row_y[x], x, y, xsize, -1,
+                                     -dc_y.bytes_per_row() / sizeof(DC));
+      for (int i = 0; i < 2; i++) {
+        DC pred =
+            MinCostPredict(&row[2 * x + i], x, y, xsize, -2,
+                           -dc.bytes_per_row() / sizeof(DC), true, predictor);
+        row_out[2 * x + i] = row[2 * x + i] - pred;
+      }
+    }
+  }
+}
+
 }  // namespace pik
 
 #endif  // DC_PREDICTOR_SLOW_H_

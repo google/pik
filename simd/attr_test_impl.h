@@ -4,7 +4,7 @@
 // Generic implementation, "instantiated" for all supported instruction sets.
 template <>
 SIMD_ATTR SIMD_NOINLINE void AttrTest::operator()<SIMD_TARGET>() {
-  const Full<int32_t, SIMD_TARGET> d;
+  const SIMD_FULL(int32_t) d;
   SIMD_ALIGN int32_t lanes[d.N];
   std::iota(lanes, lanes + d.N, 1);
   auto v = load(d, lanes);
@@ -16,7 +16,7 @@ SIMD_ATTR SIMD_NOINLINE void AttrTest::operator()<SIMD_TARGET>() {
       abort();
     }
   }
-  printf("OK: %s\n", vec_name<Full<uint8_t, SIMD_TARGET>>());
+  printf("OK: %s\n", vec_name<SIMD_FULL(uint8_t)>());
 }
 
 #endif

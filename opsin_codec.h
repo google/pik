@@ -26,6 +26,7 @@
 #include <utility>
 #include <vector>
 
+#include "ans_decode.h"
 #include "ans_encode.h"
 #include "bit_reader.h"
 #include "cluster.h"
@@ -34,6 +35,7 @@
 #include "context_map_encode.h"
 #include "fast_log.h"
 #include "histogram_encode.h"
+#include "huffman_decode.h"
 #include "image.h"
 #include "lehmer_code.h"
 #include "pik_info.h"
@@ -78,7 +80,7 @@ void VisitCoefficient(int coeff, int histo_idx, Visitor* visitor) {
   int nbits, bits;
   EncodeCoeff(coeff, &nbits, &bits);
   visitor->VisitSymbol(nbits, histo_idx);
-  visitor->VisitBits(nbits, bits);
+  visitor->VisitBits(nbits, bits, histo_idx);
 }
 
 class CoeffProcessor {
@@ -88,9 +90,6 @@ class CoeffProcessor {
   void Reset() {}
   int block_size() const { return stride_; }
   static int num_contexts() { return 3; }
-
-  template <class Visitor>
-  void ProcessHeader(Visitor* visitor) {}
 
   template <class Visitor>
   void ProcessBlock(const int16_t* coeffs, int x, int y, int c,
@@ -146,72 +145,31 @@ void VisitACSymbol(int runlen, int nbits, int histo_idx, Visitor* visitor) {
   visitor->VisitSymbol(symbol, histo_idx);
 }
 
+inline int NumNonZerosContext(int x, int y, uint8_t* prev) {
+  // *prev is updated after context is computed, so prev[0] is for top-block,
+  // prev[-3] is for previous block.
+  return x > 0 ? (prev[0] + prev[-3]) >> 2 : prev[0] >> 1;
+}
+
+static const int kOrderContexts = 6;
+
 class ACBlockProcessor {
  public:
-  ACBlockProcessor() {
+  ACBlockProcessor(const Image3B* block_ctx, int xsize)
+      : block_ctx_(*block_ctx), xsize_(xsize) {
     Reset();
-    for (int c = 0; c < 3; ++c) {
+    for (int c = 0; c < kOrderContexts; ++c) {
       memcpy(&order_[c * 64], kNaturalCoeffOrder, 64 * sizeof(order_[0]));
     }
   }
   void Reset() {
-    prev_num_nzeros_[0] = prev_num_nzeros_[1] = prev_num_nzeros_[2] = 0;
+    prev_num_nzeros_ = std::vector<uint8_t>(3 * (xsize_ >> 6));
   }
   int block_size() const { return 64; }
-  static int num_contexts() { return 408; }
+  static int num_contexts() { return kOrderContexts * (32 + 120); }
 
-  void SetCoeffOrder(int order[192]) {
+  void SetCoeffOrder(int order[kOrderContexts * 64]) {
     memcpy(order_, order, sizeof(order_));
-  }
-
-  template <class Visitor>
-  void ProcessHeader(Visitor* visitor) {
-    const int kJPEGZigZagOrder[64] = {
-      0,   1,  5,  6, 14, 15, 27, 28,
-      2,   4,  7, 13, 16, 26, 29, 42,
-      3,   8, 12, 17, 25, 30, 41, 43,
-      9,  11, 18, 24, 31, 40, 44, 53,
-      10, 19, 23, 32, 39, 45, 52, 54,
-      20, 22, 33, 38, 46, 51, 55, 60,
-      21, 34, 37, 47, 50, 56, 59, 61,
-      35, 36, 48, 49, 57, 58, 62, 63
-    };
-    for (int c = 0; c < 3; ++c) {
-      int order_zigzag[64];
-      for (int i = 0; i < 64; ++i) {
-        order_zigzag[i] = kJPEGZigZagOrder[order_[c * 64 + i]];
-      }
-      int lehmer[64];
-      ComputeLehmerCode(order_zigzag, 64, lehmer);
-      int end = 63;
-      while (end >= 1 && lehmer[end] == 0) {
-        --end;
-      }
-      for (int i = 1; i <= end; ++i) {
-        ++lehmer[i];
-      }
-      static const int kSpan = 16;
-      for (int i = 0; i < 64; i += kSpan) {
-        const int start = (i > 0) ? i : 1;
-        const int end = i + kSpan;
-        int has_non_zero = 0;
-        for (int j = start; j < end; ++j) has_non_zero |= lehmer[j];
-        if (!has_non_zero) {   // all zero in the span -> escape
-          visitor->VisitBits(1, 0);
-          continue;
-        } else {
-          visitor->VisitBits(1, 1);
-        }
-        for (int j = start; j < end; ++j) {
-          int v;
-          PIK_ASSERT(lehmer[j] <= 64);
-          for (v = lehmer[j]; v >= 7; v -= 7) {
-            visitor->VisitBits(3, 7);
-          }
-          visitor->VisitBits(3, v);
-        }
-      }
-    }
   }
 
   template <class Visitor>
@@ -221,23 +179,26 @@ class ACBlockProcessor {
     for (int k = 1; k < block_size(); ++k) {
       if (coeffs[k] != 0) ++num_nzeros;
     }
-    if (x == 0) {
-      prev_num_nzeros_[c] = 0;
-    }
-    int context = c * 16 + (prev_num_nzeros_[c] >> 2);
+    const int ix = 3 * (x >> 6) + c;
+    const int block_ctx = block_ctx_.Row(y)[c][x >> 6];
+    int context = block_ctx * 32 +
+        NumNonZerosContext(x, y, &prev_num_nzeros_[ix]);
+    PIK_ASSERT(context < kOrderContexts * 32);
     visitor->VisitSymbol(num_nzeros, context);
-    prev_num_nzeros_[c] = num_nzeros;
+    prev_num_nzeros_[ix] = num_nzeros;
     if (num_nzeros == 0) return;
     // Run length of zero coefficients preceding the current non-zero symbol.
     int r = 0;
-    const int histo_offset = 48 + c * 120;
+    const int histo_offset = kOrderContexts * 32 + block_ctx * 120;
     int histo_idx = histo_offset + ZeroDensityContext(num_nzeros - 1, 0, 4);
+    const int order_offset = block_ctx * 64;
     for (int k = 1; k < block_size(); ++k) {
-      int16_t coeff = coeffs[order_[c * 64 + k]];
+      int16_t coeff = coeffs[order_[order_offset + k]];
       if (coeff == 0) {
         r++;
         continue;
       }
+      PIK_ASSERT(histo_idx < num_contexts());
       while (r > 15) {
         VisitACSymbol(15, 0, histo_idx, visitor);
         r -= 16;
@@ -245,7 +206,7 @@ class ACBlockProcessor {
       int nbits, bits;
       EncodeCoeff(coeff, &nbits, &bits);
       VisitACSymbol(r, nbits, histo_idx, visitor);
-      visitor->VisitBits(nbits, bits);
+      visitor->VisitBits(nbits, bits, c);
       r = 0;
       histo_idx = histo_offset + ZeroDensityContext(num_nzeros - 1, k, 4);
       --num_nzeros;
@@ -253,8 +214,10 @@ class ACBlockProcessor {
     PIK_CHECK(num_nzeros == 0);
   }
  private:
-  int order_[192];
-  int prev_num_nzeros_[3];
+  const Image3B& block_ctx_;
+  const int xsize_;
+  int order_[kOrderContexts * 64];
+  std::vector<uint8_t> prev_num_nzeros_;
 };
 
 template <typename T, class Processor, class Visitor>
@@ -262,7 +225,6 @@ void ProcessImage3(const Image3<T>& img,
                    Processor* processor,
                    Visitor* visitor) {
   processor->Reset();
-  processor->ProcessHeader(visitor);
   for (int y = 0; y < img.ysize(); ++y) {
     auto row = img.Row(y);
     for (int x = 0; x < img.xsize(); x += processor->block_size()) {
@@ -286,25 +248,35 @@ void ProcessImage(const Image<T>& img,
   }
 }
 
-inline double ShannonEntropy(const uint32_t* data, const size_t data_size) {
+inline double CrossEntropy(const uint32_t* counts, const size_t counts_len,
+                           const uint32_t* codes,  const size_t codes_len) {
   double sum = 0.0f;
   uint32_t total_count = 0;
-  for (int i = 0; i < data_size; ++i) {
-    if (data[i] > 0) {
-      sum -= data[i] * std::log2(data[i]);
-      total_count += data[i];
+  uint32_t total_codes = 0;
+  for (int i = 0; i < codes_len; ++i) {
+    if (codes[i] > 0) {
+      if (i < counts_len && counts[i] > 0) {
+        sum -= counts[i] * std::log2(codes[i]);
+        total_count += counts[i];
+      }
+      total_codes += codes[i];
     }
   }
-  if (total_count > 0) {
-    sum += total_count * std::log2(total_count);
+  if (total_codes > 0) {
+    sum += total_count * std::log2(total_codes);
   }
   return sum;
+}
+
+inline double ShannonEntropy(const uint32_t* data, const size_t data_size) {
+  return CrossEntropy(data, data_size, data, data_size);
 }
 
 class HistogramBuilder {
  public:
   explicit HistogramBuilder(const size_t num_contexts)
-      : weight_(1), num_extra_bits_(0), histograms_(num_contexts) {
+      : weight_(1), histograms_(num_contexts) {
+    num_extra_bits_[0] = num_extra_bits_[1] = num_extra_bits_[2] = 0;
   }
 
   void set_weight(int weight) { weight_ = weight; }
@@ -313,14 +285,15 @@ class HistogramBuilder {
     histograms_[histo_idx].Add(symbol, weight_);
   }
 
-  void VisitBits(size_t nbits, uint64_t bits) {
-    num_extra_bits_ += weight_ * nbits;
+  void VisitBits(size_t nbits, uint64_t bits, int c) {
+    num_extra_bits_[c] += weight_ * nbits;
   }
 
   template <class EntropyEncodingData>
   void BuildAndStoreEntropyCodes(std::vector<EntropyEncodingData>* codes,
                                  std::vector<uint8_t>* context_map,
                                  size_t* storage_ix, uint8_t* storage,
+                                 std::vector<double>* entropy_per_context,
                                  PikImageSizeInfo* info) const {
     std::vector<Histogram> clustered_histograms(histograms_);
     context_map->resize(histograms_.size());
@@ -341,6 +314,13 @@ class HistogramBuilder {
         info->clustered_entropy += clustered_histograms[i].ShannonEntropy();
       }
     }
+    if (entropy_per_context) {
+      entropy_per_context->resize(histograms_.size());
+      for (int i = 0; i < histograms_.size(); ++i) {
+        (*entropy_per_context)[i] = histograms_[i].CrossEntropy(
+            clustered_histograms[(*context_map)[i]]);
+      }
+    }
     for (int c = 0; c < clustered_histograms.size(); ++c) {
       EntropyEncodingData code;
       code.BuildAndStore(&clustered_histograms[c].data_[0],
@@ -351,7 +331,11 @@ class HistogramBuilder {
   }
 
   size_t EncodedSize(int lg2_histo_align, int lg2_data_align) const;
-  size_t num_extra_bits() const { return num_extra_bits_; }
+  size_t num_extra_bits() const {
+    return num_extra_bits_[0] + num_extra_bits_[1] + num_extra_bits_[2];
+  }
+
+  size_t num_extra_bits(int c) const { return num_extra_bits_[c]; }
 
  private:
   struct Histogram {
@@ -389,11 +373,17 @@ class HistogramBuilder {
     double ShannonEntropy() const {
       return pik::ShannonEntropy(data_.data(), data_.size());
     }
+    double CrossEntropy(const Histogram& coding_histo) const {
+      return pik::CrossEntropy(data_.data(), data_.size(),
+                               coding_histo.data_.data(),
+                               coding_histo.data_.size());
+    }
+
     std::vector<uint32_t> data_;
     uint32_t total_count_;
   };
   int weight_;
-  size_t num_extra_bits_;
+  size_t num_extra_bits_[3];
   std::vector<Histogram> histograms_;
 };
 
@@ -403,8 +393,10 @@ void UnpredictDC(Image3W* coeffs);
 std::string EncodeImage(const Image3W& img, int stride,
                         PikImageSizeInfo* info);
 
-std::string EncodeAC(const Image3W& coeffs, PikImageSizeInfo* info);
-std::string EncodeACFast(const Image3W& coeffs, PikImageSizeInfo* info);
+std::string EncodeAC(const Image3W& coeffs, const Image3B& block_ctx,
+                     PikInfo* pik_info);
+std::string EncodeACFast(const Image3W& coeffs, const Image3B& block_ctx,
+                         PikInfo* pik_info);
 
 size_t EncodedImageSize(const Image3W& img, int stride);
 
@@ -419,14 +411,31 @@ std::string EncodeNonZeroVals(const std::vector<Image3W>& absvals,
 
 bool DecodeImage(BitReader* br, int stride, Image3W* coeffs);
 
-bool DecodeAC(BitReader* br,Image3W* coeffs);
+bool DecodeAC(const Image3B& block_ctx, BitReader* br,Image3W* coeffs);
 
-std::string EncodePlane(const Image<int>& img, int minval, int maxval,
-                        PikImageSizeInfo* info);
+struct EncodedIntPlane {
+  std::string preamble;
+  std::vector<std::vector<std::string>> tiles;
+};
 
-size_t EncodedPlaneSize(const Image<int>& img, int minval, int maxval);
+EncodedIntPlane EncodePlane(const Image<int>& img, int minval, int maxval,
+                            int tile_size, PikImageSizeInfo* info);
 
-bool DecodePlane(BitReader* br, int minval, int maxval, Image<int>* img);
+class IntPlaneDecoder {
+ public:
+  IntPlaneDecoder(int minval, int maxval, int tile_size)
+      : minval_(minval), maxval_(maxval), tile_size_(tile_size) {}
+  bool LoadPreamble(BitReader* br);
+  bool DecodeTile(BitReader* br, Image<int>* img);
+
+ private:
+  bool ready_ = false;
+  int minval_;
+  int maxval_;
+  int tile_size_;
+  std::vector<uint8_t> context_map_;
+  ANSCode ans_code_;
+};
 
 }  // namespace pik
 

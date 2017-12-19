@@ -42,16 +42,16 @@ namespace SIMD_NAMESPACE {
 // (e.g. SSE4), defaulting to the best available. The return type D::V is either
 // a full vector of at least 128 bits, an N-lane (=2^j) part, or a scalar.
 
-// Specialized in platform-specific headers; see Desc::V and Dup128.
+// Specialized in platform-specific headers; see Desc::V.
 template <typename T, size_t N, class Target>
 struct VecT;
-template <typename T, class Target>
-struct Dup128T;
 
 // Descriptor: properties that uniquely identify a vector/part/scalar. Used to
 // select overloaded functions; see Full/Part/Scalar aliases below.
 template <typename LaneT, size_t kLanes, class TargetT>
 struct Desc {
+  Desc() {}
+
   using T = LaneT;
   static constexpr size_t N = kLanes;
   using Target = TargetT;
@@ -62,21 +62,32 @@ struct Desc {
   // parts are merely aliases for full vectors to avoid wrapper overhead.
   using V = typename VecT<T, N, Target>::type;
 
-  // Alias for a full vector whose 128-bit block(s) are all equal.
-  using Dup128 = typename Dup128T<T, Target>::type;
-
   static_assert((N & (N - 1)) == 0, "N must be a power of two");
   static_assert(N <= Target::template NumLanes<T>(), "N too large");
 };
 
+// Avoid having to specify SIMD_TARGET in every Part<>/Full<>. Option 1: macro,
+// required in attr mode, where we want a different default target for each
+// expansion of target-specific code (via foreach_target.h's includes).
+#define SIMD_FULL(T) Full<T, SIMD_TARGET>
+#define SIMD_PART(T, N) Part<T, N, SIMD_TARGET>
+
+#if SIMD_USE_ATTR
+#define SIMD_DEFAULT_TARGET
+#else
+// Option 2 (normal mode): default argument; sufficient because this entire
+// header is included from each target-specific translation unit.
+#define SIMD_DEFAULT_TARGET = SIMD_TARGET
+#endif
+
 // Shorthand for a full vector.
-template <typename T, class Target>
+template <typename T, class Target SIMD_DEFAULT_TARGET>
 using Full = Desc<T, Target::template NumLanes<T>(), Target>;
 
 // Shorthand for a part (or full) vector. N=2^j. Note that PartTarget selects
 // a 128-bit Target when T and N are small enough (avoids additional AVX2
 // versions of SSE4 initializers/loads).
-template <typename T, size_t N, class Target>
+template <typename T, size_t N, class Target SIMD_DEFAULT_TARGET>
 using Part = Desc<T, N, PartTarget<T, N, Target>>;
 
 // Shorthand for a scalar; note that scalar<T> is the actual data class.

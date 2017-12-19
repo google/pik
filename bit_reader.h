@@ -57,14 +57,18 @@ class BitReader {
   template<int N>
   int PeekFixedBits() const {
     static_assert(N <= 30, "At most 30 bits may be read.");
+    PIK_ASSERT(N + bit_pos_ <= 64);
     return (val_ >> bit_pos_) & ((1 << N) - 1);
   }
 
   int PeekBits(int nbits) const {
+    PIK_ASSERT(nbits <= 30);
+    PIK_ASSERT(nbits + bit_pos_ <= 64);
     return (val_ >> bit_pos_) & ((1 << nbits) - 1);
   }
 
   int ReadBits(int nbits) {
+    PIK_ASSERT(nbits <= 30);
     FillBitBuffer();
     int bits = PeekBits(nbits);
     bit_pos_ += nbits;

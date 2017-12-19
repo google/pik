@@ -31,16 +31,6 @@ struct raw_sse4<double> {
   using type = __m128d;
 };
 
-// All 128-bit blocks equal; returned from load_dup128.
-template <typename T>
-struct dup128x1 {
-  using Raw = typename raw_sse4<T>::type;
-
-  explicit dup128x1(const Raw raw) : raw(raw) {}
-
-  Raw raw;
-};
-
 // Returned by set_shift_*_count, also used by AVX2; do not use directly.
 template <typename T, size_t N>
 struct shift_left_count {
@@ -92,11 +82,6 @@ class vec_sse4 {
 template <typename T, size_t N>
 struct VecT<T, N, SSE4> {
   using type = vec_sse4<T, N>;
-};
-
-template <typename T>
-struct Dup128T<T, SSE4> {
-  using type = dup128x1<T>;
 };
 
 using u8x16 = vec_sse4<uint8_t, 16>;
@@ -247,6 +232,41 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, N> iota(Desc<T, N, SSE4> d,
   }
   return load(d, lanes);
 }
+
+SIMD_DIAGNOSTICS(push)
+SIMD_DIAGNOSTICS_OFF(disable : 4701, ignored "-Wuninitialized")
+
+// Returns a vector with uninitialized elements.
+template <typename T, size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, N> undefined(Desc<T, N, SSE4>) {
+#ifdef __clang__
+  return vec_sse4<T, N>(_mm_undefined_si128());
+#else
+  __m128i raw;
+  return vec_sse4<T, N>(raw);
+#endif
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> undefined(Desc<float, N, SSE4>) {
+#ifdef __clang__
+  return vec_sse4<float, N>(_mm_undefined_ps());
+#else
+  __m128 raw;
+  return vec_sse4<float, N>(raw);
+#endif
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, N> undefined(
+    Desc<double, N, SSE4>) {
+#ifdef __clang__
+  return vec_sse4<double, N>(_mm_undefined_pd());
+#else
+  __m128d raw;
+  return vec_sse4<double, N>(raw);
+#endif
+}
+
+SIMD_DIAGNOSTICS(pop)
 
 // ================================================== ARITHMETIC
 
@@ -773,6 +793,11 @@ namespace ext {
 
 // Returns the upper 16 bits of a * b in each lane.
 template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint16_t, N> mulhi(
+    const vec_sse4<uint16_t, N> a, const vec_sse4<uint16_t, N> b) {
+  return vec_sse4<uint16_t, N>(_mm_mulhi_epu16(a.raw, b.raw));
+}
+template <size_t N>
 SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int16_t, N> mulhi(
     const vec_sse4<int16_t, N> a, const vec_sse4<int16_t, N> b) {
   return vec_sse4<int16_t, N>(_mm_mulhi_epi16(a.raw, b.raw));
@@ -1219,8 +1244,16 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, N> operator^(
 
 // ------------------------------ Select/blend
 
-// Returns mask ? b : a. Due to ARM's semantics, each lane of "mask" must
-// equal T(0) or ~T(0) although x86 may only check the most significant bit.
+// Returns a mask for use by select().
+// blendv_ps/pd only check the sign bit, so this is a no-op on x86.
+template <typename T, size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, N> selector_from_sign(
+    const vec_sse4<T, N> v) {
+  return v;
+}
+
+// Returns mask ? b : a. "mask" must either have been returned by
+// selector_from_mask, or callers must ensure its lanes are T(0) or ~T(0).
 template <typename T, size_t N>
 SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, N> select(const vec_sse4<T, N> a,
                                                  const vec_sse4<T, N> b,
@@ -1312,9 +1345,9 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, 1> load<float>(
 
 // 128-bit SIMD => nothing to duplicate, same as an unaligned load.
 template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE dup128x1<T> load_dup128(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> load_dup128(
     Full<T, SSE4> d, const T* const SIMD_RESTRICT p) {
-  return dup128x1<T>(load_unaligned(d, p).raw);
+  return load_unaligned(d, p);
 }
 
 // ------------------------------ Store
@@ -1338,12 +1371,6 @@ SIMD_ATTR_SSE4 SIMD_INLINE void store<double>(const vec_sse4<double> v,
 }
 
 template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE void store(const dup128x1<T> v, Full<T, SSE4> d,
-                                      T* SIMD_RESTRICT aligned) {
-  store(vec_sse4<T>(v.raw), d, aligned);
-}
-
-template <typename T>
 SIMD_ATTR_SSE4 SIMD_INLINE void store_unaligned(const vec_sse4<T> v,
                                                 Full<T, SSE4>,
                                                 T* SIMD_RESTRICT p) {
@@ -1359,13 +1386,6 @@ template <>
 SIMD_ATTR_SSE4 SIMD_INLINE void store_unaligned<double>(
     const vec_sse4<double> v, Full<double, SSE4>, double* SIMD_RESTRICT p) {
   _mm_storeu_pd(p, v.raw);
-}
-
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE void store_unaligned(const dup128x1<T> v,
-                                                Full<T, SSE4> d,
-                                                T* SIMD_RESTRICT p) {
-  store_unaligned(vec_sse4<T>(v.raw), d, p);
 }
 
 template <typename T>
@@ -1457,6 +1477,11 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int32_t> convert_to(
 SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint64_t> convert_to(
     Full<uint64_t, SSE4>, const vec_sse4<uint32_t, 2> v) {
   return vec_sse4<uint64_t>(_mm_cvtepu32_epi64(v.raw));
+}
+
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint32_t> u32_from_u8(
+    const vec_sse4<uint8_t> v) {
+  return vec_sse4<uint32_t>(_mm_cvtepu8_epi32(v.raw));
 }
 
 // Signed: replicate sign bit.
@@ -1975,8 +2000,8 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, 1> other_half(
 
 // Single block => already broadcasted/interleaved.
 template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE dup128x1<T> broadcast_block(const vec_sse4<T> v) {
-  return dup128x1<T>(v.raw);
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> broadcast_block(const vec_sse4<T> v) {
+  return v;
 }
 
 // hiH,hiL loH,loL |-> hiL,loL (= lower halves)
@@ -2019,6 +2044,55 @@ template <>
 SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double> concat_hi_lo(
     const vec_sse4<double> hi, const vec_sse4<double> lo) {
   return vec_sse4<double>(_mm_blend_pd(hi.raw, lo.raw, 1));
+}
+
+// ------------------------------ Odd/even lanes
+
+template <typename T>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> odd_even_impl(char (&sizeof_t)[1],
+                                                     const vec_sse4<T> a,
+                                                     const vec_sse4<T> b) {
+  const Full<T, SSE4> d;
+  const Full<uint8_t, SSE4> d8;
+  SIMD_ALIGN constexpr uint8_t mask[16] = {0xFF, 0, 0xFF, 0, 0xFF, 0, 0xFF, 0,
+                                           0xFF, 0, 0xFF, 0, 0xFF, 0, 0xFF, 0};
+  return select(a, b, cast_to(d, load(d8, mask)));
+}
+template <typename T>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> odd_even_impl(char (&sizeof_t)[2],
+                                                     const vec_sse4<T> a,
+                                                     const vec_sse4<T> b) {
+  return vec_sse4<T>(_mm_blend_epi16(a.raw, b.raw, 0x55));
+}
+template <typename T>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> odd_even_impl(char (&sizeof_t)[4],
+                                                     const vec_sse4<T> a,
+                                                     const vec_sse4<T> b) {
+  return vec_sse4<T>(_mm_blend_epi16(a.raw, b.raw, 0x33));
+}
+template <typename T>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> odd_even_impl(char (&sizeof_t)[8],
+                                                     const vec_sse4<T> a,
+                                                     const vec_sse4<T> b) {
+  return vec_sse4<T>(_mm_blend_epi16(a.raw, b.raw, 0x0F));
+}
+
+template <typename T>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> odd_even(const vec_sse4<T> a,
+                                                const vec_sse4<T> b) {
+  char sizeof_t[sizeof(T)];
+  return odd_even_impl(sizeof_t, a, b);
+}
+template <>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float> odd_even<float>(
+    const vec_sse4<float> a, const vec_sse4<float> b) {
+  return vec_sse4<float>(_mm_blend_ps(a.raw, b.raw, 5));
+}
+
+template <>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double> odd_even<double>(
+    const vec_sse4<double> a, const vec_sse4<double> b) {
+  return vec_sse4<double>(_mm_blend_pd(a.raw, b.raw, 1));
 }
 
 // ================================================== MISC

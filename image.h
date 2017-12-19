@@ -548,6 +548,46 @@ Image<T> ImageFromPacked(const std::vector<T>& packed, const size_t xsize,
 ImageB ImageFromPacked(const uint8_t* packed, const size_t xsize,
                        const size_t ysize, const size_t bytes_per_row);
 
+// Currently, we abuse Image to either refer to an image that owns its storage
+// or one that doesn't. In similar vein, we abuse Image* function parameters to
+// either mean "assign to me" or "fill the provided image with data".
+// Hopefully, the "assign to me" meaning will go away and most images in the Pik
+// codebase will not be backed by own storage. When this happens we can redesign
+// Image to be a non-storage-holding view class and introduce BackedImage in
+// those places that actually need it.
+// TODO(user): Introduce the distinction between image view and image when
+// most of Pik wants image views.
+
+template <typename T>
+Image<T> Window(Image<T>* from, size_t x, size_t y, size_t xsize,
+                size_t ysize) {
+  xsize = std::min<size_t>(xsize, from->xsize() - x);
+  ysize = std::min<size_t>(ysize, from->ysize() - y);
+  return Image<T>(xsize, ysize, reinterpret_cast<uint8_t*>(from->Row(y) + x),
+                  from->bytes_per_row());
+}
+
+template <typename T>
+class ConstWrapper {
+ public:
+  explicit ConstWrapper(T value) : value_(std::move(value)) {}
+
+  const T& get() { return value_; }
+
+ private:
+  T value_;
+};
+
+template <typename T>
+ConstWrapper<Image<T>> ConstWindow(const Image<T>& from, size_t x, size_t y,
+                                   size_t xsize, size_t ysize) {
+  xsize = std::min<size_t>(xsize, from.xsize() - x);
+  ysize = std::min<size_t>(ysize, from.ysize() - y);
+  return ConstWrapper<Image<T>>(Image<T>(
+      xsize, ysize, reinterpret_cast<uint8_t*>(const_cast<T*>(from.Row(y) + x)),
+      from.bytes_per_row()));
+}
+
 // A bundle of 3 images of same size.
 template <typename ComponentType>
 class Image3 {
@@ -675,7 +715,7 @@ class MetaImage {
   }
 
   void SetColor(Image3<T>&& color) {
-    if (has_alpha_) {
+    if (alpha_bit_depth_ > 0) {
       PIK_CHECK(color.xsize() == alpha_.xsize());
       PIK_CHECK(color.ysize() == alpha_.ysize());
     }
@@ -685,43 +725,60 @@ class MetaImage {
   PIK_INLINE size_t xsize() const { return color_.xsize(); }
   PIK_INLINE size_t ysize() const { return color_.ysize(); }
 
-  void AddAlpha() {
-    PIK_CHECK(!has_alpha_);
-    has_alpha_ = true;
-    alpha_ = Plane(color_.xsize(), color_.ysize(), GetOpaqueValue());
+  void AddAlpha(int bit_depth) {
+    PIK_CHECK(alpha_bit_depth_ == 0);
+    PIK_CHECK(bit_depth == 8 || bit_depth == 16);
+    alpha_bit_depth_ = bit_depth;
+    alpha_ = ImageU(color_.xsize(), color_.ysize(), 0xffff >> (16 - bit_depth));
   }
 
-  void SetAlpha(Image<T>&& alpha) {
+  void SetAlpha(ImageU&& alpha, int bit_depth) {
     PIK_CHECK(alpha.xsize() == color_.xsize());
     PIK_CHECK(alpha.ysize() == color_.ysize());
-    has_alpha_ = true;
+    PIK_CHECK(bit_depth == 8 || bit_depth == 16);
+    alpha_bit_depth_ = bit_depth;
     alpha_ = std::move(alpha);
+    for (int y = 0; y < alpha_.xsize(); ++y) {
+      for (int x = 0; x < alpha_.xsize(); ++x) {
+        PIK_CHECK(alpha_.Row(y)[x] <= (0xffff >> (16 - bit_depth)));
+      }
+    }
+  }
+
+  template<typename T>
+  void CopyAlpha(const MetaImage<T>& other) {
+    if (other.HasAlpha()) {
+      SetAlpha(CopyImage(other.GetAlpha()), other.AlphaBitDepth());
+    }
   }
 
   bool HasAlpha() const {
-    return has_alpha_;
+    return alpha_bit_depth_ > 0;
   }
 
-  Image<T>& GetAlpha() {
+  int AlphaBitDepth() const {
+    return alpha_bit_depth_;
+  }
+
+  ImageU& GetAlpha() {
     return alpha_;
   }
 
-  const Image<T>& GetAlpha() const {
+  const ImageU& GetAlpha() const {
     return alpha_;
   }
 
-  static T GetOpaqueValue() { return GetOpaqueValue(T(0)); }
+  void ShrinkTo(const size_t xsize, const size_t ysize) {
+    color_.ShrinkTo(xsize, ysize);
+    if (alpha_bit_depth_ > 0) {
+      alpha_.ShrinkTo(xsize, ysize);
+    }
+  }
 
  private:
-  static uint8_t GetOpaqueValue(uint8_t type) { return 255; }
-  static uint16_t GetOpaqueValue(uint16_t type) { return 65535; }
-  static int16_t GetOpaqueValue(int16_t type) { return -1; }
-  static float GetOpaqueValue(float type) { return 255.0f; }
-  static double GetOpaqueValue(double type) { return 255.0; }
-
   Image3<T> color_;
-  bool has_alpha_ = false;
-  Image<T> alpha_;
+  int alpha_bit_depth_ = 0;
+  ImageU alpha_;
 };
 
 using MetaImageB = MetaImage<uint8_t>;
@@ -999,6 +1056,32 @@ Image3<T> ExpandAndCopyBorders(const Image3<T>& img, const size_t xres,
     }
   }
   return out;
+}
+
+template <typename T>
+Image3<T> Window(Image3<T>* from, size_t x, size_t y, size_t xsize,
+                 size_t ysize) {
+  std::array<Image<T>, 3> from_unpacked = from->Deconstruct();
+  Image3<T> result = Image3<T>(Window(&from_unpacked[0], x, y, xsize, ysize),
+                               Window(&from_unpacked[1], x, y, xsize, ysize),
+                               Window(&from_unpacked[2], x, y, xsize, ysize));
+  *from = Image3<T>(from_unpacked);
+  return result;
+}
+
+template <typename T>
+ConstWrapper<Image3<T>> ConstWindow(const Image3<T>& from, size_t x, size_t y,
+                                    size_t xsize, size_t ysize) {
+  ConstWrapper<Image<T>> plane0 =
+      ConstWindow(from.plane(0), x, y, xsize, ysize);
+  ConstWrapper<Image<T>> plane1 =
+      ConstWindow(from.plane(1), x, y, xsize, ysize);
+  ConstWrapper<Image<T>> plane2 =
+      ConstWindow(from.plane(2), x, y, xsize, ysize);
+  return ConstWrapper<Image3<T>>(
+      Image3<T>(std::move(const_cast<Image<T>&>(plane0.get())),
+                std::move(const_cast<Image<T>&>(plane1.get())),
+                std::move(const_cast<Image<T>&>(plane2.get()))));
 }
 
 float Average(const ImageF& img);

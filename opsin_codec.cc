@@ -25,20 +25,17 @@
 
 #include "ans_params.h"
 #include "bit_reader.h"
+#include "common.h"
 #include "compiler_specific.h"
 #include "context_map_decode.h"
 #include "dc_predictor.h"
 #include "dc_predictor_slow.h"
 #include "fast_log.h"
-#include "histogram_decode.h"
-#include "huffman_decode.h"
 #include "huffman_encode.h"
 #include "status.h"
 #include "write_bits.h"
 
 namespace pik {
-
-static const int kANSBufferSize = 1 << 16;
 
 static inline int SymbolFromSignedInt(int diff) {
   return diff >= 0 ? 2 * diff : -2 * diff - 1;
@@ -64,20 +61,34 @@ void PredictDCBlock(size_t x, size_t y, size_t xsize, size_t row_stride,
   }
 }
 
+void PredictDCTile(const Image3W& coeffs, Image3W* out) {
+  PIK_ASSERT(coeffs.ysize() == out->ysize());
+  PIK_ASSERT(coeffs.xsize() == 64 * out->xsize());
+  const size_t row_stride = coeffs.plane(0).bytes_per_row() / sizeof(int16_t);
+  for (int y = 0; y < out->ysize(); y++) {
+    auto row_in = coeffs.Row(y);
+    auto row_out = out->Row(y);
+    for (int x = 0; x < out->xsize(); x++) {
+      PredictDCBlock(x, y, out->xsize(), row_stride, row_in, row_out);
+    }
+  }
+}
+
 Image3W PredictDC(const Image3W& coeffs) {
   Image3W out(coeffs.xsize() / 64, coeffs.ysize());
-  const size_t row_stride = coeffs.plane(0).bytes_per_row() / sizeof(int16_t);
-  for (int y = 0; y < out.ysize(); y++) {
-    auto row_in = coeffs.Row(y);
-    auto row_out = out.Row(y);
-    for (int x = 0; x < out.xsize(); x++) {
-      PredictDCBlock(x, y, out.xsize(), row_stride, row_in, row_out);
+  for (int y = 0; y < out.ysize(); y += kSupertileInBlocks) {
+    for (int x = 0; x < out.xsize(); x += kSupertileInBlocks) {
+      Image3W out_window =
+          Window(&out, x, y, kSupertileInBlocks, kSupertileInBlocks);
+      ConstWrapper<Image3W> coeffs_window = ConstWindow(
+          coeffs, 64 * x, y, 64 * kSupertileInBlocks, kSupertileInBlocks);
+      PredictDCTile(coeffs_window.get(), &out_window);
     }
   }
   return out;
 }
 
-void UnpredictDC(Image3W* coeffs) {
+void UnpredictDCTile(Image3W* coeffs) {
   ImageW dc_y(coeffs->xsize() / 64, coeffs->ysize());
   ImageW dc_xz(coeffs->xsize() / 64 * 2, coeffs->ysize());
 
@@ -112,6 +123,17 @@ void UnpredictDC(Image3W* coeffs) {
   }
 }
 
+void UnpredictDC(Image3W* coeffs) {
+  PIK_ASSERT(coeffs->xsize() % 64 == 0);
+  for (int y = 0; y < coeffs->ysize(); y += kSupertileInBlocks) {
+    for (int x = 0; x < coeffs->xsize(); x += 64 * kSupertileInBlocks) {
+      Image3W coeffs_window =
+          Window(coeffs, x, y, 64 * kSupertileInBlocks, kSupertileInBlocks);
+      UnpredictDCTile(&coeffs_window);
+    }
+  }
+}
+
 PIK_INLINE size_t RoundToBytes(size_t num_bits, int lg2_byte_alignment) {
   const size_t bias = (8 << lg2_byte_alignment) - 1;
   return ((1 << lg2_byte_alignment) *
@@ -121,7 +143,7 @@ PIK_INLINE size_t RoundToBytes(size_t num_bits, int lg2_byte_alignment) {
 size_t HistogramBuilder::EncodedSize(
     int lg2_histo_align, int lg2_data_align) const {
   size_t total_histogram_bits = 0;
-  size_t total_data_bits = num_extra_bits_;
+  size_t total_data_bits = num_extra_bits();
   for (int c = 0; c < histograms_.size(); ++c) {
     size_t histogram_bits;
     size_t data_bits;
@@ -140,143 +162,18 @@ size_t HistogramBuilder::EncodedSize(
   }
 }
 
-struct HuffmanEncodingData {
-  void BuildAndStore(const uint32_t* histogram, size_t histo_size,
-                     size_t* storage_ix, uint8_t* storage) {
-    depths.resize(histo_size);
-    bits.resize(histo_size);
-    BuildAndStoreHuffmanTree(histogram, histo_size,
-                             depths.data(), bits.data(),
-                             storage_ix, storage);
-  }
-
-  std::vector<uint8_t> depths;
-  std::vector<uint16_t> bits;
-};
-
-// Symbol visitor that emits the entropy coded symbols to the bit stream.
-class HuffmanSymbolWriter : public BitWriter {
- public:
-  // "storage" points to a pre-allocated memory area that must have enough size
-  // hold all of the encoded symbols. It is the responsibility of the caller
-  // to compute the required size or an upper bound thereof.
-  HuffmanSymbolWriter(const std::vector<HuffmanEncodingData>& codes,
-                      const std::vector<uint8_t>& context_map,
-                      size_t* storage_ix, uint8_t* storage)
-      : BitWriter(storage_ix, storage), codes_(codes),
-        context_map_(context_map) {}
-
-  void VisitSymbol(int symbol, int ctx) {
-    const int histo_idx = context_map_[ctx];
-    WriteBits(codes_[histo_idx].depths[symbol], codes_[histo_idx].bits[symbol],
-              storage_ix_, storage_);
-  }
-
-  void FlushToBitStream() {}
-
- private:
-  const std::vector<HuffmanEncodingData>& codes_;
-  const std::vector<uint8_t>& context_map_;
-};
-
-struct ANSEncodingData {
-  void BuildAndStore(const uint32_t* histogram, size_t histo_size,
-                     size_t* storage_ix, uint8_t* storage) {
-    std::vector<int> counts(histo_size);
-    for (int i = 0; i < histo_size; ++i) {
-      counts[i] = histogram[i];
-    }
-    ans_table.resize(histo_size);
-    BuildAndStoreANSEncodingData(counts.data(), counts.size(), ans_table.data(),
-                                 storage_ix, storage);
-  }
-
-  std::vector<ANSEncSymbolInfo> ans_table;
-};
-
-// Symbol visitor that collects symbols and raw bits to be encoded.
-class ANSSymbolWriter {
- public:
-  ANSSymbolWriter(const std::vector<ANSEncodingData>& codes,
-                  const std::vector<uint8_t>& context_map,
-                  size_t* storage_ix, uint8_t* storage)
-      : idx_(0), symbol_idx_(0), code_words_(2 * kANSBufferSize),
-        symbols_(kANSBufferSize), codes_(codes), context_map_(context_map),
-        storage_ix_(storage_ix), storage_(storage) {}
-
-  void VisitBits(size_t nbits, uint64_t bits) {
-    PIK_ASSERT(nbits <= 16);
-    PIK_ASSERT(idx_ < code_words_.size());
-    if (nbits > 0) {
-      code_words_[idx_++] = (bits << 16) + nbits;
-    }
-  }
-
-  void VisitSymbol(int symbol, int ctx) {
-    PIK_ASSERT(idx_ < code_words_.size());
-    code_words_[idx_++] = 0xffff;  // Placeholder, to be encoded later.
-    symbols_[symbol_idx_++] = (ctx << 16) + symbol;
-    if (symbol_idx_ == kANSBufferSize) {
-      FlushToBitStream();
-    }
-  }
-
-  void FlushToBitStream() {
-    const int num_codewords = idx_;
-    ANSCoder ans;
-    int first_symbol = num_codewords;
-    // Replace placeholder code words with actual bits by feeding symbols to the
-    // ANS encoder in a reverse order.
-    for (int i = num_codewords - 1; i >= 0; --i) {
-      const uint32_t cw = code_words_[i];
-      if ((cw & 0xffff) == 0xffff) {
-        const uint32_t sym = symbols_[--symbol_idx_];
-        const uint32_t context = sym >> 16;
-        const uint8_t histo_idx = context_map_[context];
-        const uint32_t symbol = sym & 0xffff;
-        const ANSEncSymbolInfo info = codes_[histo_idx].ans_table[symbol];
-        uint8_t nbits = 0;
-        uint32_t bits = ans.PutSymbol(info, &nbits);
-        code_words_[i] = (bits << 16) + nbits;
-        first_symbol = i;
-      }
-    }
-    for (int i = 0; i < num_codewords; ++i) {
-      if (i == first_symbol) {
-        const uint32_t state = ans.GetState();
-        WriteBits(16, (state >> 16) & 0xffff, storage_ix_, storage_);
-        WriteBits(16, state & 0xffff, storage_ix_, storage_);
-      }
-      const uint32_t cw = code_words_[i];
-      const uint32_t nbits = cw & 0xffff;
-      const uint32_t bits = cw >> 16;
-      WriteBits(nbits, bits, storage_ix_, storage_);
-    }
-    idx_ = 0;
-    PIK_ASSERT(symbol_idx_ == 0);
-  }
-
- private:
-  int idx_;
-  int symbol_idx_;
-  // Vector of (bits, nbits) pairs to be encoded.
-  std::vector<uint32_t> code_words_;
-  // Vector of (context, symbol) pairs to be encoded.
-  std::vector<uint32_t> symbols_;
-  const std::vector<ANSEncodingData>& codes_;
-  const std::vector<uint8_t>& context_map_;
-  size_t* storage_ix_;
-  uint8_t* storage_;
-};
-
-void ComputeCoeffOrder(const Image3W& img, int* order) {
-  for (int c = 0; c < 3; ++c) {
+void ComputeCoeffOrder(const Image3W& img, const Image3B& block_ctx,
+                       int* order) {
+  for (int ctx = 0; ctx < kOrderContexts; ++ctx) {
     int num_zeros[64] = { 0 };
     for (int y = 0; y < img.ysize(); ++y) {
       auto row = img.Row(y);
       for (int x = 0; x < img.xsize(); x += 64) {
-        for (int k = 1; k < 64; ++k) {
-          if (row[c][x + k] == 0) ++num_zeros[k];
+        for (int c = 0; c < 3; ++c) {
+          if (block_ctx.Row(y)[c][x >> 6] != ctx) continue;
+          for (int k = 1; k < 64; ++k) {
+            if (row[c][x + k] == 0) ++num_zeros[k];
+          }
         }
       }
     }
@@ -290,7 +187,54 @@ void ComputeCoeffOrder(const Image3W& img, int* order) {
         [](const std::pair<int, int>& a, const std::pair<int, int>& b) -> bool {
           return a.second < b.second; });
     for (int i = 0; i < 64; ++i) {
-      order[c * 64 + i] = kNaturalCoeffOrder[pos_and_val[i].first];
+      order[ctx * 64 + i] = kNaturalCoeffOrder[pos_and_val[i].first];
+    }
+  }
+}
+
+void EncodeCoeffOrder(const int* order, size_t* storage_ix, uint8_t* storage) {
+  const int kJPEGZigZagOrder[64] = {
+    0,   1,  5,  6, 14, 15, 27, 28,
+    2,   4,  7, 13, 16, 26, 29, 42,
+    3,   8, 12, 17, 25, 30, 41, 43,
+    9,  11, 18, 24, 31, 40, 44, 53,
+    10, 19, 23, 32, 39, 45, 52, 54,
+    20, 22, 33, 38, 46, 51, 55, 60,
+    21, 34, 37, 47, 50, 56, 59, 61,
+    35, 36, 48, 49, 57, 58, 62, 63
+  };
+  int order_zigzag[64];
+  for (int i = 0; i < 64; ++i) {
+    order_zigzag[i] = kJPEGZigZagOrder[order[i]];
+  }
+  int lehmer[64];
+  ComputeLehmerCode(order_zigzag, 64, lehmer);
+  int end = 63;
+  while (end >= 1 && lehmer[end] == 0) {
+    --end;
+  }
+  for (int i = 1; i <= end; ++i) {
+    ++lehmer[i];
+  }
+  static const int kSpan = 16;
+  for (int i = 0; i < 64; i += kSpan) {
+    const int start = (i > 0) ? i : 1;
+    const int end = i + kSpan;
+    int has_non_zero = 0;
+    for (int j = start; j < end; ++j) has_non_zero |= lehmer[j];
+    if (!has_non_zero) {   // all zero in the span -> escape
+      WriteBits(1, 0, storage_ix, storage);
+      continue;
+    } else {
+      WriteBits(1, 1, storage_ix, storage);
+    }
+    for (int j = start; j < end; ++j) {
+      int v;
+      PIK_ASSERT(lehmer[j] <= 64);
+      for (v = lehmer[j]; v >= 7; v -= 7) {
+        WriteBits(3, 7, storage_ix, storage);
+      }
+      WriteBits(3, v, storage_ix, storage);
     }
   }
 }
@@ -311,8 +255,10 @@ struct EncodeImageInternal {
     storage[0] = 0;
     std::vector<EntropyEncodingData> codes;
     std::vector<uint8_t> context_map;
+    std::vector<double> entropy_per_context;
     builder.BuildAndStoreEntropyCodes(
-        &codes, &context_map, &storage_ix, storage, info);
+        &codes, &context_map, &storage_ix, storage,
+        info ? &entropy_per_context : nullptr, info);
     // Close the histogram bit stream.
     size_t jump_bits = ((storage_ix + 7) & ~7) - storage_ix;
     WriteBits(jump_bits, 0, &storage_ix, storage);
@@ -333,6 +279,20 @@ struct EncodeImageInternal {
       info->entropy_coded_bits += data_bits - builder.num_extra_bits();
       info->extra_bits += builder.num_extra_bits();
       info->total_size += out_size;
+      for (int c = 0; c < 3; ++c) {
+        if (context_map.size() == 3) {
+          info->entropy_per_channel[c] += entropy_per_context[c];
+        } else if (context_map.size() == ACBlockProcessor::num_contexts()) {
+          for (int i = 0; i < 32; ++i) {
+            info->entropy_per_channel[c] += entropy_per_context[c * 32 + i];
+          }
+          for (int i = 0; i < 120; ++i) {
+            info->entropy_per_channel[c] +=
+                entropy_per_context[96 + c * 120 + i];
+          }
+        }
+        info->entropy_per_channel[c] += builder.num_extra_bits(c);
+      }
     }
     return output;
   }
@@ -353,13 +313,31 @@ std::string EncodeImage(const Image3W& img, int stride,
       img, &processor, info);
 }
 
-std::string EncodeAC(const Image3W& coeffs, PikImageSizeInfo* info) {
-  ACBlockProcessor processor;
-  int order[192];
-  ComputeCoeffOrder(coeffs, order);
+std::string EncodeAC(const Image3W& coeffs,
+                     const Image3B& block_ctx,
+                     PikInfo* pik_info) {
+  ACBlockProcessor processor(&block_ctx, coeffs.xsize());
+  int order[kOrderContexts * 64];
+  ComputeCoeffOrder(coeffs, block_ctx, order);
+  // TODO(user): Check this upper bound on size of encoded order.
+  std::string encoded_coeff_order(kOrderContexts * 1024, 0);
+  {
+    uint8_t* storage = reinterpret_cast<uint8_t*>(&encoded_coeff_order[0]);
+    size_t storage_ix = 0;
+    for(int c = 0; c < kOrderContexts; c++) {
+      EncodeCoeffOrder(&order[c * 64], &storage_ix, storage);
+    }
+    PIK_CHECK(storage_ix < encoded_coeff_order.size() * 8);
+    encoded_coeff_order.resize((storage_ix + 7) / 8);
+  }
+  if (pik_info) {
+    pik_info->layers[kLayerOrder].total_size += encoded_coeff_order.size();
+  }
+  PikImageSizeInfo* ac_info = pik_info ? &pik_info->layers[kLayerAC] : nullptr;
   processor.SetCoeffOrder(order);
-  return EncodeImageInternal<ANSEncodingData, ANSSymbolWriter>()(
-      coeffs, &processor, info);
+  std::string output = EncodeImageInternal<ANSEncodingData, ANSSymbolWriter>()(
+      coeffs, &processor, ac_info);
+  return encoded_coeff_order + output;
 }
 
 PIK_INLINE uint32_t MakeToken(const uint32_t context, const uint32_t symbol,
@@ -367,9 +345,11 @@ PIK_INLINE uint32_t MakeToken(const uint32_t context, const uint32_t symbol,
   return (context << 26) | (symbol << 18) | (nbits << 14) | bits;
 }
 
-std::string EncodeACFast(const Image3W& coeffs, PikImageSizeInfo* info) {
+std::string EncodeACFast(const Image3W& coeffs,
+                         const Image3B& block_ctx,
+                         PikInfo* pik_info) {
   // Build static context map.
-  static const int kNumContexts = 408;
+  static const int kNumContexts = kOrderContexts * (32 + 120);
   static const int kStaticZdensContextMap[120] = {
     0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3,
     0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3,
@@ -381,16 +361,19 @@ std::string EncodeACFast(const Image3W& coeffs, PikImageSizeInfo* info) {
     6, 6, 6, 6, 5, 5, 2, 2, 2, 2, 2,
   };
   static const int kNumStaticZdensContexts = 7;
-  static const int kNumStaticContexts = 3 * (1 + kNumStaticZdensContexts);
+  static const int kNumStaticContexts =
+      4 * (1 + kNumStaticZdensContexts);
   PIK_ASSERT(kNumStaticContexts <= 64);
   std::vector<uint8_t> context_map(kNumContexts);
-  for (int c = 0; c < 3; ++c) {
-    for (int i = 0; i < 16; ++i) {
-      context_map[c * 16 + i] = c;
+  for (int c = 0; c < kOrderContexts; ++c) {
+    const int ctx = std::min(c, 3);
+    for (int i = 0; i < 32; ++i) {
+      context_map[c * 32 + i] = ctx;
     }
     for (int i = 0; i < 120; ++i) {
-      context_map[48 + c * 120 + i] =
-          3 + c * kNumStaticZdensContexts + kStaticZdensContextMap[i];
+      context_map[kOrderContexts * 32 + c * 120 + i] =
+          4 + ctx * kNumStaticZdensContexts +
+          kStaticZdensContextMap[i];
     }
   }
   // Tokenize the coefficient stream.
@@ -401,15 +384,16 @@ std::string EncodeACFast(const Image3W& coeffs, PikImageSizeInfo* info) {
     auto row = coeffs.Row(y);
     for (int x = 0; x < coeffs.xsize(); x += 64) {
       for (int c = 0; c < 3; ++c) {
+        const int bctx = block_ctx.Row(y)[c][x / 64];
         const int16_t* coeffs = &row[c][x];
         int num_nzeros = 0;
         for (int k = 1; k < 64; ++k) {
           if (coeffs[k] != 0) ++num_nzeros;
         }
-        tokens.push_back(MakeToken(c, num_nzeros, 0, 0));
+        tokens.push_back(MakeToken(std::min(bctx, 3), num_nzeros, 0, 0));
         if (num_nzeros == 0) continue;
         int r = 0;
-        const int histo_offset = 48 + c * 120;
+        const int histo_offset = kOrderContexts * 32 + bctx * 120;
         int histo_idx = histo_offset + ZeroDensityContext(num_nzeros - 1, 0, 4);
         histo_idx = context_map[histo_idx];
         for (int k = 1; k < 64; ++k) {
@@ -418,6 +402,7 @@ std::string EncodeACFast(const Image3W& coeffs, PikImageSizeInfo* info) {
             r++;
             continue;
           }
+          PIK_ASSERT(histo_idx < kNumContexts);
           while (r > 15) {
             tokens.push_back(MakeToken(histo_idx, kIndexLut[0xf0], 0, 0));
             r -= 16;
@@ -441,9 +426,10 @@ std::string EncodeACFast(const Image3W& coeffs, PikImageSizeInfo* info) {
   for (int i = 0; i < tokens.size(); ++i) {
     ++histograms[tokens[i] >> 18];
   }
-  if (info) {
+  PikImageSizeInfo* ac_info = pik_info ? &pik_info->layers[kLayerAC] : nullptr;
+  if (ac_info) {
     for (int c = 0; c < kNumStaticContexts; ++c) {
-      info->clustered_entropy += ShannonEntropy(&histograms[c << 8], 256);
+      ac_info->clustered_entropy += ShannonEntropy(&histograms[c << 8], 256);
     }
   }
   // Estimate total output size.
@@ -462,6 +448,13 @@ std::string EncodeACFast(const Image3W& coeffs, PikImageSizeInfo* info) {
   size_t storage_ix = 0;
   uint8_t* storage = reinterpret_cast<uint8_t*>(&output[0]);
   storage[0] = 0;
+  for (int c = 0; c < kOrderContexts; c++)
+    EncodeCoeffOrder(kNaturalCoeffOrder, &storage_ix, storage);
+  WriteZeroesToByteBoundary(&storage_ix, storage);
+  const size_t order_bytes = storage_ix >> 3;
+  if (pik_info) {
+    pik_info->layers[kLayerOrder].total_size += order_bytes;
+  }
   // Encode the histograms.
   std::vector<ANSEncodingData> codes;
   EncodeContextMap(context_map, kNumStaticContexts, &storage_ix, storage);
@@ -471,12 +464,9 @@ std::string EncodeACFast(const Image3W& coeffs, PikImageSizeInfo* info) {
     codes.emplace_back(std::move(code));
   }
   // Close the histogram bit stream.
-  size_t jump_bits = ((storage_ix + 7) & ~7) - storage_ix;
-  WriteBits(jump_bits, 0, &storage_ix, storage);
-  PIK_ASSERT(storage_ix % 8 == 0);
-  const size_t histo_bytes = storage_ix >> 3;
+  WriteZeroesToByteBoundary(&storage_ix, storage);
+  const size_t histo_bytes = (storage_ix >> 3) - order_bytes;
   // Entropy encode data.
-  WriteBits(12, 0, &storage_ix, storage);  // zig-zag coefficient order
   PIK_ASSERT(kANSBufferSize <= (1 << 16));
   for (int start = 0; start < tokens.size(); start += kANSBufferSize) {
     std::vector<uint32_t> out;
@@ -511,17 +501,17 @@ std::string EncodeACFast(const Image3W& coeffs, PikImageSizeInfo* info) {
       }
     }
   }
-  const size_t data_bits = storage_ix - 8 * histo_bytes;
+  const size_t data_bits = storage_ix - 8 * histo_bytes - 8 * order_bytes;
   const size_t data_bytes = (data_bits + 7) >> 3;
-  const int out_size = histo_bytes + data_bytes;
+  const int out_size = order_bytes + histo_bytes + data_bytes;
   PIK_CHECK(out_size <= max_out_size);
   output.resize(out_size);
-  if (info) {
-    info->num_clustered_histograms += codes.size();
-    info->histogram_size += histo_bytes;
-    info->entropy_coded_bits += data_bits - num_extra_bits;
-    info->extra_bits += num_extra_bits;
-    info->total_size += out_size;
+  if (ac_info) {
+    ac_info->num_clustered_histograms += codes.size();
+    ac_info->histogram_size += histo_bytes;
+    ac_info->entropy_coded_bits += data_bits - num_extra_bits;
+    ac_info->extra_bits += num_extra_bits;
+    ac_info->total_size += out_size;
   }
   return output;
 }
@@ -531,18 +521,13 @@ size_t EncodedImageSize(const Image3W& img, int stride) {
   return EncodedImageSizeInternal(img, &processor);
 }
 
-size_t EncodedACSize(const Image3W& coeffs) {
-  ACBlockProcessor processor;
-  return EncodedImageSizeInternal(coeffs, &processor);
-}
-
 class ANSBitCounter {
  public:
   ANSBitCounter(const std::vector<ANSEncodingData>& codes,
                 const std::vector<uint8_t>& context_map)
       : codes_(codes), context_map_(context_map), nbits_(0.0f) {}
 
-  void VisitBits(size_t nbits, uint64_t bits) {
+  void VisitBits(size_t nbits, uint64_t bits, int c) {
     nbits_ += nbits;
   }
 
@@ -561,18 +546,20 @@ class ANSBitCounter {
 };
 
 Image3F LocalACInformationDensity(const Image3W& coeffs) {
-  ACBlockProcessor processor;
-  int order[192];
-  ComputeCoeffOrder(coeffs, order);
+  Image3B block_ctx(coeffs.xsize() / 64, coeffs.ysize(), 0);
+  ACBlockProcessor processor(&block_ctx, coeffs.xsize());
+  int order[kOrderContexts * 64];
+  ComputeCoeffOrder(coeffs, block_ctx, order);
   processor.SetCoeffOrder(order);
   HistogramBuilder builder(ACBlockProcessor::num_contexts());
   ProcessImage3(coeffs, &processor, &builder);
   std::vector<ANSEncodingData> codes;
   std::vector<uint8_t> context_map;
   builder.BuildAndStoreEntropyCodes(&codes, &context_map,
-                                    nullptr, nullptr, nullptr);
+                                    nullptr, nullptr, nullptr, nullptr);
   ANSBitCounter counter(codes, context_map);
   Image3F out(coeffs.xsize() / processor.block_size(), coeffs.ysize());
+  processor.Reset();
   for (int y = 0; y < coeffs.ysize(); ++y) {
     auto row_in = coeffs.Row(y);
     auto row_out = out.Row(y);
@@ -626,104 +613,17 @@ static const uint8_t kSymbolLut[256] = {
   0xf8, 0xf9, 0xfa, 0xfb, 0xfc, 0xfd, 0xfe, 0xff,
 };
 
-class HuffmanSymbolReader {
- public:
-  int ReadSymbol(const HuffmanDecodingData& code,
-                 BitReader* const PIK_RESTRICT br) {
-    const HuffmanCode* const PIK_RESTRICT table = &code.table_[0];
-    int offset = br->PeekFixedBits<kHuffmanTableBits>();
-    const int nbits = table[offset].bits - kHuffmanTableBits;
-    if (nbits > 0) {
-      br->Advance(kHuffmanTableBits);
-      offset += table[offset].value + br->PeekBits(nbits);
-    }
-    br->Advance(table[offset].bits);
-    return table[offset].value;
-  }
-};
-
-class ANSSymbolReader {
- public:
-  bool DecodeHistograms(const size_t num_histograms,
-                        const size_t max_alphabet_size,
-                        const uint8_t* symbol_lut, size_t symbol_lut_size,
-                        BitReader* in) {
-    map_.resize(num_histograms << ANS_LOG_TAB_SIZE);
-    info_.resize(num_histograms << 8);
-    for (int c = 0; c < num_histograms; ++c) {
-      std::vector<int> counts;
-      if (!ReadHistogram(ANS_LOG_TAB_SIZE, &counts, in)) {
-        return PIK_FAILURE("Invalid histogram bitstream.");
-      }
-      if (counts.size() > max_alphabet_size) {
-        return PIK_FAILURE("Alphabet size is too long.");
-      }
-      int offset = 0;
-      for (int i = 0, pos = 0; i < counts.size(); ++i) {
-        int symbol = i;
-        if (symbol_lut != nullptr && symbol < symbol_lut_size) {
-          symbol = symbol_lut[symbol];
-        }
-        info_[(c << 8) + symbol].offset_ = offset;
-        info_[(c << 8) + symbol].freq_ = counts[i];
-        offset += counts[i];
-        if (offset > ANS_TAB_SIZE) {
-          return PIK_FAILURE("Invalid ANS histogram data.");
-        }
-        for (int j = 0; j < counts[i]; ++j, ++pos) {
-          map_[(c << ANS_LOG_TAB_SIZE) + pos] = symbol;
-        }
-      }
-    }
-    return true;
-  }
-
-  int ReadSymbol(const int histo_idx, BitReader* const PIK_RESTRICT br) {
-    if (symbols_left_ == 0) {
-      state_ = br->ReadBits(16);
-      state_ = (state_ << 16) | br->ReadBits(16);
-      br->FillBitBuffer();
-      symbols_left_ = kANSBufferSize;
-    }
-    const uint32_t res = state_ & (ANS_TAB_SIZE - 1);
-    const uint8_t symbol = map_[(histo_idx << ANS_LOG_TAB_SIZE) + res];
-    const ANSSymbolInfo s = info_[(histo_idx << 8) + symbol];
-    state_ = s.freq_ * (state_ >> ANS_LOG_TAB_SIZE) + res - s.offset_;
-    --symbols_left_;
-    if (state_ < (1u << 16)) {
-      state_ = (state_ << 16) | br->PeekFixedBits<16>();
-      br->Advance(16);
-    }
-    return symbol;
-  }
-
-  bool CheckANSFinalState() { return state_ == (ANS_SIGNATURE << 16); }
-
- private:
-  struct ANSSymbolInfo {
-    uint16_t offset_;
-    uint16_t freq_;
-  };
-  size_t symbols_left_ = 0;
-  uint32_t state_ = 0;
-  std::vector<uint8_t> map_;
-  std::vector<ANSSymbolInfo> info_;
-};
-
-bool DecodeHistograms(BitReader* br,
-                      const size_t num_contexts,
-                      const size_t max_alphabet_size,
-                      const uint8_t* symbol_lut, size_t symbol_lut_size,
-                      ANSSymbolReader* decoder,
+bool DecodeHistograms(BitReader* br, const size_t num_contexts,
+                      const size_t max_alphabet_size, const uint8_t* symbol_lut,
+                      size_t symbol_lut_size, ANSCode* code,
                       std::vector<uint8_t>* context_map) {
   size_t num_histograms = 1;
   context_map->resize(num_contexts);
   if (num_contexts > 1) {
     if (!DecodeContextMap(context_map, &num_histograms, br)) return false;
   }
-  if (!decoder->DecodeHistograms(num_histograms, max_alphabet_size,
-                                 symbol_lut, symbol_lut_size,
-                                 br)) {
+  if (!DecodeANSCodes(num_histograms, max_alphabet_size, symbol_lut,
+                      symbol_lut_size, br, code)) {
     return false;
   }
   br->JumpToByteBoundary();
@@ -792,30 +692,33 @@ bool DecodeCoeffOrder(int* order, BitReader* br) {
 
 bool DecodeACData(BitReader* const PIK_RESTRICT br,
                   const std::vector<uint8_t>& context_map,
+                  const Image3B& block_ctx,
                   ANSSymbolReader* const PIK_RESTRICT decoder,
+                  const int* const PIK_RESTRICT coeff_order,
                   Image3W* const PIK_RESTRICT coeffs) {
-  int coeff_order[192];
-  for (int c = 0; c < 3; ++c) {
-    DecodeCoeffOrder(&coeff_order[c * 64], br);
-  }
+  std::vector<uint8_t> prev_num_nzeros(3 * (coeffs->xsize() >> 6));
   for (int y = 0; y < coeffs->ysize(); ++y) {
     auto row = coeffs->Row(y);
-    int prev_num_nzeros[3] = { 0 };
-    for (int x = 0; x < coeffs->xsize(); x += 64) {
-      for (int c = 0; c < 3; ++c) {
+    auto row_bctx = block_ctx.Row(y);
+    for (int x = 0, ix = 0, bx = 0; x < coeffs->xsize(); x += 64, ++bx) {
+      for (int c = 0; c < 3; ++c, ++ix) {
         memset(&row[c][x + 1], 0, 63 * sizeof(row[0][0]));
         br->FillBitBuffer();
-        const int context1 = c * 16 + (prev_num_nzeros[c] >> 2);
+        const int block_ctx = row_bctx[c][bx];
+        const int context1 = block_ctx * 32 +
+            NumNonZerosContext(x, y, &prev_num_nzeros[ix]);
         int num_nzeros =
             kIndexLut[decoder->ReadSymbol(context_map[context1], br)];
         if (num_nzeros > 63) {
           return PIK_FAILURE("Invalid AC data.");
         }
-        prev_num_nzeros[c] = num_nzeros;
+        prev_num_nzeros[ix] = num_nzeros;
         if (num_nzeros == 0) continue;
-        const int histo_offset = 48 + c * 120;
+        const int histo_offset = kOrderContexts * 32 + block_ctx * 120;
         const int context2 = ZeroDensityContext(num_nzeros - 1, 0, 4);
         int histo_idx = context_map[histo_offset + context2];
+        const int order_offset = block_ctx * 64;
+        const int* PIK_RESTRICT const block_order = &coeff_order[order_offset];
         for (int k = 1; k < 64 && num_nzeros > 0; ++k) {
           br->FillBitBuffer();
           int s = decoder->ReadSymbol(histo_idx, br);
@@ -832,7 +735,7 @@ bool DecodeACData(BitReader* const PIK_RESTRICT br,
             histo_idx = context_map[histo_offset + context];
             --num_nzeros;
           }
-          row[c][x + coeff_order[c * 64 + k]] = s;
+          row[c][x + block_order[k]] = s;
         }
         if (num_nzeros != 0) {
           return PIK_FAILURE("Invalid AC data.");
@@ -846,11 +749,13 @@ bool DecodeACData(BitReader* const PIK_RESTRICT br,
 
 bool DecodeImage(BitReader* br, int stride,  Image3W* coeffs) {
   std::vector<uint8_t> context_map;
-  ANSSymbolReader decoder;
-  if (!DecodeHistograms(br, CoeffProcessor::num_contexts(), 16,
-                        nullptr, 0, &decoder, &context_map) ||
-      !DecodeImageData(br, context_map, stride,
-                       &decoder, coeffs)) {
+  ANSCode code;
+  if (!DecodeHistograms(br, CoeffProcessor::num_contexts(), 16, nullptr, 0,
+                        &code, &context_map)) {
+    return false;
+  }
+  ANSSymbolReader decoder(&code);
+  if (!DecodeImageData(br, context_map, stride, &decoder, coeffs)) {
     return false;
   }
   if (!decoder.CheckANSFinalState()) {
@@ -859,13 +764,21 @@ bool DecodeImage(BitReader* br, int stride,  Image3W* coeffs) {
   return true;
 }
 
-bool DecodeAC(BitReader* br, Image3W* coeffs) {
+bool DecodeAC(const Image3B& block_ctx, BitReader* br, Image3W* coeffs) {
   std::vector<uint8_t> context_map;
-  ANSSymbolReader decoder;
-  if (!DecodeHistograms(br, ACBlockProcessor::num_contexts(), 256,
-                        kSymbolLut, sizeof(kSymbolLut),
-                        &decoder, &context_map) ||
-      !DecodeACData(br, context_map, &decoder, coeffs)) {
+  int coeff_order[kOrderContexts * 64];
+  for (int c = 0; c < kOrderContexts; ++c) {
+    DecodeCoeffOrder(&coeff_order[c * 64], br);
+  }
+  br->JumpToByteBoundary();
+  ANSCode code;
+  if (!DecodeHistograms(br, ACBlockProcessor::num_contexts(), 256, kSymbolLut,
+                        sizeof(kSymbolLut), &code, &context_map)) {
+    return false;
+  }
+  ANSSymbolReader decoder(&code);
+  if (!DecodeACData(br, context_map, block_ctx,
+                    &decoder, coeff_order, coeffs)) {
     return false;
   }
   if (!decoder.CheckANSFinalState()) {
@@ -874,21 +787,26 @@ bool DecodeAC(BitReader* br, Image3W* coeffs) {
   return true;
 }
 
-class DeltaCodingProcessor {
+namespace {
+
+class ContextProcessor {
  public:
-  DeltaCodingProcessor(int minval, int maxval, int xsize)
-      : minval_(minval), maxval_(maxval), xsize_(xsize) {
+  ContextProcessor(int minval, int maxval, int x_tilesize, int y_tilesize)
+      : minval_(minval),
+        maxval_(maxval),
+        x_tilesize_(x_tilesize),
+        y_tilesize_(y_tilesize) {
     Reset();
   }
 
-  void Reset() {
-    row_ = std::vector<int>(xsize_);
-  }
+  void Reset() { row_ = std::vector<int>(x_tilesize_); }
 
   int block_size() const { return 1; }
-  static int num_contexts() { return 1; }
+  int num_contexts() { return 1 + ((maxval_ - minval_) >> kContextShift); }
 
   int PredictVal(int x, int y, int c) {
+    PIK_ASSERT(0 <= x && x < x_tilesize_);
+    PIK_ASSERT(0 <= y && y < y_tilesize_);
     if (x == 0) {
       return y == 0 ? (minval_ + maxval_ + 1) / 2 : row_[x];
     }
@@ -898,82 +816,125 @@ class DeltaCodingProcessor {
     return (row_[x] + row_[x - 1] + 1) / 2;
   }
 
-  void SetVal(int x, int y, int c, int val) {
-    row_[x] = val;
+  int Context(int x, int y, int c) {
+    return (PredictVal(x, y, c) - minval_) >> kContextShift;
   }
+
+  void SetVal(int x, int y, int c, int val) { row_[x] = val; }
 
   template <class Visitor>
   void ProcessBlock(const int* val, int x, int y, int c, Visitor* visitor) {
+    PIK_ASSERT(0 <= x && x < x_tilesize_);
+    PIK_ASSERT(0 <= y && y < y_tilesize_);
     PIK_ASSERT(*val >= minval_ && *val <= maxval_);
-    int diff = *val - PredictVal(x, y, c);
-    visitor->VisitSymbol(SymbolFromSignedInt(diff), c);
+    int ctx = Context(x, y, c);
+    visitor->VisitSymbol(*val - minval_, ctx);
     SetVal(x, y, c, *val);
   }
 
  private:
+  static const int kContextShift = 1;
   const int minval_;
   const int maxval_;
-  const int xsize_;
+  const int x_tilesize_;
+  const int y_tilesize_;
   std::vector<int> row_;
 };
 
-std::string EncodePlane(const Image<int>& img, int minval, int maxval,
-                        PikImageSizeInfo* info) {
-  DeltaCodingProcessor processor(minval, maxval, img.xsize());
+}  // namespace
+
+EncodedIntPlane EncodePlane(const Image<int>& img, int minval, int maxval,
+                            int tile_size, PikImageSizeInfo* info) {
+  EncodedIntPlane result;
+  ContextProcessor processor(minval, maxval, tile_size, tile_size);
   HistogramBuilder builder(processor.num_contexts());
-  ProcessImage(img, &processor, &builder);
-  const size_t max_out_size = 2 * img.xsize() * img.ysize() + 1024;
-  std::string output(max_out_size, 0);
-  size_t storage_ix = 0;
-  uint8_t* storage = reinterpret_cast<uint8_t*>(&output[0]);
-  storage[0] = 0;
-  std::vector<HuffmanEncodingData> codes;
+  const size_t tile_xsize = (img.xsize() + tile_size - 1) / tile_size;
+  const size_t tile_ysize = (img.ysize() + tile_size - 1) / tile_size;
+  for (int y = 0; y < tile_ysize; y++) {
+    for (int x = 0; x < tile_xsize; x++) {
+      ConstWrapper<Image<int>> tile =
+          ConstWindow(img, x * tile_size, y * tile_size, tile_size, tile_size);
+      ProcessImage(tile.get(), &processor, &builder);
+    }
+  }
+
+  std::vector<ANSEncodingData> codes;
   std::vector<uint8_t> context_map;
-  builder.BuildAndStoreEntropyCodes(&codes, &context_map, &storage_ix, storage,
-                                    info);
-  const size_t histo_bytes = storage_ix >> 3;
-  HuffmanSymbolWriter symbol_writer(codes, context_map, &storage_ix, storage);
-  ProcessImage(img, &processor, &symbol_writer);
-  symbol_writer.FlushToBitStream();
-  const size_t data_bits = storage_ix - 8 * histo_bytes;
-  const int out_size = (storage_ix + 7) >> 3;
-  PIK_CHECK(out_size <= max_out_size);
-  output.resize(out_size);
-  if (info) {
-    ++info->num_clustered_histograms;
-    info->histogram_size += histo_bytes;
-    info->entropy_coded_bits += data_bits - builder.num_extra_bits();
-    info->extra_bits += builder.num_extra_bits();
-    info->total_size += out_size;
+  {
+    const size_t max_out_size = 1024;
+    result.preamble = std::string(max_out_size, 0);
+    size_t storage_ix = 0;
+    uint8_t* storage = reinterpret_cast<uint8_t*>(&result.preamble[0]);
+    storage[0] = 0;
+    builder.BuildAndStoreEntropyCodes(&codes, &context_map, &storage_ix,
+                                      storage, nullptr, info);
+    const int out_size = (storage_ix + 7) >> 3;
+    PIK_CHECK(out_size <= max_out_size);
+    PIK_CHECK(out_size >= 0);
+    result.preamble.resize(out_size);
+    if (info) {
+      info->num_clustered_histograms += codes.size();
+      info->histogram_size += out_size;
+      info->total_size += out_size;
+    }
   }
-  return output;
+  result.tiles.resize(tile_ysize);
+  for (int y = 0; y < tile_ysize; y++) {
+    result.tiles[y].resize(tile_xsize);
+    for (int x = 0; x < tile_xsize; x++) {
+      const size_t max_out_size = 2 * tile_size * tile_size;
+      result.tiles[y][x] = std::string(max_out_size, 0);
+      size_t storage_ix = 0;
+      uint8_t* storage = reinterpret_cast<uint8_t*>(&result.tiles[y][x][0]);
+      storage[0] = 0;
+      ANSSymbolWriter symbol_writer(codes, context_map, &storage_ix, storage);
+      ConstWrapper<Image<int>> tile =
+          ConstWindow(img, x * tile_size, y * tile_size, tile_size, tile_size);
+      ProcessImage(tile.get(), &processor, &symbol_writer);
+      symbol_writer.FlushToBitStream();
+      const int out_size = (storage_ix + 7) >> 3;
+      PIK_CHECK(out_size <= max_out_size);
+      result.tiles[y][x].resize(out_size);
+      if (info) {
+        info->entropy_coded_bits += storage_ix - builder.num_extra_bits();
+        info->extra_bits += builder.num_extra_bits();
+        info->total_size += out_size;
+      }
+    }
+  }
+  return result;
 }
 
-size_t EncodedPlaneSize(const Image<int>& img, int minval, int maxval) {
-  DeltaCodingProcessor processor(minval, maxval, img.xsize());
-  HistogramBuilder builder(processor.num_contexts());
-  ProcessImage(img, &processor, &builder);
-  return builder.EncodedSize(-1, 0);
+bool IntPlaneDecoder::LoadPreamble(BitReader* br) {
+  PIK_CHECK(!ready_);
+  ContextProcessor processor(minval_, maxval_, tile_size_, tile_size_);
+  const size_t max_alphabet_size = maxval_ - minval_ + 1;
+  if (!DecodeHistograms(br, processor.num_contexts(), max_alphabet_size,
+                        nullptr, 0, &ans_code_, &context_map_)) {
+    return false;
+  }
+  br->JumpToByteBoundary();
+  ready_ = true;
+  return true;
 }
 
-bool DecodePlane(BitReader* br, int minval, int maxval, Image<int>* img) {
-  HuffmanDecodingData huff;
-  if (!huff.ReadFromBitStream(br)) {
-    return PIK_FAILURE("Failed to decode histogram.");
-  }
-  HuffmanDecoder decoder;
-  DeltaCodingProcessor processor(minval, maxval, img->xsize());
+bool IntPlaneDecoder::DecodeTile(BitReader* br, Image<int>* img) {
+  ContextProcessor processor(minval_, maxval_, tile_size_, tile_size_);
+  ANSSymbolReader decoder(&ans_code_);
   for (int y = 0; y < img->ysize(); ++y) {
     auto row = img->Row(y);
     for (int x = 0; x < img->xsize(); ++x) {
-      int symbol = decoder.ReadSymbol(huff, br);
-      int diff = SignedIntFromSymbol(symbol);
-      row[x] = diff + processor.PredictVal(x, y, 0);
-      if (row[x] > maxval || row[x] < minval) {
+      int ctx = processor.Context(x, y, 0);
+      br->FillBitBuffer();
+      row[x] = decoder.ReadSymbol(context_map_[ctx], br) + minval_;
+      if (row[x] > maxval_ || row[x] < minval_) {
         return PIK_FAILURE("Out of range value in quantization plane.");
       }
       processor.SetVal(x, y, 0, row[x]);
     }
+  }
+  if (!decoder.CheckANSFinalState()) {
+    return PIK_FAILURE("ANS checksum failure.");
   }
   br->JumpToByteBoundary();
   return true;

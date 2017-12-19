@@ -31,6 +31,10 @@ float ButteraugliDistance(const Image3B& rgb0, const Image3B& rgb1,
 float ButteraugliDistance(const Image3F& rgb0, const Image3F& rgb1,
                           ImageF* distmap);
 
+// rgb0 and rgb1 are linear RGB images with optional alpha channel.
+float ButteraugliDistance(const MetaImageF& rgb0, const MetaImageF& rgb1,
+                          ImageF* distmap_out);
+
 }  // namespace pik
 
 #endif  // BUTTERAUGLI_DISTANCE_H_

@@ -54,7 +54,7 @@ std::vector<butteraugli::ImageF> SrgbToLinearRgb(
 std::vector<butteraugli::ImageF> OpsinToLinearRgb(
     const int xsize, const int ysize,
     const Image3F& opsin) {
-  const Full<float, SIMD_TARGET> d;
+  const Full<float> d;
   PIK_ASSERT(xsize <= opsin.xsize());
   PIK_ASSERT(ysize <= opsin.ysize());
   std::vector<butteraugli::ImageF> planes =
@@ -67,7 +67,7 @@ std::vector<butteraugli::ImageF> OpsinToLinearRgb(
       const auto vx = load(d, row_in[0] + x);
       const auto vy = load(d, row_in[1] + x);
       const auto vb = load(d, row_in[2] + x);
-      Full<float, SIMD_TARGET>::V r, g, b;
+      Full<float>::V r, g, b;
       XybToRgb(d, vx, vy, vb, &r, &g, &b);
       store(r, d, row_out[0] + x);
       store(g, d, row_out[1] + x);

@@ -7,6 +7,9 @@ override LDFLAGS += $(PNG_LIBS) -ljpeg -lpthread
 PIK_OBJS := $(addprefix obj/, \
 	simd/dispatch.o \
 	adaptive_quantization.o \
+	af_stats.o \
+	alpha_blend.o \
+	ans_decode.o \
 	ans_encode.o \
 	arch_specific.o \
 	butteraugli/butteraugli.o \
@@ -25,10 +28,12 @@ PIK_OBJS := $(addprefix obj/, \
 	pik_alpha.o \
 	huffman_decode.o \
 	huffman_encode.o \
+	histogram.o \
 	histogram_decode.o \
 	histogram_encode.o \
 	image_io.o \
 	lehmer_code.o \
+	noise.o \
 	opsin_codec.o \
 	opsin_inverse.o \
 	opsin_image.o \

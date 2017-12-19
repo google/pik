@@ -16,10 +16,12 @@
 
 #include <stdio.h>
 #include <algorithm>
+#include <sstream>
 #include <vector>
 
 #include "arch_specific.h"
 #include "cache_aligned.h"
+#include "common.h"
 #include "compiler_specific.h"
 #include "dct.h"
 #include "opsin_codec.h"
@@ -270,6 +272,7 @@ Quantizer::Quantizer(int quant_xsize, int quant_ysize) :
     quant_xsize_(quant_xsize),
     quant_ysize_(quant_ysize),
     global_scale_(kGlobalScaleDenom / kDefaultQuant),
+    quant_patch_(kDefaultQuant),
     quant_dc_(kDefaultQuant),
     quant_img_ac_(quant_xsize_, quant_ysize_, kDefaultQuant),
     scale_(quant_xsize_ * 64, quant_ysize_),
@@ -278,18 +281,7 @@ Quantizer::Quantizer(int quant_xsize, int quant_ysize) :
 
 bool Quantizer::SetQuantField(const float quant_dc, const ImageF& qf) {
   bool changed = false;
-  float range_min, range_max;
-  ImageMinMax(qf, &range_min, &range_max);
-  range_max = std::max(range_max, quant_dc);
-  range_min = std::min(range_min, quant_dc);
-  float range_dynamic = std::min(16.0f, range_max / range_min);
-  // We want range_max to map to 8 * sqrt(range_dynamic) and therefore
-  // range_min would map to 8 / sqrt(range_dynamic).
-  float log_global_scale =
-      std::log(range_max / (8.0 * sqrt(range_dynamic))) / std::log(2);
-  int global_scale_shift =
-      std::min(15, static_cast<int>(-log_global_scale + 0.5));
-  int new_global_scale = kGlobalScaleDenom >> global_scale_shift;
+  int new_global_scale = 4096 * quant_dc;
   if (new_global_scale != global_scale_) {
     global_scale_ = new_global_scale;
     changed = true;
@@ -317,28 +309,27 @@ bool Quantizer::SetQuantField(const float quant_dc, const ImageF& qf) {
     const float* const PIK_RESTRICT kDequantMatrix = DequantMatrix();
     std::vector<float> quant_matrix(192);
     for (int i = 0; i < quant_matrix.size(); ++i) {
-      quant_matrix[i] = 1.0f / (64.0f * kDequantMatrix[i]);
+      quant_matrix[i] = 1.0f / kDequantMatrix[i];
     }
     const float qdc = scale * quant_dc_;
-    const float scale64 = scale * 64.0f;
-    const float qdc64 = qdc * 64.0f;
     for (int y = 0; y < quant_ysize_; ++y) {
       auto row_q = quant_img_ac_.Row(y);
       auto row_scale = scale_.Row(y);
       for (int x = 0; x < quant_xsize_; ++x) {
         const int offset = x * 64;
-        const float qac64 = scale64 * row_q[x];
+        const float qac = scale * row_q[x];
         for (int c = 0; c < 3; ++c) {
           const float* const PIK_RESTRICT qm = &quant_matrix[c * 64];
           for (int k = 0; k < 64; ++k) {
-            row_scale[c][offset + k] = qac64 * qm[k];
+            row_scale[c][offset + k] = qac * qm[k];
           }
-          row_scale[c][offset] = qdc64 * qm[0];
+          row_scale[c][offset] = qdc * qm[0];
         }
       }
     }
     inv_global_scale_ = 1.0f / scale;
     inv_quant_dc_ = 1.0f / qdc;
+    inv_quant_patch_ = inv_global_scale_ / quant_patch_;
     initialized_ = true;
   }
   return changed;
@@ -356,25 +347,54 @@ void Quantizer::GetQuantField(float* quant_dc, ImageF* qf) {
 }
 
 std::string Quantizer::Encode(PikImageSizeInfo* info) const {
-  return (std::string(1, (global_scale_ - 1) >> 8) +
-          std::string(1, (global_scale_ - 1) & 0xff) +
-          std::string(1, quant_dc_ - 1) +
-          EncodePlane(quant_img_ac_, 1, kQuantMax, info));
-}
-
-size_t Quantizer::EncodedSize() const {
-  return (3 + EncodedPlaneSize(quant_img_ac_, 1, kQuantMax));
+  EncodedIntPlane encoded_plane =
+      EncodePlane(quant_img_ac_, 1, kQuantMax, kSupertileInBlocks, info);
+  std::stringstream ss;
+  ss << std::string(1, (global_scale_ - 1) >> 8);
+  ss << std::string(1, (global_scale_ - 1) & 0xff);
+  ss << std::string(1, quant_patch_ - 1);
+  ss << std::string(1, quant_dc_ - 1);
+  ss << encoded_plane.preamble;
+  for (int y = 0; y < encoded_plane.tiles.size(); y++) {
+    for (int x = 0; x < encoded_plane.tiles[0].size(); x++) {
+      ss << encoded_plane.tiles[y][x];
+    }
+  }
+  if (info) {
+    info->total_size += 4;
+  }
+  return ss.str();
 }
 
 bool Quantizer::Decode(BitReader* br) {
   global_scale_ = br->ReadBits(8) << 8;
   global_scale_ += br->ReadBits(8) + 1;
+  quant_patch_ = br->ReadBits(8) + 1;
   quant_dc_ = br->ReadBits(8) + 1;
-  if (!DecodePlane(br, 1, kQuantMax, &quant_img_ac_)) {
+  IntPlaneDecoder decoder(1, kQuantMax, kSupertileInBlocks);
+  if (!decoder.LoadPreamble(br)) {
     return false;
+  }
+  size_t tile_ysize =
+      (quant_img_ac_.ysize() + kSupertileInBlocks - 1) / kSupertileInBlocks;
+  size_t tile_xsize =
+      (quant_img_ac_.xsize() + kSupertileInBlocks - 1) / kSupertileInBlocks;
+  for (int y = 0; y < tile_ysize; y++) {
+    for (int x = 0; x < tile_xsize; x++) {
+      Image<int> tile =
+          Window(&quant_img_ac_, x * kSupertileInBlocks, y * kSupertileInBlocks,
+                 std::min<int>(kSupertileInBlocks,
+                               quant_img_ac_.xsize() - kSupertileInBlocks * x),
+                 std::min<int>(kSupertileInBlocks,
+                               quant_img_ac_.ysize() - kSupertileInBlocks * y));
+      if (!decoder.DecodeTile(br, &tile)) {
+        return false;
+      }
+    }
   }
   inv_global_scale_ = kGlobalScaleDenom * 1.0 / global_scale_;
   inv_quant_dc_ = inv_global_scale_ / quant_dc_;
+  inv_quant_patch_ = inv_global_scale_ / quant_patch_;
   initialized_ = true;
   return true;
 }

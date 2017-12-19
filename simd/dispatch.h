@@ -43,16 +43,14 @@ constexpr bool IsSupported<NONE>(const int targets) {
   return true;
 }
 
-// Chooses "kTarget", the best instruction set supported by the current CPU,
-// and returns func.operator()<Target>(args). The dispatch overhead is low,
-// about 4 cycles, but this should be called infrequently. The member function
-// template (as opposed to a class template) allows stateful functors.
+// Chooses "kTarget", the best instruction set in "supported", and returns
+// func.operator()<Target>(args). The dispatch overhead is low, about 4 cycles,
+// but this should be called infrequently. The member function template (as
+// opposed to a class template) allows stateful functors.
 template <class Func, typename... Args>
-SIMD_INLINE auto Run(Func&& func, Args&&... args)
+SIMD_INLINE auto Run(const int supported, Func&& func, Args&&... args)
     -> decltype(std::forward<Func>(func).template operator()<NONE>(
         std::forward<Args>(args)...)) {
-  const int supported = SupportedTargets();
-  (void)supported;
   // NOTE: check SIMD_ENABLE rather than SIMD_ENABLE_* because the latter may
   // require additional build flags not specified for this translation unit.
 #if (SIMD_ENABLE & SIMD_AVX2) && (SIMD_ARCH == SIMD_ARCH_X86)

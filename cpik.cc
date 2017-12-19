@@ -27,8 +27,9 @@ namespace pik {
 namespace {
 
 // main() function, within namespace for convenience.
-int Compress(const char* pathname_in, const float butteraugli_distance,
-             const char* pathname_out, const bool fast_mode) {
+int Compress(const char* pathname_in, const char* pathname_out,
+             const float butteraugli_distance, const size_t target_size,
+             const bool fast_mode, const bool verbose) {
 #if SIMD_ENABLE_AVX2
   if ((dispatch::SupportedTargets() & SIMD_AVX2) == 0) {
     fprintf(stderr, "Cannot continue because CPU lacks AVX2/FMA support.\n");
@@ -47,20 +48,22 @@ int Compress(const char* pathname_in, const float butteraugli_distance,
     return 1;
   }
 
+  CompressParams params;
+
   if (fast_mode) {
     printf("Compressing with fast mode\n");
+    params.fast_mode = true;
+    params.butteraugli_distance = -1;
+  } else if (target_size > 0) {
+    printf("Compressing to target size %zd\n", target_size);
+    params.target_size = target_size;
+    params.butteraugli_distance = -1;
   } else {
     printf("Compressing with maximum Butteraugli distance %f\n",
            butteraugli_distance);
+    params.butteraugli_distance = butteraugli_distance;
   }
 
-  CompressParams params;
-  params.butteraugli_distance = butteraugli_distance;
-  params.alpha_channel = in.HasAlpha();
-  if (fast_mode) {
-    params.fast_mode = true;
-    params.butteraugli_distance = -1;
-  }
   PaddedBytes compressed;
   PikInfo aux_out;
   if (!PixelsToPik(params, in, &compressed, &aux_out)) {
@@ -69,6 +72,9 @@ int Compress(const char* pathname_in, const float butteraugli_distance,
   }
 
   printf("Compressed to %zu bytes\n", compressed.size());
+  if (verbose) {
+    aux_out.Print(1);
+  }
 
   FILE* f = fopen(pathname_out, "wb");
   if (f == nullptr) {
@@ -106,7 +112,9 @@ void ExitWithArgError(int argc, char** argv) {
 
 int main(int argc, char** argv) {
   bool fast_mode = false;
+  bool verbose = false;
   const char* arg_maxError = nullptr;
+  const char* arg_maxSize = nullptr;
   const char* arg_in = nullptr;
   const char* arg_out = nullptr;
   for (int i = 1; i < argc; i++) {
@@ -114,12 +122,20 @@ int main(int argc, char** argv) {
       std::string arg = argv[i];
       if (arg == "--fast") {
         fast_mode = true;
+      } else if (arg == "-v") {
+        verbose = true;
       } else if (arg == "--distance") {
         if (i + 1 >= argc) {
           printf("Must give a distance value\n");
           ExitWithArgError(argc, argv);
         }
         arg_maxError = argv[++i];
+      } else if (arg == "--target_size") {
+        if (i + 1 >= argc) {
+          printf("Must give a size value\n");
+          ExitWithArgError(argc, argv);
+        }
+        arg_maxSize = argv[++i];
       } else if (arg == "--help") {
         PrintArgHelp(argc, argv);
         return 0;
@@ -136,6 +152,12 @@ int main(int argc, char** argv) {
     }
   }
 
+  if (arg_maxError && arg_maxSize) {
+    fprintf(stderr,
+            "Only one of --distance or --target_size can be specified.\n");
+    ExitWithArgError(argc, argv);
+  }
+
   float butteraugli_distance = 1.0;
   if (arg_maxError) {
     butteraugli_distance = strtod(arg_maxError, nullptr);
@@ -146,9 +168,15 @@ int main(int argc, char** argv) {
     }
   }
 
+  size_t target_size = 0;
+  if (arg_maxSize) {
+    target_size = strtoul(arg_maxSize, nullptr, 0);
+  }
+
   if (!arg_in || !arg_out) {
     ExitWithArgError(argc, argv);
   }
 
-  return pik::Compress(arg_in, butteraugli_distance, arg_out, fast_mode);
+  return pik::Compress(arg_in, arg_out, butteraugli_distance, target_size,
+                       fast_mode, verbose);
 }

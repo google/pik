@@ -15,13 +15,22 @@
 #ifndef HISTOGRAM_H_
 #define HISTOGRAM_H_
 
+#include <vector>
+
+#include "compiler_specific.h"
+
 namespace pik {
 
 // Returns the precision (number of bits) that should be used to store
 // a histogram count such that Log2Floor(count) == logcount.
-inline int GetPopulationCountPrecision(int logcount) {
+PIK_INLINE int GetPopulationCountPrecision(int logcount) {
   return (logcount + 1) >> 1;
 }
+
+// Returns a histogram where the counts are positive, differ by at most 1,
+// and add up to total_count. The bigger counts (if any) are at the beginning
+// of the histogram.
+std::vector<int> CreateFlatHistogram(int length, int total_count);
 
 }  // namespace pik
 

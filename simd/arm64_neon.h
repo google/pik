@@ -159,16 +159,6 @@ struct raw_arm8<float, 1> {
   using type = float32x2_t;
 };
 
-// All 128-bit blocks equal; returned from load_dup128.
-template <typename T, size_t N = ARM8::NumLanes<T>()>
-struct dup128x1 {
-  using Raw = typename raw_arm8<T, N>::type;
-
-  explicit dup128x1(const Raw raw) : raw(raw) {}
-
-  Raw raw;
-};
-
 template <typename T, size_t N = ARM8::NumLanes<T>()>
 class vec_arm8 {
   using Raw = typename raw_arm8<T, N>::type;
@@ -209,11 +199,6 @@ class vec_arm8 {
 template <typename T, size_t N>
 struct VecT<T, N, ARM8> {
   using type = vec_arm8<T, N>;
-};
-
-template <typename T>
-struct Dup128T<T, ARM8> {
-  using type = dup128x1<T>;
 };
 
 using u8x16 = vec_arm8<uint8_t, 16>;
@@ -471,6 +456,16 @@ SIMD_INLINE vec_arm8<T, N> iota(Desc<T, N, ARM8> d, const T2 first) {
   return load(d, lanes);
 }
 
+// Returns a vector with uninitialized elements.
+template <typename T, size_t N>
+SIMD_INLINE vec_arm8<T, N> undefined(Desc<T, N, ARM8> d) {
+  SIMD_DIAGNOSTICS(push)
+  SIMD_DIAGNOSTICS_OFF(disable : 4701, ignored "-Wuninitialized")
+  typename raw_arm8<T, N>::type a;
+  return vec_arm8<T, N>(a);
+  SIMD_DIAGNOSTICS(pop)
+}
+
 // ================================================== ARITHMETIC
 
 // ------------------------------ Addition
@@ -666,15 +661,15 @@ SIMD_INLINE vec_arm8<uint16_t, N> avg(const vec_arm8<uint16_t, N> a,
 // Returns absolute value, except that LimitsMin() maps to LimitsMax() + 1.
 template <size_t N>
 SIMD_INLINE vec_arm8<int8_t, N> abs(const vec_arm8<int8_t, N> v) {
-  return vec_arm8<int8_t, N>(vabs_s8(v.raw));
+  return vec_arm8<int8_t, N>(vabsq_s8(v.raw));
 }
 template <size_t N>
 SIMD_INLINE vec_arm8<int16_t, N> abs(const vec_arm8<int16_t, N> v) {
-  return vec_arm8<int16_t, N>(vabs_s16(v.raw));
+  return vec_arm8<int16_t, N>(vabsq_s16(v.raw));
 }
 template <size_t N>
 SIMD_INLINE vec_arm8<int32_t, N> abs(const vec_arm8<int32_t, N> v) {
-  return vec_arm8<int32_t, N>(vabs_s32(v.raw));
+  return vec_arm8<int32_t, N>(vabsq_s32(v.raw));
 }
 
 // ------------------------------ Shift lanes by constant #bits
@@ -1515,8 +1510,24 @@ SIMD_INLINE vec_arm8<double, N> operator^(const vec_arm8<double, N> a,
 
 // ------------------------------ Select/blend
 
-// Returns mask ? b : a. Due to ARM's semantics, each lane of "mask" must
-// equal T(0) or ~T(0) although x86 may only check the most significant bit.
+// Returns a mask for use by select().
+// blendv_ps/pd only check the sign bit, so this is a no-op on x86.
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> selector_from_sign(const vec_arm8<float, N> v) {
+  const Part<float, N> df;
+  const Part<int32_t, N> di;
+  return cast_to(df, shift_right<31>(cast_to(di, v)));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> selector_from_sign(
+    const vec_arm8<double, N> v) {
+  const Part<double, N> df;
+  const Part<int64_t, N> di;
+  return cast_to(df, shift_right<63>(cast_to(di, v)));
+}
+
+// Returns mask ? b : a. "mask" must either have been returned by
+// selector_from_mask, or callers must ensure its lanes are T(0) or ~T(0).
 template <size_t N>
 SIMD_INLINE vec_arm8<uint8_t, N> select(const vec_arm8<uint8_t, N> a,
                                         const vec_arm8<uint8_t, N> b,
@@ -1630,9 +1641,9 @@ SIMD_INLINE vec_arm8<T> load(Full<T, ARM8> d, const T* SIMD_RESTRICT p) {
 
 // 128-bit SIMD => nothing to duplicate, same as an unaligned load.
 template <typename T>
-SIMD_INLINE dup128x1<T> load_dup128(Full<T, ARM8> d,
+SIMD_INLINE vec_arm8<T> load_dup128(Full<T, ARM8> d,
                                     const T* const SIMD_RESTRICT p) {
-  return dup128x1<T>(load_unaligned(d, p).raw);
+  return load_unaligned(d, p);
 }
 
 // ------------------------------ Load 64
@@ -1684,53 +1695,49 @@ SIMD_INLINE vec_arm8<double, 1> load(Desc<double, 1, ARM8>,
 // It is a required parameter to the intrinsic, however
 // we don't actually care what is in it, and we don't want
 // to introduce extra overhead by initializing it to something.
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wuninitialized"
 
-SIMD_INLINE vec_arm8<uint8_t, 4> load(Desc<uint8_t, 4, ARM8>,
+SIMD_INLINE vec_arm8<uint8_t, 4> load(Desc<uint8_t, 4, ARM8> d,
                                       const uint8_t* SIMD_RESTRICT p) {
-  uint32x2_t a;
+  uint32x2_t a = undefined(d).raw;
   uint32x2_t b = vld1_lane_u32(reinterpret_cast<const uint32_t*>(p), a, 0);
   return vec_arm8<uint8_t, 4>(vreinterpret_u8_u32(b));
 }
-SIMD_INLINE vec_arm8<uint16_t, 2> load(Desc<uint16_t, 2, ARM8>,
+SIMD_INLINE vec_arm8<uint16_t, 2> load(Desc<uint16_t, 2, ARM8> d,
                                        const uint16_t* SIMD_RESTRICT p) {
-  uint32x2_t a;
+  uint32x2_t a = undefined(d).raw;
   uint32x2_t b = vld1_lane_u32(reinterpret_cast<const uint32_t*>(p), a, 0);
   return vec_arm8<uint16_t, 2>(vreinterpret_u16_u32(b));
 }
-SIMD_INLINE vec_arm8<uint32_t, 1> load(Desc<uint32_t, 1, ARM8>,
+SIMD_INLINE vec_arm8<uint32_t, 1> load(Desc<uint32_t, 1, ARM8> d,
                                        const uint32_t* SIMD_RESTRICT p) {
-  uint32x2_t a;
+  uint32x2_t a = undefined(d).raw;
   uint32x2_t b = vld1_lane_u32(p, a, 0);
   return vec_arm8<uint32_t, 1>(b);
 }
-SIMD_INLINE vec_arm8<int8_t, 4> load(Desc<int8_t, 4, ARM8>,
+SIMD_INLINE vec_arm8<int8_t, 4> load(Desc<int8_t, 4, ARM8> d,
                                      const int8_t* SIMD_RESTRICT p) {
-  int32x2_t a;
+  int32x2_t a = undefined(d).raw;
   int32x2_t b = vld1_lane_s32(reinterpret_cast<const int32_t*>(p), a, 0);
   return vec_arm8<int8_t, 4>(vreinterpret_s8_s32(b));
 }
-SIMD_INLINE vec_arm8<int16_t, 2> load(Desc<int16_t, 2, ARM8>,
+SIMD_INLINE vec_arm8<int16_t, 2> load(Desc<int16_t, 2, ARM8> d,
                                       const int16_t* SIMD_RESTRICT p) {
-  int32x2_t a;
+  int32x2_t a = undefined(d).raw;
   int32x2_t b = vld1_lane_s32(reinterpret_cast<const int32_t*>(p), a, 0);
   return vec_arm8<int16_t, 2>(vreinterpret_s16_s32(b));
 }
-SIMD_INLINE vec_arm8<int32_t, 1> load(Desc<int32_t, 1, ARM8>,
+SIMD_INLINE vec_arm8<int32_t, 1> load(Desc<int32_t, 1, ARM8> d,
                                       const int32_t* SIMD_RESTRICT p) {
-  int32x2_t a;
+  int32x2_t a = undefined(d).raw;
   int32x2_t b = vld1_lane_s32(p, a, 0);
   return vec_arm8<int32_t, 1>(b);
 }
-SIMD_INLINE vec_arm8<float, 1> load(Desc<float, 1, ARM8>,
+SIMD_INLINE vec_arm8<float, 1> load(Desc<float, 1, ARM8> d,
                                     const float* SIMD_RESTRICT p) {
-  float32x2_t a;
+  float32x2_t a = undefined(d).raw;
   float32x2_t b = vld1_lane_f32(p, a, 0);
   return vec_arm8<float, 1>(b);
 }
-
-#pragma clang diagnostic pop
 
 // ------------------------------ Store 128
 
@@ -1782,12 +1789,6 @@ template <typename T, size_t N>
 SIMD_INLINE void store(vec_arm8<T, N> v, Desc<T, N, ARM8> d,
                        T* SIMD_RESTRICT p) {
   store_unaligned(v, d, p);
-}
-
-template <typename T, size_t N>
-SIMD_INLINE void store(const dup128x1<T, N> v, Full<T, ARM8> d,
-                       T* SIMD_RESTRICT aligned) {
-  store(vec_arm8<T>(v.raw), d, aligned);
 }
 
 // ------------------------------ Store 64
@@ -1914,6 +1915,10 @@ SIMD_INLINE vec_arm8<int32_t> convert_to(Full<int32_t, ARM8>,
   return vec_arm8<int32_t>(vmovl_u16(v.raw));
 }
 
+SIMD_INLINE vec_arm8<uint32_t> u32_from_u8(const vec_arm8<uint8_t> v) {
+  return convert_to(Full<uint32_t, ARM8>(), v);
+}
+
 // Signed: replicate sign bit.
 SIMD_INLINE vec_arm8<int16_t> convert_to(Full<int16_t, ARM8>,
                                          const vec_arm8<int8_t, 8> v) {
@@ -1961,8 +1966,8 @@ SIMD_INLINE vec_arm8<int8_t, 8> convert_to(Part<int8_t, 8, ARM8>,
 // In the following convert_to functions, |b| is purposely undefined.
 // The value a needs to be extended to 128 bits so that vqmovn can be
 // used and |b| is undefined so that no extra overhead is introduced.
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wuninitialized"
+SIMD_DIAGNOSTICS(push)
+SIMD_DIAGNOSTICS_OFF(disable : 4701, ignored "-Wuninitialized")
 
 SIMD_INLINE vec_arm8<uint8_t, 4> convert_to(Part<uint8_t, 4, ARM8>,
                                             const vec_arm8<int32_t> v) {
@@ -1980,7 +1985,7 @@ SIMD_INLINE vec_arm8<int8_t, 4> convert_to(Part<int8_t, 4, ARM8>,
   return vec_arm8<int8_t, 4>(vqmovn_s16(c));
 }
 
-#pragma clang diagnostic pop
+SIMD_DIAGNOSTICS(pop)
 
 // ------------------------------ Convert i32 <=> f32
 
@@ -2069,7 +2074,7 @@ SIMD_INLINE vec_arm8<T, N> shift_bytes_right(const vec_arm8<T, N> v) {
 // Unsigned
 template <int kLane>
 SIMD_INLINE vec_arm8<uint16_t> broadcast(const vec_arm8<uint16_t> v) {
-  static_assert(0 <= kLane && kLane < 4, "Invalid lane");
+  static_assert(0 <= kLane && kLane < 8, "Invalid lane");
   return vec_arm8<uint16_t>(vdupq_laneq_u16(v.raw, kLane));
 }
 template <int kLane>
@@ -2086,7 +2091,7 @@ SIMD_INLINE vec_arm8<uint64_t> broadcast(const vec_arm8<uint64_t> v) {
 // Signed
 template <int kLane>
 SIMD_INLINE vec_arm8<int16_t> broadcast(const vec_arm8<int16_t> v) {
-  static_assert(0 <= kLane && kLane < 4, "Invalid lane");
+  static_assert(0 <= kLane && kLane < 8, "Invalid lane");
   return vec_arm8<int16_t>(vdupq_laneq_s16(v.raw, kLane));
 }
 template <int kLane>
@@ -2255,64 +2260,62 @@ SIMD_INLINE vec_arm8<double> interleave_hi(const vec_arm8<double> a,
   return vec_arm8<double>(vzip2q_s64(a.raw, b.raw));
 }
 
-//// ------------------------------ Zip lanes
-//
-//// Same as interleave_*, except that the return lanes are double-width
-/// integers; / this is necessary because the single-lane scalar cannot return
-/// two values.
-//
-// SIMD_INLINE vec_arm8<uint16_t> zip_lo(const vec_arm8<uint8_t> a, const
-// vec_arm8<uint8_t> b) {
-//  return vec_arm8<uint16_t>(_mm_unpacklo_epi8(a.raw, b.raw));
-//}
-// SIMD_INLINE vec_arm8<uint32_t> zip_lo(const vec_arm8<uint16_t> a, const
-// vec_arm8<uint16_t> b) {
-//  return vec_arm8<uint32_t>(_mm_unpacklo_epi16(a.raw, b.raw));
-//}
-// SIMD_INLINE vec_arm8<uint64_t> zip_lo(const vec_arm8<uint32_t> a, const
-// vec_arm8<uint32_t> b) {
-//  return vec_arm8<uint64_t>(_mm_unpacklo_epi32(a.raw, b.raw));
-//}
-//
-// SIMD_INLINE vec_arm8<int16_t> zip_lo(const vec_arm8<int8_t> a, const
-// vec_arm8<int8_t> b) {
-//  return vec_arm8<int16_t>(_mm_unpacklo_epi8(a.raw, b.raw));
-//}
-// SIMD_INLINE vec_arm8<int32_t> zip_lo(const vec_arm8<int16_t> a, const
-// vec_arm8<int16_t> b) {
-//  return vec_arm8<int32_t>(_mm_unpacklo_epi16(a.raw, b.raw));
-//}
-// SIMD_INLINE vec_arm8<int64_t> zip_lo(const vec_arm8<int32_t> a, const
-// vec_arm8<int32_t> b) {
-//  return vec_arm8<int64_t>(_mm_unpacklo_epi32(a.raw, b.raw));
-//}
-//
-// SIMD_INLINE vec_arm8<uint16_t> zip_hi(const vec_arm8<uint8_t> a, const
-// vec_arm8<uint8_t> b) {
-//  return vec_arm8<uint16_t>(_mm_unpackhi_epi8(a.raw, b.raw));
-//}
-// SIMD_INLINE vec_arm8<uint32_t> zip_hi(const vec_arm8<uint16_t> a, const
-// vec_arm8<uint16_t> b) {
-//  return vec_arm8<uint32_t>(_mm_unpackhi_epi16(a.raw, b.raw));
-//}
-// SIMD_INLINE vec_arm8<uint64_t> zip_hi(const vec_arm8<uint32_t> a, const
-// vec_arm8<uint32_t> b) {
-//  return vec_arm8<uint64_t>(_mm_unpackhi_epi32(a.raw, b.raw));
-//}
-//
-// SIMD_INLINE vec_arm8<int16_t> zip_hi(const vec_arm8<int8_t> a, const
-// vec_arm8<int8_t> b) {
-//  return vec_arm8<int16_t>(_mm_unpackhi_epi8(a.raw, b.raw));
-//}
-// SIMD_INLINE vec_arm8<int32_t> zip_hi(const vec_arm8<int16_t> a, const
-// vec_arm8<int16_t> b) {
-//  return vec_arm8<int32_t>(_mm_unpackhi_epi16(a.raw, b.raw));
-//}
-// SIMD_INLINE vec_arm8<int64_t> zip_hi(const vec_arm8<int32_t> a, const
-// vec_arm8<int32_t> b) {
-//  return vec_arm8<int64_t>(_mm_unpackhi_epi32(a.raw, b.raw));
-//}
-//
+// ------------------------------ Zip lanes
+
+// Same as interleave_*, except that the return lanes are double-width integers;
+// this is necessary because the single-lane scalar cannot return two values.
+
+SIMD_INLINE vec_arm8<uint16_t> zip_lo(const vec_arm8<uint8_t> a,
+                                      const vec_arm8<uint8_t> b) {
+  return vec_arm8<uint16_t>(vzip1q_u8(a.raw, b.raw));
+}
+SIMD_INLINE vec_arm8<uint32_t> zip_lo(const vec_arm8<uint16_t> a,
+                                      const vec_arm8<uint16_t> b) {
+  return vec_arm8<uint32_t>(vzip1q_u16(a.raw, b.raw));
+}
+SIMD_INLINE vec_arm8<uint64_t> zip_lo(const vec_arm8<uint32_t> a,
+                                      const vec_arm8<uint32_t> b) {
+  return vec_arm8<uint64_t>(vzip1q_u32(a.raw, b.raw));
+}
+
+SIMD_INLINE vec_arm8<int16_t> zip_lo(const vec_arm8<int8_t> a,
+                                     const vec_arm8<int8_t> b) {
+  return vec_arm8<int16_t>(vzip1q_s8(a.raw, b.raw));
+}
+SIMD_INLINE vec_arm8<int32_t> zip_lo(const vec_arm8<int16_t> a,
+                                     const vec_arm8<int16_t> b) {
+  return vec_arm8<int32_t>(vzip1q_s16(a.raw, b.raw));
+}
+SIMD_INLINE vec_arm8<int64_t> zip_lo(const vec_arm8<int32_t> a,
+                                     const vec_arm8<int32_t> b) {
+  return vec_arm8<int64_t>(vzip1q_s32(a.raw, b.raw));
+}
+
+SIMD_INLINE vec_arm8<uint16_t> zip_hi(const vec_arm8<uint8_t> a,
+                                      const vec_arm8<uint8_t> b) {
+  return vec_arm8<uint16_t>(vzip2q_u8(a.raw, b.raw));
+}
+SIMD_INLINE vec_arm8<uint32_t> zip_hi(const vec_arm8<uint16_t> a,
+                                      const vec_arm8<uint16_t> b) {
+  return vec_arm8<uint32_t>(vzip2q_u16(a.raw, b.raw));
+}
+SIMD_INLINE vec_arm8<uint64_t> zip_hi(const vec_arm8<uint32_t> a,
+                                      const vec_arm8<uint32_t> b) {
+  return vec_arm8<uint64_t>(vzip2q_u32(a.raw, b.raw));
+}
+
+SIMD_INLINE vec_arm8<int16_t> zip_hi(const vec_arm8<int8_t> a,
+                                     const vec_arm8<int8_t> b) {
+  return vec_arm8<int16_t>(vzip2q_s8(a.raw, b.raw));
+}
+SIMD_INLINE vec_arm8<int32_t> zip_hi(const vec_arm8<int16_t> a,
+                                     const vec_arm8<int16_t> b) {
+  return vec_arm8<int32_t>(vzip2q_s16(a.raw, b.raw));
+}
+SIMD_INLINE vec_arm8<int64_t> zip_hi(const vec_arm8<int32_t> a,
+                                     const vec_arm8<int32_t> b) {
+  return vec_arm8<int64_t>(vzip2q_s32(a.raw, b.raw));
+}
 
 // ------------------------------ Parts
 
@@ -2414,8 +2417,8 @@ SIMD_INLINE vec_arm8<T> broadcast_part(Full<T, ARM8>, const vec_arm8<T, N> v) {
 
 // Single block => already broadcasted/interleaved.
 template <typename T>
-SIMD_INLINE dup128x1<T> broadcast_block(const vec_arm8<T> v) {
-  return dup128x1<T>(v.raw);
+SIMD_INLINE vec_arm8<T> broadcast_block(const vec_arm8<T> v) {
+  return vec_arm8<T>(v.raw);
 }
 
 // hiH,hiL loH,loL |-> hiL,loL (= lower halves)
@@ -2452,6 +2455,33 @@ SIMD_INLINE vec_arm8<T> concat_hi_lo(const vec_arm8<T> hi,
       0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0};
   return select(hi, lo,
                 cast_to(Full<T, ARM8>(), load(Full<uint8_t, ARM8>(), mask)));
+}
+
+// ------------------------------ Odd/even lanes
+
+template<typename T>
+SIMD_INLINE vec_arm8<T> odd_even(
+    const vec_arm8<T> a, const vec_arm8<T> b) {
+  const Full<uint8_t, ARM8> d8;
+  SIMD_ALIGN constexpr uint8_t mask[16] = {
+    ((0 / sizeof(T)) & 1)  ? 0 : 0xFF,
+    ((1 / sizeof(T)) & 1)  ? 0 : 0xFF,
+    ((2 / sizeof(T)) & 1)  ? 0 : 0xFF,
+    ((3 / sizeof(T)) & 1)  ? 0 : 0xFF,
+    ((4 / sizeof(T)) & 1)  ? 0 : 0xFF,
+    ((5 / sizeof(T)) & 1)  ? 0 : 0xFF,
+    ((6 / sizeof(T)) & 1)  ? 0 : 0xFF,
+    ((7 / sizeof(T)) & 1)  ? 0 : 0xFF,
+    ((8 / sizeof(T)) & 1)  ? 0 : 0xFF,
+    ((9 / sizeof(T)) & 1)  ? 0 : 0xFF,
+    ((10 / sizeof(T)) & 1) ? 0 : 0xFF,
+    ((11 / sizeof(T)) & 1) ? 0 : 0xFF,
+    ((12 / sizeof(T)) & 1) ? 0 : 0xFF,
+    ((13 / sizeof(T)) & 1) ? 0 : 0xFF,
+    ((14 / sizeof(T)) & 1) ? 0 : 0xFF,
+    ((15 / sizeof(T)) & 1) ? 0 : 0xFF,
+  };
+  return select(a, b, load(d8, mask));
 }
 
 // ================================================== MISC

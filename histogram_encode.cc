@@ -45,15 +45,27 @@ template<bool minimize_error_of_sum> bool RebalanceHistogram(
     int* counts) {
   int sum = 0;
   float sum_nonrounded = 0.0;
-  int remainder_pos = -1;
+  int remainder_pos = 0;  // if all of them are handled in first loop
   int remainder_log = -1;
+  for (int n = 0; n < max_symbol; ++n) {
+    if (targets[n] > 0 && targets[n] < 1.0) {
+      counts[n] = 1;
+      sum_nonrounded += targets[n];
+      sum += counts[n];
+    }
+  }
+  const float discount_ratio =
+      (table_size - sum) / (table_size - sum_nonrounded);
+  PIK_ASSERT(discount_ratio > 0);
+  PIK_ASSERT(discount_ratio <= 1.0);
   // Invariant for minimize_error_of_sum == true:
   // abs(sum - sum_nonrounded)
   //   <= SmallestIncrement(max(targets[])) + max_symbol
   for (int n = 0; n < max_symbol; ++n) {
-    if (targets[n] > 0) {
+    if (targets[n] >= 1.0) {
       sum_nonrounded += targets[n];
-      counts[n] = static_cast<uint32_t>(targets[n] + .5);  // round
+      counts[n] =
+          static_cast<uint32_t>(targets[n] * discount_ratio);  // truncate
       if (counts[n] == 0) counts[n] = 1;
       if (counts[n] == table_size) counts[n] = table_size - 1;
       // Round the count to the closest nonzero multiple of SmallestIncrement
@@ -61,6 +73,7 @@ template<bool minimize_error_of_sum> bool RebalanceHistogram(
       // keep the sum as close as possible to sum_nonrounded.
       int inc = SmallestIncrement(counts[n]);
       counts[n] -= counts[n] & (inc - 1);
+      // TODO(user): Should we rescale targets[n]?
       const float target =
           minimize_error_of_sum ? (sum_nonrounded - sum) : targets[n];
       if (counts[n] == 0 || (target > counts[n] + inc / 2 &&
@@ -82,7 +95,7 @@ template<bool minimize_error_of_sum> bool RebalanceHistogram(
 }
 
 
-void NormalizeCounts(int* counts, int* omit_pos, const int length,
+bool NormalizeCounts(int* counts, int* omit_pos, const int length,
                      const int precision_bits, int* num_symbols, int* symbols) {
   const int table_size = 1 << precision_bits;  // target sum / table size
   uint64_t total = 0;
@@ -100,13 +113,14 @@ void NormalizeCounts(int* counts, int* omit_pos, const int length,
   }
   *num_symbols = symbol_count;
   if (symbol_count == 0) {
-    return;
+    return true;
   }
   if (symbol_count == 1) {
     counts[symbols[0]] = table_size;
-    return;
+    return true;
   }
-  PIK_ASSERT(symbol_count <= table_size);
+  if (symbol_count > table_size)
+    return PIK_FAILURE("Too many entries in an ANS histogram");
 
   const float norm = 1.f * table_size / total;
   std::vector<float> targets(max_symbol);
@@ -117,9 +131,12 @@ void NormalizeCounts(int* counts, int* omit_pos, const int length,
                                  counts)) {
     // Use an alternative rebalancing mechanism if the one above failed
     // to create a histogram that is positive wherever the original one was.
-    PIK_CHECK(RebalanceHistogram<true>(&targets[0], max_symbol, table_size,
-                                       omit_pos, counts));
+    if (!RebalanceHistogram<true>(&targets[0], max_symbol, table_size,
+                                  omit_pos, counts)) {
+      return PIK_FAILURE("Logic error: couldn't rebalance a histogram");;
+    }
   }
+  return true;
 }
 
 void StoreVarLenUint16(size_t n, size_t* storage_ix, uint8_t* storage) {
@@ -157,6 +174,8 @@ void EncodeCounts(const int* counts,
     }
   } else {
     // Mark non-small tree.
+    WriteBits(1, 0, storage_ix, storage);
+    // Mark non-flat histogram.
     WriteBits(1, 0, storage_ix, storage);
 
     int length = 0;
@@ -199,6 +218,17 @@ void EncodeCounts(const int* counts,
       }
     }
   }
+}
+
+void EncodeFlatHistogram(const int alphabet_size,
+                         size_t* storage_ix,
+                         uint8_t* storage) {
+  // Mark non-small tree.
+  WriteBits(1, 0, storage_ix, storage);
+  // Mark uniform histogram.
+  WriteBits(1, 1, storage_ix, storage);
+  // Encode alphabet size.
+  WriteBits(ANS_LOG_TAB_SIZE, alphabet_size, storage_ix, storage);
 }
 
 float PopulationCost(const int* data, int alphabet_size, int total_count) {

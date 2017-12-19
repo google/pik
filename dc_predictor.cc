@@ -22,10 +22,35 @@
 namespace pik {
 namespace SIMD_NAMESPACE {
 namespace {
+
 constexpr size_t kNumPredictors = 8;
-using DI = Part<int16_t, kNumPredictors, SIMD_TARGET>;
-using DU = Part<uint16_t, kNumPredictors, SIMD_TARGET>;
-using D8 = Part<uint8_t, kNumPredictors * 2, SIMD_TARGET>;
+#if SIMD_TARGET_VALUE == SIMD_NONE
+using DI = Scalar<int16_t>;
+// For predictors and costs.
+struct VIx8 {
+  DI::V lanes[kNumPredictors];
+};
+// For U, V.
+struct VIx2 {
+  DI::V lanes[2];
+};
+PIK_INLINE VIx2 operator+(const VIx2& a, const VIx2& b) {
+  VIx2 ret;
+  ret.lanes[0] = a.lanes[0] + b.lanes[0];
+  ret.lanes[1] = a.lanes[1] + b.lanes[1];
+  return ret;
+}
+PIK_INLINE VIx2 operator-(const VIx2& a, const VIx2& b) {
+  VIx2 ret;
+  ret.lanes[0] = a.lanes[0] - b.lanes[0];
+  ret.lanes[1] = a.lanes[1] - b.lanes[1];
+  return ret;
+}
+#else
+using DI = Part<int16_t, kNumPredictors>;
+using VIx8 = DI::V;
+using VIx2 = Part<int16_t, 2>::V;
+#endif
 
 // Not the same as avg, which rounds rather than truncates!
 template <class V>
@@ -47,9 +72,30 @@ PIK_INLINE V AbsResidual(const V c, const V pred) {
   return abs(sub_sat(c, pred));
 }
 
+#if SIMD_TARGET_VALUE == SIMD_NONE
+
+PIK_INLINE size_t IndexOfMinCost(const VIx8& abs_costs) {
+  const DI d;
+  // Algorithm must exactly match minpus_epu16.
+  size_t idx_pred = 0;
+  int16_t min_cost = get_part(d, abs_costs.lanes[0]);
+  for (size_t i = 0; i < kNumPredictors; ++i) {
+    const int16_t cost = get_part(d, abs_costs.lanes[i]);
+    if (cost < min_cost) {
+      min_cost = cost;
+      idx_pred = i;
+    }
+  }
+  return idx_pred;
+}
+
+#else
+
 // Returns a shuffle mask for moving lane i to lane 0 (i = argmin abs_costs[i]).
-// This is used for selecting the best predictor(s).
-PIK_INLINE u8x16 ShuffleForMinCost(const DI::V abs_costs) {
+// This is used for selecting the best predictor(s). The shuffle also broadcasts
+// the result to all lanes so that callers can use any_part.
+PIK_INLINE u8x16 ShuffleForMinCost(const VIx8 abs_costs) {
+  using D8 = Part<uint8_t, kNumPredictors * 2>;
   const D8 d8;
   // Replicates index16 returned from minpos into all bytes.
   SIMD_ALIGN const uint8_t kIdx[16] = {2, 2, 2, 2, 2, 2, 2, 2,
@@ -61,16 +107,14 @@ PIK_INLINE u8x16 ShuffleForMinCost(const DI::V abs_costs) {
   const auto high_byte = load(d8, kHighByte);
   // Note: minpos is unsigned; LimitsMin (a large absolute value) will have a
   // higher cost than any other value.
+  using DU = Part<uint16_t, kNumPredictors>;
   const auto idx_min = ext::minpos(cast_to(DU(), abs_costs));
   const auto idx_idx = shuffle_bytes(idx_min, bytes_from_idx);
   const auto byte_idx = idx_idx + idx_idx;  // shift left by 1 => byte index
   return cast_to(d8, byte_idx) + high_byte;
 }
 
-// Return value is broadcasted into all lanes => caller can use any_part.
-PIK_INLINE DI::V SelectMinCost(const DI::V pred, const D8::V shuffle) {
-  return shuffle_bytes(pred, shuffle);
-}
+#endif
 
 // Sliding window of "causal" (already decoded) pixels, plus simple functions
 // to predict the next pixel "c" from its neighbors: l n r
@@ -97,20 +141,20 @@ PIK_INLINE DI::V SelectMinCost(const DI::V pred, const D8::V shuffle) {
 class PixelNeighborsY {
  public:
   // Single Y value.
-  using PixelD = Part<int16_t, 1, SIMD_TARGET>;
+  using PixelD = Part<int16_t, 1>;
+  using PixelV = PixelD::V;
 
-  static PIK_INLINE PixelD::V LoadPixel(const DC* const PIK_RESTRICT row,
-                                        const size_t x) {
+  static PIK_INLINE PixelV LoadPixel(const DC* const PIK_RESTRICT row,
+                                     const size_t x) {
     return set_part(PixelD(), row[x]);
   }
 
-  static PIK_INLINE void StorePixel(const PixelD::V dc,
-                                    DC* const PIK_RESTRICT row,
+  static PIK_INLINE void StorePixel(const PixelV dc, DC* const PIK_RESTRICT row,
                                     const size_t x) {
     row[x] = get_part(PixelD(), dc);
   }
 
-  static PIK_INLINE DI::V Broadcast(const PixelD::V dc) {
+  static PIK_INLINE DI::V Broadcast(const PixelV dc) {
     return broadcast_part<0>(DI(), dc);
   }
 
@@ -129,40 +173,63 @@ class PixelNeighborsY {
     l_ = set1(d, row_m[1]);
     n_ = set1(d, row_m[2]);
     w_ = set1(d, row_b[1]);
-    pred_w_ = Predict(l_, ww, wl, n_);
+    Predict(l_, ww, wl, n_, &pred_w_);
   }
 
   // Estimates "cost" for each predictor by comparing with known n and w.
-  PIK_INLINE DI::V PredictorCosts(const size_t x,
-                                  const DC* const PIK_RESTRICT row_ym,
-                                  const DC* const PIK_RESTRICT row_yb,
-                                  const DC* const PIK_RESTRICT row_t) {
+  PIK_INLINE void PredictorCosts(const size_t x,
+                                 const DC* const PIK_RESTRICT row_ym,
+                                 const DC* const PIK_RESTRICT row_yb,
+                                 const DC* const PIK_RESTRICT row_t,
+                                 VIx8* PIK_RESTRICT costs) {
     const auto tr = Broadcast(LoadPixel(row_t, x + 1));
-    const auto costs =
-        AbsResidual(n_, Predict(tn_, l_, tl_, tr)) + AbsResidual(w_, pred_w_);
+    VIx8 pred_n;
+    Predict(tn_, l_, tl_, tr, &pred_n);
+#if SIMD_TARGET_VALUE == SIMD_NONE
+    for (size_t i = 0; i < kNumPredictors; ++i) {
+      costs->lanes[i] =
+          AbsResidual(n_, pred_n.lanes[i]) + AbsResidual(w_, pred_w_.lanes[i]);
+    }
+#else
+    *costs = AbsResidual(n_, pred_n) + AbsResidual(w_, pred_w_);
+#endif
     tl_ = tn_;
     tn_ = tr;
-    return costs;
   }
 
   // Returns predictor for pixel c with min cost and updates pred_w_.
-  PIK_INLINE PixelD::V PredictC(const PixelD::V r, const DI::V costs) {
-    const auto pred_c = Predict(n_, w_, l_, Broadcast(r));
+  PIK_INLINE PixelV PredictC(const PixelV r, const VIx8 costs) {
+    VIx8 pred_c;
+    Predict(n_, w_, l_, Broadcast(r), &pred_c);
     pred_w_ = pred_c;
-    const auto shuffle = ShuffleForMinCost(costs);
-    return any_part(PixelD(), SelectMinCost(pred_c, shuffle));
+#if SIMD_TARGET_VALUE == SIMD_NONE
+    return pred_c.lanes[IndexOfMinCost(costs)];
+#else
+    return any_part(PixelD(), shuffle_bytes(pred_c, ShuffleForMinCost(costs)));
+#endif
   }
 
-  PIK_INLINE void Advance(const PixelD::V r, const PixelD::V c) {
+  PIK_INLINE void Advance(const PixelV r, const PixelV c) {
     l_ = n_;
     n_ = Broadcast(r);
     w_ = Broadcast(c);
   }
 
  private:
-  // All arguments are broadcasted.
-  static PIK_INLINE DI::V Predict(const DI::V n, const DI::V w, const DI::V l,
-                                  const DI::V r) {
+  // All input arguments are broadcasted.
+  static PIK_INLINE void Predict(const DI::V n, const DI::V w, const DI::V l,
+                                 const DI::V r, VIx8* PIK_RESTRICT pred) {
+#if SIMD_TARGET_VALUE == SIMD_NONE
+    // Eight predictors for luminance (decreases coded size by ~0.5% vs four)
+    pred->lanes[0] = Average(Average(n, w), r);
+    pred->lanes[1] = Average(w, n);
+    pred->lanes[2] = Average(n, r);
+    pred->lanes[3] = Average(w, l);
+    pred->lanes[4] = Average(n, l);
+    pred->lanes[5] = w;
+    pred->lanes[6] = ClampedGradient(n, w, l);
+    pred->lanes[7] = n;
+#else
     // "x" are invalid/don't care lanes.
     const auto vRN = interleave_lo(n, r);
     const auto v6 = ClampedGradient(n, w, l);
@@ -173,16 +240,8 @@ class PixelNeighborsY {
     const auto vx765xxxx = interleave_lo(vNWNWNWNW, v6);
     const auto vx7654321 = concat_hi_lo(vx765xxxx, vAxxx4321);
     const auto v0xxxxxxx = Average(vAxxx4321, r);
-    // Eight predictors for luminance (decreases coded size by ~0.5% vs four)
-    // 0: Average(Average(n, w), r);
-    // 1: Average(w, n);
-    // 2: Average(n, r);
-    // 3: Average(w, l);
-    // 4: Average(n, l);
-    // 5: w;
-    // 6: PredClampedGrad(n, w, l);
-    // 7: n;
-    return extract_concat_bytes<14>(vx7654321, v0xxxxxxx);
+    *pred = extract_concat_bytes<14>(vx7654321, v0xxxxxxx);
+#endif
   }
 
   DI::V tl_;
@@ -191,7 +250,7 @@ class PixelNeighborsY {
   DI::V w_;
   DI::V l_;
   // (30% overall speedup by reusing the current prediction as the next pred_w_)
-  DI::V pred_w_;
+  VIx8 pred_w_;
 };
 
 // Providing separate sets of predictors for the luminance and chrominance bands
@@ -199,18 +258,32 @@ class PixelNeighborsY {
 // chrominance bands does not.
 class PixelNeighborsUV {
  public:
-  // UV (U in higher lane, V loaded first).
-  using PixelD = Part<int16_t, 2, SIMD_TARGET>;
+#if SIMD_TARGET_VALUE != SIMD_NONE
+  using PixelD = Part<int16_t, 2>;
+#endif
+  using PixelV = VIx2;
 
-  static PIK_INLINE PixelD::V LoadPixel(const DC* const PIK_RESTRICT row,
-                                        const size_t x) {
+  // U in lane1, V in lane0.
+  static PIK_INLINE PixelV LoadPixel(const DC* const PIK_RESTRICT row,
+                                     const size_t x) {
+#if SIMD_TARGET_VALUE == SIMD_NONE
+    PixelV ret;
+    ret.lanes[0] = load(DI(), row + 2 * x + 0);  // V
+    ret.lanes[1] = load(DI(), row + 2 * x + 1);  // U
+    return ret;
+#else
     return load(PixelD(), row + 2 * x);
+#endif
   }
 
-  static PIK_INLINE void StorePixel(const PixelD::V uv,
-                                    DC* const PIK_RESTRICT row,
+  static PIK_INLINE void StorePixel(const PixelV uv, DC* const PIK_RESTRICT row,
                                     const size_t x) {
+#if SIMD_TARGET_VALUE == SIMD_NONE
+    store(uv.lanes[0], DI(), row + 2 * x + 0);  // V
+    store(uv.lanes[1], DI(), row + 2 * x + 1);  // U
+#else
     store(uv, PixelD(), row + 2 * x);
+#endif
   }
 
   PixelNeighborsUV(const DC* const PIK_RESTRICT row_ym,
@@ -228,48 +301,83 @@ class PixelNeighborsUV {
   }
 
   // Estimates "cost" for each predictor by comparing with known c from Y band.
-  PIK_INLINE DI::V PredictorCosts(const size_t x,
-                                  const DC* const PIK_RESTRICT row_ym,
-                                  const DC* const PIK_RESTRICT row_yb,
-                                  const DC* const PIK_RESTRICT) {
+  PIK_INLINE void PredictorCosts(const size_t x,
+                                 const DC* const PIK_RESTRICT row_ym,
+                                 const DC* const PIK_RESTRICT row_yb,
+                                 const DC* const PIK_RESTRICT,
+                                 VIx8* PIK_RESTRICT costs) {
     const auto yr = set1(DI(), row_ym[x + 1]);
     const auto yc = set1(DI(), row_yb[x]);
-    const auto costs = AbsResidual(yc, Predict(yn_, yw_, yl_, yr));
+    VIx8 pred_y;
+    Predict(yn_, yw_, yl_, yr, &pred_y);
+#if SIMD_TARGET_VALUE == SIMD_NONE
+    for (size_t i = 0; i < kNumPredictors; ++i) {
+      costs->lanes[i] = AbsResidual(yc, pred_y.lanes[i]);
+    }
+#else
+    *costs = AbsResidual(yc, pred_y);
+#endif
     yl_ = yn_;
     yn_ = yr;
     yw_ = yc;
-    return costs;
   }
 
   // Returns predictor for pixel c with min cost.
-  PIK_INLINE PixelD::V PredictC(const PixelD::V r, const DI::V costs) const {
-    const DI::V pred_u =
-        Predict(BroadcastU(n_), BroadcastU(w_), BroadcastU(l_), BroadcastU(r));
-    const DI::V pred_v =
-        Predict(BroadcastV(n_), BroadcastV(w_), BroadcastV(l_), BroadcastV(r));
+  PIK_INLINE PixelV PredictC(const PixelV r, const VIx8& costs) const {
+    VIx8 u, v;
+    Predict(BroadcastU(n_), BroadcastU(w_), BroadcastU(l_), BroadcastU(r), &u);
+    Predict(BroadcastV(n_), BroadcastV(w_), BroadcastV(l_), BroadcastV(r), &v);
+
+#if SIMD_TARGET_VALUE == SIMD_NONE
+    const size_t idx_pred = IndexOfMinCost(costs);
+    PixelV ret;
+    ret.lanes[0] = v.lanes[idx_pred];
+    ret.lanes[1] = u.lanes[idx_pred];
+    return ret;
+#else
     const auto shuffle = ShuffleForMinCost(costs);
-    const auto best_u = SelectMinCost(pred_u, shuffle);
-    const auto best_v = SelectMinCost(pred_v, shuffle);
+    const auto best_u = shuffle_bytes(u, shuffle);
+    const auto best_v = shuffle_bytes(v, shuffle);
     return any_part(PixelD(), interleave_lo(best_v, best_u));
+#endif
   }
 
-  PIK_INLINE void Advance(const PixelD::V r, const PixelD::V c) {
+  PIK_INLINE void Advance(const PixelV r, const PixelV c) {
     l_ = n_;
     n_ = r;
     w_ = c;
   }
 
  private:
-  static PIK_INLINE DI::V BroadcastU(const PixelD::V uv) {
+  static PIK_INLINE DI::V BroadcastU(const PixelV uv) {
+#if SIMD_TARGET_VALUE == SIMD_NONE
+    return uv.lanes[1];
+#else
     return broadcast_part<1>(DI(), uv);
+#endif
   }
-  static PIK_INLINE DI::V BroadcastV(const PixelD::V uv) {
+  static PIK_INLINE DI::V BroadcastV(const PixelV uv) {
+#if SIMD_TARGET_VALUE == SIMD_NONE
+    return uv.lanes[0];
+#else
     return broadcast_part<0>(DI(), uv);
+#endif
   }
 
   // All arguments are broadcasted.
-  static PIK_INLINE DI::V Predict(const DI::V n, const DI::V w, const DI::V l,
-                                  const DI::V r) {
+  static PIK_INLINE void Predict(const DI::V n, const DI::V w, const DI::V l,
+                                 const DI::V r, VIx8* PIK_RESTRICT pred) {
+#if SIMD_TARGET_VALUE == SIMD_NONE
+    // Eight predictors for chrominance:
+    pred->lanes[0] = ClampedGradient(n, w, l);
+    pred->lanes[1] = Average(n, w);
+    pred->lanes[2] = n;
+    pred->lanes[3] = Average(n, r);
+    pred->lanes[4] = w;
+    pred->lanes[5] = Average(w, l);
+    pred->lanes[6] = r;
+    pred->lanes[7] = Average(Average(w, r), n);
+#else
     // "x" lanes are unused.
     const auto v0 = ClampedGradient(n, w, l);
     const auto vRN = interleave_lo(n, r);
@@ -281,24 +389,16 @@ class PixelNeighborsUV {
     const auto v531A = Average(vLNNW, vWRWR);
     const auto v6543210x = interleave_lo(v531A, vRWN0);
     const auto v7 = Average(v531A, n);
-    // Eight predictors for chrominance:
-    // 0: ClampedGrad(n, w, l);
-    // 1: Average2(n, w);
-    // 2: n;
-    // 3: Average2(n, r);
-    // 4: w;
-    // 5: Average2(w, l);
-    // 6: r;
-    // 7: Average2(Average2(w, r), n);
-    return extract_concat_bytes<2>(v7, v6543210x);
+    *pred = extract_concat_bytes<2>(v7, v6543210x);
+#endif
   }
 
   DI::V yn_;
   DI::V yw_;
   DI::V yl_;
-  PixelD::V n_;
-  PixelD::V w_;
-  PixelD::V l_;
+  PixelV n_;
+  PixelV w_;
+  PixelV l_;
 };
 
 // Computes residuals of a fixed predictor (the preceding pixel W).
@@ -386,7 +486,7 @@ struct RightBorder1 {
 // pointers are unused and may be null if N = PixelNeighborsY.
 template <class N>
 class Adaptive {
-  using PixelV = typename N::PixelD::V;
+  using PixelV = typename N::PixelV;
 
  public:
   static void Shrink(const size_t xsize, const DC* const PIK_RESTRICT row_ym,
@@ -442,7 +542,8 @@ class Adaptive {
     // PixelNeighborsY uses w at x - 1 => two pixel margin.
     for (size_t x = 2; x < xsize - 1; ++x) {
       const auto r = N::LoadPixel(row_m, x + 1);
-      const auto costs = neighbors.PredictorCosts(x, row_ym, row_yb, row_t);
+      VIx8 costs;
+      neighbors.PredictorCosts(x, row_ym, row_yb, row_t, &costs);
       const auto pred_c = neighbors.PredictC(r, costs);
       const auto c = func(x, pred_c);
       neighbors.Advance(r, c);

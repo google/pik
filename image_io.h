@@ -86,6 +86,9 @@ struct ImageFormatPlanes {
 MetaImageF ReadMetaImageLinear(const std::string& pathname);
 Image3F ReadImage3Linear(const std::string& pathname);
 
+// Converts to sRGB and writes to format auto-detected from "pathname".
+void WriteImageLinear(const ImageF& linear, const std::string& pathname);
+void WriteImageLinear(const Image3F& linear, const std::string& pathname);
 
 // Writes after linear rescaling to 0-255.
 template <class Format>
@@ -123,6 +126,8 @@ bool ReadImage(ImageFormatPNG, const std::string&, ImageU*);
 bool ReadImage(ImageFormatPNG, const std::string&, Image3B*);
 bool ReadImage(ImageFormatPNG, const std::string&, Image3W*);
 bool ReadImage(ImageFormatPNG, const std::string&, Image3U*);
+bool ReadImage(ImageFormatPNG, const std::string&, MetaImageB*);
+bool ReadImage(ImageFormatPNG, const std::string&, MetaImageU*);
 
 bool WriteImage(ImageFormatPNG, const ImageB&, const std::string&);
 bool WriteImage(ImageFormatPNG, const ImageW&, const std::string&);
@@ -139,6 +144,9 @@ bool ReadImage(ImageFormatY4M, const std::string&, Image3B*);
 bool ReadImage(ImageFormatY4M, const std::string& pathname, Image3U* image,
                int* bit_depth);
 
+// Unsupported (will return false) but required by WriteLinear.
+bool WriteImage(ImageFormatY4M, const ImageB&, const std::string&);
+
 bool WriteImage(ImageFormatY4M, const Image3B&, const std::string&);
 bool WriteImage(ImageFormatY4M, const Image3U&, const std::string&);
 
@@ -147,6 +155,10 @@ bool WriteImage(ImageFormatY4M, const Image3U&, const std::string&);
 bool ReadImage(ImageFormatJPG, const std::string&, Image3B*);
 
 bool ReadImage(ImageFormatJPG, const uint8_t* buf, size_t size, Image3B*);
+
+// Unsupported (will return false) but required by WriteLinear.
+bool WriteImage(ImageFormatJPG, const ImageB&, const std::string&);
+bool WriteImage(ImageFormatJPG, const Image3B&, const std::string&);
 
 // Planes - text header, raw (linear) 2D array[s] with padding
 

@@ -46,15 +46,6 @@ struct HuffmanDecodingData {
   // Returns false if the Huffman code lengths can not de decoded.
   bool ReadFromBitStream(BitReader* input);
 
-  void ReorderSymbols(const uint8_t* symbol_lut, const size_t symbol_lut_size) {
-    for (size_t i = 0; i < table_.size(); ++i) {
-      if (table_[i].bits <= kHuffmanTableBits &&
-          table_[i].value < symbol_lut_size) {
-        table_[i].value = symbol_lut[table_[i].value];
-      }
-    }
-  }
-
   std::vector<HuffmanCode> table_;
 };
 
