@@ -40,9 +40,13 @@ void ComputeBlockIDCTFloat(float block[64]);
 // The algorithm is described in the book JPEG: Still Image Data Compression
 // Standard, section 4.3.5.
 static const float kIDCTScales[8] = {
-  0.3535533906f, 0.4903926402f, 0.4619397663f, 0.4157348062f,
-  0.3535533906f, 0.2777851165f, 0.1913417162f, 0.0975451610f,
-};
+    0.3535533906f, 0.4903926402f, 0.4619397663f, 0.4157348062f,
+    0.3535533906f, 0.2777851165f, 0.1913417162f, 0.0975451610f};
+
+static const float kRecipIDCTScales[8] = {
+    1.0 / 0.3535533906f, 1.0 / 0.4903926402f, 1.0 / 0.4619397663f,
+    1.0 / 0.4157348062f, 1.0 / 0.3535533906f, 1.0 / 0.2777851165f,
+    1.0 / 0.1913417162f, 1.0 / 0.0975451610f};
 
 // Same as ComputeBlockDCTFloat(), but the output is further transformed with
 // the following:
@@ -57,6 +61,8 @@ void ComputeTransposedScaledBlockDCTFloat(float block[64]);
 //     block[8 * kx + ky] / (kIDCTScales[kx] * kIDCTScales[ky])
 // Requires that block is 32-bytes aligned.
 void ComputeTransposedScaledBlockIDCTFloat(float block[64]);
+
+void TransposeBlock(float block[64]);
 
 }  // namespace pik
 

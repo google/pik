@@ -24,7 +24,7 @@ using namespace SIMD_NAMESPACE;
 constexpr size_t kMaxLanes = Full<float>::N;
 using D = Part<float, SIMD_MIN(8, kMaxLanes)>;
 
-PIK_INLINE void TransposeBlock(float block[64]) {
+void TransposeBlock(float block[64]) {
 #if SIMD_TARGET_VALUE == SIMD_AVX2
   const D d;
   const auto p0 = load(d, block + 0);

@@ -1,4 +1,5 @@
-#include <stdio.h>
+#include <cstdio>
+#include <random>
 
 #include "af_stats.h"
 #include "noise.h"

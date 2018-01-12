@@ -24,6 +24,7 @@ PIK_OBJS := $(addprefix obj/, \
 	gamma_correct.o \
 	gauss_blur.o \
 	header.o \
+	linalg.o \
 	pik.o \
 	pik_alpha.o \
 	huffman_decode.o \

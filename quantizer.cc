@@ -268,6 +268,38 @@ int ClampVal(int val) {
   return std::min(kQuantMax, std::max(1, val));
 }
 
+ImageD ComputeBlockDistanceQForm(const double lambda,
+                                 const float* const PIK_RESTRICT scales) {
+  ImageD A = Identity<double>(64);
+  for (int ky = 0, k = 0; ky < 8; ++ky) {
+    for (int kx = 0; kx < 8; ++kx, ++k) {
+      const float scale =
+          kRecipIDCTScales[kx] * kRecipIDCTScales[ky] / scales[k];
+      A.Row(k)[k] *= scale * scale;
+    }
+  }
+  for (int i = 0; i < 8; ++i) {
+    const double scale_i = kRecipIDCTScales[i];
+    for (int k = 0; k < 8; ++k) {
+      const double sign_k = (k % 2 == 0 ? 1.0 : -1.0);
+      const double scale_k = kRecipIDCTScales[k];
+      const double scale_ik = scale_i * scale_k / scales[8 * i + k];
+      const double scale_ki = scale_i * scale_k / scales[8 * k + i];
+      for (int l = 0; l < 8; ++l) {
+        const double sign_l = (l % 2 == 0 ? 1.0 : -1.0);
+        const double scale_l = kRecipIDCTScales[l];
+        const double scale_il = scale_i * scale_l / scales[8 * i + l];
+        const double scale_li = scale_i * scale_l / scales[8 * l + i];
+        A.Row(8 * i + k)[8 * i + l] +=
+            (1.0 + sign_k * sign_l) * lambda * scale_ik * scale_il;
+        A.Row(8 * k + i)[8 * l + i] +=
+            (1.0 + sign_k * sign_l) * lambda * scale_ki * scale_li;
+      }
+    }
+  }
+  return A;
+}
+
 Quantizer::Quantizer(int quant_xsize, int quant_ysize) :
     quant_xsize_(quant_xsize),
     quant_ysize_(quant_ysize),
@@ -275,11 +307,11 @@ Quantizer::Quantizer(int quant_xsize, int quant_ysize) :
     quant_patch_(kDefaultQuant),
     quant_dc_(kDefaultQuant),
     quant_img_ac_(quant_xsize_, quant_ysize_, kDefaultQuant),
-    scale_(quant_xsize_ * 64, quant_ysize_),
     initialized_(false) {
 }
 
-bool Quantizer::SetQuantField(const float quant_dc, const ImageF& qf) {
+bool Quantizer::SetQuantField(const float quant_dc, const ImageF& qf,
+                              const CompressParams& cparams) {
   bool changed = false;
   int new_global_scale = 4096 * quant_dc;
   if (new_global_scale != global_scale_) {
@@ -314,16 +346,26 @@ bool Quantizer::SetQuantField(const float quant_dc, const ImageF& qf) {
     const float qdc = scale * quant_dc_;
     for (int y = 0; y < quant_ysize_; ++y) {
       auto row_q = quant_img_ac_.Row(y);
-      auto row_scale = scale_.Row(y);
       for (int x = 0; x < quant_xsize_; ++x) {
-        const int offset = x * 64;
         const float qac = scale * row_q[x];
         for (int c = 0; c < 3; ++c) {
-          const float* const PIK_RESTRICT qm = &quant_matrix[c * 64];
-          for (int k = 0; k < 64; ++k) {
-            row_scale[c][offset + k] = qac * qm[k];
+          const uint64_t key = QuantizerKey(x, y, c);
+          if (qmap_.find(key) == qmap_.end()) {
+            const float* const PIK_RESTRICT qm = &quant_matrix[c * 64];
+            BlockQuantizer bq;
+            for (int k = 0; k < 64; ++k) {
+              bq.scales[k] = (k == 0 ? qdc : qac) * qm[k];
+            }
+            if (cparams.quant_border_bias != 0.0) {
+              ImageD A = ComputeBlockDistanceQForm(
+                  cparams.quant_border_bias, &bq.scales[0]);
+              LatticeOptimizer lattice;
+              lattice.InitFromQuadraticForm(A);
+              lattices_.emplace_back(std::move(lattice));
+              bq.lattice_idx = lattices_.size() - 1;
+            }
+            qmap_.insert(std::make_pair(key, std::move(bq)));
           }
-          row_scale[c][offset] = qdc * qm[0];
         }
       }
     }
@@ -449,6 +491,30 @@ Image3F DequantizeCoeffs(const Image3W& in, const Quantizer& quantizer) {
           block_out[k] = block_in[k] * (muls[k] * inv_quant_ac);
         }
         block_out[0] = block_in[0] * (muls[0] * inv_quant_dc);
+      }
+    }
+  }
+  return out;
+}
+
+ImageF QuantizeRoundtrip(const Quantizer& quantizer, int c, const ImageF& img) {
+  const int block_xsize = img.xsize() / 64;
+  const int block_ysize = img.ysize();
+  const float inv_quant_dc = quantizer.inv_quant_dc();
+  const float* const PIK_RESTRICT kDequantMatrix = &DequantMatrix()[c * 64];
+  ImageF out(img.xsize(), img.ysize());
+  for (int block_y = 0; block_y < block_ysize; ++block_y) {
+    const float* const PIK_RESTRICT row_in = img.ConstRow(block_y);
+    float* const PIK_RESTRICT row_out = out.Row(block_y);
+    for (int block_x = 0; block_x < block_xsize; ++block_x) {
+      const float inv_quant_ac = quantizer.inv_quant_ac(block_x, block_y);
+      const float* const PIK_RESTRICT block_in = &row_in[block_x * 64];
+      float* const PIK_RESTRICT block_out = &row_out[block_x * 64];
+      int16_t qblock[64];
+      quantizer.QuantizeBlock(block_x, block_y, c, block_in, qblock);
+      block_out[0] = qblock[0] * (kDequantMatrix[0] * inv_quant_dc);
+      for (int k = 1; k < 64; ++k) {
+        block_out[k] = qblock[k] * (kDequantMatrix[k] * inv_quant_ac);
       }
     }
   }

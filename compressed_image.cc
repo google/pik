@@ -37,7 +37,6 @@ namespace {
 
 static const int kBlockEdge = 8;
 static const int kBlockSize = kBlockEdge * kBlockEdge;
-const float kYToBScale = 128.0f;
 
 }  // namespace
 
@@ -82,22 +81,32 @@ void CenterOpsinValues(Image3F* img) {
   }
 }
 
-void YToBTransform(const Image<int>& ytob_map,
-                   const int ytob_dc,
-                   const float factor,
-                   Image3F* coeffs) {
+void ApplyColorTransform(const ColorTransform& ctan,
+                         const float factor,
+                         const ImageF& y_plane,
+                         Image3F* coeffs) {
   const int bxsize = coeffs->xsize() / kBlockSize;
   const int bysize = coeffs->ysize();
+  const float kYToBScale = 1.0f / 128.0f;
+  const float kYToXScale = 1.0f / 256.0f;
+  const float factor_b = factor * kYToBScale;
+  const float factor_x = factor * kYToXScale;
   for (int y = 0; y < bysize; ++y) {
-    const float* const PIK_RESTRICT row_y = coeffs->ConstPlaneRow(1, y);
+    const float* const PIK_RESTRICT row_y = y_plane.Row(y);
+    float* const PIK_RESTRICT row_x = coeffs->PlaneRow(0, y);
     float* const PIK_RESTRICT row_b = coeffs->PlaneRow(2, y);
     for (int x = 0; x < bxsize; ++x) {
       const int xoff = x * kBlockSize;
       const float ytob_ac =
-          factor * ytob_map.Row(y / kTileInBlocks)[x / kTileInBlocks];
-      row_b[xoff] += factor * ytob_dc * row_y[xoff];
+          factor_b * ctan.ytob_map.Row(y / kTileInBlocks)[x / kTileInBlocks];
+      const float ytox_ac =
+          factor_x * (ctan.ytox_map.Row(y / kTileInBlocks)[x / kTileInBlocks]
+                      - 128);
+      row_b[xoff] += factor_b * ctan.ytob_dc * row_y[xoff];
+      row_x[xoff] += factor_x * (ctan.ytox_dc - 128) * row_y[xoff];
       for (int k = 1; k < kBlockSize; ++k) {
         row_b[xoff + k] += ytob_ac * row_y[xoff + k];
+        row_x[xoff + k] += ytox_ac * row_y[xoff + k];
       }
     }
   }
@@ -150,11 +159,12 @@ void ComputePredictionResiduals(const Quantizer& quantizer,
 QuantizedCoeffs ComputeCoefficients(const CompressParams& params,
                                     const Image3F& opsin,
                                     const Quantizer& quantizer,
-                                    const Image<int>& ytob_map,
-                                    const int ytob_dc) {
+                                    const ColorTransform& ctan) {
   Image3F coeffs = TransposedScaledDCT(opsin);
   ComputePredictionResiduals(quantizer, &coeffs);
-  YToBTransform(ytob_map, ytob_dc, -1.0f / kYToBScale, &coeffs);
+  ApplyColorTransform(ctan, -1.0f,
+                      QuantizeRoundtrip(quantizer, 1, coeffs.plane(1)),
+                      &coeffs);
   QuantizedCoeffs qcoeffs;
   qcoeffs.dct = QuantizeCoeffs(coeffs, quantizer);
   return qcoeffs;
@@ -214,19 +224,19 @@ Image3B ComputeBlockContextFromDC(const Image3W& coeffs,
   return out;
 }
 
-std::string EncodeYToBMap(const Image<int>& ytob_map,
-                          const int ytob_dc,
-                          PikImageSizeInfo* info) {
-  const size_t max_out_size = ytob_map.xsize() * ytob_map.ysize() + 1024;
+std::string EncodeColorMap(const Image<int>& ac_map,
+                           const int dc_val,
+                           PikImageSizeInfo* info) {
+  const size_t max_out_size = ac_map.xsize() * ac_map.ysize() + 1024;
   std::string output(max_out_size, 0);
   size_t storage_ix = 0;
   uint8_t* storage = reinterpret_cast<uint8_t*>(&output[0]);
   storage[0] = 0;
   std::vector<uint32_t> histogram(256);
-  ++histogram[ytob_dc];
-  for (int y = 0; y < ytob_map.ysize(); ++y) {
-    for (int x = 0; x < ytob_map.xsize(); ++x) {
-      ++histogram[ytob_map.Row(y)[x]];
+  ++histogram[dc_val];
+  for (int y = 0; y < ac_map.ysize(); ++y) {
+    for (int x = 0; x < ac_map.xsize(); ++x) {
+      ++histogram[ac_map.Row(y)[x]];
     }
   }
   std::vector<uint8_t> bit_depths(256);
@@ -235,10 +245,10 @@ std::string EncodeYToBMap(const Image<int>& ytob_map,
                            bit_depths.data(), bit_codes.data(),
                            &storage_ix, storage);
   const size_t histo_bits = storage_ix;
-  WriteBits(bit_depths[ytob_dc], bit_codes[ytob_dc], &storage_ix, storage);
-  for (int y = 0; y < ytob_map.ysize(); ++y) {
-    const int* const PIK_RESTRICT row = ytob_map.Row(y);
-    for (int x = 0; x < ytob_map.xsize(); ++x) {
+  WriteBits(bit_depths[dc_val], bit_codes[dc_val], &storage_ix, storage);
+  for (int y = 0; y < ac_map.ysize(); ++y) {
+    const int* const PIK_RESTRICT row = ac_map.Row(y);
+    for (int x = 0; x < ac_map.xsize(); ++x) {
       WriteBits(bit_depths[row[x]], bit_codes[row[x]], &storage_ix, storage);
     }
   }
@@ -256,17 +266,17 @@ std::string EncodeYToBMap(const Image<int>& ytob_map,
 std::string EncodeToBitstream(const QuantizedCoeffs& qcoeffs,
                              const Quantizer& quantizer,
                               const NoiseParams& noise_params,
-                              const Image<int>& ytob_map,
-                              const int ytob_dc,
+                              const ColorTransform& ctan,
                               bool fast_mode,
                               PikInfo* info) {
   const Image3W& qdct = qcoeffs.dct;
   const size_t x_tilesize =
       DivCeil(qdct.xsize(), kSupertileInBlocks * kBlockSize);
   const size_t y_tilesize = DivCeil(qdct.ysize(), kSupertileInBlocks);
-  std::string ytob_code = EncodeYToBMap(
-      ytob_map, ytob_dc,
-      info ? &info->layers[kLayerYToB] : nullptr);
+  PikImageSizeInfo* ctan_info = info ? &info->layers[kLayerCtan] : nullptr;
+  std::string ctan_code =
+      EncodeColorMap(ctan.ytob_map, ctan.ytob_dc, ctan_info) +
+      EncodeColorMap(ctan.ytox_map, ctan.ytox_dc, ctan_info);
   PikImageSizeInfo* quant_info = info ? &info->layers[kLayerQuant] : nullptr;
   PikImageSizeInfo* dc_info = info ? &info->layers[kLayerDC] : nullptr;
   std::string noise_code = EncodeNoise(noise_params);
@@ -285,7 +295,7 @@ std::string EncodeToBitstream(const QuantizedCoeffs& qcoeffs,
   std::string ac_code = fast_mode ?
       EncodeACFast(qdct, block_ctx, info) :
       EncodeAC(qdct, block_ctx, info);
-  std::string out = ytob_code + noise_code + quant_code + dc_code + ac_code;
+  std::string out = ctan_code + noise_code + quant_code + dc_code + ac_code;
   if (info) {
     info->layers[kLayerHeader].total_size += noise_code.size();
     if (out.size() % 4) {
@@ -295,17 +305,17 @@ std::string EncodeToBitstream(const QuantizedCoeffs& qcoeffs,
   return PadTo4Bytes(out);
 }
 
-bool DecodeYToBMap(BitReader* br, Image<int>* ytob_map, int* ytob_dc) {
+bool DecodeColorMap(BitReader* br, Image<int>* ac_map, int* dc_val) {
   HuffmanDecodingData entropy;
   if (!entropy.ReadFromBitStream(br)) {
     return PIK_FAILURE("Invalid histogram data.");
   }
   HuffmanDecoder decoder;
   br->FillBitBuffer();
-  *ytob_dc = decoder.ReadSymbol(entropy, br);
-  for (int y = 0; y < ytob_map->ysize(); ++y) {
-    int* const PIK_RESTRICT row = ytob_map->Row(y);
-    for (int x = 0; x < ytob_map->xsize(); ++x) {
+  *dc_val = decoder.ReadSymbol(entropy, br);
+  for (int y = 0; y < ac_map->ysize(); ++y) {
+    int* const PIK_RESTRICT row = ac_map->Row(y);
+    for (int x = 0; x < ac_map->xsize(); ++x) {
       br->FillBitBuffer();
       row[x] = decoder.ReadSymbol(entropy, br);
     }
@@ -316,16 +326,13 @@ bool DecodeYToBMap(BitReader* br, Image<int>* ytob_map, int* ytob_dc) {
 
 bool DecodeFromBitstream(const uint8_t* data, const size_t data_size,
                          const size_t xsize, const size_t ysize,
-                         Image<int>* ytob_map,
-                         int* ytob_dc,
+                         ColorTransform* ctan,
                          NoiseParams* noise_params,
                          Quantizer* quantizer,
                          QuantizedCoeffs* qcoeffs,
                          size_t* compressed_size) {
   const size_t x_blocksize = DivCeil(xsize, kBlockEdge);
   const size_t y_blocksize = DivCeil(ysize, kBlockEdge);
-  const size_t x_tilesize = DivCeil(xsize, kTileSize);
-  const size_t y_tilesize = DivCeil(ysize, kTileSize);
   const size_t x_stilesize = DivCeil(x_blocksize, kSupertileInBlocks);
   const size_t y_stilesize = DivCeil(y_blocksize, kSupertileInBlocks);
   if (data_size == 0) {
@@ -333,8 +340,8 @@ bool DecodeFromBitstream(const uint8_t* data, const size_t data_size,
   }
   qcoeffs->dct = Image3W(x_blocksize * kBlockSize, y_blocksize);
   BitReader br(data, data_size & ~3);
-  *ytob_map = Image<int>(x_tilesize, y_tilesize);
-  DecodeYToBMap(&br, ytob_map, ytob_dc);
+  DecodeColorMap(&br, &ctan->ytob_map, &ctan->ytob_dc);
+  DecodeColorMap(&br, &ctan->ytox_map, &ctan->ytox_dc);
   if (!DecodeNoise(&br, noise_params)) {
     return PIK_FAILURE("noise decoding failed.");
   }
@@ -364,10 +371,9 @@ bool DecodeFromBitstream(const uint8_t* data, const size_t data_size,
 
 Image3F ReconOpsinImage(const QuantizedCoeffs& qcoeffs,
                         const Quantizer& quantizer,
-                        const Image<int>& ytob_map,
-                        const int ytob_dc) {
+                        const ColorTransform& ctan) {
   Image3F dcoeffs = DequantizeCoeffs(qcoeffs.dct, quantizer);
-  YToBTransform(ytob_map, ytob_dc, 1.0f / kYToBScale, &dcoeffs);
+  ApplyColorTransform(ctan, 1.0f, dcoeffs.plane(1), &dcoeffs);
   Adjust2x2ACFromDC(DCImage(dcoeffs), 1, &dcoeffs);
   Image3F pred = GetPixelSpaceImageFrom2x2Corners(dcoeffs);
   pred = UpSample4x4BlurDCT(pred, 1.5f);

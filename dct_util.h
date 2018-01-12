@@ -5,6 +5,18 @@
 
 namespace pik {
 
+// Returns same size image, such that ComputeBlockIDCTFloat could be called
+// for each block (interpretation/layout: see TransposedScaledIDCT).
+// REQUIRES: xsize() == 64*N
+Image3F UndoTransposeAndScale(const Image3F& transposed_scaled);
+
+// Returns a 8*N x 8*M image where each 8x8 block is produced with
+// ComputeBlockIDCTFloat() from the corresponding 64x1 block of
+// the coefficient image, which is obtained from UndoTransposeAndScale.
+// REQUIRES: coeffs.xsize() == 64*N, coeffs.ysize() == M.
+// Intended for testing deblocking algorithms.
+Image3F SlowIDCT(const Image3F& coeffs);
+
 // Returns a 8*N x 8*M image where each 8x8 block is produced with
 // ComputeTransposedScaledBlockIDCTFloat() from the corresponding 64x1 block of
 // the coefficient image.

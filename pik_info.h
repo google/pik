@@ -65,12 +65,12 @@ static const int kNumImageLayers = 7;
 static const int kLayerHeader = 0;
 static const int kLayerOrder = 1;
 static const int kLayerAlpha = 2;
-static const int kLayerYToB = 3;
+static const int kLayerCtan = 3;
 static const int kLayerQuant = 4;
 static const int kLayerDC = 5;
 static const int kLayerAC = 6;
 static const char* kImageLayers[] = {
-  "header", "order", "alpha", "ytob", "quant", "DC", "AC",
+  "header", "order", "alpha", "ctan", "quant", "DC", "AC",
 };
 
 // Metadata and statistics gathered during compression or decompression.

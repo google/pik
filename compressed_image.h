@@ -19,6 +19,7 @@
 #include <stdint.h>
 #include <string>
 
+#include "common.h"
 #include "image.h"
 #include "noise.h"
 #include "pik_info.h"
@@ -31,6 +32,19 @@ Image3F AlignImage(const Image3F& in, const size_t N);
 
 void CenterOpsinValues(Image3F* img);
 
+struct ColorTransform {
+  ColorTransform(size_t xsize, size_t ysize)
+      : ytob_dc(120), ytox_dc(128),
+        ytob_map(DivCeil(xsize, kTileSize),
+                 DivCeil(ysize, kTileSize), 120),
+        ytox_map(DivCeil(xsize, kTileSize),
+                 DivCeil(ysize, kTileSize), 128) {}
+  int ytob_dc;
+  int ytox_dc;
+  Image<int> ytob_map;
+  Image<int> ytox_map;
+};
+
 struct QuantizedCoeffs {
   Image3W dct;
 };
@@ -38,29 +52,26 @@ struct QuantizedCoeffs {
 void ComputePredictionResiduals(const Quantizer& quantizer,
                                 Image3F* coeffs);
 
-void YToBTransform(const Image<int>& ytob_map,
-                   const int ytob_dc,
-                   const float factor,
-                   Image3F* coeffs);
+void ApplyColorTransform(const ColorTransform& ctan,
+                         const float factor,
+                         const ImageF& y_plane,
+                         Image3F* coeffs);
 
 QuantizedCoeffs ComputeCoefficients(const CompressParams& params,
                                     const Image3F& opsin,
                                     const Quantizer& quantizer,
-                                    const Image<int>& ytob_map,
-                                    const int ytob_dc);
+                                    const ColorTransform& ctan);
 
 std::string EncodeToBitstream(const QuantizedCoeffs& qcoeffs,
                               const Quantizer& quantizer,
                               const NoiseParams& noise_params,
-                              const Image<int>& ytob_map,
-                              const int ytob_dc,
+                              const ColorTransform& ctan,
                               bool fast_mode,
                               PikInfo* info);
 
 bool DecodeFromBitstream(const uint8_t* data, const size_t data_size,
                          const size_t xsize, const size_t ysize,
-                         Image<int>* ytob_map,
-                         int* ytob_dc,
+                         ColorTransform* ctan,
                          NoiseParams* noise_params,
                          Quantizer* quantizer,
                          QuantizedCoeffs* qcoeffs,
@@ -68,8 +79,7 @@ bool DecodeFromBitstream(const uint8_t* data, const size_t data_size,
 
 Image3F ReconOpsinImage(const QuantizedCoeffs& qcoeffs,
                         const Quantizer& quantizer,
-                        const Image<int>& ytob_map,
-                        const int ytob_dc);
+                        const ColorTransform& ctan);
 
 }  // namespace pik
 

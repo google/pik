@@ -20,6 +20,7 @@ struct CompressParams {
   // butteraugli distance, positive values mean quantize everywhere with that
   // value.
   float uniform_quant = 0.0f;
+  float quant_border_bias = 0.0f;
   // If true, will use a compression method that is reasonably fast and aims to
   // find a trade-off between quality and file size that optimizes the
   // quality-adjusted-bits-per-pixel metric.

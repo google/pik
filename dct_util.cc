@@ -7,6 +7,55 @@
 
 namespace pik {
 
+Image3F UndoTransposeAndScale(const Image3F& transposed_scaled) {
+  PIK_ASSERT(transposed_scaled.xsize() % 64 == 0);
+  Image3F out(transposed_scaled.xsize(), transposed_scaled.ysize());
+  alignas(32) float block[64];
+  for (int y = 0; y < transposed_scaled.ysize(); ++y) {
+    for (int x = 0; x < transposed_scaled.xsize(); x += 64) {
+      for (int c = 0; c < 3; ++c) {
+        const auto row_in = transposed_scaled.PlaneRow(c, y);
+        auto row_out = out.PlaneRow(c, y);
+
+        memcpy(block, row_in + x, sizeof(block));
+        TransposeBlock(block);
+
+        for (size_t iy = 0; iy < 8; ++iy) {
+          const float rcp_sy = kRecipIDCTScales[iy];
+          for (size_t ix = 0; ix < 8; ++ix) {
+            block[iy * 8 + ix] *= rcp_sy * kRecipIDCTScales[ix];
+          }
+        }
+        memcpy(row_out + x, block, sizeof(block));
+      }
+    }
+  }
+  return out;
+}
+
+// Same as below, except that coeffs are not transposed/scaled.
+Image3F SlowIDCT(const Image3F& coeffs) {
+  PIK_ASSERT(coeffs.xsize() % 64 == 0);
+  Image3F img(coeffs.xsize() / 8, coeffs.ysize() * 8);
+  alignas(32) float block[64];
+  for (int y = 0; y < coeffs.ysize(); ++y) {
+    const int yoff = y * 8;
+    auto row_in = coeffs.Row(y);
+    for (int x = 0; x < coeffs.xsize(); x += 64) {
+      const int xoff = x / 8;
+      for (int c = 0; c < 3; ++c) {
+        memcpy(block, &row_in[c][x], sizeof(block));
+        ComputeBlockIDCTFloat(block);
+        for (int iy = 0; iy < 8; ++iy) {
+          float* const PIK_RESTRICT row_out = &img.Row(yoff + iy)[c][xoff];
+          memcpy(row_out, &block[iy * 8], 8 * sizeof(block[0]));
+        }
+      }
+    }
+  }
+  return img;
+}
+
 Image3F TransposedScaledIDCT(const Image3F& coeffs) {
   PIK_ASSERT(coeffs.xsize() % 64 == 0);
   Image3F img(coeffs.xsize() / 8, coeffs.ysize() * 8);

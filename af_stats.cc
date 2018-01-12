@@ -1,5 +1,7 @@
 #include "af_stats.h"
 
+#include <numeric>
+
 #include "af_solver.h"
 #include "arch_specific.h"
 #include "simd/simd.h"

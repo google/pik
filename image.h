@@ -226,6 +226,7 @@ using ImageB = Image<uint8_t>;
 // TODO(janwas): rename to ImageS (short/signed)
 using ImageW = Image<int16_t>;  // signed integer or half-float
 using ImageU = Image<uint16_t>;
+using ImageI = Image<int>;
 using ImageF = Image<float>;
 
 template <typename T>
@@ -239,6 +240,12 @@ Image<T> CopyImage(const Image<T>& image) {
     memcpy(row_copy, row, xsize * sizeof(T));
   }
   return copy;
+}
+
+// Also works for Image3 and mixed argument types.
+template <class Image1, class Image2>
+bool SameSize(const Image1& image1, const Image2& image2) {
+  return image1.xsize() == image2.xsize() && image1.ysize() == image2.ysize();
 }
 
 template <typename T>
@@ -429,6 +436,39 @@ bool VerifyPadding(const Image<T>& image) {
   return true;
 }
 
+// Mirrors out of bounds coordinates and returns valid coordinates unchanged.
+// We assume the radius (distance outside the image) is small compared to the
+// image size, otherwise this might not terminate.
+static inline int Mirror(int x, const int xsize) {
+  while (x < 0 || x >= xsize) {
+    if (x < 0) {
+      x = -x - 1;
+    } else {
+      x = 2 * xsize - 1 - x;
+    }
+  }
+  return x;
+}
+
+// Returns a new image with "border" additional pixels on each side, initialized
+// by mirroring.
+template <typename T>
+Image<T> CopyWithMirroredBorder(const Image<T>& in, const int border) {
+  const int ixsize = in.xsize();
+  const int iysize = in.ysize();
+  Image<T> out(ixsize + 2 * border, iysize + 2 * border);
+  for (int iy = -border; iy < iysize + border; ++iy) {
+    const int clamped_y = Mirror(iy, iysize);
+    const T* const PIK_RESTRICT row_in = in.ConstRow(clamped_y);
+    T* const PIK_RESTRICT row_out = out.Row(iy + border) + border;
+    for (int ix = -border; ix < ixsize + border; ++ix) {
+      const int clamped_x = Mirror(ix, ixsize);
+      row_out[ix] = row_in[clamped_x];
+    }
+  }
+  return out;
+}
+
 // Sets "thickness" pixels on each border to "value". This is faster than
 // initializing the entire image and overwriting valid/interior pixels.
 template <typename T>
@@ -491,8 +531,7 @@ void ImageMinMax(const Image<T>& image, T* const PIK_RESTRICT min,
 template <typename FromType, typename ToType>
 void ImageConvert(const Image<FromType>& from, const float to_range,
                   Image<ToType>* const PIK_RESTRICT to) {
-  PIK_ASSERT(from.xsize() == to->xsize());
-  PIK_ASSERT(from.ysize() == to->ysize());
+  PIK_ASSERT(SameSize(from, *to));
   FromType min_from, max_from;
   ImageMinMax(from, &min_from, &max_from);
   const float scale = to_range / (max_from - min_from);
@@ -615,10 +654,8 @@ class Image3 {
   }
 
   Image3(Plane&& plane0, Plane&& plane1, Plane&& plane2) {
-    PIK_CHECK(plane0.xsize() == plane1.xsize());
-    PIK_CHECK(plane0.ysize() == plane1.ysize());
-    PIK_CHECK(plane0.xsize() == plane2.xsize());
-    PIK_CHECK(plane0.ysize() == plane2.ysize());
+    PIK_CHECK(SameSize(plane0, plane1));
+    PIK_CHECK(SameSize(plane0, plane2));
     planes_[0] = std::move(plane0);
     planes_[1] = std::move(plane1);
     planes_[2] = std::move(plane2);
@@ -716,8 +753,7 @@ class MetaImage {
 
   void SetColor(Image3<T>&& color) {
     if (alpha_bit_depth_ > 0) {
-      PIK_CHECK(color.xsize() == alpha_.xsize());
-      PIK_CHECK(color.ysize() == alpha_.ysize());
+      PIK_CHECK(SameSize(color, alpha_));
     }
     color_ = std::move(color);
   }
@@ -733,8 +769,7 @@ class MetaImage {
   }
 
   void SetAlpha(ImageU&& alpha, int bit_depth) {
-    PIK_CHECK(alpha.xsize() == color_.xsize());
-    PIK_CHECK(alpha.ysize() == color_.ysize());
+    PIK_CHECK(SameSize(alpha, color_));
     PIK_CHECK(bit_depth == 8 || bit_depth == 16);
     alpha_bit_depth_ = bit_depth;
     alpha_ = std::move(alpha);
@@ -846,6 +881,15 @@ void SetBorder(const size_t thickness, const T value, Image3<T>* image) {
   }
 }
 
+// Returns a new image with "border" additional pixels on each side, initialized
+// by mirroring.
+template <typename T>
+Image3<T> CopyWithMirroredBorder(const Image3<T>& in, const int border) {
+  return Image3<T>(CopyWithMirroredBorder(in.plane(0), border),
+                   CopyWithMirroredBorder(in.plane(1), border),
+                   CopyWithMirroredBorder(in.plane(2), border));
+}
+
 // Computes independent minimum and maximum values for each plane.
 template <typename T>
 void Image3MinMax(const Image3<T>& image, std::array<T, 3>* min,
@@ -868,8 +912,7 @@ void Image3MinMax(const Image3<T>& image, std::array<T, 3>* min,
 template <typename FromType, typename ToType>
 void Image3Convert(const Image3<FromType>& from, const float to_range,
                    Image3<ToType>* const PIK_RESTRICT to) {
-  PIK_ASSERT(from.xsize() == to->xsize());
-  PIK_ASSERT(from.ysize() == to->ysize());
+  PIK_ASSERT(SameSize(from, *to));
   std::array<FromType, 3> min_from, max_from;
   Image3MinMax(from, &min_from, &max_from);
   float scales[3];

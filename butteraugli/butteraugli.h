@@ -494,17 +494,17 @@ BUTTERAUGLI_INLINE void OpsinAbsorbance(const V &in0, const V &in1,
                                         V *BUTTERAUGLI_RESTRICT out1,
                                         V *BUTTERAUGLI_RESTRICT out2) {
   // https://en.wikipedia.org/wiki/Photopsin absorbance modeling.
-  static const double mixi0 = 0.277084545393;
-  static const double mixi1 = 0.531975134379;
-  static const double mixi2 = 0.0936711872463;
-  static const double mixi3 = 1.08948395785;
-  static const double mixi4 = 0.200053583285;
-  static const double mixi5 = 0.546345344527;
+  static const double mixi0 = 0.27202083655;
+  static const double mixi1 = 0.531074807019;
+  static const double mixi2 = 0.0916746079938;
+  static const double mixi3 = 1.10601810005;
+  static const double mixi4 = 0.197254076081;
+  static const double mixi5 = 0.556419839393;
   static const double mixi6 = mixi2;
   static const double mixi7 = mixi3;
-  static const double mixi8 = 0.0331585203223;
-  static const double mixi9 = 0.0729000776916;
-  static const double mixi10 = 0.0891338081303;
+  static const double mixi8 = 0.0319360816401;
+  static const double mixi9 = 0.0586236857423;
+  static const double mixi10 = 0.0969777322364;
   static const double mixi11 = mixi3;
 
   const V mix0(mixi0);
@@ -609,4 +609,4 @@ static inline double GammaPolynomial(double value) {
 }  // namespace butteraugli
 }  // namespace pik
 
-#endif  // BUTTERAUGLI_H_
+#endif  // BUTTERAUGLI_BUTTERAUGLI_H_
