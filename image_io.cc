@@ -998,7 +998,7 @@ bool WriteImage(ImageFormatPNG, const MetaImageU& image,
   return WritePNGImage(image, pathname);
 }
 
-void jpeg_catch_error(j_common_ptr cinfo) {
+static void jpeg_catch_error(j_common_ptr cinfo) {
   (*cinfo->err->output_message)(cinfo);
   jmp_buf* jpeg_jmpbuf = (jmp_buf*)cinfo->client_data;
   jpeg_destroy(cinfo);
@@ -1028,7 +1028,7 @@ bool ReadJpegImage(const JpegInput& input, Image3B* rgb) {
   jpeg_decompress_struct cinfo;
   jpeg_error_mgr jerr;
   cinfo.err = jpeg_std_error(&jerr);
-  cinfo.do_fancy_upsampling = true;
+  cinfo.do_fancy_upsampling = TRUE;
 
   jmp_buf jpeg_jmpbuf;
   cinfo.client_data = &jpeg_jmpbuf;
