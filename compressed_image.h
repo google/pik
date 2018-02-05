@@ -50,7 +50,8 @@ struct QuantizedCoeffs {
 };
 
 void ComputePredictionResiduals(const Quantizer& quantizer,
-                                Image3F* coeffs);
+                                Image3F* coeffs,
+                                Image3F* predicted_coeffs);
 
 void ApplyColorTransform(const ColorTransform& ctan,
                          const float factor,
@@ -60,7 +61,8 @@ void ApplyColorTransform(const ColorTransform& ctan,
 QuantizedCoeffs ComputeCoefficients(const CompressParams& params,
                                     const Image3F& opsin,
                                     const Quantizer& quantizer,
-                                    const ColorTransform& ctan);
+                                    const ColorTransform& ctan,
+                                    const PikInfo* aux_out);
 
 std::string EncodeToBitstream(const QuantizedCoeffs& qcoeffs,
                               const Quantizer& quantizer,
@@ -77,9 +79,11 @@ bool DecodeFromBitstream(const uint8_t* data, const size_t data_size,
                          QuantizedCoeffs* qcoeffs,
                          size_t* compressed_size);
 
+// Last optional argument receives (if non-null) the scaled DCT coefficients
+// before the final IDCT.
 Image3F ReconOpsinImage(const QuantizedCoeffs& qcoeffs,
-                        const Quantizer& quantizer,
-                        const ColorTransform& ctan);
+                        const Quantizer& quantizer, const ColorTransform& ctan,
+                        Image3F* transposed_scaled_dct = nullptr);
 
 }  // namespace pik
 

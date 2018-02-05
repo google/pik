@@ -27,6 +27,7 @@ PIK_OBJS := $(addprefix obj/, \
 	linalg.o \
 	pik.o \
 	pik_alpha.o \
+	pik_info.o \
 	huffman_decode.o \
 	huffman_encode.o \
 	histogram.o \

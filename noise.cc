@@ -62,9 +62,10 @@ float GetScoreSumsOfAbsoluteDifferences(const Image3F& opsin, const int x,
   const int small_bl_size = block_size / 2;
   const int kNumSAD =
       (block_size - small_bl_size) * (block_size - small_bl_size);
-  const int color_ch = 1;  // Y channel in opsin
   // block_size x block_size reference pixels
   int counter = 0;
+  const int offset = 2;
+
   std::vector<float> sad(kNumSAD, 0);
   for (int y_bl = 0; y_bl + small_bl_size < block_size; ++y_bl) {
     for (int x_bl = 0; x_bl + small_bl_size < block_size; ++x_bl) {
@@ -73,8 +74,11 @@ float GetScoreSumsOfAbsoluteDifferences(const Image3F& opsin, const int x,
       // the center one
       for (int cy = 0; cy < small_bl_size; ++cy) {
         for (int cx = 0; cx < small_bl_size; ++cx) {
-          float center = opsin.PlaneRow(color_ch, y + y_bl)[x + x_bl];
-          float wnd = opsin.PlaneRow(color_ch, y + cy)[x + cx];
+          float wnd = 0.5 * (opsin.PlaneRow(1, y + y_bl + cy)[x + x_bl + cx] +
+                             opsin.PlaneRow(0, y + y_bl + cy)[x + x_bl + cx]);
+          float center =
+              0.5 * (opsin.PlaneRow(1, y + offset + cy)[x + offset + cx] +
+                     opsin.PlaneRow(0, y + offset + cy)[x + offset + cx]);
           sad_sum += std::abs(center - wnd);
         }
       }
@@ -120,8 +124,8 @@ float GetSADThreshold(const Histogram& histogram, const int num_bin) {
 }
 
 float GetValue(const NoiseParams& noise_params, const float x) {
-  const float kMaxNoiseLevel = 0.04;
-  const float kMinNoiseLevel = 0.;
+  const float kMaxNoiseLevel = 1.0f;
+  const float kMinNoiseLevel = 0.0f;
   return ClipMinMax(
       noise_params.alpha * std::pow(x, noise_params.gamma) + noise_params.beta,
       kMinNoiseLevel, kMaxNoiseLevel);
@@ -131,7 +135,7 @@ void AddNoiseToRGB(const float rnd_noise_r, const float rnd_noise_g,
                    const float rnd_noise_cor, const float noise_strength_g,
                    float noise_strength_r, float* x_channel, float* y_channel,
                    float* b_channel) {
-  const float kRGCorr = 0.85;
+  const float kRGCorr = 0.9;
   const float kRGNCorr = 1 - kRGCorr;
 
   // Add noise
@@ -160,9 +164,7 @@ void AddNoise(const NoiseParams& noise_params, Image3F* opsin) {
       GetRandomVector(opsin->xsize(), opsin->ysize());
   std::vector<float> rnd_noise_correlated =
       GetRandomVector(opsin->xsize(), opsin->ysize());
-  // TODO(user) select different parameters for different pik quality
-  const float kQualityConst = 0.9;
-  const float norm_const = 0.32 * kQualityConst;
+  const float norm_const = 0.6;
   for (int y = 0; y < opsin->ysize(); ++y) {
     for (int x = 0; x < opsin->xsize(); ++x) {
       auto row = opsin->Row(y);
@@ -188,14 +190,14 @@ void AddNoise(const NoiseParams& noise_params, Image3F* opsin) {
 }
 
 // F(alpha, beta, gamma| x,y) = (1-n) * sum_i(y_i - (alpha x_i ^ gamma +
-// beta))^2 + n * alpha.
+// beta))^2 + n * alpha * gamma.
 struct LossFunction {
   explicit LossFunction(const std::vector<NoiseLevel>& nl0) : nl(nl0) {}
 
   double Compute(const std::vector<double>& w, std::vector<double>* df) const {
     double loss_function = 0;
     const double kEpsilon = 1e-2;
-    const double kRegul = 0.1;
+    const double kRegul = 0.00005;
     (*df)[0] = 0;
     (*df)[1] = 0;
     (*df)[2] = 0;
@@ -204,12 +206,13 @@ struct LossFunction {
       if (shifted_intensity > kEpsilon) {
         double l_f =
             nl[ind].noise_level - (w[0] * pow(shifted_intensity, w[1]) + w[2]);
-        (*df)[0] +=
-            (1 - kRegul) * 2.0 * l_f * pow(shifted_intensity, w[1]) + kRegul;
+        (*df)[0] += (1 - kRegul) * 2.0 * l_f * pow(shifted_intensity, w[1]) +
+                    kRegul * w[1];
         (*df)[1] += (1 - kRegul) * 2.0 * l_f * w[0] *
-                    pow(shifted_intensity, w[1]) * log(shifted_intensity);
+                        pow(shifted_intensity, w[1]) * log(shifted_intensity) +
+                    kRegul * w[0];
         (*df)[2] += (1 - kRegul) * 2.0 * l_f;
-        loss_function += (1 - kRegul) * l_f * l_f + kRegul * w[0];
+        loss_function += (1 - kRegul) * l_f * l_f + kRegul * w[0] * w[1];
       }
     }
     return loss_function;
@@ -239,27 +242,19 @@ void AddPointsForExtrapolation(std::vector<NoiseLevel>* noise_level) {
   noise_level->push_back(nl_max);
 }
 
-void GetNoiseParameter(const Image3F& opsin, const float percent,
-                       NoiseParams* noise_params) {
+void GetNoiseParameter(const Image3F& opsin, NoiseParams* noise_params) {
   // The size of a patch in decoder might be different from encoder's patch
   // size.
   // For encoder: the patch size should be big enough to estimate
   //              noise level, but, at the same time, it should be not too big
   //              to be able to estimate intensity value of the patch
   const int block_s = 8;
-
-  // TODO(user) choose the best model to select "flat" patches
-  // std::vector<float> texture_strength = GetTextureStrength(opsin, block_s);
-  // const int n_patches = std::floor(texture_strength.size() * percent);
-  // float threshold = GetThresholdFlatIndices(texture_strength, n_patches);
-  // std::vector<NoiseLevel> nl =
-  //     GetNoiseLevel(opsin, texture_strength, threshold, block_s);
-
   const int kNumBin = 256;
   Histogram sad_histogram;
   std::vector<float> sad_scores =
       GetSADScoresForPatches(opsin, block_s, kNumBin, &sad_histogram);
-  float sad_threshold = GetSADThreshold(sad_histogram, kNumBin);
+  float sad_threshold =
+      ClipMinMax(GetSADThreshold(sad_histogram, kNumBin), 0.0f, 0.15f);
   std::vector<NoiseLevel> nl =
       GetNoiseLevel(opsin, sad_scores, sad_threshold, block_s);
 
@@ -326,9 +321,9 @@ void OptimizeNoiseParameters(const std::vector<NoiseLevel>& noise_level,
 
   LossFunction loss_function(noise_level);
   std::vector<double> parameter_vector(3);
-  parameter_vector[0] = -0.1;
-  parameter_vector[1] = 2.1;
-  parameter_vector[2] = 0.3;
+  parameter_vector[0] = -0.05;
+  parameter_vector[1] = 2.6;
+  parameter_vector[2] = 0.025;
 
   parameter_vector = optimize::OptimizeWithScaledConjugateGradientMethod(
       loss_function, parameter_vector, kPrecision, kMaxIter);
@@ -381,9 +376,9 @@ std::vector<NoiseLevel> GetNoiseLevel(
 
   const int filt_size = 1;
   static const float kLaplFilter[filt_size * 2 + 1][filt_size * 2 + 1] = {
-      {-1.414f, -1.0f, -1.414f},
-      {-1.0f, 9.656f, -1.0f},
-      {-1.414f, -1.0f, -1.414f},
+      {-0.25f, -1.0f, -0.25f},
+      {-1.0f, 5.0f, -1.0f},
+      {-0.25f, -1.0f, -0.25f},
   };
 
   // The noise model is build based on channel 0.5 * (X+Y) as we notices that it

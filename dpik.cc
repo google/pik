@@ -120,11 +120,13 @@ int main(int argc, char** argv) {
   }
 
   if (!file_in || !file_out || arg_error) {
-    fprintf(stderr,
-        "Usage: %s [--16bit] in.pik out.png\n"
+    fprintf(
+        stderr,
+        "Usage: %s [--16bit] [--dump] in.pik out.png\n"
         "    out.png will have 8 bit per color channel by default,\n"
-        "    16 bit per channel if --16bit is set\n"
-        , argv[0]);
+        "    16 bit per channel if --16bit is set. --dump writes intermediate\n"
+        "    files to in.pik.dct etc.\n",
+        argv[0]);
     return 1;
   }
 

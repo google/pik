@@ -387,8 +387,8 @@ class HistogramBuilder {
   std::vector<Histogram> histograms_;
 };
 
-Image3W PredictDC(const Image3W& coeffs);
-void UnpredictDC(Image3W* coeffs);
+void PredictDCTile(const Image3W& coeffs, Image3W* out);
+void UnpredictDCTile(Image3W* coeffs);
 
 std::string EncodeImage(const Image3W& img, int stride,
                         PikImageSizeInfo* info);

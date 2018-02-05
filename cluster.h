@@ -117,8 +117,43 @@ int HistogramCombine(HistogramType* out,
   float cost_diff_threshold = 0.0f;
   int min_cluster_size = 1;
 
-  // Uniquify the list of symbols.
-  std::vector<int> clusters(symbols, symbols + symbols_size);
+  // Uniquify the list of symbols after merging empty clusters.
+  std::vector<int> clusters;
+  clusters.reserve(symbols_size);
+  int sum_of_totals = 0;
+  int first_zero_pop_count_symbol = -1;
+  for (int i = 0; i < symbols_size; ++i) {
+    if (out[symbols[i]].total_count_ == 0) {
+      // Merge the zero pop count histograms into one.
+      if (first_zero_pop_count_symbol == -1) {
+        first_zero_pop_count_symbol = symbols[i];
+        clusters.push_back(symbols[i]);
+      } else {
+        symbols[i] = first_zero_pop_count_symbol;
+      }
+    } else {
+      // Insert all histograms with non-zero pop counts.
+      clusters.push_back(symbols[i]);
+      sum_of_totals += out[symbols[i]].total_count_;
+    }
+  }
+  if (sum_of_totals < 160) {
+    // Use a single histogram if there are only a few samples.
+    // This helps with small images (like 64x64 size) where the
+    // context map is more expensive than the related savings.
+    // TODO: Estimate the the actual difference in bitcost to
+    // make the final decision of this strategy and clustering.
+    *cluster_size = 1;
+    HistogramType combo = out[symbols[0]];
+    for (int i = 1; i < symbols_size; ++i) {
+      combo.AddHistogram(out[symbols[i]]);
+    }
+    out[symbols[0]] = combo;
+    for (int i = 1; i < symbols_size; ++i) {
+      symbols[i] = symbols[0];
+    }
+    return 1;
+  }
   std::sort(clusters.begin(), clusters.end());
   clusters.resize(std::unique(clusters.begin(), clusters.end()) -
                   clusters.begin());

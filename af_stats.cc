@@ -93,7 +93,7 @@ int Histogram::Mode() const {
 }
 
 double Histogram::Quantile(double q01) const {
-  const int64_t total  =std::accumulate(bins, bins + kBins, 1LL);
+  const int64_t total = std::accumulate(bins, bins + kBins, 1LL);
   const int64_t target = static_cast<int64_t>(q01 * total);
   // Until sum >= target:
   int64_t sum = 0;

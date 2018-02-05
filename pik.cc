@@ -14,6 +14,7 @@
 
 #include "pik.h"
 
+#include <limits.h>  // PATH_MAX
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,6 +50,8 @@ bool FLAGS_log_search_state = false;
 bool FLAGS_dump_quant_state = false;
 
 namespace pik {
+
+
 namespace {
 
 void EncodeU32(const uint32_t val, uint8_t* dest) {
@@ -162,13 +165,11 @@ void DumpHeatmap(const PikInfo* info, const std::string& label,
   std::vector<uint8_t> heatmap(3 * xsize * ysize);
   butteraugli::CreateHeatMapImage(vals, good_threshold, bad_threshold, xsize,
                                   ysize, &heatmap);
-  char pathname[200];
-  snprintf(pathname, sizeof(pathname), "%s%s%05d.png",
-           info->debug_prefix.c_str(), label.c_str(),
+  char filename[200];
+  snprintf(filename, sizeof(filename), "%s%05d", label.c_str(),
            info->num_butteraugli_iters);
-  WriteImage(ImageFormatPNG(),
-             Image3FromInterleaved(&heatmap[0], xsize, ysize, 3 * xsize),
-             pathname);
+  info->DumpImage(filename,
+                  Image3FromInterleaved(&heatmap[0], xsize, ysize, 3 * xsize));
 }
 
 void DumpHeatmaps(const PikInfo* info,
@@ -237,8 +238,8 @@ void FindBestQuantization(const Image3F& opsin_orig,
     float qmin, qmax;
     ImageMinMax(quant_field, &qmin, &qmax);
     if (quantizer->SetQuantField(kInitialQuantDC, quant_field, cparams)) {
-      QuantizedCoeffs qcoeffs = ComputeCoefficients(
-          search_params, opsin, *quantizer, ctan);
+      QuantizedCoeffs qcoeffs =
+          ComputeCoefficients(search_params, opsin, *quantizer, ctan, nullptr);
       Image3F recon = ReconOpsinImage(qcoeffs, *quantizer, ctan);
       Image3B srgb;
       CenteredOpsinToSrgb(recon, &srgb);
@@ -498,8 +499,8 @@ void ScaleToTargetSize(const Image3F& opsin,
   std::string candidate;
   for (int i = 0; i < 10; ++i) {
     ScaleQuantizationMap(quant_dc, quant_ac, cparams, scale_good, quantizer);
-    QuantizedCoeffs qcoeffs = ComputeCoefficients(cparams, opsin, *quantizer,
-                                                  ctan);
+    QuantizedCoeffs qcoeffs =
+        ComputeCoefficients(cparams, opsin, *quantizer, ctan, nullptr);
     candidate = EncodeToBitstream(qcoeffs, *quantizer, noise_params, ctan,
                                   false, nullptr);
     if (candidate.size() <= target_size) {
@@ -522,8 +523,8 @@ void ScaleToTargetSize(const Image3F& opsin,
     if (!ScaleQuantizationMap(quant_dc, quant_ac, cparams, scale, quantizer)) {
       break;
     }
-    QuantizedCoeffs qcoeffs = ComputeCoefficients(cparams, opsin, *quantizer,
-                                                  ctan);
+    QuantizedCoeffs qcoeffs =
+        ComputeCoefficients(cparams, opsin, *quantizer, ctan, nullptr);
     candidate = EncodeToBitstream(qcoeffs, *quantizer, noise_params, ctan,
                                   false, nullptr);
     if (candidate.size() <= target_size) {
@@ -568,8 +569,8 @@ void CompressToTargetSize(const Image3F& opsin_orig,
     }
     FindBestQuantization(opsin_orig, opsin, cparams, dist,
                          ctan, quantizer, aux_out);
-    QuantizedCoeffs qcoeffs = ComputeCoefficients(cparams, opsin, *quantizer,
-                                                  ctan);
+    QuantizedCoeffs qcoeffs =
+        ComputeCoefficients(cparams, opsin, *quantizer, ctan, nullptr);
     std::string candidate = EncodeToBitstream(
         qcoeffs, *quantizer, noise_params, ctan, false, nullptr);
     if (candidate.size() <= target_size) {
@@ -769,8 +770,7 @@ bool OpsinToPik(const CompressParams& params, const MetaImageF& opsin_orig,
   CenterOpsinValues(&opsin);
   NoiseParams noise_params;
   if (params.apply_noise) {
-    const float kPatchPercent = 0.2;
-    GetNoiseParameter(opsin, kPatchPercent, &noise_params);
+    GetNoiseParameter(opsin, &noise_params);
   }
 
   ColorTransform ctan(xsize, ysize);
@@ -809,7 +809,8 @@ bool OpsinToPik(const CompressParams& params, const MetaImageF& opsin_orig,
     opsin = ReduceNoise(opsin);
   }
 
-  QuantizedCoeffs qcoeffs = ComputeCoefficients(params, opsin, quantizer, ctan);
+  QuantizedCoeffs qcoeffs =
+      ComputeCoefficients(params, opsin, quantizer, ctan, aux_out);
   std::string compressed_data = EncodeToBitstream(
       qcoeffs, quantizer, noise_params, ctan, params.fast_mode, aux_out);
 
@@ -886,6 +887,7 @@ bool PikToPixelsT(const DecompressParams& params, const PaddedBytes& compressed,
     AddNoise(noise_params, &opsin);
     CenteredOpsinToSrgb(opsin, &planes);
     planes.ShrinkTo(header.xsize, header.ysize);
+
     image->SetColor(std::move(planes));
     if (alpha_bit_depth > 0) {
       image->SetAlpha(std::move(alpha), alpha_bit_depth);

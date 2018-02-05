@@ -143,52 +143,83 @@ void Adjust2x2ACFromDC(const Image3F& dc, const int direction,
   }
 }
 
-void ComputePredictionResiduals(const Quantizer& quantizer,
-                                Image3F* coeffs) {
+void ComputePredictionResiduals(const Quantizer& quantizer, Image3F* coeffs,
+                                Image3F* predicted_coeffs) {
   Image3W qcoeffs = QuantizeCoeffs(*coeffs, quantizer);
   Image3F dcoeffs = DequantizeCoeffs(qcoeffs, quantizer);
-  Adjust2x2ACFromDC(DCImage(dcoeffs), -1, coeffs);
+  Image3F prediction_from_dc(coeffs->xsize(), coeffs->ysize(), 0.0f);
+  Adjust2x2ACFromDC(DCImage(dcoeffs), 1, &prediction_from_dc);
+  SubtractFrom(prediction_from_dc, coeffs);
   qcoeffs = QuantizeCoeffs(*coeffs, quantizer);
   dcoeffs = DequantizeCoeffs(qcoeffs, quantizer);
-  Adjust2x2ACFromDC(DCImage(dcoeffs), 1, &dcoeffs);
+  AddTo(prediction_from_dc, &dcoeffs);
   Image3F pred = GetPixelSpaceImageFrom2x2Corners(dcoeffs);
   pred = UpSample4x4BlurDCT(pred, 1.5f);
   SubtractFrom(pred, coeffs);
+  if (predicted_coeffs) {
+    *predicted_coeffs = std::move(pred);
+    AddTo(prediction_from_dc, predicted_coeffs);
+  }
+}
+
+static void ZeroDC(Image3W* coeffs) {
+  for (int c = 0; c < 3; c++) {
+    for (int y = 0; y < coeffs->ysize(); y++) {
+      auto row = coeffs->PlaneRow(c, y);
+      for (int x = 0; x < coeffs->xsize(); x += 64) {
+        row[x] = 0;
+      }
+    }
+  }
 }
 
 QuantizedCoeffs ComputeCoefficients(const CompressParams& params,
                                     const Image3F& opsin,
                                     const Quantizer& quantizer,
-                                    const ColorTransform& ctan) {
+                                    const ColorTransform& ctan,
+                                    const PikInfo* aux_out) {
+  Image3F predicted_coeffs;
   Image3F coeffs = TransposedScaledDCT(opsin);
-  ComputePredictionResiduals(quantizer, &coeffs);
+  ComputePredictionResiduals(quantizer, &coeffs,
+                             aux_out != nullptr ? &predicted_coeffs : nullptr);
   ApplyColorTransform(ctan, -1.0f,
                       QuantizeRoundtrip(quantizer, 1, coeffs.plane(1)),
                       &coeffs);
+  if (aux_out) {
+    ApplyColorTransform(
+        ctan, -1.0f, QuantizeRoundtrip(quantizer, 1, predicted_coeffs.plane(1)),
+        &predicted_coeffs);
+  }
   QuantizedCoeffs qcoeffs;
   qcoeffs.dct = QuantizeCoeffs(coeffs, quantizer);
+  if (aux_out) {
+    Image3W dct_copy = CopyImage3(qcoeffs.dct);
+    ZeroDC(&dct_copy);
+    aux_out->DumpCoeffImage("coeff_residuals", dct_copy);
+    aux_out->DumpCoeffImage("coeff_predictions",
+                            QuantizeCoeffs(predicted_coeffs, quantizer));
+  }
   return qcoeffs;
 }
 
-Image3B ComputeBlockContextFromDC(const Image3W& coeffs,
-                                  const Quantizer& quantizer) {
+void ComputeBlockContextFromDC(const Image3W& coeffs,
+                               const Quantizer& quantizer, Image3B* out) {
   const int bxsize = coeffs.xsize() / 64;
   const int bysize = coeffs.ysize();
   const float iquant_base = quantizer.inv_quant_dc();
-  Image3B out(bxsize, bysize);
   for (int c = 0; c < 3; ++c) {
     const float iquant = iquant_base * DequantMatrix()[c * 64];
     const float range = kXybRange[c] / iquant;
     const int kR2Thresh = 10.24f * range * range + 1.0f;
     for (int x = 0; x < bxsize; ++x) {
-      out.Row(0)[c][x] = c;
-      out.Row(bysize - 1)[c][x] = c;
+      out->Row(0)[c][x] = c;
+      out->Row(bysize - 1)[c][x] = c;
     }
     for (int y = 1; y + 1 < bysize; ++y) {
       const int16_t* const PIK_RESTRICT row_t = coeffs.ConstPlaneRow(c, y - 1);
       const int16_t* const PIK_RESTRICT row_m = coeffs.ConstPlaneRow(c, y);
       const int16_t* const PIK_RESTRICT row_b = coeffs.ConstPlaneRow(c, y + 1);
-      uint8_t* const PIK_RESTRICT row_out = out.PlaneRow(c, y);
+      uint8_t* const PIK_RESTRICT row_out = out->PlaneRow(c, y);
       row_out[0] = row_out[bxsize - 1] = c;
       for (int bx = 1; bx + 1 < bxsize; ++bx) {
         const int x = bx * 64;
@@ -221,7 +252,6 @@ Image3B ComputeBlockContextFromDC(const Image3W& coeffs,
       }
     }
   }
-  return out;
 }
 
 std::string EncodeColorMap(const Image<int>& ac_map,
@@ -282,16 +312,24 @@ std::string EncodeToBitstream(const QuantizedCoeffs& qcoeffs,
   std::string noise_code = EncodeNoise(noise_params);
   std::string quant_code = quantizer.Encode(quant_info);
   std::string dc_code = "";
-  auto predicted_dc = PredictDC(qdct);
+  Image3W predicted_dc(qdct.xsize() / kBlockSize, qdct.ysize());
+  Image3B block_ctx(qdct.xsize() / kBlockSize, qdct.ysize());
   for (int y = 0; y < y_tilesize; y++) {
     for (int x = 0; x < x_tilesize; x++) {
+      Image3W predicted_dc_tile =
+          Window(&predicted_dc, x * kSupertileInBlocks, y * kSupertileInBlocks,
+                 kSupertileInBlocks, kSupertileInBlocks);
       ConstWrapper<Image3W> qdct_tile = ConstWindow(
-          predicted_dc, x * kSupertileInBlocks, y * kSupertileInBlocks,
-          kSupertileInBlocks, kSupertileInBlocks);
-      dc_code += EncodeImage(qdct_tile.get(), 1, dc_info);
+          qdct, x * kSupertileInBlocks * kBlockSize, y * kSupertileInBlocks,
+          kSupertileInBlocks * kBlockSize, kSupertileInBlocks);
+      PredictDCTile(qdct_tile.get(), &predicted_dc_tile);
+      dc_code += EncodeImage(predicted_dc_tile, 1, dc_info);
+      Image3B block_ctx_tile =
+          Window(&block_ctx, x * kSupertileInBlocks, y * kSupertileInBlocks,
+                 kSupertileInBlocks, kSupertileInBlocks);
+      ComputeBlockContextFromDC(qdct_tile.get(), quantizer, &block_ctx_tile);
     }
   }
-  Image3B block_ctx = ComputeBlockContextFromDC(qdct, quantizer);
   std::string ac_code = fast_mode ?
       EncodeACFast(qdct, block_ctx, info) :
       EncodeAC(qdct, block_ctx, info);
@@ -348,6 +386,7 @@ bool DecodeFromBitstream(const uint8_t* data, const size_t data_size,
   if (!quantizer->Decode(&br)) {
     return PIK_FAILURE("quantizer Decode failed.");
   }
+  Image3B block_ctx(x_blocksize, y_blocksize);
   for (int y = 0; y < y_stilesize; y++) {
     for (int x = 0; x < x_stilesize; x++) {
       Image3W qdct_tile = Window(
@@ -358,10 +397,13 @@ bool DecodeFromBitstream(const uint8_t* data, const size_t data_size,
       if (!DecodeImage(&br, kBlockSize, &qdct_tile)) {
         return PIK_FAILURE("DecodeImage failed.");
       }
+      UnpredictDCTile(&qdct_tile);
+      Image3B block_ctx_tile =
+          Window(&block_ctx, x * kSupertileInBlocks, y * kSupertileInBlocks,
+                 kSupertileInBlocks, kSupertileInBlocks);
+      ComputeBlockContextFromDC(qdct_tile, *quantizer, &block_ctx_tile);
     }
   }
-  UnpredictDC(&qcoeffs->dct);
-  Image3B block_ctx = ComputeBlockContextFromDC(qcoeffs->dct, *quantizer);
   if (!DecodeAC(block_ctx, &br, &qcoeffs->dct)) {
     return PIK_FAILURE("DecodeAC failed.");
   }
@@ -370,16 +412,18 @@ bool DecodeFromBitstream(const uint8_t* data, const size_t data_size,
 }
 
 Image3F ReconOpsinImage(const QuantizedCoeffs& qcoeffs,
-                        const Quantizer& quantizer,
-                        const ColorTransform& ctan) {
+                        const Quantizer& quantizer, const ColorTransform& ctan,
+                        Image3F* transposed_scaled_dct) {
   Image3F dcoeffs = DequantizeCoeffs(qcoeffs.dct, quantizer);
   ApplyColorTransform(ctan, 1.0f, dcoeffs.plane(1), &dcoeffs);
   Adjust2x2ACFromDC(DCImage(dcoeffs), 1, &dcoeffs);
   Image3F pred = GetPixelSpaceImageFrom2x2Corners(dcoeffs);
   pred = UpSample4x4BlurDCT(pred, 1.5f);
   AddTo(pred, &dcoeffs);
-  Image3F opsin = TransposedScaledIDCT(dcoeffs);
-  return opsin;
+  if (transposed_scaled_dct != nullptr) {
+    *transposed_scaled_dct = CopyImage3(dcoeffs);
+  }
+  return TransposedScaledIDCT(dcoeffs);
 }
 
 }  // namespace pik

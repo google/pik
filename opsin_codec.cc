@@ -74,21 +74,8 @@ void PredictDCTile(const Image3W& coeffs, Image3W* out) {
   }
 }
 
-Image3W PredictDC(const Image3W& coeffs) {
-  Image3W out(coeffs.xsize() / 64, coeffs.ysize());
-  for (int y = 0; y < out.ysize(); y += kSupertileInBlocks) {
-    for (int x = 0; x < out.xsize(); x += kSupertileInBlocks) {
-      Image3W out_window =
-          Window(&out, x, y, kSupertileInBlocks, kSupertileInBlocks);
-      ConstWrapper<Image3W> coeffs_window = ConstWindow(
-          coeffs, 64 * x, y, 64 * kSupertileInBlocks, kSupertileInBlocks);
-      PredictDCTile(coeffs_window.get(), &out_window);
-    }
-  }
-  return out;
-}
-
 void UnpredictDCTile(Image3W* coeffs) {
+  PIK_ASSERT(coeffs->xsize() % 64 == 0);
   ImageW dc_y(coeffs->xsize() / 64, coeffs->ysize());
   ImageW dc_xz(coeffs->xsize() / 64 * 2, coeffs->ysize());
 
@@ -119,17 +106,6 @@ void UnpredictDCTile(Image3W* coeffs) {
 
       row_out[0][x] = row_xz[2 * block_x];
       row_out[2][x] = row_xz[2 * block_x + 1];
-    }
-  }
-}
-
-void UnpredictDC(Image3W* coeffs) {
-  PIK_ASSERT(coeffs->xsize() % 64 == 0);
-  for (int y = 0; y < coeffs->ysize(); y += kSupertileInBlocks) {
-    for (int x = 0; x < coeffs->xsize(); x += 64 * kSupertileInBlocks) {
-      Image3W coeffs_window =
-          Window(coeffs, x, y, 64 * kSupertileInBlocks, kSupertileInBlocks);
-      UnpredictDCTile(&coeffs_window);
     }
   }
 }

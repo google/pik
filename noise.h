@@ -24,8 +24,7 @@ struct NoiseLevel {
 void AddNoise(const NoiseParams& noise_params, Image3F* opsin);
 
 // Get parameters of the noise for NoiseParams model
-void GetNoiseParameter(const Image3F& opsin, const float percent,
-                       NoiseParams* noise_params);
+void GetNoiseParameter(const Image3F& opsin, NoiseParams* noise_params);
 
 std::string EncodeNoise(const NoiseParams& noise_params);
 
