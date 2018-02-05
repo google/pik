@@ -441,6 +441,12 @@ class ButteraugliComparator {
             std::vector<ImageF>* BUTTERAUGLI_RESTRICT mask_dc) const;
 
  private:
+  void MaltaDiffMapLF(const ImageF& y0,
+                      const ImageF& y1,
+                      double w,
+                      double normalization,
+                      ImageF* BUTTERAUGLI_RESTRICT block_diff_ac) const;
+
   void MaltaDiffMap(const ImageF& y0,
                     const ImageF& y1,
                     double w,
@@ -494,18 +500,18 @@ BUTTERAUGLI_INLINE void OpsinAbsorbance(const V &in0, const V &in1,
                                         V *BUTTERAUGLI_RESTRICT out1,
                                         V *BUTTERAUGLI_RESTRICT out2) {
   // https://en.wikipedia.org/wiki/Photopsin absorbance modeling.
-  static const double mixi0 = 0.27202083655;
-  static const double mixi1 = 0.531074807019;
-  static const double mixi2 = 0.0916746079938;
-  static const double mixi3 = 1.10601810005;
-  static const double mixi4 = 0.197254076081;
-  static const double mixi5 = 0.556419839393;
-  static const double mixi6 = mixi2;
-  static const double mixi7 = mixi3;
-  static const double mixi8 = 0.0319360816401;
-  static const double mixi9 = 0.0586236857423;
-  static const double mixi10 = 0.0969777322364;
-  static const double mixi11 = mixi3;
+  static const double mixi0 = 0.254462330846;
+  static const double mixi1 = 0.488238255095;
+  static const double mixi2 = 0.0635278003854;
+  static const double mixi3 = 1.01681026909;
+  static const double mixi4 = 0.195214015766;
+  static const double mixi5 = 0.568019861857;
+  static const double mixi6 = 0.0860755536007;
+  static const double mixi7 = 1.1510118369;
+  static const double mixi8 = 0.07374607900105684;
+  static const double mixi9 = 0.06142425304154509;
+  static const double mixi10 = 0.24416850520714256;
+  static const double mixi11 = 1.20481945273;
 
   const V mix0(mixi0);
   const V mix1(mixi1);
