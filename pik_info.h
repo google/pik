@@ -18,6 +18,8 @@
 #include <cstddef>
 #include <string>
 #include <vector>
+#include "image.h"
+#include "image_io.h"
 
 namespace pik {
 
@@ -114,6 +116,19 @@ struct PikInfo {
     TotalImageSize().Print(num_inputs);
   }
 
+  template <typename T>
+  void DumpImage(const char* label, const Image3<T>& image) const {
+    char pathname[200];
+    snprintf(pathname, sizeof(pathname), "%s%s.png", debug_prefix.c_str(),
+             label);
+    WriteImage(ImageFormatPNG(), image, pathname);
+  }
+
+  // This dumps coefficients as a 16-bit PNG with coefficients of a block placed
+  // in the area that would contain that block in a normal image. To view the
+  // resulting image manually, rescale intensities by using:
+  // $ convert -auto-level IMAGE.PNG - | display -
+  void DumpCoeffImage(const char* label, const Image3W& coeff_image) const;
 
   std::vector<PikImageSizeInfo> layers;
   std::vector<int> num_dict_matches;
