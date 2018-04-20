@@ -85,7 +85,7 @@ uint32_t ApicId() {
 
 float X64_Reciprocal12(const float x) {
   const SIMD_NAMESPACE::Part<float, 1> d;
-  return get_part(d, rcp_approx(set_part(d, x)));
+  return get_part(d, approximate_reciprocal(set_part(d, x)));
 }
 
 #endif  // PIK_ARCH_X64

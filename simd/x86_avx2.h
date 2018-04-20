@@ -34,6 +34,12 @@ struct raw_avx2<double> {
   using type = __m256d;
 };
 
+// Returned by set_table_indices for use by table_lookup_lanes.
+template <typename T>
+struct permute_avx2 {
+  __m256i raw;
+};
+
 template <typename T, size_t N = AVX2::NumLanes<T>()>
 class vec_avx2 {
   using Raw = typename raw_avx2<T>::type;
@@ -368,24 +374,24 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> operator-(
 
 // Unsigned
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint8_t, N> add_sat(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint8_t, N> saturated_add(
     const vec_avx2<uint8_t, N> a, const vec_avx2<uint8_t, N> b) {
   return vec_avx2<uint8_t, N>(_mm256_adds_epu8(a.raw, b.raw));
 }
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint16_t, N> add_sat(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint16_t, N> saturated_add(
     const vec_avx2<uint16_t, N> a, const vec_avx2<uint16_t, N> b) {
   return vec_avx2<uint16_t, N>(_mm256_adds_epu16(a.raw, b.raw));
 }
 
 // Signed
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int8_t, N> add_sat(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int8_t, N> saturated_add(
     const vec_avx2<int8_t, N> a, const vec_avx2<int8_t, N> b) {
   return vec_avx2<int8_t, N>(_mm256_adds_epi8(a.raw, b.raw));
 }
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int16_t, N> add_sat(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int16_t, N> saturated_add(
     const vec_avx2<int16_t, N> a, const vec_avx2<int16_t, N> b) {
   return vec_avx2<int16_t, N>(_mm256_adds_epi16(a.raw, b.raw));
 }
@@ -396,24 +402,24 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int16_t, N> add_sat(
 
 // Unsigned
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint8_t, N> sub_sat(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint8_t, N> saturated_subtract(
     const vec_avx2<uint8_t, N> a, const vec_avx2<uint8_t, N> b) {
   return vec_avx2<uint8_t, N>(_mm256_subs_epu8(a.raw, b.raw));
 }
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint16_t, N> sub_sat(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint16_t, N> saturated_subtract(
     const vec_avx2<uint16_t, N> a, const vec_avx2<uint16_t, N> b) {
   return vec_avx2<uint16_t, N>(_mm256_subs_epu16(a.raw, b.raw));
 }
 
 // Signed
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int8_t, N> sub_sat(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int8_t, N> saturated_subtract(
     const vec_avx2<int8_t, N> a, const vec_avx2<int8_t, N> b) {
   return vec_avx2<int8_t, N>(_mm256_subs_epi8(a.raw, b.raw));
 }
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int16_t, N> sub_sat(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int16_t, N> saturated_subtract(
     const vec_avx2<int16_t, N> a, const vec_avx2<int16_t, N> b) {
   return vec_avx2<int16_t, N>(_mm256_subs_epi16(a.raw, b.raw));
 }
@@ -424,12 +430,12 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int16_t, N> sub_sat(
 
 // Unsigned
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint8_t, N> avg(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint8_t, N> average_round(
     const vec_avx2<uint8_t, N> a, const vec_avx2<uint8_t, N> b) {
   return vec_avx2<uint8_t, N>(_mm256_avg_epu8(a.raw, b.raw));
 }
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint16_t, N> avg(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint16_t, N> average_round(
     const vec_avx2<uint16_t, N> a, const vec_avx2<uint16_t, N> b) {
   return vec_avx2<uint16_t, N>(_mm256_avg_epu16(a.raw, b.raw));
 }
@@ -592,39 +598,39 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int64_t, N> shift_left_same(
 
 // Unsigned (no u8,u16)
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint32_t, N> shift_left_var(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint32_t, N> operator<<(
     const vec_avx2<uint32_t, N> v, const vec_avx2<uint32_t, N> bits) {
   return vec_avx2<uint32_t, N>(_mm256_sllv_epi32(v.raw, bits.raw));
 }
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint32_t, N> shift_right_var(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint32_t, N> operator>>(
     const vec_avx2<uint32_t, N> v, const vec_avx2<uint32_t, N> bits) {
   return vec_avx2<uint32_t, N>(_mm256_srlv_epi32(v.raw, bits.raw));
 }
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint64_t, N> shift_left_var(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint64_t, N> operator<<(
     const vec_avx2<uint64_t, N> v, const vec_avx2<uint64_t, N> bits) {
   return vec_avx2<uint64_t, N>(_mm256_sllv_epi64(v.raw, bits.raw));
 }
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint64_t, N> shift_right_var(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint64_t, N> operator>>(
     const vec_avx2<uint64_t, N> v, const vec_avx2<uint64_t, N> bits) {
   return vec_avx2<uint64_t, N>(_mm256_srlv_epi64(v.raw, bits.raw));
 }
 
 // Signed (no i8,i16,i64)
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int32_t, N> shift_left_var(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int32_t, N> operator<<(
     const vec_avx2<int32_t, N> v, const vec_avx2<int32_t, N> bits) {
   return vec_avx2<int32_t, N>(_mm256_sllv_epi32(v.raw, bits.raw));
 }
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int32_t, N> shift_right_var(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int32_t, N> operator>>(
     const vec_avx2<int32_t, N> v, const vec_avx2<int32_t, N> bits) {
   return vec_avx2<int32_t, N>(_mm256_srav_epi32(v.raw, bits.raw));
 }
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int64_t, N> shift_left_var(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int64_t, N> operator<<(
     const vec_avx2<int64_t, N> v, const vec_avx2<int64_t, N> bits) {
   return vec_avx2<int64_t, N>(_mm256_sllv_epi64(v.raw, bits.raw));
 }
@@ -765,24 +771,24 @@ namespace ext {
 
 // Returns the upper 16 bits of a * b in each lane.
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint16_t, N> mulhi(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint16_t, N> mul_high(
     const vec_avx2<uint16_t, N> a, const vec_avx2<uint16_t, N> b) {
   return vec_avx2<uint16_t, N>(_mm256_mulhi_epu16(a.raw, b.raw));
 }
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int16_t, N> mulhi(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int16_t, N> mul_high(
     const vec_avx2<int16_t, N> a, const vec_avx2<int16_t, N> b) {
   return vec_avx2<int16_t, N>(_mm256_mulhi_epi16(a.raw, b.raw));
 }
 
+}  // namespace ext
+
 // Returns (((a * b) >> 14) + 1) >> 1.
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int16_t, N> mulhrs(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int16_t, N> mul_high_round(
     const vec_avx2<int16_t, N> a, const vec_avx2<int16_t, N> b) {
   return vec_avx2<int16_t, N>(_mm256_mulhrs_epi16(a.raw, b.raw));
 }
-
-}  // namespace ext
 
 // Multiplies even lanes (0, 2 ..) and places the double-wide result into
 // even and the upper half into its odd neighbor lane.
@@ -793,6 +799,26 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int64_t> mul_even(
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint64_t> mul_even(
     const vec_avx2<uint32_t> a, const vec_avx2<uint32_t> b) {
   return vec_avx2<uint64_t>(_mm256_mul_epu32(a.raw, b.raw));
+}
+
+// ------------------------------ Floating-point negate
+
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float, N> neg(
+    const vec_avx2<float, N> v) {
+  const Part<float, N, AVX2> df;
+  const Part<uint32_t, N, AVX2> du;
+  const auto sign = cast_to(df, set1(du, 0x80000000u));
+  return v ^ sign;
+}
+
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> neg(
+    const vec_avx2<double, N> v) {
+  const Part<double, N, AVX2> df;
+  const Part<uint64_t, N, AVX2> du;
+  const auto sign = cast_to(df, set1(du, 0x8000000000000000ull));
+  return v ^ sign;
 }
 
 // ------------------------------ Floating-point mul / div
@@ -821,7 +847,7 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> operator/(
 
 // Approximate reciprocal
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float, N> rcp_approx(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float, N> approximate_reciprocal(
     const vec_avx2<float, N> v) {
   return vec_avx2<float, N>(_mm256_rcp_ps(v.raw));
 }
@@ -842,20 +868,6 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> mul_add(
   return vec_avx2<double, N>(_mm256_fmadd_pd(mul.raw, x.raw, add.raw));
 }
 
-// Returns mul * x - sub
-template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float, N> mul_sub(
-    const vec_avx2<float, N> mul, const vec_avx2<float, N> x,
-    const vec_avx2<float, N> sub) {
-  return vec_avx2<float, N>(_mm256_fmsub_ps(mul.raw, x.raw, sub.raw));
-}
-template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> mul_sub(
-    const vec_avx2<double, N> mul, const vec_avx2<double, N> x,
-    const vec_avx2<double, N> sub) {
-  return vec_avx2<double, N>(_mm256_fmsub_pd(mul.raw, x.raw, sub.raw));
-}
-
 // Returns add - mul * x
 template <size_t N>
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float, N> nmul_add(
@@ -870,7 +882,38 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> nmul_add(
   return vec_avx2<double, N>(_mm256_fnmadd_pd(mul.raw, x.raw, add.raw));
 }
 
-// nmul_sub would require an additional negate of mul or x.
+// Slightly more expensive on ARM (extra negate)
+namespace ext {
+
+// Returns mul * x - sub
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float, N> mul_subtract(
+    const vec_avx2<float, N> mul, const vec_avx2<float, N> x,
+    const vec_avx2<float, N> sub) {
+  return vec_avx2<float, N>(_mm256_fmsub_ps(mul.raw, x.raw, sub.raw));
+}
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> mul_subtract(
+    const vec_avx2<double, N> mul, const vec_avx2<double, N> x,
+    const vec_avx2<double, N> sub) {
+  return vec_avx2<double, N>(_mm256_fmsub_pd(mul.raw, x.raw, sub.raw));
+}
+
+// Returns -mul * x - sub
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float, N> nmul_subtract(
+    const vec_avx2<float, N> mul, const vec_avx2<float, N> x,
+    const vec_avx2<float, N> sub) {
+  return vec_avx2<float, N>(_mm256_fnmsub_ps(mul.raw, x.raw, sub.raw));
+}
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> nmul_subtract(
+    const vec_avx2<double, N> mul, const vec_avx2<double, N> x,
+    const vec_avx2<double, N> sub) {
+  return vec_avx2<double, N>(_mm256_fnmsub_pd(mul.raw, x.raw, sub.raw));
+}
+
+}  // namespace ext
 
 // ------------------------------ Floating-point square root
 
@@ -887,49 +930,66 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> sqrt(
 
 // Approximate reciprocal square root
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float, N> rsqrt_approx(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float, N> approximate_reciprocal_sqrt(
     const vec_avx2<float, N> v) {
   return vec_avx2<float, N>(_mm256_rsqrt_ps(v.raw));
 }
 
 // ------------------------------ Floating-point rounding
 
-// Toward nearest integer
+// Toward nearest integer, tie to even
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float, N> round_nearest(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float, N> round(
     const vec_avx2<float, N> v) {
   return vec_avx2<float, N>(
       _mm256_round_ps(v.raw, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
 }
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> round_nearest(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> round(
     const vec_avx2<double, N> v) {
   return vec_avx2<double, N>(
       _mm256_round_pd(v.raw, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
 }
 
-// Toward +infinity, aka ceiling
+// Toward zero, aka truncate
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float, N> round_pos_inf(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float, N> trunc(
     const vec_avx2<float, N> v) {
-  return vec_avx2<float, N>(_mm256_ceil_ps(v.raw));
+  return vec_avx2<float, N>(
+      _mm256_round_ps(v.raw, _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC));
 }
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> round_pos_inf(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> trunc(
     const vec_avx2<double, N> v) {
-  return vec_avx2<double, N>(_mm256_ceil_pd(v.raw));
+  return vec_avx2<double, N>(
+      _mm256_round_pd(v.raw, _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC));
+}
+
+// Toward +infinity, aka ceiling
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float, N> ceil(const vec_avx2<float, N> v) {
+  return vec_avx2<float, N>(
+      _mm256_round_ps(v.raw, _MM_FROUND_TO_POS_INF | _MM_FROUND_NO_EXC));
+}
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> ceil(
+    const vec_avx2<double, N> v) {
+  return vec_avx2<double, N>(
+      _mm256_round_pd(v.raw, _MM_FROUND_TO_POS_INF | _MM_FROUND_NO_EXC));
 }
 
 // Toward -infinity, aka floor
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float, N> round_neg_inf(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float, N> floor(
     const vec_avx2<float, N> v) {
-  return vec_avx2<float, N>(_mm256_floor_ps(v.raw));
+  return vec_avx2<float, N>(
+      _mm256_round_ps(v.raw, _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
 }
 template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> round_neg_inf(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> floor(
     const vec_avx2<double, N> v) {
-  return vec_avx2<double, N>(_mm256_floor_pd(v.raw));
+  return vec_avx2<double, N>(
+      _mm256_round_pd(v.raw, _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
 }
 
 // ================================================== COMPARE
@@ -1164,7 +1224,7 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> operator^(
 // Returns a mask for use by select().
 // blendv_ps/pd only check the sign bit, so this is a no-op on x86.
 template <typename T, size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> selector_from_sign(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> condition_from_sign(
     const vec_avx2<T, N> v) {
   return v;
 }
@@ -1327,192 +1387,167 @@ SIMD_ATTR_AVX2 SIMD_INLINE void stream<double>(const vec_avx2<double> v,
   _mm256_stream_pd(aligned, v.raw);
 }
 
-// ================================================== CONVERT
+// ------------------------------ Gather
 
-// ------------------------------ Shuffle bytes with variable indices
+// "Extensions": useful but not quite performance-portable operations. We add
+// functions to this namespace in multiple places.
+namespace ext {
 
-// Returns vector of bytes[from[i]]. "from" is also interpreted as bytes:
-// either valid indices in [0, 16) or >= 0x80 to zero the i-th output byte.
-template <typename T, typename TI, size_t N, size_t NI>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> shuffle_bytes(
-    const vec_avx2<T, N> bytes, const vec_avx2<TI, NI> from) {
-  return vec_avx2<T, N>(_mm256_shuffle_epi8(bytes.raw, from.raw));
+template <typename T>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T> gather_offset_impl(
+    char (&sizeof_t)[4], Full<T, AVX2>, const T* SIMD_RESTRICT base,
+    const vec_avx2<int32_t> offset) {
+  return vec_avx2<T>(_mm256_i32gather_epi32(
+      reinterpret_cast<const int32_t*>(base), offset.raw, 1));
 }
-
-// ------------------------------ Promotions (part w/ narrow lanes -> full)
-
-// Unsigned: zero-extend.
-// Note: these have 3 cycle latency; if inputs are already split across the
-// 128 bit blocks (in their upper/lower halves), then zip_hi/lo would be faster.
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint16_t> convert_to(Full<uint16_t, AVX2>,
-                                                         const u8x16 v) {
-  return vec_avx2<uint16_t>(_mm256_cvtepu8_epi16(v.raw));
-}
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint32_t> convert_to(Full<uint32_t, AVX2>,
-                                                         const u8x8 v) {
-  return vec_avx2<uint32_t>(_mm256_cvtepu8_epi32(v.raw));
-}
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int16_t> convert_to(Full<int16_t, AVX2>,
-                                                        const u8x16 v) {
-  return vec_avx2<int16_t>(_mm256_cvtepu8_epi16(v.raw));
-}
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int32_t> convert_to(Full<int32_t, AVX2>,
-                                                        const u8x8 v) {
-  return vec_avx2<int32_t>(_mm256_cvtepu8_epi32(v.raw));
-}
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint32_t> convert_to(Full<uint32_t, AVX2>,
-                                                         const u16x8 v) {
-  return vec_avx2<uint32_t>(_mm256_cvtepu16_epi32(v.raw));
-}
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int32_t> convert_to(Full<int32_t, AVX2>,
-                                                        const u16x8 v) {
-  return vec_avx2<int32_t>(_mm256_cvtepu16_epi32(v.raw));
-}
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint64_t> convert_to(Full<uint64_t, AVX2>,
-                                                         const u32x4 v) {
-  return vec_avx2<uint64_t>(_mm256_cvtepu32_epi64(v.raw));
+template <typename T>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T> gather_index_impl(
+    char (&sizeof_t)[4], Full<T, AVX2>, const T* SIMD_RESTRICT base,
+    const vec_avx2<int32_t> index) {
+  return vec_avx2<T>(_mm256_i32gather_epi32(
+      reinterpret_cast<const int32_t*>(base), index.raw, 4));
 }
 
-// Special case for "v" with all blocks equal (e.g. from broadcast_block or
-// load_dup128): single-cycle latency instead of 3.
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint32_t> u32_from_u8(
-    const vec_avx2<uint8_t> v) {
-  const Full<uint32_t, AVX2> d32;
-  SIMD_ALIGN static constexpr uint32_t k32From8[8] = {
-      0xFFFFFF00UL, 0xFFFFFF01UL, 0xFFFFFF02UL, 0xFFFFFF03UL,
-      0xFFFFFF04UL, 0xFFFFFF05UL, 0xFFFFFF06UL, 0xFFFFFF07UL};
-  return shuffle_bytes(cast_to(d32, v), load(d32, k32From8));
+template <typename T>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T> gather_offset_impl(
+    char (&sizeof_t)[8], Full<T, AVX2>, const T* SIMD_RESTRICT base,
+    const vec_avx2<int64_t> offset) {
+  return vec_avx2<T>(_mm256_i64gather_epi64(
+      reinterpret_cast<const GatherIndex64*>(base), offset.raw, 1));
+}
+template <typename T>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T> gather_index_impl(
+    char (&sizeof_t)[8], Full<T, AVX2>, const T* SIMD_RESTRICT base,
+    const vec_avx2<int64_t> index) {
+  return vec_avx2<T>(_mm256_i64gather_epi64(
+      reinterpret_cast<const GatherIndex64*>(base), index.raw, 8));
 }
 
-// Signed: replicate sign bit.
-// Note: these have 3 cycle latency; if inputs are already split across the
-// 128 bit blocks (in their upper/lower halves), then zip_hi/lo followed by
-// signed shift would be faster.
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int16_t> convert_to(Full<int16_t, AVX2>,
-                                                        const i8x16 v) {
-  return vec_avx2<int16_t>(_mm256_cvtepi8_epi16(v.raw));
+template <typename T, typename Offset>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T> gather_offset(
+    Full<T, AVX2> d, const T* SIMD_RESTRICT base,
+    const vec_avx2<Offset> offset) {
+  static_assert(sizeof(T) == sizeof(Offset), "SVE requires same size base/ofs");
+  char sizeof_t[sizeof(T)];
+  return gather_offset_impl(sizeof_t, d, base, offset);
 }
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int32_t> convert_to(Full<int32_t, AVX2>,
-                                                        const i8x8 v) {
-  return vec_avx2<int32_t>(_mm256_cvtepi8_epi32(v.raw));
-}
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int32_t> convert_to(Full<int32_t, AVX2>,
-                                                        const i16x8 v) {
-  return vec_avx2<int32_t>(_mm256_cvtepi16_epi32(v.raw));
-}
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int64_t> convert_to(Full<int64_t, AVX2>,
-                                                        const i32x4 v) {
-  return vec_avx2<int64_t>(_mm256_cvtepi32_epi64(v.raw));
+template <typename T, typename Index>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T> gather_index(
+    Full<T, AVX2> d, const T* SIMD_RESTRICT base, const vec_avx2<Index> index) {
+  static_assert(sizeof(T) == sizeof(Index), "SVE requires same size base/idx");
+  char sizeof_t[sizeof(T)];
+  return gather_index_impl(sizeof_t, d, base, index);
 }
 
-// ------------------------------ Demotions (full -> part w/ narrow lanes)
-
-SIMD_ATTR_AVX2 SIMD_INLINE u16x8 convert_to(Part<uint16_t, 8, AVX2>,
-                                            const vec_avx2<int32_t> v) {
-  const __m256i u16 = _mm256_packus_epi32(v.raw, v.raw);
-  // Concatenating lower halves of both 128-bit blocks afterward is more
-  // efficient than an extra input with low block = high block of v.
-  return u16x8(_mm256_castsi256_si128(_mm256_permute4x64_epi64(u16, 0x88)));
+template <>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float> gather_offset<float>(
+    Full<float, AVX2>, const float* SIMD_RESTRICT base,
+    const vec_avx2<int32_t> offset) {
+  return vec_avx2<float>(_mm256_i32gather_ps(base, offset.raw, 1));
+}
+template <>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float> gather_index<float>(
+    Full<float, AVX2>, const float* SIMD_RESTRICT base,
+    const vec_avx2<int32_t> index) {
+  return vec_avx2<float>(_mm256_i32gather_ps(base, index.raw, 4));
 }
 
-SIMD_ATTR_AVX2 SIMD_INLINE u8x8 convert_to(Part<uint8_t, 8, AVX2>,
-                                           const vec_avx2<int32_t> v) {
-  const __m256i u16_blocks = _mm256_packus_epi32(v.raw, v.raw);
-  // Concatenate lower 64 bits of each 128-bit block
-  const __m256i u16_concat = _mm256_permute4x64_epi64(u16_blocks, 0x88);
-  const __m128i u16 = _mm256_castsi256_si128(u16_concat);
-  return u8x8(_mm_packus_epi16(u16, u16));
+template <>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> gather_offset<double>(
+    Full<double, AVX2>, const double* SIMD_RESTRICT base,
+    const vec_avx2<int64_t> offset) {
+  return vec_avx2<double>(_mm256_i64gather_pd(base, offset.raw, 1));
+}
+template <>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> gather_index<double>(
+    Full<double, AVX2>, const double* SIMD_RESTRICT base,
+    const vec_avx2<int64_t> index) {
+  return vec_avx2<double>(_mm256_i64gather_pd(base, index.raw, 8));
 }
 
-SIMD_ATTR_AVX2 SIMD_INLINE i16x8 convert_to(Part<int16_t, 8, AVX2>,
-                                            const vec_avx2<int32_t> v) {
-  const __m256i i16 = _mm256_packs_epi32(v.raw, v.raw);
-  return i16x8(_mm256_castsi256_si128(_mm256_permute4x64_epi64(i16, 0x88)));
-}
-
-SIMD_ATTR_AVX2 SIMD_INLINE i8x8 convert_to(Part<int8_t, 8, AVX2>,
-                                           const vec_avx2<int32_t> v) {
-  const __m256i i16_blocks = _mm256_packs_epi32(v.raw, v.raw);
-  // Concatenate lower 64 bits of each 128-bit block
-  const __m256i i16_concat = _mm256_permute4x64_epi64(i16_blocks, 0x88);
-  const __m128i i16 = _mm256_castsi256_si128(i16_concat);
-  return i8x8(_mm_packs_epi16(i16, i16));
-}
-
-SIMD_ATTR_AVX2 SIMD_INLINE u8x16 convert_to(Part<uint8_t, 16, AVX2>,
-                                            const vec_avx2<int16_t> v) {
-  const __m256i u8 = _mm256_packus_epi16(v.raw, v.raw);
-  return u8x16(_mm256_castsi256_si128(_mm256_permute4x64_epi64(u8, 0x88)));
-}
-
-SIMD_ATTR_AVX2 SIMD_INLINE i8x16 convert_to(Part<int8_t, 16, AVX2>,
-                                            const vec_avx2<int16_t> v) {
-  const __m256i i8 = _mm256_packs_epi16(v.raw, v.raw);
-  return i8x16(_mm256_castsi256_si128(_mm256_permute4x64_epi64(i8, 0x88)));
-}
-
-// ------------------------------ Convert i32 <=> f32
-
-template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float, N> convert_to(
-    Part<float, N, AVX2>, const vec_avx2<int32_t, N> v) {
-  return vec_avx2<float, N>(_mm256_cvtepi32_ps(v.raw));
-}
-// Truncates (rounds toward zero).
-template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int32_t, N> convert_to(
-    Part<int32_t, N, AVX2>, const vec_avx2<float, N> v) {
-  return vec_avx2<int32_t, N>(_mm256_cvttps_epi32(v.raw));
-}
-
-template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int32_t, N> nearest_int(
-    const vec_avx2<float, N> v) {
-  return vec_avx2<int32_t, N>(_mm256_cvtps_epi32(v.raw));
-}
+}  // namespace ext
 
 // ================================================== SWIZZLE
 
-// ------------------------------ Extract other half (see any_part)
+// ------------------------------ Extract half
 
-template <typename T, size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_sse4<T, N / 2> other_half(
-    const vec_avx2<T, N> v) {
-  return vec_sse4<T, N / 2>(_mm256_extracti128_si256(v.raw, 1));
+template <typename T>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_sse4<T> get_half(Lower, vec_avx2<T> v) {
+  return vec_sse4<T>(_mm256_castsi256_si128(v.raw));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE f32x4 other_half(const vec_avx2<float> v) {
-  return f32x4(_mm256_extractf128_ps(v.raw, 1));
+template <>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_sse4<float> get_half(Lower, vec_avx2<float> v) {
+  return vec_sse4<float>(_mm256_castps256_ps128(v.raw));
 }
-SIMD_ATTR_AVX2 SIMD_INLINE f64x2 other_half(const vec_avx2<double> v) {
-  return f64x2(_mm256_extractf128_pd(v.raw, 1));
+template <>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_sse4<double> get_half(Lower,
+                                                     vec_avx2<double> v) {
+  return vec_sse4<double>(_mm256_castpd256_pd128(v.raw));
+}
+template <typename T>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_sse4<T> lower_half(const vec_avx2<T> v) {
+  return get_half(Lower(), v);
+}
+
+template <typename T>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_sse4<T> get_half(Upper, const vec_avx2<T> v) {
+  return vec_sse4<T>(_mm256_extracti128_si256(v.raw, 1));
+}
+template <>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_sse4<float> get_half(Upper,
+                                                    const vec_avx2<float> v) {
+  return vec_sse4<float>(_mm256_extractf128_ps(v.raw, 1));
+}
+template <>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_sse4<double> get_half(Upper,
+                                                     const vec_avx2<double> v) {
+  return vec_sse4<double>(_mm256_extractf128_pd(v.raw, 1));
+}
+template <typename T>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_sse4<T> upper_half(const vec_avx2<T> v) {
+  return get_half(Upper(), v);
 }
 
 // ------------------------------ Shift vector by constant #bytes
 
 // 0x01..0F, kBytes = 1 => 0x02..0F00
 template <int kBytes, typename T, size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> shift_bytes_left(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> shift_left_bytes(
     const vec_avx2<T, N> v) {
+  static_assert(0 <= kBytes && kBytes <= 16, "Invalid kBytes");
   // This is the same operation as _mm256_bslli_epi128.
   return vec_avx2<T, N>(_mm256_slli_si256(v.raw, kBytes));
 }
 
+template <int kLanes, typename T, size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> shift_left_lanes(
+    const vec_avx2<T, N> v) {
+  return shift_left_bytes<kLanes * sizeof(T)>(v);
+}
+
 // 0x01..0F, kBytes = 1 => 0x0001..0E
 template <int kBytes, typename T, size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> shift_bytes_right(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> shift_right_bytes(
     const vec_avx2<T, N> v) {
+  static_assert(0 <= kBytes && kBytes <= 16, "Invalid kBytes");
   // This is the same operation as _mm256_bsrli_epi128.
   return vec_avx2<T, N>(_mm256_srli_si256(v.raw, kBytes));
+}
+
+template <int kLanes, typename T, size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> shift_right_lanes(
+    const vec_avx2<T, N> v) {
+  return shift_right_bytes<kLanes * sizeof(T)>(v);
 }
 
 // ------------------------------ Extract from 2x 128-bit at constant offset
 
 // Extracts 128 bits from <hi, lo> by skipping the least-significant kBytes.
 template <int kBytes, typename T, size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> extract_concat_bytes(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> combine_shift_right_bytes(
     const vec_avx2<T, N> hi, const vec_avx2<T, N> lo) {
   const Full<uint8_t, AVX2> d8;
-  const Full<uint8_t, AVX2>::V extracted_bytes(
+  const vec_avx2<uint8_t> extracted_bytes(
       _mm256_alignr_epi8(cast_to(d8, hi).raw, cast_to(d8, lo).raw, kBytes));
   return cast_to(Full<T, AVX2>(), extracted_bytes);
 }
@@ -1589,8 +1624,8 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> broadcast(
 // Notation: let vec_avx2<int32_t> have lanes 7,6,5,4,3,2,1,0 (0 is
 // least-significant). shuffle_0321 rotates four-lane blocks one lane to the
 // right (the previous least-significant lane is now most-significant =>
-// 47650321). These could also be implemented via extract_concat_bytes but the
-// shuffle_abcd notation is more convenient.
+// 47650321). These could also be implemented via combine_shift_right_bytes but
+// the shuffle_abcd notation is more convenient.
 
 // Swap 64-bit halves
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint32_t> shuffle_1032(
@@ -1659,6 +1694,27 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int32_t> shuffle_0123(
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float> shuffle_0123(
     const vec_avx2<float> v) {
   return vec_avx2<float>(_mm256_shuffle_ps(v.raw, v.raw, 0x1B));
+}
+
+// ------------------------------ Permute (runtime variable)
+
+template <typename T>
+SIMD_ATTR_AVX2 SIMD_INLINE permute_avx2<T> set_table_indices(const Full<T, AVX2>,
+                                                       const int32_t* idx) {
+  return permute_avx2<T>{load_unaligned(Full<int32_t, AVX2>(), idx).raw};
+}
+
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint32_t> table_lookup_lanes(
+    const vec_avx2<uint32_t> v, const permute_avx2<uint32_t> idx) {
+  return vec_avx2<uint32_t>(_mm256_permutevar8x32_epi32(v.raw, idx.raw));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int32_t> table_lookup_lanes(
+    const vec_avx2<int32_t> v, const permute_avx2<int32_t> idx) {
+  return vec_avx2<int32_t>(_mm256_permutevar8x32_epi32(v.raw, idx.raw));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float> table_lookup_lanes(
+    const vec_avx2<float> v, const permute_avx2<float> idx) {
+  return vec_avx2<float>(_mm256_permutevar8x32_ps(v.raw, idx.raw));
 }
 
 // ------------------------------ Interleave lanes
@@ -1875,22 +1931,6 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> broadcast_part(
 
 // ------------------------------ Blocks
 
-// H,L |-> L,L
-template <typename T>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T> broadcast_block(const vec_avx2<T> v) {
-  return vec_avx2<T>(_mm256_permute2x128_si256(v.raw, v.raw, 0));
-}
-template <>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float> broadcast_block(
-    const vec_avx2<float> v) {
-  return vec_avx2<float>(_mm256_permute2f128_ps(v.raw, v.raw, 0));
-}
-template <>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> broadcast_block(
-    const vec_avx2<double> v) {
-  return vec_avx2<double>(_mm256_permute2f128_pd(v.raw, v.raw, 0));
-}
-
 // hiH,hiL loH,loL |-> hiL,loL (= lower halves)
 template <typename T>
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T> concat_lo_lo(const vec_avx2<T> hi,
@@ -2008,6 +2048,175 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> odd_even<double>(
   return vec_avx2<double>(_mm256_blend_pd(a.raw, b.raw, 5));
 }
 
+// ================================================== CONVERT
+
+// ------------------------------ Shuffle bytes with variable indices
+
+// Returns vector of bytes[from[i]]. "from" is also interpreted as bytes:
+// either valid indices in [0, 16) or >= 0x80 to zero the i-th output byte.
+template <typename T, typename TI, size_t N, size_t NI>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> table_lookup_bytes(
+    const vec_avx2<T, N> bytes, const vec_avx2<TI, NI> from) {
+  return vec_avx2<T, N>(_mm256_shuffle_epi8(bytes.raw, from.raw));
+}
+
+// ------------------------------ Promotions (part w/ narrow lanes -> full)
+
+// Unsigned: zero-extend.
+// Note: these have 3 cycle latency; if inputs are already split across the
+// 128 bit blocks (in their upper/lower halves), then zip_hi/lo would be faster.
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint16_t> convert_to(Full<uint16_t, AVX2>,
+                                                         const u8x16 v) {
+  return vec_avx2<uint16_t>(_mm256_cvtepu8_epi16(v.raw));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint32_t> convert_to(Full<uint32_t, AVX2>,
+                                                         const u8x8 v) {
+  return vec_avx2<uint32_t>(_mm256_cvtepu8_epi32(v.raw));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int16_t> convert_to(Full<int16_t, AVX2>,
+                                                        const u8x16 v) {
+  return vec_avx2<int16_t>(_mm256_cvtepu8_epi16(v.raw));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int32_t> convert_to(Full<int32_t, AVX2>,
+                                                        const u8x8 v) {
+  return vec_avx2<int32_t>(_mm256_cvtepu8_epi32(v.raw));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint32_t> convert_to(Full<uint32_t, AVX2>,
+                                                         const u16x8 v) {
+  return vec_avx2<uint32_t>(_mm256_cvtepu16_epi32(v.raw));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int32_t> convert_to(Full<int32_t, AVX2>,
+                                                        const u16x8 v) {
+  return vec_avx2<int32_t>(_mm256_cvtepu16_epi32(v.raw));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint64_t> convert_to(Full<uint64_t, AVX2>,
+                                                         const u32x4 v) {
+  return vec_avx2<uint64_t>(_mm256_cvtepu32_epi64(v.raw));
+}
+
+// Special case for "v" with all blocks equal (e.g. from broadcast_block or
+// load_dup128): single-cycle latency instead of 3.
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint32_t> u32_from_u8(
+    const vec_avx2<uint8_t> v) {
+  const Full<uint32_t, AVX2> d32;
+  SIMD_ALIGN static constexpr uint32_t k32From8[8] = {
+      0xFFFFFF00UL, 0xFFFFFF01UL, 0xFFFFFF02UL, 0xFFFFFF03UL,
+      0xFFFFFF04UL, 0xFFFFFF05UL, 0xFFFFFF06UL, 0xFFFFFF07UL};
+  return table_lookup_bytes(cast_to(d32, v), load(d32, k32From8));
+}
+
+// Signed: replicate sign bit.
+// Note: these have 3 cycle latency; if inputs are already split across the
+// 128 bit blocks (in their upper/lower halves), then zip_hi/lo followed by
+// signed shift would be faster.
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int16_t> convert_to(Full<int16_t, AVX2>,
+                                                        const i8x16 v) {
+  return vec_avx2<int16_t>(_mm256_cvtepi8_epi16(v.raw));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int32_t> convert_to(Full<int32_t, AVX2>,
+                                                        const i8x8 v) {
+  return vec_avx2<int32_t>(_mm256_cvtepi8_epi32(v.raw));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int32_t> convert_to(Full<int32_t, AVX2>,
+                                                        const i16x8 v) {
+  return vec_avx2<int32_t>(_mm256_cvtepi16_epi32(v.raw));
+}
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int64_t> convert_to(Full<int64_t, AVX2>,
+                                                        const i32x4 v) {
+  return vec_avx2<int64_t>(_mm256_cvtepi32_epi64(v.raw));
+}
+
+// ------------------------------ Demotions (full -> part w/ narrow lanes)
+
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE VT<uint16_t, N, AVX2> convert_to(
+    Part<uint16_t, N, AVX2>, const vec_avx2<int32_t> v) {
+  const __m256i u16 = _mm256_packus_epi32(v.raw, v.raw);
+  // Concatenating lower halves of both 128-bit blocks afterward is more
+  // efficient than an extra input with low block = high block of v.
+  return VT<uint16_t, N, AVX2>(
+      _mm256_castsi256_si128(_mm256_permute4x64_epi64(u16, 0x88)));
+}
+
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE VT<uint8_t, N, AVX2> convert_to(
+    Part<uint8_t, N, AVX2>, const vec_avx2<int32_t> v) {
+  const __m256i u16_blocks = _mm256_packus_epi32(v.raw, v.raw);
+  // Concatenate lower 64 bits of each 128-bit block
+  const __m256i u16_concat = _mm256_permute4x64_epi64(u16_blocks, 0x88);
+  const __m128i u16 = _mm256_castsi256_si128(u16_concat);
+  return VT<uint8_t, N, AVX2>(_mm_packus_epi16(u16, u16));
+}
+
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE VT<int16_t, N, AVX2> convert_to(
+    Part<int16_t, N, AVX2>, const vec_avx2<int32_t> v) {
+  const __m256i i16 = _mm256_packs_epi32(v.raw, v.raw);
+  return VT<int16_t, N, AVX2>(
+      _mm256_castsi256_si128(_mm256_permute4x64_epi64(i16, 0x88)));
+}
+
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE VT<int8_t, N, AVX2> convert_to(
+    Part<int8_t, N, AVX2>, const vec_avx2<int32_t> v) {
+  const __m256i i16_blocks = _mm256_packs_epi32(v.raw, v.raw);
+  // Concatenate lower 64 bits of each 128-bit block
+  const __m256i i16_concat = _mm256_permute4x64_epi64(i16_blocks, 0x88);
+  const __m128i i16 = _mm256_castsi256_si128(i16_concat);
+  return VT<int8_t, N, AVX2>(_mm_packs_epi16(i16, i16));
+}
+
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE VT<uint8_t, N, AVX2> convert_to(
+    Part<uint8_t, N, AVX2>, const vec_avx2<int16_t> v) {
+  const __m256i u8 = _mm256_packus_epi16(v.raw, v.raw);
+  return VT<uint8_t, N, AVX2>(
+      _mm256_castsi256_si128(_mm256_permute4x64_epi64(u8, 0x88)));
+}
+
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE VT<int8_t, N, AVX2> convert_to(
+    Part<int8_t, N, AVX2>, const vec_avx2<int16_t> v) {
+  const __m256i i8 = _mm256_packs_epi16(v.raw, v.raw);
+  return VT<int8_t, N, AVX2>(
+      _mm256_castsi256_si128(_mm256_permute4x64_epi64(i8, 0x88)));
+}
+
+// For already range-limited input [0, 255].
+SIMD_ATTR_AVX2 SIMD_INLINE vec_sse4<uint8_t, 8> u8_from_u32(
+    const vec_avx2<uint32_t> v) {
+  const Full<uint32_t, AVX2> d32;
+  SIMD_ALIGN static constexpr uint32_t k8From32[8] = {
+      0x0C080400u, ~0u, ~0u, ~0u, ~0u, 0x0C080400u, ~0u, ~0u};
+  // Place first four bytes in lo[0], remainding 4 in hi[1].
+  const auto quad = table_lookup_bytes(v, load(d32, k8From32));
+  // Interleave both quadruplets - OR instead of unpack reduces port5 pressure.
+  const auto lo = get_half(Lower(), quad);
+  const auto hi = get_half(Upper(), quad);
+  const auto pair = get_half(Lower(), lo | hi);
+  return cast_to(Part<uint8_t, 8, SSE4>(), pair);
+}
+
+// ------------------------------ Convert i32 <=> f32
+
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float, N> convert_to(
+    Part<float, N, AVX2>, const vec_avx2<int32_t, N> v) {
+  return vec_avx2<float, N>(_mm256_cvtepi32_ps(v.raw));
+}
+// Truncates (rounds toward zero).
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int32_t, N> convert_to(
+    Part<int32_t, N, AVX2>, const vec_avx2<float, N> v) {
+  return vec_avx2<int32_t, N>(_mm256_cvttps_epi32(v.raw));
+}
+
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int32_t, N> nearest_int(
+    const vec_avx2<float, N> v) {
+  return vec_avx2<int32_t, N>(_mm256_cvtps_epi32(v.raw));
+}
+
 // ================================================== MISC
 
 // aes_round already defined by x86_sse4.h.
@@ -2080,7 +2289,8 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> horz_sum_impl(
 
 // Supported for {uif}32x8, {uif}64x4. Returns the sum in each lane.
 template <typename T, size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> horz_sum(const vec_avx2<T, N> vHL) {
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> sum_of_lanes(
+    const vec_avx2<T, N> vHL) {
   const vec_avx2<T, N> vLH = concat_lo_hi(vHL, vHL);
   char sizeof_t[sizeof(T)];
   return horz_sum_impl(sizeof_t, vLH + vHL);

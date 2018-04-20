@@ -6,13 +6,20 @@
 
 namespace pik {
 
+// No effect if kDefault, otherwise forces a feature on or off.
+enum class Override : int {
+  kOn = 1,
+  kOff = 0,
+  kDefault = -1
+};
+
 struct CompressParams {
   // Only used for benchmarking (comparing vs libjpeg)
   int jpeg_quality = 100;
   bool jpeg_chroma_subsampling = false;
   bool clear_metadata = false;
 
-  float butteraugli_distance = -1.0f;
+  float butteraugli_distance = 1.0f;
   size_t target_size = 0;
   float target_bitrate = 0.0f;
   bool target_size_search_fast_mode = false;
@@ -25,11 +32,17 @@ struct CompressParams {
   // find a trade-off between quality and file size that optimizes the
   // quality-adjusted-bits-per-pixel metric.
   bool fast_mode = false;
-  int max_butteraugli_iters = 200;
+  int max_butteraugli_iters = 100;
 
-  bool apply_noise = false;
-  bool denoise = false;
+  Override denoise = Override::kDefault;
 
+  Override apply_noise = Override::kDefault;
+
+
+  // Prints extra information after encoding.
+  bool verbose = false;
+
+  bool exp_disable_hf_prediction = false;
 };
 
 struct DecompressParams {
@@ -37,6 +50,9 @@ struct DecompressParams {
   // If true, checks at the end of decoding that all of the compressed data
   // was consumed by the decoder.
   bool check_decompressed_size = true;
+
+  // kDefault := whatever the encoder decided (stored in header).
+  Override denoise = Override::kDefault;
 };
 }  // namespace pik
 

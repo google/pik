@@ -35,6 +35,10 @@ extern "C" {
 #include "png.h"
 }
 
+#ifdef MEMORY_SANITIZER
+#include <sanitizer/msan_interface.h>
+#endif
+
 namespace pik {
 
 // RAII, ensures files are closed even when returning early.
@@ -683,7 +687,7 @@ bool ReadImage(ImageFormatPNG, const std::string& pathname, ImageB* image) {
   return ReadPNGImage(pathname, 0, image);
 }
 
-bool ReadImage(ImageFormatPNG, const std::string& pathname, ImageW* image) {
+bool ReadImage(ImageFormatPNG, const std::string& pathname, ImageS* image) {
   return ReadPNGImage(pathname, 0x8000, image);
 }
 
@@ -695,7 +699,7 @@ bool ReadImage(ImageFormatPNG, const std::string& pathname, Image3B* image) {
   return ReadPNGImage3(pathname, 0, image);
 }
 
-bool ReadImage(ImageFormatPNG, const std::string& pathname, Image3W* image) {
+bool ReadImage(ImageFormatPNG, const std::string& pathname, Image3S* image) {
   return ReadPNGImage3(pathname, 0x8000, image);
 }
 
@@ -810,7 +814,7 @@ class PngWriter {
     png_write_row(png_, row_buffer_.data());
   }
 
-  void WriteRow(const ImageW& image, const size_t y) {
+  void WriteRow(const ImageS& image, const size_t y) {
     const auto row = image.ConstRow(y);
     uint8_t* PIK_RESTRICT bytes = row_buffer_.data();
     for (size_t x = 0; x < xsize_; ++x) {
@@ -819,7 +823,7 @@ class PngWriter {
     png_write_row(png_, row_buffer_.data());
   }
 
-  void WriteRow(const Image3W& image, const size_t y) {
+  void WriteRow(const Image3S& image, const size_t y) {
     const auto row = image.ConstRow(y);
     uint8_t* PIK_RESTRICT bytes = row_buffer_.data();
     for (size_t x = 0; x < xsize_; ++x) {
@@ -830,7 +834,7 @@ class PngWriter {
     png_write_row(png_, row_buffer_.data());
   }
 
-  void WriteRow(const MetaImageW& image, const size_t y) {
+  void WriteRow(const MetaImageS& image, const size_t y) {
     const auto row = image.GetColor().ConstRow(y);
     uint8_t* PIK_RESTRICT bytes = row_buffer_.data();
     if (color_type_ == PNG_COLOR_TYPE_RGBA) {
@@ -963,7 +967,7 @@ bool WriteImage(ImageFormatPNG, const ImageB& image,
   return WritePNGImage(image, pathname);
 }
 
-bool WriteImage(ImageFormatPNG, const ImageW& image,
+bool WriteImage(ImageFormatPNG, const ImageS& image,
                 const std::string& pathname) {
   return WritePNGImage(image, pathname);
 }
@@ -978,7 +982,7 @@ bool WriteImage(ImageFormatPNG, const Image3B& image3,
   return WritePNGImage(image3, pathname);
 }
 
-bool WriteImage(ImageFormatPNG, const Image3W& image3,
+bool WriteImage(ImageFormatPNG, const Image3S& image3,
                 const std::string& pathname) {
   return WritePNGImage(image3, pathname);
 }
@@ -1311,6 +1315,10 @@ bool StorePlanes(const PlanesHeader& header,
 
   const size_t plane_size = header.ysize * header.bytes_per_row;
   for (const uint8_t* plane : planes) {
+    // Disable MSAN: we don't mind writing uninitialized padding to disk.
+#ifdef MEMORY_SANITIZER
+    __msan_unpoison(plane, plane_size);
+#endif
     const size_t bytes_written = fwrite(plane, 1, plane_size, f);
     if (bytes_written != plane_size) {
       return PIK_FAILURE("Write planes");
@@ -1507,7 +1515,7 @@ class LinearLoader {
 
   // From 16-bit signed
   template <class Format>
-  void ConvertToLinearRGB(Format, const Image3W& srgb) {
+  void ConvertToLinearRGB(Format, const Image3S& srgb) {
     linear_rgb_->SetColor(Image3F(srgb.xsize(), srgb.ysize()));
     for (size_t y = 0; y < srgb.ysize(); ++y) {
       auto row_rgb = srgb.Row(y);
@@ -1523,7 +1531,7 @@ class LinearLoader {
 
   // From 16-bit signed
   template <class Format>
-  void ConvertToLinearRGB(Format format, const MetaImageW& srgb) {
+  void ConvertToLinearRGB(Format format, const MetaImageS& srgb) {
     ConvertToLinearRGB(format, srgb.GetColor());
     linear_rgb_->CopyAlpha(srgb);
   }
@@ -1610,7 +1618,7 @@ void WriteImageLinear(const Image3F& linear, const std::string& pathname) {
 template bool ReadImage<uint8_t>(ImageFormatPlanes, const std::string&,
                                  ImageB*);
 template bool ReadImage<int16_t>(ImageFormatPlanes, const std::string&,
-                                 ImageW*);
+                                 ImageS*);
 template bool ReadImage<uint16_t>(ImageFormatPlanes, const std::string&,
                                   ImageU*);
 template bool ReadImage<float>(ImageFormatPlanes, const std::string&, ImageF*);
@@ -1618,14 +1626,14 @@ template bool ReadImage<float>(ImageFormatPlanes, const std::string&, ImageF*);
 template bool ReadImage<uint8_t>(ImageFormatPlanes, const std::string&,
                                  Image3B*);
 template bool ReadImage<int16_t>(ImageFormatPlanes, const std::string&,
-                                 Image3W*);
+                                 Image3S*);
 template bool ReadImage<uint16_t>(ImageFormatPlanes, const std::string&,
                                   Image3U*);
 template bool ReadImage<float>(ImageFormatPlanes, const std::string&, Image3F*);
 
 template bool WriteImage<uint8_t>(ImageFormatPlanes, const ImageB&,
                                   const std::string&);
-template bool WriteImage<int16_t>(ImageFormatPlanes, const ImageW&,
+template bool WriteImage<int16_t>(ImageFormatPlanes, const ImageS&,
                                   const std::string&);
 template bool WriteImage<uint16_t>(ImageFormatPlanes, const ImageU&,
                                    const std::string&);
@@ -1634,7 +1642,7 @@ template bool WriteImage<float>(ImageFormatPlanes, const ImageF&,
 
 template bool WriteImage<uint8_t>(ImageFormatPlanes, const Image3B&,
                                   const std::string&);
-template bool WriteImage<int16_t>(ImageFormatPlanes, const Image3W&,
+template bool WriteImage<int16_t>(ImageFormatPlanes, const Image3S&,
                                   const std::string&);
 template bool WriteImage<uint16_t>(ImageFormatPlanes, const Image3U&,
                                    const std::string&);

@@ -55,10 +55,12 @@
 #define PROFILER_ZONE(name)
 #endif
 
+
 namespace pik {
 namespace butteraugli {
 
 void *CacheAligned::Allocate(const size_t bytes) {
+  PROFILER_FUNC;
   char *const allocated = static_cast<char *>(malloc(bytes + kCacheLineSize));
   if (allocated == nullptr) {
     return nullptr;
@@ -74,6 +76,7 @@ void *CacheAligned::Allocate(const size_t bytes) {
 }
 
 void CacheAligned::Free(void *aligned_pointer) {
+  PROFILER_FUNC;
   if (aligned_pointer == nullptr) {
     return;
   }
@@ -101,6 +104,7 @@ static inline bool IsNan(const double x) {
 }
 
 static inline void CheckImage(const ImageF &image, const char *name) {
+  PROFILER_FUNC;
   for (size_t y = 0; y < image.ysize(); ++y) {
     const float * const BUTTERAUGLI_RESTRICT row = image.Row(y);
     for (size_t x = 0; x < image.xsize(); ++x) {
@@ -136,7 +140,7 @@ static inline void CheckImage(const ImageF &image, const char *name) {
 // Purpose of kInternalGoodQualityThreshold:
 // Normalize 'ok' image degradation to 1.0 across different versions of
 // butteraugli.
-static const double kInternalGoodQualityThreshold = 17.283833434227766;
+static const double kInternalGoodQualityThreshold = 17.541881067400787;
 static const double kGlobalScale = 1.0 / kInternalGoodQualityThreshold;
 
 inline float DotProduct(const float u[3], const float v[3]) {
@@ -185,6 +189,7 @@ void ConvolveBorderColumn(
 ImageF Convolution(const ImageF& in,
                    const std::vector<float>& kernel,
                    const float border_ratio) {
+  PROFILER_FUNC;
   ImageF out(in.ysize(), in.xsize());
   const int len = kernel.size();
   const int offset = kernel.size() / 2;
@@ -403,6 +408,7 @@ static ImageF SuppressInBrightAreas(size_t xsize, size_t ysize,
                                     double mul, double mul2, double reg,
                                     const ImageF& hf,
                                     const ImageF& brightness) {
+  PROFILER_FUNC;
   ImageF inew(xsize, ysize);
   for (size_t y = 0; y < ysize; ++y) {
     const float* const rowhf = hf.Row(y);
@@ -687,21 +693,6 @@ ImageF CalculateDiffmap(const ImageF& diffmap_in) {
                     : std::sqrt(orig_val));
     }
   }
-  {
-    static const double kSigma = 1.33335217193;
-    static const double mul1 = 0.0583097569237;
-    static const float scale = 1.0f / (1.0f + mul1);
-    static const double border_ratio = 1.0; // optimization gives 26.97 ?!
-    ImageF blurred = Blur(diffmap, kSigma, border_ratio);
-    for (int y = 0; y < diffmap.ysize(); ++y) {
-      const float* const BUTTERAUGLI_RESTRICT row_blurred = blurred.Row(y);
-      float* const BUTTERAUGLI_RESTRICT row = diffmap.Row(y);
-      for (int x = 0; x < diffmap.xsize(); ++x) {
-        row[x] += mul1 * row_blurred[x];
-        row[x] *= scale;
-      }
-    }
-  }
   return diffmap;
 }
 
@@ -846,7 +837,12 @@ void ButteraugliComparator::DiffmapPsychoImage(const PsychoImage& pi1,
       CombineChannels(mask_xyb, mask_xyb_dc, block_diff_dc, block_diff_ac));
 }
 
-static float MaltaUnitLF(const float *d, const int xs) {
+// Allows PaddedMaltaUnit to call either function via overloading.
+struct MaltaTagLF {};
+struct MaltaTag {};
+
+static float MaltaUnit(MaltaTagLF, const float* BUTTERAUGLI_RESTRICT d,
+                       const int xs) {
   const int xs3 = 3 * xs;
   float retval = 0;
   {
@@ -895,7 +891,7 @@ static float MaltaUnitLF(const float *d, const int xs) {
         d[-xs3 - xs + 1] +
         d[-xs - xs + 1] +
         d[0] +
-        d[xs - 1] +
+        d[xs + xs - 1] +
         d[xs3 + xs - 1];
     retval += sum * sum;
   }
@@ -905,7 +901,7 @@ static float MaltaUnitLF(const float *d, const int xs) {
         d[-xs3 - xs - 1] +
         d[-xs - xs - 1] +
         d[0] +
-        d[xs + 1] +
+        d[xs + xs + 1] +
         d[xs3 + xs + 1];
     retval += sum * sum;
   }
@@ -1077,7 +1073,8 @@ static float MaltaUnitLF(const float *d, const int xs) {
   return retval;
 }
 
-static float MaltaUnit(const float *d, const int xs) {
+static float MaltaUnit(MaltaTag, const float* BUTTERAUGLI_RESTRICT d,
+                       const int xs) {
   const int xs3 = 3 * xs;
   float retval = 0;
   {
@@ -1141,7 +1138,7 @@ static float MaltaUnit(const float *d, const int xs) {
         d[-xs] +
         d[0] +
         d[xs] +
-        d[xs - 1] +
+        d[xs + xs - 1] +
         d[xs3 - 1] +
         d[xs3 + xs - 1];
     retval += sum * sum;
@@ -1155,7 +1152,7 @@ static float MaltaUnit(const float *d, const int xs) {
         d[-xs] +
         d[0] +
         d[xs] +
-        d[xs + 1] +
+        d[xs + xs + 1] +
         d[xs3 + 1] +
         d[xs3 + xs + 1];
     retval += sum * sum;
@@ -1356,116 +1353,118 @@ static float MaltaUnit(const float *d, const int xs) {
   return retval;
 }
 
-void ButteraugliComparator::MaltaDiffMap(
-    const ImageF& y0, const ImageF& y1,
-    const double weight,
-    const double norm1,
-    ImageF* BUTTERAUGLI_RESTRICT block_diff_ac) const {
-  PROFILER_FUNC;
-  const double len = 3.75;
-  static const double mulli = 0.354191303559;
+// Returns MaltaUnit. "fastMode" avoids bounds-checks when x0 and y0 are known
+// to be far enough from the image borders.
+template <bool fastMode, class Tag>
+static BUTTERAUGLI_INLINE float PaddedMaltaUnit(
+    float* const BUTTERAUGLI_RESTRICT diffs, const size_t x0, const size_t y0,
+    const size_t xsize_, const size_t ysize_) {
+  int ix0 = y0 * xsize_ + x0;
+  const float* BUTTERAUGLI_RESTRICT d = &diffs[ix0];
+  if (fastMode ||
+      (x0 >= 4 && y0 >= 4 && x0 < (xsize_ - 4) && y0 < (ysize_ - 4))) {
+    return MaltaUnit(Tag(), d, xsize_);
+  }
+
+  float borderimage[9 * 9];
+  for (int dy = 0; dy < 9; ++dy) {
+    int y = y0 + dy - 4;
+    if (y < 0 || y >= ysize_) {
+      for (int dx = 0; dx < 9; ++dx) {
+        borderimage[dy * 9 + dx] = 0.0f;
+      }
+    } else {
+      for (int dx = 0; dx < 9; ++dx) {
+        int x = x0 + dx - 4;
+        if (x < 0 || x >= xsize_) {
+          borderimage[dy * 9 + dx] = 0.0f;
+        } else {
+          borderimage[dy * 9 + dx] = diffs[y * xsize_ + x];
+        }
+      }
+    }
+  }
+  return MaltaUnit(Tag(), &borderimage[4 * 9 + 4], 9);
+}
+
+template <class Tag>
+static void MaltaDiffMapImpl(const ImageF& lum0, const ImageF& lum1,
+                             const size_t xsize_, const size_t ysize_,
+                             const double weight, const double norm1,
+                             const double len, const double mulli,
+                             ImageF* block_diff_ac) {
   const double w = mulli * sqrt(weight) / (len * 2 + 1);
-  const double norm2 = w * norm1;
+  const float norm2 = w * norm1;
+
   std::vector<float> diffs(ysize_ * xsize_);
-  std::vector<float> sums(ysize_ * xsize_);
   for (size_t y = 0, ix = 0; y < ysize_; ++y) {
-    const float* BUTTERAUGLI_RESTRICT const row0 = y0.Row(y);
-    const float* BUTTERAUGLI_RESTRICT const row1 = y1.Row(y);
+    const float* BUTTERAUGLI_RESTRICT const row0 = lum0.Row(y);
+    const float* BUTTERAUGLI_RESTRICT const row1 = lum1.Row(y);
     for (size_t x = 0; x < xsize_; ++x, ++ix) {
-      double absval = 0.5 * (std::abs(row0[x]) + std::abs(row1[x]));
-      double diff = row0[x] - row1[x];
-      double scaler = norm2 / (norm1 + absval);
+      const float absval = 0.5f * (std::abs(row0[x]) + std::abs(row1[x]));
+      const float diff = row0[x] - row1[x];
+      const float scaler = norm2 / (static_cast<float>(norm1) + absval);
       diffs[ix] = scaler * diff;
     }
   }
-  float borderimage[9 * 9];
-  for (size_t y0 = 0; y0 < ysize_; ++y0) {
+
+  size_t y0 = 0;
+  // Top
+  for (; y0 < 4; ++y0) {
     float* const BUTTERAUGLI_RESTRICT row_diff = block_diff_ac->Row(y0);
-    const bool fastModeY = y0 >= 4 && y0 < ysize_ - 4;
     for (size_t x0 = 0; x0 < xsize_; ++x0) {
-      int ix0 = y0 * xsize_ + x0;
-      const float *d = &diffs[ix0];
-      const bool fastModeX = x0 >= 4 && x0 < xsize_ - 4;
-      if (fastModeY && fastModeX) {
-        row_diff[x0] += MaltaUnit(d, xsize_);
-      } else {
-        for (int dy = 0; dy < 9; ++dy) {
-          int y = y0 + dy - 4;
-          if (y < 0 || y >= ysize_) {
-            for (int dx = 0; dx < 9; ++dx) {
-              borderimage[dy * 9 + dx] = 0;
-            }
-          } else {
-            for (int dx = 0; dx < 9; ++dx) {
-              int x = x0 + dx - 4;
-              if (x < 0 || x >= xsize_) {
-                borderimage[dy * 9 + dx] = 0;
-              } else {
-                borderimage[dy * 9 + dx] = diffs[y * xsize_ + x];
-              }
-            }
-          }
-        }
-        row_diff[x0] += MaltaUnit(&borderimage[4 * 9 + 4], 9);
-      }
+      row_diff[x0] +=
+          PaddedMaltaUnit<false, Tag>(&diffs[0], x0, y0, xsize_, ysize_);
+    }
+  }
+
+  // Middle
+  for (; y0 < ysize_ - 4; ++y0) {
+    float* const BUTTERAUGLI_RESTRICT row_diff = block_diff_ac->Row(y0);
+    size_t x0 = 0;
+    for (; x0 < 4; ++x0) {
+      row_diff[x0] +=
+          PaddedMaltaUnit<false, Tag>(&diffs[0], x0, y0, xsize_, ysize_);
+    }
+    for (; x0 < xsize_ - 4; ++x0) {
+      row_diff[x0] +=
+          PaddedMaltaUnit<true, Tag>(&diffs[0], x0, y0, xsize_, ysize_);
+    }
+
+    for (; x0 < xsize_; ++x0) {
+      row_diff[x0] +=
+          PaddedMaltaUnit<false, Tag>(&diffs[0], x0, y0, xsize_, ysize_);
+    }
+  }
+
+  // Bottom
+  for (; y0 < ysize_; ++y0) {
+    float* const BUTTERAUGLI_RESTRICT row_diff = block_diff_ac->Row(y0);
+    for (size_t x0 = 0; x0 < xsize_; ++x0) {
+      row_diff[x0] +=
+          PaddedMaltaUnit<false, Tag>(&diffs[0], x0, y0, xsize_, ysize_);
     }
   }
 }
 
+void ButteraugliComparator::MaltaDiffMap(
+    const ImageF& lum0, const ImageF& lum1, const double weight,
+    const double norm1, ImageF* BUTTERAUGLI_RESTRICT block_diff_ac) const {
+  PROFILER_FUNC;
+  const double len = 3.75;
+  static const double mulli = 0.354191303559;
+  MaltaDiffMapImpl<MaltaTag>(lum0, lum1, xsize_, ysize_, weight, norm1, len,
+                             mulli, block_diff_ac);
+}
+
 void ButteraugliComparator::MaltaDiffMapLF(
-    const ImageF& y0, const ImageF& y1,
-    const double weight,
-    const double norm1,
-    ImageF* BUTTERAUGLI_RESTRICT block_diff_ac) const {
+    const ImageF& lum0, const ImageF& lum1, const double weight,
+    const double norm1, ImageF* BUTTERAUGLI_RESTRICT block_diff_ac) const {
   PROFILER_FUNC;
   const double len = 3.75;
   static const double mulli = 0.405371989604;
-  const double w = mulli * sqrt(weight) / (len * 2 + 1);
-  const double norm2 = w * norm1;
-  std::vector<float> diffs(ysize_ * xsize_);
-  std::vector<float> sums(ysize_ * xsize_);
-  for (size_t y = 0, ix = 0; y < ysize_; ++y) {
-    const float* BUTTERAUGLI_RESTRICT const row0 = y0.Row(y);
-    const float* BUTTERAUGLI_RESTRICT const row1 = y1.Row(y);
-    for (size_t x = 0; x < xsize_; ++x, ++ix) {
-      double absval = 0.5 * (std::abs(row0[x]) + std::abs(row1[x]));
-      double diff = row0[x] - row1[x];
-      double scaler = norm2 / (norm1 + absval);
-      diffs[ix] = scaler * diff;
-    }
-  }
-  float borderimage[9 * 9];
-  for (size_t y0 = 0; y0 < ysize_; ++y0) {
-    float* const BUTTERAUGLI_RESTRICT row_diff = block_diff_ac->Row(y0);
-    const bool fastModeY = y0 >= 4 && y0 < ysize_ - 4;
-    for (size_t x0 = 0; x0 < xsize_; ++x0) {
-      int ix0 = y0 * xsize_ + x0;
-      const float *d = &diffs[ix0];
-      const bool fastModeX = x0 >= 4 && x0 < xsize_ - 4;
-      if (fastModeY && fastModeX) {
-        row_diff[x0] += MaltaUnitLF(d, xsize_);
-      } else {
-        for (int dy = 0; dy < 9; ++dy) {
-          int y = y0 + dy - 4;
-          if (y < 0 || y >= ysize_) {
-            for (int dx = 0; dx < 9; ++dx) {
-              borderimage[dy * 9 + dx] = 0;
-            }
-          } else {
-            for (int dx = 0; dx < 9; ++dx) {
-              int x = x0 + dx - 4;
-              if (x < 0 || x >= xsize_) {
-                borderimage[dy * 9 + dx] = 0;
-              } else {
-                borderimage[dy * 9 + dx] = diffs[y * xsize_ + x];
-              }
-            }
-          }
-        }
-        row_diff[x0] += MaltaUnitLF(&borderimage[4 * 9 + 4], 9);
-      }
-    }
-  }
+  MaltaDiffMapImpl<MaltaTagLF>(lum0, lum1, xsize_, ysize_, weight, norm1, len,
+                               mulli, block_diff_ac);
 }
 
 ImageF ButteraugliComparator::CombineChannels(
@@ -1527,7 +1526,6 @@ static std::array<double, 512> MakeMask(
 }
 
 double MaskX(double delta) {
-  PROFILER_FUNC;
   static const double extmul = 2.59885507073;
   static const double extoff = 3.08805636789;
   static const double offset = 0.315424196682;
@@ -1539,7 +1537,6 @@ double MaskX(double delta) {
 }
 
 double MaskY(double delta) {
-  PROFILER_FUNC;
   static const double extmul = 0.9613705131;
   static const double extoff = -0.581933100068;
   static const double offset = 1.00846207765;
@@ -1551,7 +1548,6 @@ double MaskY(double delta) {
 }
 
 double MaskDcX(double delta) {
-  PROFILER_FUNC;
   static const double extmul = 10.0470705878;
   static const double extoff = 3.18472654033;
   static const double offset = 0.0551512255218;
@@ -1563,7 +1559,6 @@ double MaskDcX(double delta) {
 }
 
 double MaskDcY(double delta) {
-  PROFILER_FUNC;
   static const double extmul = 0.0115640939227;
   static const double extoff = 45.9483175519;
   static const double offset = 0.0142290066313;
@@ -1697,6 +1692,7 @@ void Mask(const std::vector<ImageF>& xyb0,
 void ButteraugliDiffmap(const std::vector<ImageF> &rgb0_image,
                         const std::vector<ImageF> &rgb1_image,
                         ImageF &result_image) {
+  PROFILER_FUNC;
   const size_t xsize = rgb0_image[0].xsize();
   const size_t ysize = rgb0_image[0].ysize();
   static const int kMax = 8;

@@ -42,6 +42,12 @@ struct shift_right_count {
   __m128i raw;
 };
 
+// Returned by set_table_indices for use by table_lookup_lanes.
+template <typename T>
+struct permute_sse4 {
+  __m128i raw;
+};
+
 template <typename T, size_t N = SSE4::NumLanes<T>()>
 class vec_sse4 {
   using Raw = typename raw_sse4<T>::type;
@@ -392,24 +398,24 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, N> operator-(
 
 // Unsigned
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint8_t, N> add_sat(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint8_t, N> saturated_add(
     const vec_sse4<uint8_t, N> a, const vec_sse4<uint8_t, N> b) {
   return vec_sse4<uint8_t, N>(_mm_adds_epu8(a.raw, b.raw));
 }
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint16_t, N> add_sat(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint16_t, N> saturated_add(
     const vec_sse4<uint16_t, N> a, const vec_sse4<uint16_t, N> b) {
   return vec_sse4<uint16_t, N>(_mm_adds_epu16(a.raw, b.raw));
 }
 
 // Signed
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int8_t, N> add_sat(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int8_t, N> saturated_add(
     const vec_sse4<int8_t, N> a, const vec_sse4<int8_t, N> b) {
   return vec_sse4<int8_t, N>(_mm_adds_epi8(a.raw, b.raw));
 }
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int16_t, N> add_sat(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int16_t, N> saturated_add(
     const vec_sse4<int16_t, N> a, const vec_sse4<int16_t, N> b) {
   return vec_sse4<int16_t, N>(_mm_adds_epi16(a.raw, b.raw));
 }
@@ -420,24 +426,24 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int16_t, N> add_sat(
 
 // Unsigned
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint8_t, N> sub_sat(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint8_t, N> saturated_subtract(
     const vec_sse4<uint8_t, N> a, const vec_sse4<uint8_t, N> b) {
   return vec_sse4<uint8_t, N>(_mm_subs_epu8(a.raw, b.raw));
 }
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint16_t, N> sub_sat(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint16_t, N> saturated_subtract(
     const vec_sse4<uint16_t, N> a, const vec_sse4<uint16_t, N> b) {
   return vec_sse4<uint16_t, N>(_mm_subs_epu16(a.raw, b.raw));
 }
 
 // Signed
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int8_t, N> sub_sat(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int8_t, N> saturated_subtract(
     const vec_sse4<int8_t, N> a, const vec_sse4<int8_t, N> b) {
   return vec_sse4<int8_t, N>(_mm_subs_epi8(a.raw, b.raw));
 }
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int16_t, N> sub_sat(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int16_t, N> saturated_subtract(
     const vec_sse4<int16_t, N> a, const vec_sse4<int16_t, N> b) {
   return vec_sse4<int16_t, N>(_mm_subs_epi16(a.raw, b.raw));
 }
@@ -448,12 +454,12 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int16_t, N> sub_sat(
 
 // Unsigned
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint8_t, N> avg(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint8_t, N> average_round(
     const vec_sse4<uint8_t, N> a, const vec_sse4<uint8_t, N> b) {
   return vec_sse4<uint8_t, N>(_mm_avg_epu8(a.raw, b.raw));
 }
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint16_t, N> avg(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint16_t, N> average_round(
     const vec_sse4<uint16_t, N> a, const vec_sse4<uint16_t, N> b) {
   return vec_sse4<uint16_t, N>(_mm_avg_epu16(a.raw, b.raw));
 }
@@ -614,48 +620,48 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int64_t, N> shift_left_same(
 
 // ------------------------------ Shift lanes by independent variable #bits
 
-#if SIMD_X86_AVX2
+#if SIMD_TARGET_VALUE == SIMD_AVX2
 
 // Unsigned (no u8,u16)
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint32_t, N> shift_left_var(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint32_t, N> operator<<(
     const vec_sse4<uint32_t, N> v, const vec_sse4<uint32_t, N> bits) {
   return vec_sse4<uint32_t, N>(_mm_sllv_epi32(v.raw, bits));
 }
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint32_t, N> shift_right_var(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint32_t, N> operator>>(
     const vec_sse4<uint32_t, N> v, const vec_sse4<uint32_t, N> bits) {
   return vec_sse4<uint32_t, N>(_mm_srlv_epi32(v.raw, bits));
 }
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint64_t, N> shift_left_var(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint64_t, N> operator<<(
     const vec_sse4<uint64_t, N> v, const vec_sse4<uint64_t, N> bits) {
   return vec_sse4<uint64_t, N>(_mm_sllv_epi64(v.raw, bits));
 }
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint64_t, N> shift_right_var(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint64_t, N> operator>>(
     const vec_sse4<uint64_t, N> v, const vec_sse4<uint64_t, N> bits) {
   return vec_sse4<uint64_t, N>(_mm_srlv_epi64(v.raw, bits));
 }
 
 // Signed (no i8,i16,i64)
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int32_t, N> shift_left_var(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int32_t, N> operator<<(
     const vec_sse4<int32_t, N> v, const vec_sse4<int32_t, N> bits) {
   return vec_sse4<int32_t, N>(_mm_sllv_epi32(v.raw, bits));
 }
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int32_t, N> shift_right_var(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int32_t, N> operator>>(
     const vec_sse4<int32_t, N> v, const vec_sse4<int32_t, N> bits) {
   return vec_sse4<int32_t, N>(_mm_srav_epi32(v.raw, bits));
 }
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int64_t, N> shift_left_var(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int64_t, N> operator<<(
     const vec_sse4<int64_t, N> v, const vec_sse4<int64_t, N> bits) {
   return vec_sse4<int64_t, N>(_mm_sllv_epi64(v.raw, bits));
 }
 
-#endif  // SIMD_X86_AVX2
+#endif  // SIMD_TARGET_VALUE == SIMD_AVX2
 
 // ------------------------------ Minimum
 
@@ -793,24 +799,24 @@ namespace ext {
 
 // Returns the upper 16 bits of a * b in each lane.
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint16_t, N> mulhi(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint16_t, N> mul_high(
     const vec_sse4<uint16_t, N> a, const vec_sse4<uint16_t, N> b) {
   return vec_sse4<uint16_t, N>(_mm_mulhi_epu16(a.raw, b.raw));
 }
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int16_t, N> mulhi(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int16_t, N> mul_high(
     const vec_sse4<int16_t, N> a, const vec_sse4<int16_t, N> b) {
   return vec_sse4<int16_t, N>(_mm_mulhi_epi16(a.raw, b.raw));
 }
 
+}  // namespace ext
+
 // Returns (((a * b) >> 14) + 1) >> 1.
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int16_t, N> mulhrs(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int16_t, N> mul_high_round(
     const vec_sse4<int16_t, N> a, const vec_sse4<int16_t, N> b) {
   return vec_sse4<int16_t, N>(_mm_mulhrs_epi16(a.raw, b.raw));
 }
-
-}  // namespace ext
 
 // Multiplies even lanes (0, 2 ..) and places the double-wide result into
 // even and the upper half into its odd neighbor lane.
@@ -821,6 +827,25 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int64_t> mul_even(
 SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint64_t> mul_even(
     const vec_sse4<uint32_t> a, const vec_sse4<uint32_t> b) {
   return vec_sse4<uint64_t>(_mm_mul_epu32(a.raw, b.raw));
+}
+
+// ------------------------------ Floating-point negate
+
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> neg(const vec_sse4<float, N> v) {
+  const Part<float, N, SSE4> df;
+  const Part<uint32_t, N, SSE4> du;
+  const auto sign = cast_to(df, set1(du, 0x80000000u));
+  return v ^ sign;
+}
+
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, N> neg(
+    const vec_sse4<double, N> v) {
+  const Part<double, N, SSE4> df;
+  const Part<uint64_t, N, SSE4> du;
+  const auto sign = cast_to(df, set1(du, 0x8000000000000000ull));
+  return v ^ sign;
 }
 
 // ------------------------------ Floating-point mul / div
@@ -865,11 +890,11 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, 1> operator/(
 
 // Approximate reciprocal
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> rcp_approx(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> approximate_reciprocal(
     const vec_sse4<float, N> v) {
   return vec_sse4<float, N>(_mm_rcp_ps(v.raw));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, 1> rcp_approx(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, 1> approximate_reciprocal(
     const vec_sse4<float, 1> v) {
   return vec_sse4<float, 1>(_mm_rcp_ss(v.raw));
 }
@@ -881,7 +906,7 @@ template <size_t N>
 SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> mul_add(
     const vec_sse4<float, N> mul, const vec_sse4<float, N> x,
     const vec_sse4<float, N> add) {
-#if SIMD_X86_AVX2
+#if SIMD_TARGET_VALUE == SIMD_AVX2
   return vec_sse4<float, N>(_mm_fmadd_ps(mul.raw, x.raw, add.raw));
 #else
   return mul * x + add;
@@ -891,32 +916,10 @@ template <size_t N>
 SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, N> mul_add(
     const vec_sse4<double, N> mul, const vec_sse4<double, N> x,
     const vec_sse4<double, N> add) {
-#if SIMD_X86_AVX2
+#if SIMD_TARGET_VALUE == SIMD_AVX2
   return vec_sse4<double, N>(_mm_fmadd_pd(mul.raw, x.raw, add.raw));
 #else
   return mul * x + add;
-#endif
-}
-
-// Returns mul * x - sub
-template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> mul_sub(
-    const vec_sse4<float, N> mul, const vec_sse4<float, N> x,
-    const vec_sse4<float, N> sub) {
-#if SIMD_X86_AVX2
-  return vec_sse4<float, N>(_mm_fmsub_ps(mul.raw, x.raw, sub.raw));
-#else
-  return mul * x - sub;
-#endif
-}
-template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, N> mul_sub(
-    const vec_sse4<double, N> mul, const vec_sse4<double, N> x,
-    const vec_sse4<double, N> sub) {
-#if SIMD_X86_AVX2
-  return vec_sse4<double, N>(_mm_fmsub_pd(mul.raw, x.raw, sub.raw));
-#else
-  return mul * x - sub;
 #endif
 }
 
@@ -925,7 +928,7 @@ template <size_t N>
 SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> nmul_add(
     const vec_sse4<float, N> mul, const vec_sse4<float, N> x,
     const vec_sse4<float, N> add) {
-#if SIMD_X86_AVX2
+#if SIMD_TARGET_VALUE == SIMD_AVX2
   return vec_sse4<float, N>(_mm_fnmadd_ps(mul.raw, x.raw, add.raw));
 #else
   return add - mul * x;
@@ -935,14 +938,61 @@ template <size_t N>
 SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, N> nmul_add(
     const vec_sse4<double, N> mul, const vec_sse4<double, N> x,
     const vec_sse4<double, N> add) {
-#if SIMD_X86_AVX2
+#if SIMD_TARGET_VALUE == SIMD_AVX2
   return vec_sse4<double, N>(_mm_fnmadd_pd(mul.raw, x.raw, add.raw));
 #else
   return add - mul * x;
 #endif
 }
 
-// nmul_sub would require an additional negate of mul or x.
+// Slightly more expensive on ARM (extra negate)
+namespace ext {
+
+// Returns mul * x - sub
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> mul_subtract(
+    const vec_sse4<float, N> mul, const vec_sse4<float, N> x,
+    const vec_sse4<float, N> sub) {
+#if SIMD_TARGET_VALUE == SIMD_AVX2
+  return vec_sse4<float, N>(_mm_fmsub_ps(mul.raw, x.raw, sub.raw));
+#else
+  return mul * x - sub;
+#endif
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, N> mul_subtract(
+    const vec_sse4<double, N> mul, const vec_sse4<double, N> x,
+    const vec_sse4<double, N> sub) {
+#if SIMD_TARGET_VALUE == SIMD_AVX2
+  return vec_sse4<double, N>(_mm_fmsub_pd(mul.raw, x.raw, sub.raw));
+#else
+  return mul * x - sub;
+#endif
+}
+
+// Returns -mul * x - sub
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> nmul_subtract(
+    const vec_sse4<float, N> mul, const vec_sse4<float, N> x,
+    const vec_sse4<float, N> sub) {
+#if SIMD_TARGET_VALUE == SIMD_AVX2
+  return vec_sse4<float, N>(_mm_fnmsub_ps(mul.raw, x.raw, sub.raw));
+#else
+  return neg(mul) * x - sub;
+#endif
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, N> nmul_subtract(
+    const vec_sse4<double, N> mul, const vec_sse4<double, N> x,
+    const vec_sse4<double, N> sub) {
+#if SIMD_TARGET_VALUE == SIMD_AVX2
+  return vec_sse4<double, N>(_mm_fnmsub_pd(mul.raw, x.raw, sub.raw));
+#else
+  return neg(mul) * x - sub;
+#endif
+}
+
+}  // namespace ext
 
 // ------------------------------ Floating-point square root
 
@@ -966,53 +1016,70 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, 1> sqrt(
 
 // Approximate reciprocal square root
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> rsqrt_approx(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> approximate_reciprocal_sqrt(
     const vec_sse4<float, N> v) {
   return vec_sse4<float, N>(_mm_rsqrt_ps(v.raw));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, 1> rsqrt_approx(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, 1> approximate_reciprocal_sqrt(
     const vec_sse4<float, 1> v) {
   return vec_sse4<float, 1>(_mm_rsqrt_ss(v.raw));
 }
 
 // ------------------------------ Floating-point rounding
 
-// Toward nearest integer
+// Toward nearest integer, ties to even
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> round_nearest(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> round(
     const vec_sse4<float, N> v) {
   return vec_sse4<float, N>(
       _mm_round_ps(v.raw, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
 }
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, N> round_nearest(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, N> round(
     const vec_sse4<double, N> v) {
   return vec_sse4<double, N>(
       _mm_round_pd(v.raw, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC));
 }
 
-// Toward +infinity, aka ceiling
+// Toward zero, aka truncate
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> round_pos_inf(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> trunc(
     const vec_sse4<float, N> v) {
-  return vec_sse4<float, N>(_mm_ceil_ps(v.raw));
+  return vec_sse4<float, N>(
+      _mm_round_ps(v.raw, _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC));
 }
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, N> round_pos_inf(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, N> trunc(
     const vec_sse4<double, N> v) {
-  return vec_sse4<double, N>(_mm_ceil_pd(v.raw));
+  return vec_sse4<double, N>(
+      _mm_round_pd(v.raw, _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC));
+}
+
+// Toward +infinity, aka ceiling
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> ceil(const vec_sse4<float, N> v) {
+  return vec_sse4<float, N>(
+      _mm_round_ps(v.raw, _MM_FROUND_TO_POS_INF | _MM_FROUND_NO_EXC));
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, N> ceil(
+    const vec_sse4<double, N> v) {
+  return vec_sse4<double, N>(
+      _mm_round_pd(v.raw, _MM_FROUND_TO_POS_INF | _MM_FROUND_NO_EXC));
 }
 
 // Toward -infinity, aka floor
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> round_neg_inf(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> floor(
     const vec_sse4<float, N> v) {
-  return vec_sse4<float, N>(_mm_floor_ps(v.raw));
+  return vec_sse4<float, N>(
+      _mm_round_ps(v.raw, _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
 }
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, N> round_neg_inf(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, N> floor(
     const vec_sse4<double, N> v) {
-  return vec_sse4<double, N>(_mm_floor_pd(v.raw));
+  return vec_sse4<double, N>(
+      _mm_round_pd(v.raw, _MM_FROUND_TO_NEG_INF | _MM_FROUND_NO_EXC));
 }
 
 // ================================================== COMPARE
@@ -1247,7 +1314,7 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, N> operator^(
 // Returns a mask for use by select().
 // blendv_ps/pd only check the sign bit, so this is a no-op on x86.
 template <typename T, size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, N> selector_from_sign(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, N> condition_from_sign(
     const vec_sse4<T, N> v) {
   return v;
 }
@@ -1445,116 +1512,89 @@ SIMD_ATTR_SSE4 SIMD_INLINE void stream<double>(const vec_sse4<double> v,
   _mm_stream_pd(aligned, v.raw);
 }
 
-// ================================================== CONVERT
+// ------------------------------ Gather
 
-// ------------------------------ Promotions (part w/ narrow lanes -> full)
+#if SIMD_TARGET_VALUE == SIMD_AVX2
 
-// Unsigned: zero-extend.
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint16_t> convert_to(
-    Full<uint16_t, SSE4>, const vec_sse4<uint8_t, 8> v) {
-  return vec_sse4<uint16_t>(_mm_cvtepu8_epi16(v.raw));
+// "Extensions": useful but not quite performance-portable operations. We add
+// functions to this namespace in multiple places.
+namespace ext {
+
+template <typename T>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> gather_offset_impl(
+    char (&sizeof_t)[4], Full<T, SSE4>, const T* SIMD_RESTRICT base,
+    const vec_sse4<int32_t> offset) {
+  return vec_sse4<T>(_mm_i32gather_epi32(reinterpret_cast<const int32_t*>(base),
+                                         offset.raw, 1));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint32_t> convert_to(
-    Full<uint32_t, SSE4>, const vec_sse4<uint8_t, 4> v) {
-  return vec_sse4<uint32_t>(_mm_cvtepu8_epi32(v.raw));
-}
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int16_t> convert_to(
-    Full<int16_t, SSE4>, const vec_sse4<uint8_t, 8> v) {
-  return vec_sse4<int16_t>(_mm_cvtepu8_epi16(v.raw));
-}
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int32_t> convert_to(
-    Full<int32_t, SSE4>, const vec_sse4<uint8_t, 4> v) {
-  return vec_sse4<int32_t>(_mm_cvtepu8_epi32(v.raw));
-}
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint32_t> convert_to(
-    Full<uint32_t, SSE4>, const vec_sse4<uint16_t, 4> v) {
-  return vec_sse4<uint32_t>(_mm_cvtepu16_epi32(v.raw));
-}
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int32_t> convert_to(
-    Full<int32_t, SSE4>, const vec_sse4<uint16_t, 4> v) {
-  return vec_sse4<int32_t>(_mm_cvtepu16_epi32(v.raw));
-}
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint64_t> convert_to(
-    Full<uint64_t, SSE4>, const vec_sse4<uint32_t, 2> v) {
-  return vec_sse4<uint64_t>(_mm_cvtepu32_epi64(v.raw));
+template <typename T>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> gather_index_impl(
+    char (&sizeof_t)[4], Full<T, SSE4>, const T* SIMD_RESTRICT base,
+    const vec_sse4<int32_t> index) {
+  return vec_sse4<T>(_mm_i32gather_epi32(reinterpret_cast<const int32_t*>(base),
+                                         index.raw, 4));
 }
 
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint32_t> u32_from_u8(
-    const vec_sse4<uint8_t> v) {
-  return vec_sse4<uint32_t>(_mm_cvtepu8_epi32(v.raw));
+template <typename T>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> gather_offset_impl(
+    char (&sizeof_t)[8], Full<T, SSE4>, const T* SIMD_RESTRICT base,
+    const vec_sse4<int64_t> offset) {
+  return vec_sse4<T>(_mm_i64gather_epi64(
+      reinterpret_cast<const GatherIndex64*>(base), offset.raw, 1));
+}
+template <typename T>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> gather_index_impl(
+    char (&sizeof_t)[8], Full<T, SSE4>, const T* SIMD_RESTRICT base,
+    const vec_sse4<int64_t> index) {
+  return vec_sse4<T>(_mm_i64gather_epi64(
+      reinterpret_cast<const GatherIndex64*>(base), index.raw, 8));
 }
 
-// Signed: replicate sign bit.
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int16_t> convert_to(
-    Full<int16_t, SSE4>, const vec_sse4<int8_t, 8> v) {
-  return vec_sse4<int16_t>(_mm_cvtepi8_epi16(v.raw));
+template <typename T, typename Offset>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> gather_offset(
+    Full<T, SSE4> d, const T* SIMD_RESTRICT base,
+    const vec_sse4<Offset> offset) {
+  static_assert(sizeof(T) == sizeof(Offset), "SVE requires same size base/ofs");
+  char sizeof_t[sizeof(T)];
+  return gather_offset_impl(sizeof_t, d, base, offset);
 }
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int32_t> convert_to(
-    Full<int32_t, SSE4>, const vec_sse4<int8_t, 4> v) {
-  return vec_sse4<int32_t>(_mm_cvtepi8_epi32(v.raw));
-}
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int32_t> convert_to(
-    Full<int32_t, SSE4>, const vec_sse4<int16_t, 4> v) {
-  return vec_sse4<int32_t>(_mm_cvtepi16_epi32(v.raw));
-}
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int64_t> convert_to(
-    Full<int64_t, SSE4>, const vec_sse4<int32_t, 2> v) {
-  return vec_sse4<int64_t>(_mm_cvtepi32_epi64(v.raw));
+template <typename T, typename Index>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> gather_index(
+    Full<T, SSE4> d, const T* SIMD_RESTRICT base, const vec_sse4<Index> index) {
+  static_assert(sizeof(T) == sizeof(Index), "SVE requires same size base/idx");
+  char sizeof_t[sizeof(T)];
+  return gather_index_impl(sizeof_t, d, base, index);
 }
 
-// ------------------------------ Demotions (full -> part w/ narrow lanes)
-
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint16_t, 4> convert_to(
-    Part<uint16_t, 4, SSE4>, const vec_sse4<int32_t> v) {
-  return vec_sse4<uint16_t, 4>(_mm_packus_epi32(v.raw, v.raw));
+template <>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float> gather_offset<float>(
+    Full<float, SSE4>, const float* SIMD_RESTRICT base,
+    const vec_sse4<int32_t> offset) {
+  return vec_sse4<float>(_mm_i32gather_ps(base, offset.raw, 1));
+}
+template <>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float> gather_index<float>(
+    Full<float, SSE4>, const float* SIMD_RESTRICT base,
+    const vec_sse4<int32_t> index) {
+  return vec_sse4<float>(_mm_i32gather_ps(base, index.raw, 4));
 }
 
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint8_t, 4> convert_to(
-    Part<uint8_t, 4, SSE4>, const vec_sse4<int32_t> v) {
-  const __m128i u16 = _mm_packus_epi32(v.raw, v.raw);
-  return vec_sse4<uint8_t, 4>(_mm_packus_epi16(u16, u16));
+template <>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double> gather_offset<double>(
+    Full<double, SSE4>, const double* SIMD_RESTRICT base,
+    const vec_sse4<int64_t> offset) {
+  return vec_sse4<double>(_mm_i64gather_pd(base, offset.raw, 1));
+}
+template <>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double> gather_index<double>(
+    Full<double, SSE4>, const double* SIMD_RESTRICT base,
+    const vec_sse4<int64_t> index) {
+  return vec_sse4<double>(_mm_i64gather_pd(base, index.raw, 8));
 }
 
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint8_t, 8> convert_to(
-    Part<uint8_t, 8, SSE4>, const vec_sse4<int16_t> v) {
-  return vec_sse4<uint8_t, 8>(_mm_packus_epi16(v.raw, v.raw));
-}
+}  // namespace ext
 
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int16_t, 4> convert_to(
-    Part<int16_t, 4, SSE4>, const vec_sse4<int32_t> v) {
-  return vec_sse4<int16_t, 4>(_mm_packs_epi32(v.raw, v.raw));
-}
-
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int8_t, 4> convert_to(
-    Part<int8_t, 4, SSE4>, const vec_sse4<int32_t> v) {
-  const __m128i i16 = _mm_packs_epi32(v.raw, v.raw);
-  return vec_sse4<int8_t, 4>(_mm_packs_epi16(i16, i16));
-}
-
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int8_t, 8> convert_to(
-    Part<int8_t, 8, SSE4>, const vec_sse4<int16_t> v) {
-  return vec_sse4<int8_t, 8>(_mm_packs_epi16(v.raw, v.raw));
-}
-
-// ------------------------------ Convert i32 <=> f32
-
-template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> convert_to(
-    Part<float, N, SSE4>, const vec_sse4<int32_t, N> v) {
-  return vec_sse4<float, N>(_mm_cvtepi32_ps(v.raw));
-}
-// Truncates (rounds toward zero).
-template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int32_t, N> convert_to(
-    Part<int32_t, N, SSE4>, const vec_sse4<float, N> v) {
-  return vec_sse4<int32_t, N>(_mm_cvttps_epi32(v.raw));
-}
-
-template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int32_t, N> nearest_int(
-    const vec_sse4<float, N> v) {
-  return vec_sse4<int32_t, N>(_mm_cvtps_epi32(v.raw));
-}
+#endif  // SIMD_TARGET_VALUE == SIMD_AVX2
 
 // ================================================== SWIZZLE
 
@@ -1562,24 +1602,36 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int32_t, N> nearest_int(
 
 // 0x01..0F, kBytes = 1 => 0x02..0F00
 template <int kBytes, typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> shift_bytes_left(const vec_sse4<T> v) {
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> shift_left_bytes(const vec_sse4<T> v) {
+  static_assert(0 <= kBytes && kBytes <= 16, "Invalid kBytes");
   return vec_sse4<T>(_mm_slli_si128(v.raw, kBytes));
+}
+
+template <int kLanes, typename T>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> shift_left_lanes(const vec_sse4<T> v) {
+  return shift_left_bytes<kLanes * sizeof(T)>(v);
 }
 
 // 0x01..0F, kBytes = 1 => 0x0001..0E
 template <int kBytes, typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> shift_bytes_right(const vec_sse4<T> v) {
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> shift_right_bytes(const vec_sse4<T> v) {
+  static_assert(0 <= kBytes && kBytes <= 16, "Invalid kBytes");
   return vec_sse4<T>(_mm_srli_si128(v.raw, kBytes));
+}
+
+template <int kLanes, typename T>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> shift_right_lanes(const vec_sse4<T> v) {
+  return shift_right_bytes<kLanes * sizeof(T)>(v);
 }
 
 // ------------------------------ Extract from 2x 128-bit at constant offset
 
 // Extracts 128 bits from <hi, lo> by skipping the least-significant kBytes.
 template <int kBytes, typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> extract_concat_bytes(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> combine_shift_right_bytes(
     const vec_sse4<T> hi, const vec_sse4<T> lo) {
   const Full<uint8_t, SSE4> d8;
-  const Full<uint8_t, SSE4>::V extracted_bytes(
+  const vec_sse4<uint8_t> extracted_bytes(
       _mm_alignr_epi8(cast_to(d8, hi).raw, cast_to(d8, lo).raw, kBytes));
   return cast_to(Full<T, SSE4>(), extracted_bytes);
 }
@@ -1656,8 +1708,8 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double> broadcast(
 // Returns vector of bytes[from[i]]. "from" is also interpreted as bytes:
 // either valid indices in [0, 16) or >= 0x80 to zero the i-th output byte.
 template <typename T, typename TI>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> shuffle_bytes(const vec_sse4<T> bytes,
-                                                     const vec_sse4<TI> from) {
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> table_lookup_bytes(
+    const vec_sse4<T> bytes, const vec_sse4<TI> from) {
   return vec_sse4<T>(_mm_shuffle_epi8(bytes.raw, from.raw));
 }
 
@@ -1666,7 +1718,7 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> shuffle_bytes(const vec_sse4<T> bytes,
 // Notation: let vec_sse4<int32_t> have lanes 3,2,1,0 (0 is least-significant).
 // shuffle_0321 rotates one lane to the right (the previous least-significant
 // lane is now most-significant). These could also be implemented via
-// extract_concat_bytes but the shuffle_abcd notation is more convenient.
+// combine_shift_right_bytes but the shuffle_abcd notation is more convenient.
 
 // Swap 64-bit halves
 SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint32_t> shuffle_1032(
@@ -1733,6 +1785,37 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int32_t> shuffle_0123(
 SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float> shuffle_0123(
     const vec_sse4<float> v) {
   return vec_sse4<float>(_mm_shuffle_ps(v.raw, v.raw, 0x1B));
+}
+
+// ------------------------------ Permute (runtime variable)
+
+template <typename T>
+SIMD_ATTR_SSE4 SIMD_INLINE permute_sse4<T> set_table_indices(const Full<T, SSE4> d,
+                                                       const int32_t* idx) {
+  const Full<uint8_t, SSE4> d8;
+  SIMD_ALIGN uint8_t control[d8.N];
+  for (size_t idx_byte = 0; idx_byte < d8.N; ++idx_byte) {
+    const size_t idx_lane = idx_byte / sizeof(T);
+    const size_t mod = idx_byte % sizeof(T);
+    control[idx_byte] = idx[idx_lane] * sizeof(T) + mod;
+  }
+  return permute_sse4<T>{load(d8, control).raw};
+}
+
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint32_t> table_lookup_lanes(
+    const vec_sse4<uint32_t> v, const permute_sse4<uint32_t> idx) {
+  return table_lookup_bytes(v, vec_sse4<uint8_t>(idx.raw));
+}
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int32_t> table_lookup_lanes(
+    const vec_sse4<int32_t> v, const permute_sse4<int32_t> idx) {
+  return table_lookup_bytes(v, vec_sse4<uint8_t>(idx.raw));
+}
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float> table_lookup_lanes(
+    const vec_sse4<float> v, const permute_sse4<float> idx) {
+  const Full<int32_t, SSE4> di;
+  const Full<float, SSE4> df;
+  return cast_to(
+      df, table_lookup_bytes(cast_to(di, v), vec_sse4<uint8_t>(idx.raw)));
 }
 
 // ------------------------------ Interleave lanes
@@ -1971,38 +2054,48 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, N> any_part(Desc<T, N, SSE4>,
 
 // Returns full vector with the given part's lane broadcasted. Note that
 // callers cannot use broadcast directly because part lane order is undefined.
-template<int kLane, typename T, size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> broadcast_part(
-    Full<T, SSE4>, const vec_sse4<T, N> v) {
+template <int kLane, typename T, size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> broadcast_part(Full<T, SSE4>,
+                                                      const vec_sse4<T, N> v) {
   static_assert(0 <= kLane && kLane < N, "Invalid lane");
   return broadcast<kLane>(vec_sse4<T>(v.raw));
 }
 
-// ------------------------------ 'Extract' other half (see any_part)
+// Returns upper/lower half of a vector.
+template <typename T>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, 8 / sizeof(T)> get_half(
+    Lower, const vec_sse4<T> v) {
+  return vec_sse4<T, 8 / sizeof(T)>(v.raw);
+}
+template <typename T>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, 8 / sizeof(T)> lower_half(
+    const vec_sse4<T> v) {
+  return get_half(Lower(), v);
+}
 
 // These copy hi into lo (smaller instruction encoding than shifts).
 template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, 8 / sizeof(T)> other_half(
-    const vec_sse4<T> v) {
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, 8 / sizeof(T)> get_half(
+    Upper, const vec_sse4<T> v) {
   return vec_sse4<T, 8 / sizeof(T)>(_mm_unpackhi_epi64(v.raw, v.raw));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, 2> other_half(
-    const vec_sse4<float> v) {
+template <>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, 2> get_half(
+    Upper, const vec_sse4<float> v) {
   return vec_sse4<float, 2>(_mm_movehl_ps(v.raw, v.raw));
 }
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, 1> other_half(
-    const vec_sse4<double> v) {
+template <>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, 1> get_half(
+    Upper, const vec_sse4<double> v) {
   return vec_sse4<double, 1>(_mm_unpackhi_pd(v.raw, v.raw));
 }
-
+template <typename T>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, 8 / sizeof(T)> upper_half(
+    const vec_sse4<T> v) {
+  return get_half(Upper(), v);
+}
 
 // ------------------------------ Blocks
-
-// Single block => already broadcasted/interleaved.
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> broadcast_block(const vec_sse4<T> v) {
-  return v;
-}
 
 // hiH,hiL loH,loL |-> hiL,loL (= lower halves)
 template <typename T>
@@ -2026,7 +2119,7 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> concat_hi_hi(const vec_sse4<T> hi,
 template <typename T>
 SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> concat_lo_hi(const vec_sse4<T> hi,
                                                     const vec_sse4<T> lo) {
-  return extract_concat_bytes<8>(hi, lo);
+  return combine_shift_right_bytes<8>(hi, lo);
 }
 
 // hiH,hiL loH,loL |-> hiH,loL (= outer halves)
@@ -2093,6 +2186,135 @@ template <>
 SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double> odd_even<double>(
     const vec_sse4<double> a, const vec_sse4<double> b) {
   return vec_sse4<double>(_mm_blend_pd(a.raw, b.raw, 1));
+}
+
+// ================================================== CONVERT
+
+// ------------------------------ Promotions (part w/ narrow lanes -> full)
+
+// Unsigned: zero-extend.
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint16_t> convert_to(
+    Full<uint16_t, SSE4>, const vec_sse4<uint8_t, 8> v) {
+  return vec_sse4<uint16_t>(_mm_cvtepu8_epi16(v.raw));
+}
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint32_t> convert_to(
+    Full<uint32_t, SSE4>, const vec_sse4<uint8_t, 4> v) {
+  return vec_sse4<uint32_t>(_mm_cvtepu8_epi32(v.raw));
+}
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int16_t> convert_to(
+    Full<int16_t, SSE4>, const vec_sse4<uint8_t, 8> v) {
+  return vec_sse4<int16_t>(_mm_cvtepu8_epi16(v.raw));
+}
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int32_t> convert_to(
+    Full<int32_t, SSE4>, const vec_sse4<uint8_t, 4> v) {
+  return vec_sse4<int32_t>(_mm_cvtepu8_epi32(v.raw));
+}
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint32_t> convert_to(
+    Full<uint32_t, SSE4>, const vec_sse4<uint16_t, 4> v) {
+  return vec_sse4<uint32_t>(_mm_cvtepu16_epi32(v.raw));
+}
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int32_t> convert_to(
+    Full<int32_t, SSE4>, const vec_sse4<uint16_t, 4> v) {
+  return vec_sse4<int32_t>(_mm_cvtepu16_epi32(v.raw));
+}
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint64_t> convert_to(
+    Full<uint64_t, SSE4>, const vec_sse4<uint32_t, 2> v) {
+  return vec_sse4<uint64_t>(_mm_cvtepu32_epi64(v.raw));
+}
+
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint32_t> u32_from_u8(
+    const vec_sse4<uint8_t> v) {
+  return vec_sse4<uint32_t>(_mm_cvtepu8_epi32(v.raw));
+}
+
+// Signed: replicate sign bit.
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int16_t> convert_to(
+    Full<int16_t, SSE4>, const vec_sse4<int8_t, 8> v) {
+  return vec_sse4<int16_t>(_mm_cvtepi8_epi16(v.raw));
+}
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int32_t> convert_to(
+    Full<int32_t, SSE4>, const vec_sse4<int8_t, 4> v) {
+  return vec_sse4<int32_t>(_mm_cvtepi8_epi32(v.raw));
+}
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int32_t> convert_to(
+    Full<int32_t, SSE4>, const vec_sse4<int16_t, 4> v) {
+  return vec_sse4<int32_t>(_mm_cvtepi16_epi32(v.raw));
+}
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int64_t> convert_to(
+    Full<int64_t, SSE4>, const vec_sse4<int32_t, 2> v) {
+  return vec_sse4<int64_t>(_mm_cvtepi32_epi64(v.raw));
+}
+
+// ------------------------------ Demotions (full -> part w/ narrow lanes)
+
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint16_t, N> convert_to(
+    Part<uint16_t, N, SSE4>, const vec_sse4<int32_t, N> v) {
+  return vec_sse4<uint16_t, N>(_mm_packus_epi32(v.raw, v.raw));
+}
+
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint8_t, N> convert_to(
+    Part<uint8_t, N, SSE4>, const vec_sse4<int32_t> v) {
+  const __m128i u16 = _mm_packus_epi32(v.raw, v.raw);
+  return vec_sse4<uint8_t, N>(_mm_packus_epi16(u16, u16));
+}
+
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint8_t, N> convert_to(
+    Part<uint8_t, N, SSE4>, const vec_sse4<int16_t> v) {
+  return vec_sse4<uint8_t, N>(_mm_packus_epi16(v.raw, v.raw));
+}
+
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int16_t, N> convert_to(
+    Part<int16_t, N, SSE4>, const vec_sse4<int32_t> v) {
+  return vec_sse4<int16_t, N>(_mm_packs_epi32(v.raw, v.raw));
+}
+
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int8_t, N> convert_to(
+    Part<int8_t, N, SSE4>, const vec_sse4<int32_t> v) {
+  const __m128i i16 = _mm_packs_epi32(v.raw, v.raw);
+  return vec_sse4<int8_t, N>(_mm_packs_epi16(i16, i16));
+}
+
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int8_t, N> convert_to(
+    Part<int8_t, N, SSE4>, const vec_sse4<int16_t> v) {
+  return vec_sse4<int8_t, N>(_mm_packs_epi16(v.raw, v.raw));
+}
+
+// For already range-limited input [0, 255].
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint8_t, 4> u8_from_u32(
+    const vec_sse4<uint32_t> v) {
+  const Full<uint32_t, SSE4> d32;
+  const Full<uint8_t, SSE4> d8;
+  SIMD_ALIGN static constexpr uint32_t k8From32[4] = {0x0C080400u, 0x0C080400u,
+                                                      0x0C080400u, 0x0C080400u};
+  // Replicate bytes into all 32 bit lanes for any_part.
+  const auto quad = table_lookup_bytes(v, load(d32, k8From32));
+  return any_part(Part<uint8_t, 4, SSE4>(), cast_to(d8, quad));
+}
+
+// ------------------------------ Convert i32 <=> f32
+
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> convert_to(
+    Part<float, N, SSE4>, const vec_sse4<int32_t, N> v) {
+  return vec_sse4<float, N>(_mm_cvtepi32_ps(v.raw));
+}
+// Truncates (rounds toward zero).
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int32_t, N> convert_to(
+    Part<int32_t, N, SSE4>, const vec_sse4<float, N> v) {
+  return vec_sse4<int32_t, N>(_mm_cvttps_epi32(v.raw));
+}
+
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int32_t, N> nearest_int(
+    const vec_sse4<float, N> v) {
+  return vec_sse4<int32_t, N>(_mm_cvtps_epi32(v.raw));
 }
 
 // ================================================== MISC
@@ -2179,7 +2401,7 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> horz_sum_impl(char (&sizeof_t)[8],
 
 // Supported for u/i/f 32/64. Returns the sum in each lane.
 template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> horz_sum(const vec_sse4<T> v) {
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> sum_of_lanes(const vec_sse4<T> v) {
   char sizeof_t[sizeof(T)];
   return horz_sum_impl(sizeof_t, v);
 }

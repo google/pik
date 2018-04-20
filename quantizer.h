@@ -31,8 +31,11 @@
 #include "linalg.h"
 #include "pik_info.h"
 #include "pik_params.h"
+#include "tile_flow.h"
 
 namespace pik {
+
+static const int kGlobalScaleDenom = 1 << 16;
 
 class Quantizer {
  public:
@@ -40,6 +43,19 @@ class Quantizer {
 
   bool SetQuantField(const float quant_dc, const ImageF& qf,
                      const CompressParams& cparams);
+
+  // Accessors used for adaptive edge-preserving filter:
+
+  // Returns integer AC quantization field.
+  const ImageI& RawQuantField() const { return quant_img_ac_; }
+  float RawDC() const { return quant_dc_; }
+  // Returns scaling factor such that Scale() * RawDC() or RawQuantField()
+  // pixels yields the same float values returned by GetQuantField.
+  float Scale() const { return global_scale_ * (1.0f / kGlobalScaleDenom); }
+
+  // Reciprocal of Scale().
+  float InvGlobalScale() const { return inv_global_scale_; }
+
   void GetQuantField(float* quant_dc, ImageF* qf);
 
   void SetQuant(float quant, const CompressParams& cparams) {
@@ -120,9 +136,9 @@ class Quantizer {
   }
 
   uint64_t QuantizerKey(int qx, int qy, int c) const {
-    return ((global_scale_ << 22) +
-            (quant_dc_ << 12) +
-            (quant_img_ac_.Row(qy)[qx] << 2) +
+    return ((static_cast<uint64_t>(global_scale_) << 22) +
+            (static_cast<uint64_t>(quant_dc_) << 12) +
+            (static_cast<uint64_t>(quant_img_ac_.Row(qy)[qx]) << 2) +
             c);
   }
 
@@ -131,7 +147,7 @@ class Quantizer {
   int global_scale_;
   int quant_patch_;
   int quant_dc_;
-  Image<int> quant_img_ac_;
+  ImageI quant_img_ac_;
   float inv_global_scale_;
   float inv_quant_patch_;
   float inv_quant_dc_;
@@ -142,8 +158,8 @@ class Quantizer {
 
 const float* DequantMatrix();
 
-Image3W QuantizeCoeffs(const Image3F& in, const Quantizer& quantizer);
-Image3F DequantizeCoeffs(const Image3W& in, const Quantizer& quantizer);
+Image3S QuantizeCoeffs(const Image3F& in, const Quantizer& quantizer);
+Image3F DequantizeCoeffs(const Image3S& in, const Quantizer& quantizer);
 
 ImageF QuantizeRoundtrip(const Quantizer& quantizer, int c, const ImageF& img);
 
@@ -154,6 +170,9 @@ ImageF QuantizeRoundtrip(const Quantizer& quantizer, int c, const ImageF& img);
 // See quantizer_test.cc for the definition of BlockDistance().
 ImageD ComputeBlockDistanceQForm(const double lambda,
                                  const float* const PIK_RESTRICT scales);
+
+TFNode* AddDequantize(const TFPorts in_xyb, const TFPorts in_quant_ac,
+                      const Quantizer& quantizer, TFBuilder* builder);
 
 }  // namespace pik
 

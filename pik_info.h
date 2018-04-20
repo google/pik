@@ -116,8 +116,9 @@ struct PikInfo {
     TotalImageSize().Print(num_inputs);
   }
 
-  template <typename T>
-  void DumpImage(const char* label, const Image3<T>& image) const {
+  template <typename Img>
+  void DumpImage(const char* label, const Img& image) const {
+    if (debug_prefix.empty()) return;
     char pathname[200];
     snprintf(pathname, sizeof(pathname), "%s%s.png", debug_prefix.c_str(),
              label);
@@ -128,7 +129,7 @@ struct PikInfo {
   // in the area that would contain that block in a normal image. To view the
   // resulting image manually, rescale intensities by using:
   // $ convert -auto-level IMAGE.PNG - | display -
-  void DumpCoeffImage(const char* label, const Image3W& coeff_image) const;
+  void DumpCoeffImage(const char* label, const Image3S& coeff_image) const;
 
   std::vector<PikImageSizeInfo> layers;
   std::vector<int> num_dict_matches;

@@ -94,6 +94,15 @@ using Part = Desc<T, N, PartTarget<T, N, Target>>;
 template <typename T>
 using Scalar = Desc<T, 1, NONE>;
 
+// Convenient shorthand for VecT. Chooses the smallest possible Target.
+template <typename T, size_t N, class Target>
+using VT = typename VecT<T, N, PartTarget<T, N, Target>>::type;
+
+// Type tags for get_half(Upper(), v) etc.
+struct Upper {};
+struct Lower {};
+#define SIMD_HALF Lower()
+
 // Returns a name for the vector/part/scalar. The type prefix is u/i/f for
 // unsigned/signed/floating point, followed by the number of bits per lane;
 // then 'x' followed by the number of lanes. Example: u8x16. This is useful for

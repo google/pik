@@ -15,33 +15,52 @@
 #ifndef OPSIN_PARAMS_H_
 #define OPSIN_PARAMS_H_
 
+#include <stdlib.h>
+
+#include "simd/simd.h"  // SIMD_ALIGN
+
 namespace pik {
 
 static constexpr float kScale = 255.0;
 
-static constexpr float kOpsinAbsorbanceMatrix[9] = {
-    0.355028246972028f / kScale, 0.589422218034148f / kScale,
-    0.055549534993826f / kScale, 0.250871605395556f / kScale,
-    0.714937756329137f / kScale, 0.034190638275308f / kScale,
-    0.091915449087840f / kScale, 0.165250230906774f / kScale,
-    0.742834320005384f / kScale,
-};
-static constexpr float kOpsinAbsorbanceInverseMatrix[9] = {
-    6.805644286129f * kScale,  -5.552270790544f * kScale,
-    -0.253373707795f * kScale, -2.373074275591f * kScale,
-    3.349796660147f * kScale,  0.023277709773f * kScale,
-    -0.314192274838f * kScale, -0.058176067042f * kScale,
-    1.372368367449f * kScale,
+// NOTE: inverse of this cannot be constant because we tune these values.
+static const float kOpsinAbsorbanceMatrix[9] = {
+  static_cast<float>(( 0.3523376466161795 ) / kScale),
+  static_cast<float>(( 0.6067972574251409 ) / kScale),
+  static_cast<float>(( 0.049151209535235267 ) / kScale),
+  static_cast<float>(( 0.26592386506834575 ) / kScale),
+  static_cast<float>(( 0.67140860580051065 ) / kScale),
+  static_cast<float>(( 0.061225872443361362 ) / kScale),
+  static_cast<float>(( 0.22812868140840609 ) / kScale),
+  static_cast<float>(( 0.17338855722136276 ) / kScale),
+  static_cast<float>(( 0.7418055948399257 ) / kScale),
 };
 
-static constexpr float kScaleR = 1.001746913108605f;
-static constexpr float kScaleG = 2.0f - kScaleR;
-static constexpr float kInvScaleR = 1.0f / kScaleR;
-static constexpr float kInvScaleG = 1.0f / kScaleG;
+// Returns 3x3 row-major matrix inverse of kOpsinAbsorbanceMatrix.
+// opsin_image_test verifies this is actually the inverse.
+const float* GetOpsinAbsorbanceInverseMatrix();
 
-static constexpr float kXybCenter[3] = {0.008714601398f, 0.5f, 0.5f};
+static const float kOpsinAbsorbanceBias[3] = {
+  static_cast<float>(( 0.070410956432969879 ) / kScale),
+  static_cast<float>(( 0.050981882587652023 ) / kScale),
+  static_cast<float>(( 0.31617904901529575 ) / kScale),
+};
+SIMD_ALIGN static const float kNegOpsinAbsorbanceBiasRGB[4] = {
+    -kOpsinAbsorbanceBias[0], -kOpsinAbsorbanceBias[1],
+    -kOpsinAbsorbanceBias[2], 255.0f};
+
+static const float kScaleR = 1.0017364448897901;
+static const float kScaleG = 2.0f - kScaleR;
+static const float kInvScaleR = 1.0f / kScaleR;
+static const float kInvScaleG = 1.0f / kScaleG;
+
+// kXybCenter[3] is used by opsin_inverse.cc.
+SIMD_ALIGN static constexpr float kXybCenter[4] = {
+    0.0090238451957702637f, 0.53151017427444458f, 0.57673406600952148f, 257.0f};
+
 // This is the radius of the range, not the diameter.
-static constexpr float kXybRange[3] = {0.035065606236f, 0.5f, 0.5f};
+static constexpr float kXybRange[3] = {
+    0.023776501417160034f, 0.46970874071121216f, 0.46930274367332458f};
 static constexpr float kXybMin[3] = {
     kXybCenter[0] - kXybRange[0], kXybCenter[1] - kXybRange[1],
     kXybCenter[2] - kXybRange[2],

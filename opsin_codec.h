@@ -163,10 +163,9 @@ class ACBlockProcessor {
     }
   }
   void Reset() {
-    prev_num_nzeros_ = std::vector<uint8_t>(3 * (xsize_ >> 6));
   }
   int block_size() const { return 64; }
-  static int num_contexts() { return kOrderContexts * (32 + 120); }
+  static int num_contexts() { return kOrderContexts * 120; }
 
   void SetCoeffOrder(int order[kOrderContexts * 64]) {
     memcpy(order_, order, sizeof(order_));
@@ -177,19 +176,13 @@ class ACBlockProcessor {
                     Visitor* visitor) {
     int num_nzeros = 0;
     for (int k = 1; k < block_size(); ++k) {
-      if (coeffs[k] != 0) ++num_nzeros;
+      num_nzeros += coeffs[k] != 0;
     }
-    const int ix = 3 * (x >> 6) + c;
-    const int block_ctx = block_ctx_.Row(y)[c][x >> 6];
-    int context = block_ctx * 32 +
-        NumNonZerosContext(x, y, &prev_num_nzeros_[ix]);
-    PIK_ASSERT(context < kOrderContexts * 32);
-    visitor->VisitSymbol(num_nzeros, context);
-    prev_num_nzeros_[ix] = num_nzeros;
     if (num_nzeros == 0) return;
+    const int block_ctx = block_ctx_.PlaneRow(c, y)[x >> 6];
     // Run length of zero coefficients preceding the current non-zero symbol.
     int r = 0;
-    const int histo_offset = kOrderContexts * 32 + block_ctx * 120;
+    const int histo_offset = block_ctx * 120;
     int histo_idx = histo_offset + ZeroDensityContext(num_nzeros - 1, 0, 4);
     const int order_offset = block_ctx * 64;
     for (int k = 1; k < block_size(); ++k) {
@@ -217,7 +210,6 @@ class ACBlockProcessor {
   const Image3B& block_ctx_;
   const int xsize_;
   int order_[kOrderContexts * 64];
-  std::vector<uint8_t> prev_num_nzeros_;
 };
 
 template <typename T, class Processor, class Visitor>
@@ -323,9 +315,9 @@ class HistogramBuilder {
     }
     for (int c = 0; c < clustered_histograms.size(); ++c) {
       EntropyEncodingData code;
-      code.BuildAndStore(&clustered_histograms[c].data_[0],
-                         clustered_histograms[c].data_.size(),
-                         storage_ix, storage);
+      code.BuildAndStore(clustered_histograms[c].data_.data(),
+                         clustered_histograms[c].data_.size(), storage_ix,
+                         storage);
       codes->emplace_back(std::move(code));
     }
   }
@@ -387,31 +379,29 @@ class HistogramBuilder {
   std::vector<Histogram> histograms_;
 };
 
-void PredictDCTile(const Image3W& coeffs, Image3W* out);
-void UnpredictDCTile(Image3W* coeffs);
+void PredictDCTile(const Image3S& coeffs, Image3S* out);
+void UnpredictDCTile(Image3S* coeffs);
 
-std::string EncodeImage(const Image3W& img, int stride,
+std::string EncodeImage(const Image3S& img, int stride,
                         PikImageSizeInfo* info);
 
-std::string EncodeAC(const Image3W& coeffs, const Image3B& block_ctx,
+std::string EncodeAC(const Image3S& coeffs, const Image3B& block_ctx,
                      PikInfo* pik_info);
-std::string EncodeACFast(const Image3W& coeffs, const Image3B& block_ctx,
+std::string EncodeACFast(const Image3S& coeffs, const Image3B& block_ctx,
                          PikInfo* pik_info);
 
-size_t EncodedImageSize(const Image3W& img, int stride);
+size_t EncodedImageSize(const Image3S& img, int stride);
 
-size_t EncodedACSize(const Image3W& coeffs);
+size_t EncodedACSize(const Image3S& coeffs);
 
-Image3F LocalACInformationDensity(const Image3W& coeffs);
+std::string EncodeNonZeroLocations(const std::vector<Image3S>& vals);
 
-std::string EncodeNonZeroLocations(const std::vector<Image3W>& vals);
+std::string EncodeNonZeroVals(const std::vector<Image3S>& absvals,
+                         const std::vector<Image3S>& phases);
 
-std::string EncodeNonZeroVals(const std::vector<Image3W>& absvals,
-                         const std::vector<Image3W>& phases);
+bool DecodeImage(BitReader* br, int stride, Image3S* coeffs);
 
-bool DecodeImage(BitReader* br, int stride, Image3W* coeffs);
-
-bool DecodeAC(const Image3B& block_ctx, BitReader* br,Image3W* coeffs);
+bool DecodeAC(const Image3B& block_ctx, BitReader* br,Image3S* coeffs);
 
 struct EncodedIntPlane {
   std::string preamble;
@@ -419,20 +409,28 @@ struct EncodedIntPlane {
 };
 
 EncodedIntPlane EncodePlane(const Image<int>& img, int minval, int maxval,
-                            int tile_size, PikImageSizeInfo* info);
+                            int tile_size, int num_external_contexts,
+                            const ImageB* external_context,
+                            PikImageSizeInfo* info);
 
 class IntPlaneDecoder {
  public:
-  IntPlaneDecoder(int minval, int maxval, int tile_size)
-      : minval_(minval), maxval_(maxval), tile_size_(tile_size) {}
+  IntPlaneDecoder(int minval, int maxval, int tile_size,
+                  int num_external_contexts)
+      : minval_(minval),
+        maxval_(maxval),
+        tile_size_(tile_size),
+        num_external_contexts_(num_external_contexts) {}
   bool LoadPreamble(BitReader* br);
-  bool DecodeTile(BitReader* br, Image<int>* img);
+  bool DecodeTile(BitReader* br, Image<int>* img,
+                  const ImageB* external_context);
 
  private:
   bool ready_ = false;
   int minval_;
   int maxval_;
   int tile_size_;
+  int num_external_contexts_;
   std::vector<uint8_t> context_map_;
   ANSCode ans_code_;
 };

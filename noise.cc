@@ -1,83 +1,65 @@
+#include <cmath>
 #include <cstdio>
-#include <random>
+#include <numeric>
 
 #include "af_stats.h"
+#include "xorshift128plus.h"
+#include "convolve.h"
 #include "noise.h"
 #include "opsin_params.h"
 #include "optimize.h"
+#include "rational_polynomial.h"
+#include "simd/simd.h"
 #include "write_bits.h"
 
 namespace pik {
+namespace {
+using namespace SIMD_NAMESPACE;
 
-float ClipMinMax(float x, float min_v, float max_v) {
-  x = x < min_v ? min_v : x;
-  x = x > max_v ? max_v : x;
-  return x;
-}
-
-std::vector<float> GetRandomVector(const int rnd_size_w, const int rnd_size_h) {
-  const int kMinRndV = 0;
-  const int kMaxRndV = 100000;
-  const int kSizeFilterW = 5;
-  const int kSizeFilterShift = static_cast<int>(kSizeFilterW / 2);
-  const int kSizeFilterH = 2;
-  const int kSizeFilter = kSizeFilterW * kSizeFilterH +
-                          (kSizeFilterW - kSizeFilterShift - 1);
-  const int rnd_size = rnd_size_w * rnd_size_h;
-
-  std::random_device rd;
-  std::mt19937 gen(rd());
-  std::uniform_int_distribution<> dis(kMinRndV, kMaxRndV);
-  std::uniform_int_distribution<> rnd_shift(1, kSizeFilter);
-  std::vector<float> rnd_vector(rnd_size);
-
-  for (int n = 0; n < rnd_size; ++n) {
-     rnd_vector[n] = dis(gen);
-  }
-
-  // Add laplacian-like filter
-  for (int x = 0; x < rnd_size_w; ++x) {
-    for (int y = 0; y < rnd_size_h; ++y) {
-      int shift = rnd_shift(gen);
-      int pair_pos_x = x + (shift + kSizeFilterShift) %
-                       kSizeFilterW - kSizeFilterShift;
-      int pair_pos_y = y + (shift + kSizeFilterShift) / kSizeFilterW;
-      int pos_in_rnd = x + y * rnd_size_w;
-      if (pair_pos_x < 0 || pair_pos_x >= rnd_size_w ||
-          pair_pos_y < 0 || pair_pos_y >= rnd_size_h) {
-        rnd_vector[pos_in_rnd] -= dis(gen);
-      } else {
-        int pair_pos_in_rnd = pair_pos_x + pair_pos_y * rnd_size_w;
-        rnd_vector[pos_in_rnd] -= rnd_vector[pair_pos_in_rnd];
-      }
-      rnd_vector[pos_in_rnd] /= (kMaxRndV - kMinRndV);
+ImageF RandomImage(ImageF* PIK_RESTRICT temp, Xorshift128Plus* rng) {
+  const size_t xsize = temp->xsize();
+  const size_t ysize = temp->ysize();
+  for (size_t y = 0; y < ysize; ++y) {
+    float* PIK_RESTRICT row = temp->Row(y);
+    const Full<float> df;
+    const Full<uint32_t> du;
+    for (size_t x = 0; x < xsize; x += df.N) {
+      const auto bits = cast_to(du, (*rng)());
+      // 1.0 + 23 random mantissa bits = [1, 2)
+      const auto rand12 =
+          cast_to(df, shift_right<9>(bits) | set1(du, 0x3F800000));
+      const auto rand01 = rand12 - set1(df, 1.0f);
+      store(rand01, df, row + x);
     }
   }
 
-  return rnd_vector;
+  ImageF out(xsize, ysize);
+  ConvolveT<Direct3Laplacian, Kernel::Laplacian3>::Run(*temp, &out);
+  return out;
 }
 
 float GetScoreSumsOfAbsoluteDifferences(const Image3F& opsin, const int x,
                                         const int y, const int block_size) {
-  const int small_bl_size = block_size / 2;
+  const int small_bl_size_x = 3;
+  const int small_bl_size_y = 4;
   const int kNumSAD =
-      (block_size - small_bl_size) * (block_size - small_bl_size);
+      (block_size - small_bl_size_x) * (block_size - small_bl_size_y);
   // block_size x block_size reference pixels
   int counter = 0;
   const int offset = 2;
 
   std::vector<float> sad(kNumSAD, 0);
-  for (int y_bl = 0; y_bl + small_bl_size < block_size; ++y_bl) {
-    for (int x_bl = 0; x_bl + small_bl_size < block_size; ++x_bl) {
+  for (int y_bl = 0; y_bl + small_bl_size_y < block_size; ++y_bl) {
+    for (int x_bl = 0; x_bl + small_bl_size_x < block_size; ++x_bl) {
       float sad_sum = 0;
       // size of the center patch, we compare all the patches inside window with
       // the center one
-      for (int cy = 0; cy < small_bl_size; ++cy) {
-        for (int cx = 0; cx < small_bl_size; ++cx) {
-          float wnd = 0.5 * (opsin.PlaneRow(1, y + y_bl + cy)[x + x_bl + cx] +
+      for (int cy = 0; cy < small_bl_size_y; ++cy) {
+        for (int cx = 0; cx < small_bl_size_x; ++cx) {
+          float wnd = 0.5f * (opsin.PlaneRow(1, y + y_bl + cy)[x + x_bl + cx] +
                              opsin.PlaneRow(0, y + y_bl + cy)[x + x_bl + cx]);
           float center =
-              0.5 * (opsin.PlaneRow(1, y + offset + cy)[x + offset + cx] +
+              0.5f * (opsin.PlaneRow(1, y + offset + cy)[x + offset + cx] +
                      opsin.PlaneRow(0, y + offset + cy)[x + offset + cx]);
           sad_sum += std::abs(center - wnd);
         }
@@ -99,7 +81,7 @@ std::vector<float> GetSADScoresForPatches(const Image3F& opsin,
                                           const int block_s, const int num_bin,
                                           Histogram* sad_histogram) {
   std::vector<float> sad_scores(
-      (opsin.ysize() / block_s) * (opsin.xsize() / block_s), 0.);
+      (opsin.ysize() / block_s) * (opsin.xsize() / block_s), 0.0f);
 
   int block_index = 0;
 
@@ -118,74 +100,232 @@ float GetSADThreshold(const Histogram& histogram, const int num_bin) {
   // Here we assume that the most patches with similar SAD value is a "flat"
   // patches. However, some images might contain regular texture part and
   // generate second strong peak at the histogram
-  // TODO(user) handle bimodale and heavy-tailed case
+  // TODO(user) handle bimodal and heavy-tailed case
   const int mode = histogram.Mode();
   return static_cast<float>(mode) / Histogram::kBins;
 }
 
-float GetValue(const NoiseParams& noise_params, const float x) {
-  const float kMaxNoiseLevel = 1.0f;
-  const float kMinNoiseLevel = 0.0f;
-  return ClipMinMax(
-      noise_params.alpha * std::pow(x, noise_params.gamma) + noise_params.beta,
-      kMinNoiseLevel, kMaxNoiseLevel);
+// x is in [0+delta, 1+delta], delta ~= 0.06
+template <class StrengthEval>
+typename StrengthEval::V NoiseStrength(const StrengthEval& eval,
+                                       const typename StrengthEval::V x) {
+  const typename StrengthEval::D d;
+  const auto kMinNoiseLevel = set1(d, 0.0f);
+  const auto kMaxNoiseLevel = set1(d, 1.0f);
+  // TODO(janwas): select+min is more efficient than clamp
+  return clamp(eval(x), kMinNoiseLevel, kMaxNoiseLevel);
 }
 
-void AddNoiseToRGB(const float rnd_noise_r, const float rnd_noise_g,
-                   const float rnd_noise_cor, const float noise_strength_g,
-                   float noise_strength_r, float* x_channel, float* y_channel,
-                   float* b_channel) {
-  const float kRGCorr = 0.9;
-  const float kRGNCorr = 1 - kRGCorr;
+// General case: slow but precise.
+class StrengthEvalPow {
+ public:
+  using D = Scalar<float>;
+  using V = D::V;
 
-  // Add noise
-  float red_noise = kRGNCorr * rnd_noise_r * noise_strength_r +
-                    kRGCorr * rnd_noise_cor * noise_strength_r;
-  float green_noise = kRGNCorr * rnd_noise_g * noise_strength_g +
-                      kRGCorr * rnd_noise_cor * noise_strength_g;
+  StrengthEvalPow(const NoiseParams& noise_params)
+      : noise_params_(noise_params) {}
 
-  *x_channel += red_noise - green_noise;
-  *y_channel += red_noise + green_noise;
-  *b_channel += 0.9375 * (red_noise + green_noise);
+  V operator()(const V vx) const {
+    float x;
+    store(vx, D(), &x);
+    return set1(D(), noise_params_.alpha * std::pow(x, noise_params_.gamma) +
+                         noise_params_.beta);
+  }
 
-  *x_channel = ClipMinMax(*x_channel, -kXybRange[0], kXybRange[0]);
-  *y_channel = ClipMinMax(*y_channel, -kXybRange[1], kXybRange[1]);
-  *b_channel = ClipMinMax(*b_channel, -kXybRange[2], kXybRange[2]);
+ private:
+  const NoiseParams noise_params_;
+};
+
+// For noise_params.alpha == 0: cheaper to evaluate than a polynomial and
+// avoids BLAS errors in RationalPolynomial.
+template <class D_Arg>
+class StrengthEvalLinear {
+ public:
+  using D = D_Arg;
+  using V = typename D::V;
+
+  StrengthEvalLinear(const NoiseParams& noise_params)
+      : strength_(set1(D(), noise_params.beta)) {}
+
+  V operator()(const V x) const { return strength_; }
+
+ private:
+  V strength_;
+};
+
+// Uses rational polynomial - faster than Pow.
+template <class D_Arg>
+class StrengthEvalPoly {
+  // Max err < 1E-6.
+  static constexpr size_t kDegreeP = 3;
+  static constexpr size_t kDegreeQ = 2;
+  using Polynomial =
+      SIMD_NAMESPACE::RationalPolynomial<D_Arg, kDegreeP, kDegreeQ>;
+
+ public:
+  using D = D_Arg;
+  using V = typename D::V;
+
+  static Polynomial InitPoly() {
+    const float p[kDegreeP + 1] = {
+        2.8334176974065262E-05, -4.0383997904166469E-03, 1.3657279781005727E-01,
+        1.0765042185381457E+00};
+    const float q[kDegreeQ + 1] = {7.6921408240996481E-01,
+                                   5.2686210349332230E-01,
+                                   -8.7053691084335916E-02};
+    return Polynomial(p, q);
+  }
+
+  StrengthEvalPoly(const NoiseParams& noise_params)
+      : poly_(InitPoly()),
+        mul_(set1(D(), noise_params.alpha)),
+        add_(set1(D(), noise_params.beta)) {}
+
+  PIK_INLINE V operator()(const V x) const {
+    return mul_add(mul_, poly_(x), add_);
+  }
+
+ private:
+  Polynomial poly_;
+  const V mul_;
+  const V add_;
+};
+
+template <class D>
+void AddNoiseToRGB(const typename D::V rnd_noise_r,
+                   const typename D::V rnd_noise_g,
+                   const typename D::V rnd_noise_cor,
+                   const typename D::V noise_strength_g,
+                   const typename D::V noise_strength_r,
+                   float* PIK_RESTRICT out_x, float* PIK_RESTRICT out_y,
+                   float* PIK_RESTRICT out_b) {
+  const D d;
+  const auto kRGCorr = set1(d, 0.9f);
+  const auto kRGNCorr = set1(d, 0.1f);
+
+  const auto red_noise = kRGNCorr * rnd_noise_r * noise_strength_r +
+                         kRGCorr * rnd_noise_cor * noise_strength_r;
+  const auto green_noise = kRGNCorr * rnd_noise_g * noise_strength_g +
+                           kRGCorr * rnd_noise_cor * noise_strength_g;
+
+  auto vx = load(d, out_x);
+  auto vy = load(d, out_y);
+  auto vb = load(d, out_b);
+
+  vx += red_noise - green_noise;
+  vy += red_noise + green_noise;
+  vb += set1(d, 0.9375f) * (red_noise + green_noise);
+
+  vx = clamp(vx, set1(d, -kXybRange[0]), set1(d, kXybRange[0]));
+  vy = clamp(vy, set1(d, -kXybRange[1]), set1(d, kXybRange[1]));
+  vb = clamp(vb, set1(d, -kXybRange[2]), set1(d, kXybRange[2]));
+
+  store(vx, d, out_x);
+  store(vy, d, out_y);
+  store(vb, d, out_b);
 }
+
+template <class StrengthEval>
+void AddNoiseT(const StrengthEval& noise_model, Image3F* opsin) {
+  using D = typename StrengthEval::D;
+  const D d;
+  const auto half = set1(d, 0.5f);
+
+  const size_t xsize = opsin->xsize();
+  const size_t ysize = opsin->ysize();
+
+  Xorshift128Plus rng(65537, 123456789);
+  ImageF temp(xsize, ysize);
+  const ImageF& rnd_noise_red = RandomImage(&temp, &rng);
+  const ImageF& rnd_noise_green = RandomImage(&temp, &rng);
+  const ImageF& rnd_noise_correlated = RandomImage(&temp, &rng);
+
+  // With the prior subtract-random Laplacian approximation, rnd_* ranges were
+  // about [-1.5, 1.6]; Laplacian3 about doubles this to [-3.6, 3.6], so the
+  // normalizer is half of what it was before (0.5).
+  const auto norm_const = set1(d, 0.22f);
+
+  for (size_t y = 0; y < ysize; ++y) {
+    float* PIK_RESTRICT row_x = opsin->PlaneRow(0, y);
+    float* PIK_RESTRICT row_y = opsin->PlaneRow(1, y);
+    float* PIK_RESTRICT row_b = opsin->PlaneRow(2, y);
+    const float* PIK_RESTRICT row_rnd_r = rnd_noise_red.Row(y);
+    const float* PIK_RESTRICT row_rnd_g = rnd_noise_green.Row(y);
+    const float* PIK_RESTRICT row_rnd_c = rnd_noise_correlated.Row(y);
+    for (size_t x = 0; x < xsize; x += d.N) {
+      const auto vx = load(d, row_x + x);
+      const auto vy = load(d, row_y + x);
+      const auto in_g = half * (vy - vx);
+      const auto in_r = half * (vy + vx);
+      const auto clamped_g =
+          clamp(in_g, set1(d, -kXybRange[1]), set1(d, kXybRange[1]));
+      const auto clamped_r =
+          clamp(in_r, set1(d, -kXybRange[1]), set1(d, kXybRange[1]));
+      const auto noise_strength_g =
+          NoiseStrength(noise_model, clamped_g + set1(d, kXybCenter[1]));
+      const auto noise_strength_r =
+          NoiseStrength(noise_model, clamped_r + set1(d, kXybCenter[1]));
+      const auto addit_rnd_noise_red = load(d, row_rnd_r + x) * norm_const;
+      const auto addit_rnd_noise_green = load(d, row_rnd_g + x) * norm_const;
+      const auto addit_rnd_noise_correlated =
+          load(d, row_rnd_c + x) * norm_const;
+      AddNoiseToRGB<D>(addit_rnd_noise_red, addit_rnd_noise_green,
+                       addit_rnd_noise_correlated, noise_strength_g,
+                       noise_strength_r, row_x + x, row_y + x, row_b + x);
+    }
+  }
+}
+
+// Returns max absolute error at uniformly spaced x.
+template <class EvalApprox>
+float MaxAbsError(const NoiseParams& noise_params,
+                  const EvalApprox& eval_approx) {
+  const StrengthEvalPow eval_pow(noise_params);
+
+  float max_abs_err = 0.0f;
+  const float x0 = -kXybRange[1] + kXybCenter[1];
+  const float x1 = kXybRange[1] + kXybCenter[1];
+  for (float x = x0; x < x1; x += 1E-1f) {
+    const Scalar<float> d1;
+    const Full<float> d;
+    const auto expected_v = NoiseStrength(eval_pow, set1(d1, x));
+    const auto actual_v = NoiseStrength(eval_approx, set1(d, x));
+    float expected;
+    SIMD_ALIGN float actual[d.N];
+    store(expected_v, d1, &expected);
+    store(actual_v, d, actual);
+    const float abs_err = std::abs(expected - actual[0]);
+    if (abs_err > max_abs_err) {
+      // printf("  x=%f %E %E = %E\n", x, expected, actual[0], abs_err);
+      max_abs_err = abs_err;
+    }
+  }
+  // printf("max abs %.2E\n", max_abs_err);
+  return max_abs_err;
+}
+
+}  // namespace
 
 void AddNoise(const NoiseParams& noise_params, Image3F* opsin) {
-  if (noise_params.alpha == 0 && noise_params.beta == 0 &&
-      noise_params.gamma == 0) {
+  // SIMD descriptor.
+  using D = Full<float>;
+
+  if (noise_params.alpha == 0.0f) {
+    // No noise at all
+    if (noise_params.beta == 0.0f && noise_params.gamma == 0.0f) return;
+
+    // Constant noise strength independent of pixel intensity
+    AddNoiseT(StrengthEvalLinear<D>(noise_params), opsin);
     return;
   }
-  std::vector<float> rnd_noise_red =
-      GetRandomVector(opsin->xsize(), opsin->ysize());
-  std::vector<float> rnd_noise_green =
-      GetRandomVector(opsin->xsize(), opsin->ysize());
-  std::vector<float> rnd_noise_correlated =
-      GetRandomVector(opsin->xsize(), opsin->ysize());
-  const float norm_const = 0.6;
-  for (int y = 0; y < opsin->ysize(); ++y) {
-    for (int x = 0; x < opsin->xsize(); ++x) {
-      auto row = opsin->Row(y);
-      float noise_strength_g =
-          GetValue(noise_params, ClipMinMax(0.5 * (row[1][x] - row[0][x]),
-                                            -kXybCenter[1], kXybCenter[1]) +
-                                     kXybCenter[1]);
-      float noise_strength_r =
-          GetValue(noise_params, ClipMinMax(0.5 * (row[1][x] + row[0][x]),
-                                            -kXybCenter[1], kXybCenter[1]) +
-                                     kXybCenter[1]);
-      float addit_rnd_noise_red =
-          rnd_noise_red[y * opsin->xsize() + x] * norm_const;
-      float addit_rnd_noise_green =
-          rnd_noise_green[y * opsin->xsize() + x] * norm_const;
-      float addit_rnd_noise_correlated =
-          rnd_noise_correlated[y * opsin->xsize() + x] * norm_const;
-      AddNoiseToRGB(addit_rnd_noise_red, addit_rnd_noise_green,
-                    addit_rnd_noise_correlated, noise_strength_g,
-                    noise_strength_r, &row[0][x], &row[1][x], &row[2][x]);
-    }
+
+  const StrengthEvalPoly<D> poly(noise_params);
+  if (MaxAbsError(noise_params, poly) < 1E-3f) {
+    AddNoiseT(poly, opsin);
+  } else {
+    printf("Reverting to pow: %.3f %.3f ^%.3f\n", noise_params.alpha,
+           noise_params.beta, noise_params.gamma);
+    AddNoiseT(StrengthEvalPow(noise_params), opsin);
   }
 }
 
@@ -242,7 +382,8 @@ void AddPointsForExtrapolation(std::vector<NoiseLevel>* noise_level) {
   noise_level->push_back(nl_max);
 }
 
-void GetNoiseParameter(const Image3F& opsin, NoiseParams* noise_params) {
+void GetNoiseParameter(const Image3F& opsin, NoiseParams* noise_params,
+                       float quality_coef) {
   // The size of a patch in decoder might be different from encoder's patch
   // size.
   // For encoder: the patch size should be big enough to estimate
@@ -253,16 +394,26 @@ void GetNoiseParameter(const Image3F& opsin, NoiseParams* noise_params) {
   Histogram sad_histogram;
   std::vector<float> sad_scores =
       GetSADScoresForPatches(opsin, block_s, kNumBin, &sad_histogram);
-  float sad_threshold =
-      ClipMinMax(GetSADThreshold(sad_histogram, kNumBin), 0.0f, 0.15f);
+  float sad_threshold = GetSADThreshold(sad_histogram, kNumBin);
+  // If threshold is too large, the image has a strong pattern. This pattern
+  // fools our model and it will add too much noise. Therefore, we do not add
+  // noise for such images
+  if (sad_threshold > 0.15f || sad_threshold <= 0.0f) {
+    noise_params->alpha = 0;
+    noise_params->beta = 0;
+    noise_params->gamma = 0;
+    return;
+  }
   std::vector<NoiseLevel> nl =
       GetNoiseLevel(opsin, sad_scores, sad_threshold, block_s);
 
   AddPointsForExtrapolation(&nl);
   OptimizeNoiseParameters(nl, noise_params);
+  noise_params->alpha *= quality_coef;
+  noise_params->beta *= quality_coef;
 }
 
-const float kNoisePrecision = 1000.;
+const float kNoisePrecision = 1000.0f;
 
 void EncodeFloatParam(float val, float precision, size_t* storage_ix,
                       uint8_t* storage) {
@@ -392,7 +543,7 @@ std::vector<NoiseLevel> GetNoiseLevel(
         float mean_int = 0;
         for (int y_bl = 0; y_bl < block_s; ++y_bl) {
           for (int x_bl = 0; x_bl < block_s; ++x_bl) {
-            mean_int += 0.5 * (opsin.PlaneRow(1, y + y_bl)[x + x_bl] +
+            mean_int += 0.5f * (opsin.PlaneRow(1, y + y_bl)[x + x_bl] +
                                opsin.PlaneRow(0, y + y_bl)[x + x_bl]);
           }
         }
@@ -409,13 +560,13 @@ std::vector<NoiseLevel> GetNoiseLevel(
                 for (int x_f = -1 * filt_size; x_f <= filt_size; ++x_f) {
                   if ((x_bl + x_f) >= 0 && (x_bl + x_f) < block_s) {
                     filtered_value +=
-                        0.5 *
+                        0.5f *
                         (opsin.PlaneRow(1, y + y_bl + y_f)[x + x_bl + x_f] +
                          opsin.PlaneRow(0, y + y_bl + y_f)[x + x_bl + x_f]) *
                         kLaplFilter[y_f + filt_size][x_f + filt_size];
                   } else {
                     filtered_value +=
-                        0.5 *
+                        0.5f *
                         (opsin.PlaneRow(1, y + y_bl + y_f)[x + x_bl - x_f] +
                          opsin.PlaneRow(0, y + y_bl + y_f)[x + x_bl - x_f]) *
                         kLaplFilter[y_f + filt_size][x_f + filt_size];
@@ -425,13 +576,13 @@ std::vector<NoiseLevel> GetNoiseLevel(
                 for (int x_f = -1 * filt_size; x_f <= filt_size; ++x_f) {
                   if ((x_bl + x_f) >= 0 && (x_bl + x_f) < block_s) {
                     filtered_value +=
-                        0.5 *
+                        0.5f *
                         (opsin.PlaneRow(1, y + y_bl - y_f)[x + x_bl + x_f] +
                          opsin.PlaneRow(0, y + y_bl - y_f)[x + x_bl + x_f]) *
                         kLaplFilter[y_f + filt_size][x_f + filt_size];
                   } else {
                     filtered_value +=
-                        0.5 *
+                        0.5f *
                         (opsin.PlaneRow(1, y + y_bl - y_f)[x + x_bl - x_f] +
                          opsin.PlaneRow(0, y + y_bl - y_f)[x + x_bl - x_f]) *
                         kLaplFilter[y_f + filt_size][x_f + filt_size];

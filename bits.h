@@ -18,6 +18,10 @@
 #include <stdint.h>
 #include "compiler_specific.h"
 
+static PIK_INLINE int PopCount(const uint32_t x) {
+  return __builtin_popcount(x);
+}
+
 // Undefined results for x == 0.
 static PIK_INLINE int NumZeroBitsAboveMSB32Nonzero(const uint32_t x) {
   return __builtin_clz(x);
@@ -44,6 +48,27 @@ static PIK_INLINE int NumZeroBitsBelowLSB32(const uint32_t x) {
 }
 static PIK_INLINE int NumZeroBitsBelowLSB64(const uint64_t x) {
   return (x == 0) ? 64 : NumZeroBitsBelowLSB64Nonzero(x);
+}
+
+// Returns base-2 logarithm, rounded down.
+static PIK_INLINE int FloorLog2NonZero32(const uint32_t x) {
+  return 31 ^ NumZeroBitsAboveMSB32Nonzero(x);
+}
+static PIK_INLINE int FloorLog2NonZero64(const uint64_t x) {
+  return 63 ^ NumZeroBitsAboveMSB64Nonzero(x);
+}
+
+// Returns base-2 logarithm, rounded up.
+static PIK_INLINE int CeilLog2NonZero32(const uint32_t x) {
+  const int floor_log2 = FloorLog2NonZero32(x);
+  if ((x & (x - 1)) == 0) return floor_log2;  // power of two
+  return floor_log2 + 1;
+}
+
+static PIK_INLINE int CeilLog2NonZero64(const uint64_t x) {
+  const int floor_log2 = FloorLog2NonZero64(x);
+  if ((x & (x - 1)) == 0) return floor_log2;  // power of two
+  return floor_log2 + 1;
 }
 
 #endif  // BITS_H_

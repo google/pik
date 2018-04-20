@@ -1,6 +1,7 @@
 #ifndef DCT_UTIL_H_
 #define DCT_UTIL_H_
 
+#include "data_parallel.h"
 #include "image.h"
 
 namespace pik {
@@ -16,19 +17,7 @@ Image3F UndoTransposeAndScale(const Image3F& transposed_scaled);
 // REQUIRES: coeffs.xsize() == 64*N, coeffs.ysize() == M.
 // Intended for testing deblocking algorithms.
 Image3F SlowIDCT(const Image3F& coeffs);
-
-// Returns a 8*N x 8*M image where each 8x8 block is produced with
-// ComputeTransposedScaledBlockIDCTFloat() from the corresponding 64x1 block of
-// the coefficient image.
-// REQUIRES: coeffs.xsize() == 64*N, coeffs.ysize() == M
-Image3F TransposedScaledIDCT(const Image3F& coeffs);
-
-// Returns a 64*N x M image where each 64x1 block is produced with
-// ComputeTransposedScaledBlockDCTFloat() from the corresponding 8x8 block of
-// the image. Note that the whole coefficient image is scaled by 1/64
-// afterwards, so that this is exactly the inverse of TransposedScaledIDCT().
-// REQUIRES: coeffs.xsize() == 8*N, coeffs.ysize() == 8*M
-Image3F TransposedScaledDCT(const Image3F& img);
+Image3F SlowDCT(const Image3F& img);
 
 // Returns an N x M image by taking the DC coefficient from each 64x1 block.
 // REQUIRES: coeffs.xsize() == 64*N, coeffs.ysize() == M
@@ -59,12 +48,14 @@ void Add2x2CornersFromPixelSpaceImage(const Image3F& img,
 //  4) Zero out the DC coefficients
 Image3F UpSample8x8BlurDCT(const Image3F& img, const float sigma);
 
-// Returns an image that is defined by the following transformations:
+// Adds to "add_to" (DCT) an image defined by the following transformations:
 //  1) Upsample image 4x4 with nearest-neighbor
 //  2) Blur with a Gaussian kernel of radius 4 and given sigma
 //  3) perform TransposedScaledDCT()
-//  4) Zero out the top 2x2 corner of each DCT block
-Image3F UpSample4x4BlurDCT(const Image3F& img, const float sigma);
+//  4) Zero out the top 2x2 corner of each DCT block, unless add_all is true
+//  5) XOR with "sign" (decoder adds predictions, encoder would subtract)
+void UpSample4x4BlurDCT(const Image3F& img, const float sigma, const float sign,
+                        const bool add_all, ThreadPool* pool, Image3F* add_to);
 
 // Returns an image that is defined by the following transformations:
 //  1) Upsample image 8x8 with nearest-neighbor

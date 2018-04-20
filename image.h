@@ -24,6 +24,7 @@
 #include <sys/types.h>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <complex>
 #include <limits>
@@ -31,15 +32,50 @@
 #include <utility>
 #include <vector>
 
-#include "arch_specific.h"  // kVectorSize
 #include "cache_aligned.h"
 #include "compiler_specific.h"
 #include "status.h"
 
 namespace pik {
 
-// Single channel, contiguous (cache-aligned) rows separated by padding.
-// T must be POD.
+// Each row address is a multiple of this - enables aligned loads.
+static constexpr size_t kImageAlign = CacheAligned::kCacheLineSize;
+static_assert(kImageAlign >= kMaxVectorSize, "Insufficient alignment");
+
+// Returns distance [bytes] between the start of two consecutive rows, a
+// multiple of kAlign but NOT 2048 - see below.
+//
+// Differing "kAlign" make sense for:
+// - Image: 128 to avoid false sharing/RFOs between multiple threads processing
+//   rows independently;
+// - TileFlow: no cache line alignment needed because buffers are per-thread;
+//   just need kMaxVectorSize=16..64 for SIMD.
+//
+// "valid_bytes" is xsize * sizeof(T).
+template <size_t kAlign>
+static inline size_t BytesPerRow(const size_t valid_bytes) {
+  static_assert((kAlign & (kAlign - 1)) == 0, "kAlign should be power of two");
+
+  // Extra two vectors allow *writing* a partial or full vector on the right AND
+  // left border (e.g. convolve.h) without disturbing the next/previous row.
+  const size_t row_size = valid_bytes + 2 * kMaxVectorSize;
+
+  // Round up.
+  size_t bytes_per_row = (row_size + kAlign - 1) & ~(kAlign - 1);
+
+  // During the lengthy window before writes are committed to memory, CPUs
+  // guard against read after write hazards by checking the address, but
+  // only the lower 11 bits. We avoid a false dependency between writes to
+  // consecutive rows by ensuring their sizes are not multiples of 2 KiB.
+  // Avoid2K prevents the same problem for the planes of an Image3.
+  if (bytes_per_row % 2048 == 0) {
+    bytes_per_row += kImageAlign;
+  }
+
+  return bytes_per_row;
+}
+
+// Single channel, aligned rows separated by padding. T must be POD.
 //
 // Rationale: vectorization benefits from aligned operands - unaligned loads and
 // especially stores are expensive when the address crosses cache line
@@ -75,27 +111,36 @@ class Image {
   Image(const size_t xsize, const size_t ysize)
       : xsize_(xsize),
         ysize_(ysize),
-        bytes_per_row_(BytesPerRow(xsize)),
-        bytes_(AllocateArray(bytes_per_row_ * ysize)) {
+        bytes_per_row_(BytesPerRow<kImageAlign>(xsize * sizeof(T))),
+        bytes_(AllocateArray(bytes_per_row_ * ysize, Avoid2K())) {
+#ifdef MEMORY_SANITIZER
+    // Only in MSAN builds: ensure full vectors are initialized.
+    const size_t partial = (xsize_ * sizeof(T)) % kMaxVectorSize;
+    const size_t remainder = (partial == 0) ? 0 : (kMaxVectorSize - partial);
     for (size_t y = 0; y < ysize_; ++y) {
-      T* const PIK_RESTRICT row = Row(y);
-      // Avoid use of uninitialized values msan error in padding in WriteImage
-      memset(row + xsize_, 0, bytes_per_row_ - sizeof(T) * xsize_);
+      memset(Row(y) + xsize_, 0, remainder);
     }
+#endif
   }
 
   Image(const size_t xsize, const size_t ysize, T val)
       : xsize_(xsize),
         ysize_(ysize),
-        bytes_per_row_(BytesPerRow(xsize)),
-        bytes_(AllocateArray(bytes_per_row_ * ysize)) {
+        bytes_per_row_(BytesPerRow<kImageAlign>(xsize * sizeof(T))),
+        bytes_(AllocateArray(bytes_per_row_ * ysize, Avoid2K())) {
+#ifdef MEMORY_SANITIZER
+    const size_t partial = (xsize_ * sizeof(T)) % kMaxVectorSize;
+    const size_t remainder = (partial == 0) ? 0 : (kMaxVectorSize - partial);
+#endif
+
     for (size_t y = 0; y < ysize_; ++y) {
       T* const PIK_RESTRICT row = Row(y);
       for (size_t x = 0; x < xsize_; ++x) {
         row[x] = val;
       }
-      // Avoid use of uninitialized values msan error in padding in WriteImage
-      memset(row + xsize_, 0, bytes_per_row_ - sizeof(T) * xsize_);
+#ifdef MEMORY_SANITIZER
+      memset(row + xsize_, 0, remainder);
+#endif
     }
   }
 
@@ -106,6 +151,7 @@ class Image {
         bytes_per_row_(bytes_per_row),
         bytes_(bytes, Ignore) {
     PIK_ASSERT(bytes_per_row >= xsize * sizeof(T));
+    PIK_CHECK(reinterpret_cast<uintptr_t>(bytes_.get()) % kImageAlign == 0);
   }
 
   // Takes ownership.
@@ -116,6 +162,7 @@ class Image {
         bytes_per_row_(bytes_per_row),
         bytes_(std::move(bytes)) {
     PIK_ASSERT(bytes_per_row >= xsize * sizeof(T));
+    PIK_CHECK(reinterpret_cast<uintptr_t>(bytes_.get()) % kImageAlign == 0);
   }
 
   // Move constructor (required for returning Image from function)
@@ -185,22 +232,6 @@ class Image {
     return static_cast<const uint8_t * PIK_RESTRICT>(PIK_ASSUME_ALIGNED(p, 64));
   }
 
-  // Returns cache-aligned row stride, being careful to avoid 2K aliasing.
-  static size_t BytesPerRow(const size_t xsize) {
-    // lowpass reads one extra AVX-2 vector on the right margin.
-    const size_t row_size = xsize * sizeof(T) + kVectorSize;
-    const size_t align = CacheAligned::kCacheLineSize;
-    size_t bytes_per_row = (row_size + align - 1) & ~(align - 1);
-    // During the lengthy window before writes are committed to memory, CPUs
-    // guard against read after write hazards by checking the address, but
-    // only the lower 11 bits. We avoid a false dependency between writes to
-    // consecutive rows by ensuring their sizes are not multiples of 2 KiB.
-    if (bytes_per_row % 2048 == 0) {
-      bytes_per_row += align;
-    }
-    return bytes_per_row;
-  }
-
   PIK_INLINE size_t bytes_per_row() const { return bytes_per_row_; }
 
   // Returns number of pixels (some of which are padding) per row. Useful for
@@ -212,6 +243,16 @@ class Image {
   }
 
  private:
+  // Offset for the allocated pointer to avoid 2K aliasing (see BytesPerRow)
+  // between the planes of an Image3. Necessary because consecutive large
+  // allocations on Linux often return pointers with the same alignment.
+  static size_t Avoid2K() {
+    static std::atomic<int> next{0};
+    const int kGroups = 8;
+    const int group = next.fetch_add(1) % kGroups;
+    return (2048 / kGroups) * group;
+  }
+
   // Deleter used when bytes are not owned.
   static void Ignore(uint8_t* ptr) {}
 
@@ -223,11 +264,108 @@ class Image {
 };
 
 using ImageB = Image<uint8_t>;
-// TODO(janwas): rename to ImageS (short/signed)
-using ImageW = Image<int16_t>;  // signed integer or half-float
+using ImageS = Image<int16_t>;  // signed integer or half-float
 using ImageU = Image<uint16_t>;
 using ImageI = Image<int>;
 using ImageF = Image<float>;
+using ImageD = Image<double>;
+
+// ImageSize and *ImageView are Plain Old Data to allow copying them into
+// untyped TileFlow bytestreams. We omit unnecessary fields and choose smaller
+// representations to reduce L1 cache pollution.
+#pragma pack(push, 1)
+
+// Size of an image in pixels. This is factored out of *ImageView because
+// TileFlow involves multiple views which have the same size. POD.
+struct ImageSize {
+  static ImageSize Make(const size_t xsize, const size_t ysize) {
+    ImageSize ret;
+    ret.xsize = static_cast<uint32_t>(xsize);
+    ret.ysize = static_cast<uint32_t>(ysize);
+    return ret;
+  }
+
+  bool operator==(const ImageSize& other) const {
+    return xsize == other.xsize && ysize == other.ysize;
+  }
+
+  uint32_t xsize;
+  uint32_t ysize;
+};
+
+// View into an image that allows writing pixels but not resizing/reallocating.
+// Implements a subset of the Image interface (Row). POD.
+template <typename T>
+class MutableImageView {
+ public:
+  // Moves the window to the given top-left position. A pointer argument rather
+  // than Image + x/y is necessary because the input may be an MutableImageView
+  // (which does not have an ImageF*) or contiguous buffer.
+  void Init(uint8_t* top_left, const size_t bytes_per_row) {
+    // TileFlow only guarantees vector alignment, not kImageAlign.
+    PIK_ASSERT(reinterpret_cast<uintptr_t>(top_left) % kMaxVectorSize == 0);
+    PIK_ASSERT(bytes_per_row % kMaxVectorSize == 0);
+    top_left_ = top_left;
+    bytes_per_row_ = bytes_per_row;
+  }
+
+  PIK_INLINE size_t bytes_per_row() const { return bytes_per_row_; }
+
+  // Returns a pointer aligned to kImageAlign bytes (see Init), which is aliased
+  // with the input for in-place nodes.
+  PIK_INLINE T* Row(const int64_t y) const {
+    const int64_t offset = y * static_cast<int64_t>(bytes_per_row_);
+    void* const row = PIK_ASSUME_ALIGNED(top_left_ + offset, kImageAlign);
+    return reinterpret_cast<T*>(row);
+  }
+
+  PIK_INLINE const T* ConstRow(const int64_t y) const { return Row(y); }
+
+ private:
+  uint8_t* top_left_;       // aligned
+  uint32_t bytes_per_row_;  // aligned
+};
+
+// Read-only view into an image. Implements a subset of the Image interface
+// (ConstRow). POD.
+template <typename T>
+class ConstImageView {
+ public:
+  // Top-left of the entire image; Rows will be aligned.
+  template <template <typename> class ImageOrView>
+  void Init(const ImageOrView<T>& image) {
+    top_left_ = reinterpret_cast<const uint8_t*>(image.ConstRow(0));
+    bytes_per_row_ = image.bytes_per_row();
+  }
+
+  // x, y is the pixel pointed to by Row(0) + 0. This is used to allow accessing
+  // additional pixels, e.g. during convolution. Rows are generally unaligned.
+  template <template <typename> class ImageOrView>
+  void Init(const ImageOrView<T>& image, const uint32_t x, const uint32_t y,
+            const uint32_t bytes_per_pixel = sizeof(T)) {
+    top_left_ = reinterpret_cast<const uint8_t*>(image.ConstRow(y)) +
+                x * bytes_per_pixel;
+    bytes_per_row_ = image.bytes_per_row();
+  }
+
+  PIK_INLINE size_t bytes_per_row() const { return bytes_per_row_; }
+
+  // Returns a row pointer which may or may not be aligned (see Init).
+  // The pointer is aliased with the output for in-place nodes.
+  PIK_INLINE const T* ConstRow(const int64_t y) const {
+    const uint8_t* row = top_left_ + y * static_cast<int64_t>(bytes_per_row_);
+    return reinterpret_cast<const T*>(row);
+  }
+
+ private:
+  const uint8_t* top_left_;
+  uint32_t bytes_per_row_;
+};
+
+#pragma pack(pop)
+
+using MutableImageViewF = MutableImageView<float>;
+using ConstImageViewF = ConstImageView<float>;
 
 template <typename T>
 Image<T> CopyImage(const Image<T>& image) {
@@ -264,6 +402,57 @@ bool SamePixels(const Image<T>& image1, const Image<T>& image2) {
     }
   }
   return true;
+}
+
+// Use for floating-point images with fairly large numbers; tolerates small
+// absolute errors and/or small relative errors. Returns max_relative.
+template <typename T>
+float VerifyRelativeError(const Image<T>& expected, const Image<T>& actual,
+                          const float threshold_l1,
+                          const float threshold_relative,
+                          const size_t border = 0) {
+  PIK_CHECK(SameSize(expected, actual));
+  // Max over one scanline to give a better idea whether there are systematic
+  // errors or just one outlier.
+  float max_l1 = -1E30f;
+  float max_relative = -1E30f;
+  for (size_t y = border; y < expected.ysize() - border; ++y) {
+    const T* const PIK_RESTRICT row_expected = expected.Row(y);
+    const T* const PIK_RESTRICT row_actual = actual.Row(y);
+    for (size_t x = border; x < expected.xsize() - border; ++x) {
+      const float l1 = std::abs(row_expected[x] - row_actual[x]);
+      max_l1 = std::max(max_l1, l1);
+      const float relative =
+          row_expected[x] == T(0)
+              ? 0.0f
+              : l1 / std::abs(static_cast<float>(row_expected[x]));
+      max_relative = std::max(max_relative, relative);
+    }
+
+    if (max_l1 >= threshold_l1 && max_relative >= threshold_relative) {
+      printf("Max +/- %f, %fx exceeds +/- %f, %fx\n", max_l1, max_relative,
+             threshold_l1, threshold_relative);
+      // Find first failing x for further debugging.
+      for (size_t x = border; x < expected.xsize() - border; ++x) {
+        const float l1 = std::abs(row_expected[x] - row_actual[x]);
+        const float relative =
+            row_expected[x] == T(0)
+                ? 0.0f
+                : l1 / std::abs(static_cast<float>(row_expected[x]));
+        if (l1 >= threshold_l1 && relative >= threshold_relative) {
+          printf("x %zu y %zu expected %f actual %f\n", x, y,
+                 static_cast<float>(row_expected[x]),
+                 static_cast<float>(row_actual[x]));
+          exit(1);
+        }
+      }
+    }
+
+    // Didn't find the exact same value => avoid printing repeatedly.
+    return max_relative;
+  }
+
+  return max_relative;
 }
 
 template <class ImageIn, class ImageOut>
@@ -386,60 +575,12 @@ Image<T> TorusShift(const Image<T>& img, size_t shift_x, size_t shift_y) {
 }
 
 
-// Ensures each row has RoundUp(xsize, N) + N valid values (N = NumLanes<V>()).
-// Generates missing values via mirroring with replication.
-template <typename T>
-void PadImage(Image<T>* image) {
-  const size_t xsize = image->xsize();
-  const size_t kNumLanes = kVectorSize / sizeof(T);
-  const size_t remainder = xsize % kNumLanes;
-  const size_t extra = (remainder == 0) ? 0 : (kNumLanes - remainder);
-  const size_t max_mirror = std::min(kNumLanes + extra, xsize - 1);
-
-  for (size_t y = 0; y < image->ysize(); ++y) {
-    T* const PIK_RESTRICT row = image->Row(y);
-
-    size_t i = 0;
-    for (; i < max_mirror; ++i) {
-      // The mirror is outside the last column => replicate once.
-      row[xsize + i] = row[xsize - 1 - i];
-    }
-    for (; i < kNumLanes + extra; ++i) {
-      row[xsize + i] = 0;
-    }
-  }
-}
-
-// Returns whether the first row is padded (safety check).
-template <typename T>
-bool VerifyPadding(const Image<T>& image) {
-  const size_t xsize = image.xsize();
-  const size_t kNumLanes = kVectorSize / sizeof(T);
-  const size_t remainder = xsize % kNumLanes;
-  const size_t extra = (remainder == 0) ? 0 : (kNumLanes - remainder);
-  const size_t max_mirror = std::min(kNumLanes + extra, xsize - 1);
-
-  const T* const PIK_RESTRICT row = image.Row(0);
-  size_t i = 0;
-  for (; i < max_mirror; ++i) {
-    // The mirror is outside the last column => replicate once.
-    if (fabsf(row[xsize + i] - row[xsize - 1 - i]) > 1E-3f) {
-      return false;
-    }
-  }
-  for (; i < kNumLanes + extra; ++i) {
-    if (row[xsize + i] != 0) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
 // Mirrors out of bounds coordinates and returns valid coordinates unchanged.
 // We assume the radius (distance outside the image) is small compared to the
 // image size, otherwise this might not terminate.
-static inline int Mirror(int x, const int xsize) {
+// The mirror is outside the last column (border pixel is also replicated).
+static inline int64_t Mirror(int64_t x, const int64_t xsize) {
+  // TODO(janwas): replace with branchless version
   while (x < 0 || x >= xsize) {
     if (x < 0) {
       x = -x - 1;
@@ -450,24 +591,29 @@ static inline int Mirror(int x, const int xsize) {
   return x;
 }
 
-// Returns a new image with "border" additional pixels on each side, initialized
-// by mirroring.
-template <typename T>
-Image<T> CopyWithMirroredBorder(const Image<T>& in, const int border) {
-  const int ixsize = in.xsize();
-  const int iysize = in.ysize();
-  Image<T> out(ixsize + 2 * border, iysize + 2 * border);
-  for (int iy = -border; iy < iysize + border; ++iy) {
-    const int clamped_y = Mirror(iy, iysize);
-    const T* const PIK_RESTRICT row_in = in.ConstRow(clamped_y);
-    T* const PIK_RESTRICT row_out = out.Row(iy + border) + border;
-    for (int ix = -border; ix < ixsize + border; ++ix) {
-      const int clamped_x = Mirror(ix, ixsize);
-      row_out[ix] = row_in[clamped_x];
-    }
+// Wrap modes for ensuring X/Y coordinates are in the valid range [0, size):
+
+// Mirrors (repeating the edge pixel once). Useful for convolutions.
+struct WrapMirror {
+  PIK_INLINE int64_t operator()(const int64_t coord, const int64_t size) const {
+    return Mirror(coord, size);
   }
-  return out;
-}
+};
+
+// Repeats the edge pixel.
+struct WrapClamp {
+  PIK_INLINE int64_t operator()(const int64_t coord, const int64_t size) const {
+    return std::min(std::max(0L, coord), size - 1L);
+  }
+};
+
+// Returns the same coordinate: required for TFNode with Border(), or useful
+// when we know "coord" is already valid (e.g. interior of an image).
+struct WrapUnchanged {
+  PIK_INLINE int64_t operator()(const int64_t coord, const int64_t size) const {
+    return coord;
+  }
+};
 
 // Sets "thickness" pixels on each border to "value". This is faster than
 // initializing the entire image and overwriting valid/interior pixels.
@@ -597,6 +743,10 @@ ImageB ImageFromPacked(const uint8_t* packed, const size_t xsize,
 // TODO(user): Introduce the distinction between image view and image when
 // most of Pik wants image views.
 
+// TODO(janwas): crashes if x*sizeof(T) is not a multiple of the vector size.
+// Image::[Const]Row promises the returned pointer is aligned, so the compiler
+// transforms even a load_unaligned into an aligned load. Use
+// Const/MutableImageView instead.
 template <typename T>
 Image<T> Window(Image<T>* from, size_t x, size_t y, size_t xsize,
                 size_t ysize) {
@@ -717,8 +867,16 @@ class Image3 {
   // them to change image size etc., leading to hard-to-find bugs.
   PIK_INLINE const Plane& plane(const size_t idx) const { return planes_[idx]; }
 
+  void Swap(Image3& other) {
+    for (int c = 0; c < 3; ++c) {
+      other.planes_[c].Swap(planes_[c]);
+    }
+  }
+
   void ShrinkTo(const size_t xsize, const size_t ysize) {
-    for (Plane& plane : planes_) { plane.ShrinkTo(xsize, ysize); }
+    for (Plane& plane : planes_) {
+      plane.ShrinkTo(xsize, ysize);
+    }
   }
 
   // Sizes of all three images are guaranteed to be equal.
@@ -730,9 +888,9 @@ class Image3 {
 };
 
 using Image3B = Image3<uint8_t>;
-// TODO(janwas): rename to ImageS (short/signed)
-using Image3W = Image3<int16_t>;
+using Image3S = Image3<int16_t>;
 using Image3U = Image3<uint16_t>;
+using Image3I = Image3<int>;
 using Image3F = Image3<float>;
 using Image3D = Image3<double>;
 
@@ -818,13 +976,13 @@ class MetaImage {
 
 using MetaImageB = MetaImage<uint8_t>;
 // TODO(janwas): rename to MetaImageS (short/signed)
-using MetaImageW = MetaImage<int16_t>;
+using MetaImageS = MetaImage<int16_t>;
 using MetaImageU = MetaImage<uint16_t>;
 using MetaImageF = MetaImage<float>;
 using MetaImageD = MetaImage<double>;
 
 template <typename T>
-Image3<T> CopyImage3(const Image3<T>& image3) {
+Image3<T> CopyImage(const Image3<T>& image3) {
   return Image3<T>(CopyImage(image3.plane(0)), CopyImage(image3.plane(1)),
                    CopyImage(image3.plane(2)));
 }
@@ -879,15 +1037,6 @@ void SetBorder(const size_t thickness, const T value, Image3<T>* image) {
       std::fill(row[c] + xsize - thickness, row[c] + xsize, value);
     }
   }
-}
-
-// Returns a new image with "border" additional pixels on each side, initialized
-// by mirroring.
-template <typename T>
-Image3<T> CopyWithMirroredBorder(const Image3<T>& in, const int border) {
-  return Image3<T>(CopyWithMirroredBorder(in.plane(0), border),
-                   CopyWithMirroredBorder(in.plane(1), border),
-                   CopyWithMirroredBorder(in.plane(2), border));
 }
 
 // Computes independent minimum and maximum values for each plane.
@@ -992,7 +1141,7 @@ Image3<T> LinComb(const T lambda1, const Image3<T>& image1,
 }
 
 template <typename T>
-Image3<T> ScaleImage3(const T lambda, const Image3<T>& image) {
+Image3<T> ScaleImage(const T lambda, const Image3<T>& image) {
   return Image3<T>(ScaleImage(lambda, image.plane(0)),
                    ScaleImage(lambda, image.plane(1)),
                    ScaleImage(lambda, image.plane(2)));

@@ -250,6 +250,10 @@ template <typename T, size_t N, class Target>
 using PartTarget =
     typename PartTargetT<(N * sizeof(T) + 15) / 16, Target>::type;
 
+// Unfortunately the GCC/Clang intrinsics do not accept int64_t*.
+using GatherIndex64 = long long int;
+static_assert(sizeof(GatherIndex64) == 8, "Must be 64-bit type");
+
 }  // namespace pik
 
 #endif  // SIMD_PORT_H_

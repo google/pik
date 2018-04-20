@@ -58,9 +58,11 @@ Implemented for scalar/SSE4/AVX2/ARMv8 targets, each with unit tests.
     128-bit vectors in each instruction set.
 
 *   The API and its implementation should be usable and efficient with commonly
-used compilers. Some of our open-source users cannot upgrade, so we need to
-support 4-6 year old compilers (e.g. GCC 4.8). However, we take advantage of
-newer features such as function-specific target attributes when available.
+    used compilers. Some of our open-source users cannot upgrade, so we need to
+    support 4-6 year old compilers (e.g. GCC 4.8). For example, we write
+    `shift_left<3>(v)` instead of `v << 3` because MSVC 2017 (ARM64) does not
+    propagate the literal (https://godbolt.org/g/rKx5Ga). However, we utilize
+    newer features such as function-specific target attributes when available.
 
 *   Efficient and safe runtime dispatch is important. Modules such as image or
     video codecs are typically embedded into larger applications such as

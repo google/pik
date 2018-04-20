@@ -12,7 +12,9 @@ size_t PaddedBytes::PaddedSize(const size_t size) {
   // Allow writing entire 64-bit words.
   const size_t rounded_up = (size + 7) & ~7;
   // Avoid bounds checks in LoadHeader.
-  return std::max(rounded_up, MaxCompressedHeaderSize());
+  const size_t safe_header = std::max(rounded_up, MaxCompressedHeaderSize());
+  // Allow for BitReader's overreading.
+  return safe_header + 4;
 }
 
 void PaddedBytes::resize(const size_t size) {

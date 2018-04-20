@@ -47,7 +47,7 @@ ImageF AlphaBlend(const ImageF& img, const ImageU& alpha,
 
 Image3F AlphaBlend(const MetaImageF& img, uint8_t background) {
   if (!img.HasAlpha()) {
-    return CopyImage3(img.GetColor());
+    return CopyImage(img.GetColor());
   }
   std::array<ImageF, 3> planes;
   for (int c = 0; c < 3; ++c) {

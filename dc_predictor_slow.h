@@ -22,17 +22,9 @@
 
 #include "compiler_specific.h"
 #include "image.h"
+#include "status.h"
 
 namespace pik {
-
-// Clamps gradient to the min/max of n, w, l.
-template <class V>
-static PIK_INLINE V ClampedGradient(const V& n, const V& w, const V& l) {
-  const V grad = n + w - l;
-  const V min = std::min(n, std::min(w, l));
-  const V max = std::max(n, std::max(w, l));
-  return std::min(std::max(min, grad), max);
-}
 
 template <typename V>
 class Predictors {
@@ -83,6 +75,14 @@ class Predictors {
   };
 
  private:
+  // Clamps gradient to the min/max of n, w, l.
+  static PIK_INLINE V ClampedGradient(const V& n, const V& w, const V& l) {
+    const V grad = n + w - l;
+    const V min = std::min(n, std::min(w, l));
+    const V max = std::max(n, std::max(w, l));
+    return std::min(std::max(min, grad), max);
+  }
+
   static PIK_INLINE V Average(const V& v0, const V& v1) {
     return (v0 + v1) >> 1;
   }
@@ -172,6 +172,15 @@ V MinCostPredict(const V* const PIK_RESTRICT dc, size_t x, size_t y,
                    dc, x, y, xsize, neg_col_stride, neg_row_stride);
 }
 
+static int Quantize(const int dc, const int quant_step) {
+  // TODO(janwas): division via table of magic multipliers+fixups
+  const int trunc = dc / quant_step;
+  const int mod = dc - (trunc * quant_step);
+  // If closer to the end of the interval, round up (+1).
+  const int rounded = trunc + (mod > quant_step / 2);
+  return rounded;
+}
+
 // Drop-in replacements for dc_predictor functions
 template <typename DC>
 void SlowShrinkY(const Image<DC>& dc, Image<DC>* const PIK_RESTRICT residuals) {
@@ -207,6 +216,55 @@ void SlowShrinkUV(const Image<DC>& dc_y, const Image<DC>& dc,
                            -dc.bytes_per_row() / sizeof(DC), true, predictor);
         row_out[2 * x + i] = row[2 * x + i] - pred;
       }
+    }
+  }
+}
+
+template <typename DC>
+void SlowQuantizeY(const Image<DC>& dc, const ImageS& quant_map,
+                   Image<DC>* const PIK_RESTRICT residuals) {
+  PIK_CHECK(SameSize(*residuals, quant_map));
+  PIK_CHECK(SameSize(*residuals, dc));
+  const size_t xsize = dc.xsize();
+  const size_t ysize = dc.ysize();
+  Image<DC> qdc(xsize, ysize);
+  for (size_t y = 0; y < ysize; y++) {
+    const DC* const PIK_RESTRICT row = dc.Row(y);
+    const int16_t* const PIK_RESTRICT row_quant = quant_map.Row(y);
+    DC* const PIK_RESTRICT row_out = residuals->Row(y);
+    DC* const PIK_RESTRICT row_qdc = qdc.Row(y);
+    for (size_t x = 0; x < xsize; x++) {
+      const DC pred =
+          MinCostPredict(&row_qdc[x], x, y, xsize, -1,
+                         -qdc.bytes_per_row() / sizeof(DC), false, 0);
+      const int res = row[x] - pred;
+      row_out[x] = Quantize(res, row_quant[x]);
+      row_qdc[x] = pred + row_out[x] * row_quant[x];
+      // printf("%2zu %2zu: %d (pred %d)=>%d, q %d => %d\n", x, y, row[x], pred,
+      //        res, row_quant[x], row_out[x]);
+    }
+  }
+}
+
+template <typename DC>
+void SlowDequantizeY(const Image<DC>& residuals, const ImageS& quant_map,
+                     Image<DC>* const PIK_RESTRICT dc) {
+  PIK_CHECK(SameSize(residuals, quant_map));
+  PIK_CHECK(SameSize(residuals, *dc));
+  const size_t xsize = dc->xsize();
+  const size_t ysize = dc->ysize();
+  for (size_t y = 0; y < ysize; y++) {
+    DC* const PIK_RESTRICT row = dc->Row(y);
+    const DC* const PIK_RESTRICT row_res = residuals.Row(y);
+    const DC* const PIK_RESTRICT row_quant = quant_map.Row(y);
+    for (size_t x = 0; x < xsize; x++) {
+      const DC pred =
+          MinCostPredict(&row[x], x, y, xsize, -1,
+                         -dc->bytes_per_row() / sizeof(DC), false, 0);
+      const int res = row_res[x] * row_quant[x];
+      row[x] = pred + res;
+      // printf("%2zu %2zu: %d (pred %d), q %d res %d\n", x, y, row[x], pred,
+      //        row_quant[x], res);
     }
   }
 }

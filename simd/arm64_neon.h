@@ -159,6 +159,12 @@ struct raw_arm8<float, 1> {
   using type = float32x2_t;
 };
 
+// Returned by set_table_indices for use by table_lookup_lanes.
+template <typename T>
+struct permute_sse4 {
+  uint8x16_t raw;
+};
+
 template <typename T, size_t N = ARM8::NumLanes<T>()>
 class vec_arm8 {
   using Raw = typename raw_arm8<T, N>::type;
@@ -590,25 +596,25 @@ SIMD_INLINE vec_arm8<double, N> operator-(const vec_arm8<double, N> a,
 
 // Unsigned
 template <size_t N>
-SIMD_INLINE vec_arm8<uint8_t, N> add_sat(const vec_arm8<uint8_t, N> a,
-                                         const vec_arm8<uint8_t, N> b) {
+SIMD_INLINE vec_arm8<uint8_t, N> saturated_add(const vec_arm8<uint8_t, N> a,
+                                               const vec_arm8<uint8_t, N> b) {
   return vec_arm8<uint8_t, N>(vqaddq_u8(a.raw, b.raw));
 }
 template <size_t N>
-SIMD_INLINE vec_arm8<uint16_t, N> add_sat(const vec_arm8<uint16_t, N> a,
-                                          const vec_arm8<uint16_t, N> b) {
+SIMD_INLINE vec_arm8<uint16_t, N> saturated_add(const vec_arm8<uint16_t, N> a,
+                                                const vec_arm8<uint16_t, N> b) {
   return vec_arm8<uint16_t, N>(vqaddq_u16(a.raw, b.raw));
 }
 
 // Signed
 template <size_t N>
-SIMD_INLINE vec_arm8<int8_t, N> add_sat(const vec_arm8<int8_t, N> a,
-                                        const vec_arm8<int8_t, N> b) {
+SIMD_INLINE vec_arm8<int8_t, N> saturated_add(const vec_arm8<int8_t, N> a,
+                                              const vec_arm8<int8_t, N> b) {
   return vec_arm8<int8_t, N>(vqaddq_s8(a.raw, b.raw));
 }
 template <size_t N>
-SIMD_INLINE vec_arm8<int16_t, N> add_sat(const vec_arm8<int16_t, N> a,
-                                         const vec_arm8<int16_t, N> b) {
+SIMD_INLINE vec_arm8<int16_t, N> saturated_add(const vec_arm8<int16_t, N> a,
+                                               const vec_arm8<int16_t, N> b) {
   return vec_arm8<int16_t, N>(vqaddq_s16(a.raw, b.raw));
 }
 
@@ -618,25 +624,25 @@ SIMD_INLINE vec_arm8<int16_t, N> add_sat(const vec_arm8<int16_t, N> a,
 
 // Unsigned
 template <size_t N>
-SIMD_INLINE vec_arm8<uint8_t, N> sub_sat(const vec_arm8<uint8_t, N> a,
-                                         const vec_arm8<uint8_t, N> b) {
+SIMD_INLINE vec_arm8<uint8_t, N> saturated_subtract(
+    const vec_arm8<uint8_t, N> a, const vec_arm8<uint8_t, N> b) {
   return vec_arm8<uint8_t, N>(vqsubq_u8(a.raw, b.raw));
 }
 template <size_t N>
-SIMD_INLINE vec_arm8<uint16_t, N> sub_sat(const vec_arm8<uint16_t, N> a,
-                                          const vec_arm8<uint16_t, N> b) {
+SIMD_INLINE vec_arm8<uint16_t, N> saturated_subtract(
+    const vec_arm8<uint16_t, N> a, const vec_arm8<uint16_t, N> b) {
   return vec_arm8<uint16_t, N>(vqsubq_u16(a.raw, b.raw));
 }
 
 // Signed
 template <size_t N>
-SIMD_INLINE vec_arm8<int8_t, N> sub_sat(const vec_arm8<int8_t, N> a,
-                                        const vec_arm8<int8_t, N> b) {
+SIMD_INLINE vec_arm8<int8_t, N> saturated_subtract(
+    const vec_arm8<int8_t, N> a, const vec_arm8<int8_t, N> b) {
   return vec_arm8<int8_t, N>(vqsubq_s8(a.raw, b.raw));
 }
 template <size_t N>
-SIMD_INLINE vec_arm8<int16_t, N> sub_sat(const vec_arm8<int16_t, N> a,
-                                         const vec_arm8<int16_t, N> b) {
+SIMD_INLINE vec_arm8<int16_t, N> saturated_subtract(
+    const vec_arm8<int16_t, N> a, const vec_arm8<int16_t, N> b) {
   return vec_arm8<int16_t, N>(vqsubq_s16(a.raw, b.raw));
 }
 
@@ -646,13 +652,13 @@ SIMD_INLINE vec_arm8<int16_t, N> sub_sat(const vec_arm8<int16_t, N> a,
 
 // Unsigned
 template <size_t N>
-SIMD_INLINE vec_arm8<uint8_t, N> avg(const vec_arm8<uint8_t, N> a,
-                                     const vec_arm8<uint8_t, N> b) {
+SIMD_INLINE vec_arm8<uint8_t, N> average_round(const vec_arm8<uint8_t, N> a,
+                                               const vec_arm8<uint8_t, N> b) {
   return vec_arm8<uint8_t, N>(vrhaddq_u8(a.raw, b.raw));
 }
 template <size_t N>
-SIMD_INLINE vec_arm8<uint16_t, N> avg(const vec_arm8<uint16_t, N> a,
-                                      const vec_arm8<uint16_t, N> b) {
+SIMD_INLINE vec_arm8<uint16_t, N> average_round(const vec_arm8<uint16_t, N> a,
+                                                const vec_arm8<uint16_t, N> b) {
   return vec_arm8<uint16_t, N>(vrhaddq_u16(a.raw, b.raw));
 }
 
@@ -811,42 +817,42 @@ SIMD_INLINE vec_arm8<int64_t, N> shift_left_same(
 
 // Unsigned (no u8,u16)
 template <size_t N>
-SIMD_INLINE vec_arm8<uint32_t, N> shift_left_var(
-    const vec_arm8<uint32_t, N> v, const vec_arm8<uint32_t, N> bits) {
+SIMD_INLINE vec_arm8<uint32_t, N> operator<<(const vec_arm8<uint32_t, N> v,
+                                             const vec_arm8<uint32_t, N> bits) {
   return vec_arm8<uint32_t, N>(vshlq_u32(v.raw, bits.raw));
 }
 template <size_t N>
-SIMD_INLINE vec_arm8<uint32_t, N> shift_right_var(
-    const vec_arm8<uint32_t, N> v, const vec_arm8<uint32_t, N> bits) {
+SIMD_INLINE vec_arm8<uint32_t, N> operator>>(const vec_arm8<uint32_t, N> v,
+                                             const vec_arm8<uint32_t, N> bits) {
   return vec_arm8<uint32_t, N>(
       vshlq_u32(v.raw, vnegq_s32(vreinterpretq_s32_u32(bits.raw))));
 }
 template <size_t N>
-SIMD_INLINE vec_arm8<uint64_t, N> shift_left_var(
-    const vec_arm8<uint64_t, N> v, const vec_arm8<uint64_t, N> bits) {
+SIMD_INLINE vec_arm8<uint64_t, N> operator<<(const vec_arm8<uint64_t, N> v,
+                                             const vec_arm8<uint64_t, N> bits) {
   return vec_arm8<uint64_t, N>(vshlq_u64(v.raw, bits.raw));
 }
 template <size_t N>
-SIMD_INLINE vec_arm8<uint64_t, N> shift_right_var(
-    const vec_arm8<uint64_t, N> v, const vec_arm8<uint64_t, N> bits) {
+SIMD_INLINE vec_arm8<uint64_t, N> operator>>(const vec_arm8<uint64_t, N> v,
+                                             const vec_arm8<uint64_t, N> bits) {
   return vec_arm8<uint64_t, N>(
       vshlq_u64(v.raw, vnegq_s64(vreinterpretq_s64_u64(bits.raw))));
 }
 
 // Signed (no i8,i16)
 template <size_t N>
-SIMD_INLINE vec_arm8<int32_t, N> shift_left_var(
-    const vec_arm8<int32_t, N> v, const vec_arm8<int32_t, N> bits) {
+SIMD_INLINE vec_arm8<int32_t, N> operator<<(const vec_arm8<int32_t, N> v,
+                                            const vec_arm8<int32_t, N> bits) {
   return vec_arm8<int32_t, N>(vshlq_s32(v.raw, bits.raw));
 }
 template <size_t N>
-SIMD_INLINE vec_arm8<int32_t, N> shift_right_var(
-    const vec_arm8<int32_t, N> v, const vec_arm8<int32_t, N> bits) {
+SIMD_INLINE vec_arm8<int32_t, N> operator>>(const vec_arm8<int32_t, N> v,
+                                            const vec_arm8<int32_t, N> bits) {
   return vec_arm8<int32_t, N>(vshlq_s32(v.raw, vnegq_s32(bits.raw)));
 }
 template <size_t N>
-SIMD_INLINE vec_arm8<int64_t, N> shift_left_var(
-    const vec_arm8<int64_t, N> v, const vec_arm8<int64_t, N> bits) {
+SIMD_INLINE vec_arm8<int64_t, N> operator<<(const vec_arm8<int64_t, N> v,
+                                            const vec_arm8<int64_t, N> bits) {
   return vec_arm8<int64_t, N>(vshlq_s64(v.raw, bits.raw));
 }
 
@@ -978,8 +984,8 @@ namespace ext {
 
 // Returns the upper 16 bits of a * b in each lane.
 template <size_t N>
-SIMD_INLINE vec_arm8<int16_t, N> mulhi(const vec_arm8<int16_t, N> a,
-                                       const vec_arm8<int16_t, N> b) {
+SIMD_INLINE vec_arm8<int16_t, N> mul_high(const vec_arm8<int16_t, N> a,
+                                          const vec_arm8<int16_t, N> b) {
   int32x4_t rlo = vmull_s16(vget_low_s16(a.raw), vget_low_s16(b.raw));
   int32x4_t rhi = vmull_high_s16(a.raw, b.raw);
   return vec_arm8<int16_t, N>(
@@ -1003,6 +1009,17 @@ SIMD_INLINE vec_arm8<uint64_t> mul_even(const vec_arm8<uint32_t> a,
   uint32x4_t b_packed = vuzp1q_u32(b.raw, b.raw);
   return vec_arm8<uint64_t>(
       vmull_u32(vget_low_u32(a_packed), vget_low_u32(b_packed)));
+}
+
+// ------------------------------ Floating-point negate
+
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> neg(const vec_arm8<float, N> v) {
+  return vec_arm8<float, N>(vnegq_f32(v.raw));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> neg(const vec_arm8<double, N> v) {
+  return vec_arm8<double, N>(vnegq_f64(v.raw));
 }
 
 // ------------------------------ Floating-point mul / div
@@ -1031,38 +1048,25 @@ SIMD_INLINE vec_arm8<double, N> operator/(const vec_arm8<double, N> a,
 
 // Approximate reciprocal
 template <size_t N>
-SIMD_INLINE vec_arm8<float, N> rcp_approx(const vec_arm8<float, N> v) {
+SIMD_INLINE vec_arm8<float, N> approximate_reciprocal(
+    const vec_arm8<float, N> v) {
   return vec_arm8<float, N>(vrecpeq_f32(v.raw));
 }
 
 // ------------------------------ Floating-point multiply-add variants
 
-// Returns mul * x + add
+// Returns add + mul * x
 template <size_t N>
 SIMD_INLINE vec_arm8<float, N> mul_add(const vec_arm8<float, N> mul,
                                        const vec_arm8<float, N> x,
                                        const vec_arm8<float, N> add) {
-  return vec_arm8<float, N>(vmlaq_f32(add.raw, mul.raw, x.raw));
+  return vec_arm8<float, N>(vfmaq_f32(add.raw, mul.raw, x.raw));
 }
 template <size_t N>
 SIMD_INLINE vec_arm8<double, N> mul_add(const vec_arm8<double, N> mul,
                                         const vec_arm8<double, N> x,
                                         const vec_arm8<double, N> add) {
-  return vec_arm8<double, N>(vmlaq_f64(add.raw, mul.raw, x.raw));
-}
-
-// Returns mul * x - sub
-template <size_t N>
-SIMD_INLINE vec_arm8<float, N> mul_sub(const vec_arm8<float, N> mul,
-                                       const vec_arm8<float, N> x,
-                                       const vec_arm8<float, N> sub) {
-  return mul * x - sub;
-}
-template <size_t N>
-SIMD_INLINE vec_arm8<double, N> mul_sub(const vec_arm8<double, N> mul,
-                                        const vec_arm8<double, N> x,
-                                        const vec_arm8<double, N> sub) {
-  return mul * x - sub;
+  return vec_arm8<double, N>(vfmaq_f64(add.raw, mul.raw, x.raw));
 }
 
 // Returns add - mul * x
@@ -1070,16 +1074,47 @@ template <size_t N>
 SIMD_INLINE vec_arm8<float, N> nmul_add(const vec_arm8<float, N> mul,
                                         const vec_arm8<float, N> x,
                                         const vec_arm8<float, N> add) {
-  return vec_arm8<float, N>(vmlsq_f32(add.raw, mul.raw, x.raw));
+  return vec_arm8<float, N>(vfmsq_f32(add.raw, mul.raw, x.raw));
 }
 template <size_t N>
 SIMD_INLINE vec_arm8<double, N> nmul_add(const vec_arm8<double, N> mul,
                                          const vec_arm8<double, N> x,
                                          const vec_arm8<double, N> add) {
-  return vec_arm8<double, N>(vmlsq_f64(add.raw, mul.raw, x.raw));
+  return vec_arm8<double, N>(vfmsq_f64(add.raw, mul.raw, x.raw));
 }
 
-// nmul_sub would require an additional negate of mul or x.
+// Slightly more expensive (extra negate)
+namespace ext {
+
+// Returns mul * x - sub
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> mul_subtract(const vec_arm8<float, N> mul,
+                                            const vec_arm8<float, N> x,
+                                            const vec_arm8<float, N> sub) {
+  return neg(nmul_add(mul, x, sub));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> mul_subtract(const vec_arm8<double, N> mul,
+                                             const vec_arm8<double, N> x,
+                                             const vec_arm8<double, N> sub) {
+  return neg(nmul_add(mul, x, sub));
+}
+
+// Returns -mul * x - sub
+template <size_t N>
+SIMD_INLINE vec_arm8<float, N> nmul_subtract(const vec_arm8<float, N> mul,
+                                             const vec_arm8<float, N> x,
+                                             const vec_arm8<float, N> sub) {
+  return neg(mul_add(mul, x, sub));
+}
+template <size_t N>
+SIMD_INLINE vec_arm8<double, N> nmul_subtract(const vec_arm8<double, N> mul,
+                                              const vec_arm8<double, N> x,
+                                              const vec_arm8<double, N> sub) {
+  return neg(mul_add(mul, x, sub));
+}
+
+}  // namespace ext
 
 // ------------------------------ Floating-point square root
 
@@ -1095,7 +1130,8 @@ SIMD_INLINE vec_arm8<double, N> sqrt(const vec_arm8<double, N> v) {
 
 // Approximate reciprocal square root
 template <size_t N>
-SIMD_INLINE vec_arm8<float, N> rsqrt_approx(const vec_arm8<float, N> v) {
+SIMD_INLINE vec_arm8<float, N> approximate_reciprocal_sqrt(
+    const vec_arm8<float, N> v) {
   return vec_arm8<float, N>(vrsqrteq_f32(v.raw));
 }
 
@@ -1103,31 +1139,31 @@ SIMD_INLINE vec_arm8<float, N> rsqrt_approx(const vec_arm8<float, N> v) {
 
 // Toward nearest integer
 template <size_t N>
-SIMD_INLINE vec_arm8<float, N> round_nearest(const vec_arm8<float, N> v) {
+SIMD_INLINE vec_arm8<float, N> round(const vec_arm8<float, N> v) {
   return vec_arm8<float, N>(vrndnq_f32(v.raw));
 }
 template <size_t N>
-SIMD_INLINE vec_arm8<double, N> round_nearest(const vec_arm8<double, N> v) {
+SIMD_INLINE vec_arm8<double, N> round(const vec_arm8<double, N> v) {
   return vec_arm8<double, N>(vrndnq_f64(v.raw));
 }
 
 // Toward +infinity, aka ceiling
 template <size_t N>
-SIMD_INLINE vec_arm8<float, N> round_pos_inf(const vec_arm8<float, N> v) {
+SIMD_INLINE vec_arm8<float, N> ceil(const vec_arm8<float, N> v) {
   return vec_arm8<float, N>(vrndpq_f32(v.raw));
 }
 template <size_t N>
-SIMD_INLINE vec_arm8<double, N> round_pos_inf(const vec_arm8<double, N> v) {
+SIMD_INLINE vec_arm8<double, N> ceil(const vec_arm8<double, N> v) {
   return vec_arm8<double, N>(vrndpq_f64(v.raw));
 }
 
 // Toward -infinity, aka floor
 template <size_t N>
-SIMD_INLINE vec_arm8<float, N> round_neg_inf(const vec_arm8<float, N> v) {
+SIMD_INLINE vec_arm8<float, N> floor(const vec_arm8<float, N> v) {
   return vec_arm8<float, N>(vrndmq_f32(v.raw));
 }
 template <size_t N>
-SIMD_INLINE vec_arm8<double, N> round_neg_inf(const vec_arm8<double, N> v) {
+SIMD_INLINE vec_arm8<double, N> floor(const vec_arm8<double, N> v) {
   return vec_arm8<double, N>(vrndmq_f64(v.raw));
 }
 
@@ -1513,13 +1549,13 @@ SIMD_INLINE vec_arm8<double, N> operator^(const vec_arm8<double, N> a,
 // Returns a mask for use by select().
 // blendv_ps/pd only check the sign bit, so this is a no-op on x86.
 template <size_t N>
-SIMD_INLINE vec_arm8<float, N> selector_from_sign(const vec_arm8<float, N> v) {
+SIMD_INLINE vec_arm8<float, N> condition_from_sign(const vec_arm8<float, N> v) {
   const Part<float, N> df;
   const Part<int32_t, N> di;
   return cast_to(df, shift_right<31>(cast_to(di, v)));
 }
 template <size_t N>
-SIMD_INLINE vec_arm8<double, N> selector_from_sign(
+SIMD_INLINE vec_arm8<double, N> condition_from_sign(
     const vec_arm8<double, N> v) {
   const Part<double, N> df;
   const Part<int64_t, N> di;
@@ -1940,27 +1976,32 @@ SIMD_INLINE vec_arm8<int64_t> convert_to(Full<int64_t, ARM8>,
 
 // ------------------------------ Demotions (full -> part w/ narrow lanes)
 
-SIMD_INLINE vec_arm8<uint16_t, 4> convert_to(Part<uint16_t, 4, ARM8>,
+template<size_t N>
+SIMD_INLINE vec_arm8<uint16_t, N> convert_to(Part<uint16_t, N, ARM8>,
                                              const vec_arm8<int32_t> v) {
-  return vec_arm8<uint16_t, 4>(vqmovun_s32(v.raw));
+  return vec_arm8<uint16_t, N>(vqmovun_s32(v.raw));
 }
-SIMD_INLINE vec_arm8<uint8_t, 8> convert_to(Part<uint8_t, 8, ARM8>,
+template<size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> convert_to(Part<uint8_t, N, ARM8>,
                                             const vec_arm8<uint16_t> v) {
-  return vec_arm8<uint8_t, 8>(vqmovn_u16(v.raw));
+  return vec_arm8<uint8_t, N>(vqmovn_u16(v.raw));
 }
 
-SIMD_INLINE vec_arm8<uint8_t, 8> convert_to(Part<uint8_t, 8, ARM8>,
+template<size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> convert_to(Part<uint8_t, N, ARM8>,
                                             const vec_arm8<int16_t> v) {
-  return vec_arm8<uint8_t, 8>(vqmovun_s16(v.raw));
+  return vec_arm8<uint8_t, N>(vqmovun_s16(v.raw));
 }
 
-SIMD_INLINE vec_arm8<int16_t, 4> convert_to(Part<int16_t, 4, ARM8>,
+template<size_t N>
+SIMD_INLINE vec_arm8<int16_t, N> convert_to(Part<int16_t, N, ARM8>,
                                             const vec_arm8<int32_t> v) {
-  return vec_arm8<int16_t, 4>(vqmovn_s32(v.raw));
+  return vec_arm8<int16_t, N>(vqmovn_s32(v.raw));
 }
-SIMD_INLINE vec_arm8<int8_t, 8> convert_to(Part<int8_t, 8, ARM8>,
+template<size_t N>
+SIMD_INLINE vec_arm8<int8_t, N> convert_to(Part<int8_t, N, ARM8>,
                                            const vec_arm8<int16_t> v) {
-  return vec_arm8<int8_t, 8>(vqmovn_s16(v.raw));
+  return vec_arm8<int8_t, N>(vqmovn_s16(v.raw));
 }
 
 // In the following convert_to functions, |b| is purposely undefined.
@@ -1969,20 +2010,22 @@ SIMD_INLINE vec_arm8<int8_t, 8> convert_to(Part<int8_t, 8, ARM8>,
 SIMD_DIAGNOSTICS(push)
 SIMD_DIAGNOSTICS_OFF(disable : 4701, ignored "-Wuninitialized")
 
-SIMD_INLINE vec_arm8<uint8_t, 4> convert_to(Part<uint8_t, 4, ARM8>,
+template<size_t N>
+SIMD_INLINE vec_arm8<uint8_t, N> convert_to(Part<uint8_t, N, ARM8>,
                                             const vec_arm8<int32_t> v) {
-  vec_arm8<uint16_t, 4> a = convert_to(Desc<uint16_t, 4, ARM8>(), v);
-  vec_arm8<uint16_t, 4> b;
+  vec_arm8<uint16_t, N> a = convert_to(Desc<uint16_t, N, ARM8>(), v);
+  vec_arm8<uint16_t, N> b;
   uint16x8_t c = vcombine_u16(a.raw, b.raw);
-  return vec_arm8<uint8_t, 4>(vqmovn_u16(c));
+  return vec_arm8<uint8_t, N>(vqmovn_u16(c));
 }
 
-SIMD_INLINE vec_arm8<int8_t, 4> convert_to(Part<int8_t, 4, ARM8>,
+template<size_t N>
+SIMD_INLINE vec_arm8<int8_t, N> convert_to(Part<int8_t, N, ARM8>,
                                            const vec_arm8<int32_t> v) {
-  vec_arm8<int16_t, 4> a = convert_to(Desc<int16_t, 4, ARM8>(), v);
-  vec_arm8<int16_t, 4> b;
+  vec_arm8<int16_t, N> a = convert_to(Desc<int16_t, N, ARM8>(), v);
+  vec_arm8<int16_t, N> b;
   uint16x8_t c = vcombine_s16(a.raw, b.raw);
-  return vec_arm8<int8_t, 4>(vqmovn_s16(c));
+  return vec_arm8<int8_t, N>(vqmovn_s16(c));
 }
 
 SIMD_DIAGNOSTICS(pop)
@@ -2046,8 +2089,8 @@ SIMD_INLINE vec_arm8<double, 1> other_half(const vec_arm8<double> v) {
 
 // Extracts 128 bits from <hi, lo> by skipping the least-significant kBytes.
 template <int kBytes, typename T>
-SIMD_INLINE vec_arm8<T> extract_concat_bytes(const vec_arm8<T> hi,
-                                             const vec_arm8<T> lo) {
+SIMD_INLINE vec_arm8<T> combine_shift_right_bytes(const vec_arm8<T> hi,
+                                                  const vec_arm8<T> lo) {
   static_assert(0 < kBytes && kBytes < 16, "kBytes must be in [1, 15]");
   const Full<uint8_t, ARM8> d8;
   return cast_to(Full<T, ARM8>(),
@@ -2059,14 +2102,14 @@ SIMD_INLINE vec_arm8<T> extract_concat_bytes(const vec_arm8<T> hi,
 
 // 0x01..0F, kBytes = 1 => 0x02..0F00
 template <int kBytes, typename T, size_t N>
-SIMD_INLINE vec_arm8<T, N> shift_bytes_left(const vec_arm8<T, N> v) {
-  return extract_concat_bytes<16 - kBytes>(v, setzero(Full<T, ARM8>()));
+SIMD_INLINE vec_arm8<T, N> shift_left_bytes(const vec_arm8<T, N> v) {
+  return combine_shift_right_bytes<16 - kBytes>(v, setzero(Full<T, ARM8>()));
 }
 
 // 0x01..0F, kBytes = 1 => 0x0001..0E
 template <int kBytes, typename T, size_t N>
-SIMD_INLINE vec_arm8<T, N> shift_bytes_right(const vec_arm8<T, N> v) {
-  return extract_concat_bytes<kBytes>(setzero(Full<T, ARM8>()), v);
+SIMD_INLINE vec_arm8<T, N> shift_right_bytes(const vec_arm8<T, N> v) {
+  return combine_shift_right_bytes<kBytes>(setzero(Full<T, ARM8>()), v);
 }
 
 // ------------------------------ Broadcast/splat any lane
@@ -2122,8 +2165,8 @@ SIMD_INLINE vec_arm8<double> broadcast(const vec_arm8<double> v) {
 // Returns vector of bytes[from[i]]. "from" is also interpreted as bytes:
 // either valid indices in [0, 16) or >= 0x80 to zero the i-th output byte.
 template <typename T, typename TI>
-SIMD_INLINE vec_arm8<T> shuffle_bytes(const vec_arm8<T> bytes,
-                                      const vec_arm8<TI> from) {
+SIMD_INLINE vec_arm8<T> table_lookup_bytes(const vec_arm8<T> bytes,
+                                           const vec_arm8<TI> from) {
   const Full<uint8_t, ARM8> d8;
   return cast_to(Full<T, ARM8>(),
                  vec_arm8<uint8_t>(vqtbl1q_u8(cast_to(d8, bytes).raw,
@@ -2135,28 +2178,28 @@ SIMD_INLINE vec_arm8<T> shuffle_bytes(const vec_arm8<T> bytes,
 // Notation: let vec_arm8<int32_t> have lanes 3,2,1,0 (0 is least-significant).
 // shuffle_0321 rotates one lane to the right (the previous least-significant
 // lane is now most-significant). These could also be implemented via
-// extract_concat_bytes but the shuffle_abcd notation is more convenient.
+// combine_shift_right_bytes but the shuffle_abcd notation is more convenient.
 
 // Swap 64-bit halves
 template <typename T>
 SIMD_INLINE vec_arm8<T> shuffle_1032(const vec_arm8<T> v) {
-  return extract_concat_bytes<8>(v, v);
+  return combine_shift_right_bytes<8>(v, v);
 }
 template <typename T>
 SIMD_INLINE vec_arm8<T> shuffle_01(const vec_arm8<T> v) {
-  return extract_concat_bytes<8>(v, v);
+  return combine_shift_right_bytes<8>(v, v);
 }
 
 // Rotate right 32 bits
 template <typename T>
 SIMD_INLINE vec_arm8<T> shuffle_0321(const vec_arm8<T> v) {
-  return extract_concat_bytes<4>(v, v);
+  return combine_shift_right_bytes<4>(v, v);
 }
 
 // Rotate left 32 bits
 template <typename T>
 SIMD_INLINE vec_arm8<T> shuffle_2103(const vec_arm8<T> v) {
-  return extract_concat_bytes<12>(v, v);
+  return combine_shift_right_bytes<12>(v, v);
 }
 
 // Reverse
@@ -2165,7 +2208,38 @@ SIMD_INLINE vec_arm8<T> shuffle_0123(const vec_arm8<T> v) {
   // TODO(janwas): more efficient implementation?
   static constexpr uint8_t bytes[16] = {15, 14, 13, 12, 11, 10, 9, 8,
                                         7,  6,  5,  4,  3,  2,  1, 0};
-  return shuffle_bytes(v, load(Full<uint8_t, ARM8>(), bytes));
+  return table_lookup_bytes(v, load(Full<uint8_t, ARM8>(), bytes));
+}
+
+// ------------------------------ Permute (runtime variable)
+
+template <typename T>
+SIMD_INLINE permute_arm8<T> set_table_indices(const Full<T, ARM8> d,
+                                        const int32_t* idx) {
+  const Full<uint8_t, ARM8> d8;
+  SIMD_ALIGN uint8_t control[d8.N];
+  for (size_t idx_byte = 0; idx_byte < d8.N; ++idx_byte) {
+    const size_t idx_lane = idx_byte / sizeof(T);
+    const size_t mod = idx_byte % sizeof(T);
+    control[idx_byte] = idx[idx_lane] * sizeof(T) + mod;
+  }
+  return permute_arm8<T>{load(d8, control).raw};
+}
+
+SIMD_INLINE vec_arm8<uint32_t> table_lookup_lanes(const vec_arm8<uint32_t> v,
+                                             const permute_arm8<uint32_t> idx) {
+  return table_lookup_bytes(v, vec_arm8<uint8_t>(idx.raw));
+}
+SIMD_INLINE vec_arm8<int32_t> table_lookup_lanes(const vec_arm8<int32_t> v,
+                                            const permute_arm8<int32_t> idx) {
+  return table_lookup_bytes(v, vec_arm8<uint8_t>(idx.raw));
+}
+SIMD_INLINE vec_arm8<float> table_lookup_lanes(const vec_arm8<float> v,
+                                          const permute_arm8<float> idx) {
+  const Full<int32_t, ARM8> di;
+  const Full<float, ARM8> df;
+  return cast_to(
+      df, table_lookup_bytes(cast_to(di, v), vec_arm8<uint8_t>(idx.raw)));
 }
 
 // ------------------------------ Interleave lanes
@@ -2415,12 +2489,6 @@ SIMD_INLINE vec_arm8<T> broadcast_part(Full<T, ARM8>, const vec_arm8<T, N> v) {
 
 // ------------------------------ Blocks
 
-// Single block => already broadcasted/interleaved.
-template <typename T>
-SIMD_INLINE vec_arm8<T> broadcast_block(const vec_arm8<T> v) {
-  return vec_arm8<T>(v.raw);
-}
-
 // hiH,hiL loH,loL |-> hiL,loL (= lower halves)
 template <typename T>
 SIMD_INLINE vec_arm8<T> concat_lo_lo(const vec_arm8<T> hi,
@@ -2443,7 +2511,7 @@ SIMD_INLINE vec_arm8<T> concat_hi_hi(const vec_arm8<T> hi,
 template <typename T>
 SIMD_INLINE vec_arm8<T> concat_lo_hi(const vec_arm8<T> hi,
                                      const vec_arm8<T> lo) {
-  return extract_concat_bytes<8>(hi, lo);
+  return combine_shift_right_bytes<8>(hi, lo);
 }
 
 // hiH,hiL loH,loL |-> hiH,loL (= outer halves)
@@ -2556,22 +2624,22 @@ SIMD_INLINE vec_arm8<uint64_t> sums_of_u8x8(
 }
 
 // Supported for 32b and 64b vector types. Returns the sum in each lane.
-SIMD_INLINE vec_arm8<uint32_t> horz_sum(const vec_arm8<uint32_t> v) {
+SIMD_INLINE vec_arm8<uint32_t> sum_of_lanes(const vec_arm8<uint32_t> v) {
   return vec_arm8<uint32_t>(vdupq_n_u32(vaddvq_u32(v.raw)));
 }
-SIMD_INLINE vec_arm8<int32_t> horz_sum(const vec_arm8<int32_t> v) {
+SIMD_INLINE vec_arm8<int32_t> sum_of_lanes(const vec_arm8<int32_t> v) {
   return vec_arm8<int32_t>(vdupq_n_s32(vaddvq_s32(v.raw)));
 }
-SIMD_INLINE vec_arm8<float> horz_sum(const vec_arm8<float> v) {
+SIMD_INLINE vec_arm8<float> sum_of_lanes(const vec_arm8<float> v) {
   return vec_arm8<float>(vdupq_n_f32(vaddvq_f32(v.raw)));
 }
-SIMD_INLINE vec_arm8<uint64_t> horz_sum(const vec_arm8<uint64_t> v) {
+SIMD_INLINE vec_arm8<uint64_t> sum_of_lanes(const vec_arm8<uint64_t> v) {
   return vec_arm8<uint64_t>(vdupq_n_u64(vaddvq_u64(v.raw)));
 }
-SIMD_INLINE vec_arm8<int64_t> horz_sum(const vec_arm8<int64_t> v) {
+SIMD_INLINE vec_arm8<int64_t> sum_of_lanes(const vec_arm8<int64_t> v) {
   return vec_arm8<int64_t>(vdupq_n_s64(vaddvq_s64(v.raw)));
 }
-SIMD_INLINE vec_arm8<double> horz_sum(const vec_arm8<double> v) {
+SIMD_INLINE vec_arm8<double> sum_of_lanes(const vec_arm8<double> v) {
   return vec_arm8<double>(vdupq_n_f64(vaddvq_f64(v.raw)));
 }
 

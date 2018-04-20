@@ -55,13 +55,13 @@ using VIx2 = Part<int16_t, 2>::V;
 // Not the same as avg, which rounds rather than truncates!
 template <class V>
 PIK_INLINE V Average(const V v0, const V v1) {
-  return shift_right<1>(add_sat(v0, v1));
+  return shift_right<1>(saturated_add(v0, v1));
 }
 
 // Clamps gradient to the min/max of n, w, l.
 template <class V>
 PIK_INLINE V ClampedGradient(const V n, const V w, const V l) {
-  const V grad = sub_sat(add_sat(n, w), l);
+  const V grad = saturated_subtract(saturated_add(n, w), l);
   const V vmin = min(n, min(w, l));
   const V vmax = max(n, max(w, l));
   return min(max(vmin, grad), vmax);
@@ -69,7 +69,7 @@ PIK_INLINE V ClampedGradient(const V n, const V w, const V l) {
 
 template <class V>
 PIK_INLINE V AbsResidual(const V c, const V pred) {
-  return abs(sub_sat(c, pred));
+  return abs(saturated_subtract(c, pred));
 }
 
 #if SIMD_TARGET_VALUE == SIMD_NONE
@@ -109,7 +109,7 @@ PIK_INLINE u8x16 ShuffleForMinCost(const VIx8 abs_costs) {
   // higher cost than any other value.
   using DU = Part<uint16_t, kNumPredictors>;
   const auto idx_min = ext::minpos(cast_to(DU(), abs_costs));
-  const auto idx_idx = shuffle_bytes(idx_min, bytes_from_idx);
+  const auto idx_idx = table_lookup_bytes(idx_min, bytes_from_idx);
   const auto byte_idx = idx_idx + idx_idx;  // shift left by 1 => byte index
   return cast_to(d8, byte_idx) + high_byte;
 }
@@ -205,7 +205,8 @@ class PixelNeighborsY {
 #if SIMD_TARGET_VALUE == SIMD_NONE
     return pred_c.lanes[IndexOfMinCost(costs)];
 #else
-    return any_part(PixelD(), shuffle_bytes(pred_c, ShuffleForMinCost(costs)));
+    return any_part(PixelD(),
+                    table_lookup_bytes(pred_c, ShuffleForMinCost(costs)));
 #endif
   }
 
@@ -233,14 +234,14 @@ class PixelNeighborsY {
     // "x" are invalid/don't care lanes.
     const auto vRN = interleave_lo(n, r);
     const auto v6 = ClampedGradient(n, w, l);
-    const auto vLLRN = extract_concat_bytes<12>(l, vRN);
+    const auto vLLRN = combine_shift_right_bytes<12>(l, vRN);
     const auto vNWNWNWNW = interleave_lo(w, n);
     const auto vWxxxLLRN = concat_hi_lo(w, vLLRN);
     const auto vAxxx4321 = Average(vNWNWNWNW, vWxxxLLRN);
     const auto vx765xxxx = interleave_lo(vNWNWNWNW, v6);
     const auto vx7654321 = concat_hi_lo(vx765xxxx, vAxxx4321);
     const auto v0xxxxxxx = Average(vAxxx4321, r);
-    *pred = extract_concat_bytes<14>(vx7654321, v0xxxxxxx);
+    *pred = combine_shift_right_bytes<14>(vx7654321, v0xxxxxxx);
 #endif
   }
 
@@ -336,8 +337,8 @@ class PixelNeighborsUV {
     return ret;
 #else
     const auto shuffle = ShuffleForMinCost(costs);
-    const auto best_u = shuffle_bytes(u, shuffle);
-    const auto best_v = shuffle_bytes(v, shuffle);
+    const auto best_u = table_lookup_bytes(u, shuffle);
+    const auto best_v = table_lookup_bytes(v, shuffle);
     return any_part(PixelD(), interleave_lo(best_v, best_u));
 #endif
   }
@@ -382,14 +383,14 @@ class PixelNeighborsUV {
     const auto v0 = ClampedGradient(n, w, l);
     const auto vRN = interleave_lo(n, r);
     const auto vW0 = interleave_lo(v0, w);
-    const auto vLNN = extract_concat_bytes<12>(l, n);
+    const auto vLNN = combine_shift_right_bytes<12>(l, n);
     const auto vWRWR = interleave_lo(r, w);
-    const auto vLNNW = extract_concat_bytes<14>(vLNN, w);
+    const auto vLNNW = combine_shift_right_bytes<14>(vLNN, w);
     const auto vRWN0 = interleave_lo(vW0, vRN);
     const auto v531A = Average(vLNNW, vWRWR);
     const auto v6543210x = interleave_lo(v531A, vRWN0);
     const auto v7 = Average(v531A, n);
-    *pred = extract_concat_bytes<2>(v7, v6543210x);
+    *pred = combine_shift_right_bytes<2>(v7, v6543210x);
 #endif
   }
 

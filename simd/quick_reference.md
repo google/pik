@@ -73,13 +73,13 @@ prefixes `V`: `u8/16` or `uif` for unsigned/signed/floating-point types.
 *   `V operator+(V a, V b)`: returns `a[i] + b[i]` (mod 2^bits).
 *   `V operator-(V a, V b)`: returns `a[i] - b[i]` (mod 2^bits).
 *   `V`: `ui8/16` \
-    `V add_sat(V a, V b)` returns `a[i] + b[i]` saturated to the minimum/maximum
-    representable value.
+    `V saturated_add(V a, V b)` returns `a[i] + b[i]` saturated to the
+    minimum/maximum representable value.
 *   `V`: `ui8/16` \
-    `V sub_sat(V a, V b)` returns `a[i] - b[i]` saturated to the minimum/maximum
-    representable value.
+    `V saturated_subtract(V a, V b)` returns `a[i] - b[i]` saturated to the
+    minimum/maximum representable value.
 *   `V`: `u8/16` \
-    `V avg(V a, V b)` returns `(a[i] + b[i] + 1) / 2`.
+    `V average_round(V a, V b)` returns `(a[i] + b[i] + 1) / 2`.
 *   `V`: `i8/16/32` \
     `V abs(V a)` returns the absolute value of `a[i]`; `LimitsMin()` maps to
     `LimitsMax() + 1`.
@@ -97,22 +97,22 @@ prefixes `V`: `u8/16` or `uif` for unsigned/signed/floating-point types.
     fastest shift variant on x86. Inserts zero or sign bit(s) depending on `V`.
 
 *   `V`: `ui16/32/64` \
-    `V shift_left_same(V a, Count bits)` returns `a[i] << bits`, which is
-    obtained via `set_shift_left_count(D, int)`.
+    `V shift_left_same(V a, Count bits)` returns `a[i] << bits`, where `bits` is
+    returned from `set_shift_left_count(D, int)`.
 
 *   `V`: `u16/32/64`, `i16/32` \
-    `V shift_right_same(V a, Count bits)` returns `a[i] >> bits`, which is
-    obtained via `set_shift_right_count(D, int)`. Inserts zero or sign bit(s).
+    `V shift_right_same(V a, Count bits)` returns `a[i] >> bits`, where `bits`
+    is returned from `set_shift_right_count(D, int)`. Inserts 0 or sign bit(s).
 
 *   `V`: `ui32/64` \
-    `V shift_left_var(V a, V b)` returns `a[i] << b[i]`, or zero where `b[i] >=
-    sizeof(T)*8`. Not supported by SSE4, but more efficient than the
-    `shift_*_same` functions on AVX2+.
+    `V operator<<(V a, V b)` returns `a[i] << b[i]`, which is zero when the
+    shift count `b[i] >= sizeof(T)*8`. Not supported by SSE4, but more efficient
+    than the `shift_*_same` functions on AVX2+.
 
 *   `V`: `u32/64`, `i32` \
-    `V shift_right_var(V a, V b)` returns `a[i] >> b[i]`, or zero where `b[i] >=
-    sizeof(T)*8`. Not supported by SSE4, but more efficient than the
-    `shift_*_same` functions on AVX2+. Inserts zero or sign bit(s).
+    `V operator>>(V a, V b)` returns `a[i] >> b[i]`, which is zero when the
+    shift count `b[i] >= sizeof(T)*8`. Not supported by SSE4, but more efficient
+    than the `shift_*_same` functions on AVX2+. Inserts zero or sign bit(s).
 
 *   `V`: `ui8/16/32`, `f` \
     `V min(V a, V b)`: returns `min(a[i], b[i])`.
@@ -134,46 +134,51 @@ prefixes `V`: `u8/16` or `uif` for unsigned/signed/floating-point types.
     `V operator/(V a, V b)`: returns `a[i] / b[i]` in each lane.
 
 *   `V`: `i16` \
-    `V ext::mulhi(V a, V b)`: returns the upper half of `a[i] * b[i]` in each
+    `V ext::mul_high(V a, V b)`: returns the upper half of `a[i] * b[i]` in each
     lane.
 
 *   `V`: `i16` \
-    `V ext::mulhrs(V a, V b)`: returns `(((a[i] * b[i]) >> 14) + 1) >> 1`.
+    `V mul_high_round(V a, V b)`: returns `(((a[i] * b[i]) >> 14) + 1) >> 1`.
 
 *   `V`: `ui32` \
     `V mul_even(V a, V b)`: returns double-wide result of `a[i] * b[i]` for
     every even `i`, in lanes `i` (lower) and `i + 1` (upper).
 
-*   `V`: `f32` \
-    `V rcp_approx(V a)`: returns an approximation of `1.0 / a[i]`.
-
 *   `V`: `f` \
     `V mul_add(V a, V b, V c)`: returns `a[i] * b[i] + c[i]`.
 
 *   `V`: `f` \
-    `V mul_sub(V a, V b, V c)`: returns `a[i] * b[i] - c[i]`.
+    `V nmul_add(V a, V b, V c)`: returns `-a[i] * b[i] + c[i]`.
 
 *   `V`: `f` \
-    `V nmul_add(V a, V b, V c)`: returns `c[i] - a[i] * b[i]`.
+    `V ext::mul_subtract(V a, V b, V c)`: returns `a[i] * b[i] - c[i]`.
+
+*   `V`: `f` \
+    `V ext::nmul_subtract(V a, V b, V c)`: returns `-a[i] * b[i] - c[i]`.
 
 *   `V`: `f` \
     `V sqrt(V a)`: returns `sqrt(a[i])`.
 
 *   `V`: `f32` \
-    `V rsqrt_approx(V a)`: returns an approximation of `1.0 / sqrt(a[i])`. Note
-    that `sqrt(a) ~= rsqrt_approx(a) * a`. x86 and PPC provide 12-bit
-    approximations but the error on ARM may be closer to 1%.
+    `V approximate_reciprocal_sqrt(V a)`: returns an approximation of `1.0 /
+    sqrt(a[i])`. `sqrt(a) ~= approximate_reciprocal_sqrt(a) * a`. x86 and PPC
+    provide 12-bit approximations but the error on ARM may be closer to 1%.
+
+*   `V`: `f32` \
+    `V approximate_reciprocal(V a)`: returns an approximation of `1.0 / a[i]`.
 
 *   `V`: `f` \
-    `V round_nearest(V a)`: returns `a[i]` rounded towards the nearest int.
+    `V round(V a)`: returns `a[i]` rounded towards the nearest integer, with
+    ties to even.
 
 *   `V`: `f` \
-    `V round_pos_inf(V a)`: returns `a[i]` rounded towards positive infinity,
-    aka `ceil`.
+    `V trunc(V a)`: returns `a[i]` rounded towards zero (truncate).
 
 *   `V`: `f` \
-    `V round_neg_inf(V a)`: returns `a[i]` rounded towards negative infinity,
-    aka `floor`.
+    `V ceil(V a)`: returns `a[i]` rounded towards positive infinity (ceiling).
+
+*   `V`: `f` \
+    `V floor(V a)`: returns `a[i]` rounded towards negative infinity.
 
 ### Comparisons
 
@@ -198,11 +203,13 @@ These operate on individual bits, even for floating-point vector types.
 *   `V operator|(V a, V b)`: returns `a[i] | b[i]`.
 *   `V operator^(V a, V b)`: returns `a[i] ^ b[i]`.
 *   `V`: `f` \
-    `V selector_from_sign(V v)`: returns `s` such that `select(a, b, s)` is
+    `V condition_from_sign(V v)`: returns `s` such that `select(a, b, s)` is
     equivalent to `v.sign_bit ? b : a`. This is a no-op on x86.
 *   `V select(V a, V b, V mask)`: returns `mask[i] ? b[i] : a[i]`. **Note**:
     each `mask[i]` must be all zero or all 1-bits, or returned from
-    `selector_from_sign`.
+    `condition_from_sign`.
+*   `V odd_even(V a, V b)`: returns a vector whose odd lanes are taken from `a`
+    and the even lanes from `b`.
 
 ### Memory
 
@@ -215,13 +222,20 @@ either naturally-aligned (`aligned`) or possibly unaligned (`p`).
 *   `D::V load_unaligned(D, const D::T* p)`: returns `p[i]`.
 *   `D::V load_dup128(D, const D::T* p)`: returns one 128-bit block loaded from
     `p` and broadcasted into all 128-bit block\[s\]. This enables a `convert_to`
-    overload that avoids a 3-cycle overhead on AVX2/AVX-512.
+    overload that avoids a 3-cycle overhead on AVX2/AVX-512. This is faster than
+    broadcasting single values and useful for specifying constants without
+    having to know the (maximum) vector length.
 *   `void store(D::V a, D, D::T* aligned)`: copies `a[i]` into `aligned[i]`.
 *   `void store_unaligned(D::V a, D, D::T* p)`: copies `a[i]` into `p[i]`.
 *   `void stream(D::V a, D, const D::T* aligned)`: copies `a[i]` into
     `aligned[i]` with non-temporal hint on x86 (for good performance, call for
     all consecutive vectors within the same cache line).
-
+*   `V`,`VI`: (`uif32,i32`), (`uif64,i64`) \
+    `D::V gather_offset(D, const D::T* base, VI offsets)`. Returns elements of
+    base selected by signed/possibly repeated *byte* `offsets[i]`.
+*   `V`,`VI`: (`uif32,i32`), (`uif64,i64`) \
+    `D::V gather_index(D, const D::T* base, VI indices)`. Returns vector of
+    `base[indices[i]]`. Indices are signed and need not be unique.
 *   `T`: `u32/64` \
     `void stream(T, T* aligned)`: copies `T` into `*aligned` with non-temporal
     hint on x86.
@@ -245,9 +259,14 @@ either naturally-aligned (`aligned`) or possibly unaligned (`p`).
     (`i16,i32`) \
     `D::V convert_to(D, V part)`: returns `part[i]` zero- or sign-extended to
     the wider `D::T` type.
+
 *   `V`,`D`: (`u8,u32`) \
     `D::V u32_from_u8(V)`: special-case `u8` to `u32` conversion when all blocks
-    of `V` are identical, e.g. via `broadcast_block` or `load_dup128`.
+    of `V` are identical, e.g. from `load_dup128`.
+
+*   `V`,`D`: (`u32,u8`) \
+    `D::V u8_from_u32(V)`: special-case `u32` to `u8` conversion when all lanes
+    of `V` are already clamped to `[0, 256)`.
 
 *   `V`,`D`: (`i16,i8`), (`i32,i8`), (`i32,i16`), (`i16,u8`), (`i32,u8`),
     (`i32,u16`) \
@@ -277,6 +296,12 @@ depending on platform.
     **Note**: returns either the least- or most-significant bits depending on
     platform; use `broadcast_part` to obtain a full vector.
 
+*   `V2 get_half(Upper/Lower, V)`: returns upper or lower half of the full
+    vector `V`. `SIMD_HALF` evaluates to an instance of Upper or Lower
+    (whichever is more efficient) that can be passed as the first argument. When
+    a specific half is needed, `V2 upper_half(V)` and `V2 lower_half(V)` are
+    more convenient alternatives.
+
 *   `D::V broadcast_part<int i>(D, V)`: returns a full vector with the `i`-th
     element broadcasted. The interpretation of `i < N` is platform-dependent.
     For `V` from `load(Part<T, N>(), p)`, `i` is the index into `p[]`; for `V`
@@ -284,7 +309,7 @@ depending on platform.
 
 *   `D::N == 1` \
     `D::T get_part(D, V)`: returns the single value stored within `V`. This is
-    also useful for extracting `horz_sum` results.
+    also useful for extracting `sum_of_lanes` results.
 
 ### Swizzle
 
@@ -306,27 +331,36 @@ their operands into independently processed 128-bit *blocks*.
     operation with `scalar`).
 
 **Note**: the following are only available for full vectors (`N > 1, Target !=
-NONE`):
+NONE`), and split their operands into independently processed 128-bit *blocks*:
 
 *   `Ret`: half-sized vector part \
     `Ret other_half(V v)`: returns the other half-sized vector part, i.e. the
     part not returned by `any_part(Desc<T, N / 2>, V)`.
 
 *   `V`: `ui` \
-    `V shift_bytes_left<int>(V)`: returns the result of shifting independent
+    `V shift_left_bytes<int>(V)`: returns the result of shifting independent
     *blocks* left by `int` bytes \[1, 15\].
 
 *   `V`: `ui` \
-    `V shift_bytes_right<int>(V)`: returns the result of shifting independent
+    `V shift_left_lanes<int>(V)`: returns the result of shifting independent
+    *blocks* left by `int` lanes \[1, 15\].
+
+*   `V`: `ui` \
+    `V shift_right_bytes<int>(V)`: returns the result of shifting independent
     *blocks* right by `int` bytes \[1, 15\].
 
 *   `V`: `ui` \
-    `V extract_concat_bytes<int>(V hi, V lo)`: returns the result of shifting
-    two concatenated *blocks* `hi[i] || lo[i]` right by `int` bytes \[1, 15\].
+    `V shift_right_lanes<int>(V)`: returns the result of shifting independent
+    *blocks* right by `int` lanes \[1, 15\].
+
+*   `V`: `ui` \
+    `V combine_shift_right_bytes<int>(V hi, V lo)`: returns the result of
+    shifting two concatenated *blocks* `hi[i] || lo[i]` right by `int` bytes
+    \[1, 15\].
 
 *   `V`: `ui`; `VI`: `ui` \
-    `V shuffle_bytes(V bytes, VI from)`: returns *blocks* with `bytes[from[i]]`,
-    or zero if `from[i] >= 0x80`.
+    `V table_lookup_bytes(V bytes, VI from)`: returns *blocks* with
+    `bytes[from[i]]`, or zero if `from[i] >= 0x80`.
 
 *   `V`: `uif32` \
     `V shuffle_1032(V)`: returns *blocks* with 64-bit halves swapped.
@@ -354,8 +388,6 @@ NONE`):
 **Note**: the following operations cross block boundaries, which is typically
 more expensive on AVX2/AVX-512 than within-block operations.
 
-*   `D::V broadcast_block(V)`: broadcasts the lower 128 bits into all 128-bit
-    blocks. If possible, use `load_dup128` instead (faster).
 *   `V concat_lo_lo(V hi, V lo)`: returns the concatenation of the lower halves
     of `hi` and `lo` without splitting into blocks.
 *   `V concat_hi_hi(V hi, V lo)`: returns the concatenation of the upper halves
@@ -364,12 +396,19 @@ more expensive on AVX2/AVX-512 than within-block operations.
     `hi` and `lo` without splitting into blocks. Useful for swapping the two
     blocks in 256-bit vectors.
 *   `V concat_hi_lo(V hi, V lo)`: returns the outer quarters of the
-    concatenation of `hi` and `lo` without splitting into blocks. This does not
-    incur a block-crossing penalty on AVX2.
-*   `V odd_even(V a, V b)`: returns a vector whose odd lanes are taken from `a`
-    and the even lanes from `b`.
+    concatenation of `hi` and `lo` without splitting into blocks. Unlike the
+    other variants, this does not incur a block-crossing penalty on AVX2.
+
+*   `V`: `uif32` \
+    `V table_lookup_lanes(V a, VI)` returns a vector of `a[indices[i]]`,
+    where `VI` is returned from `set_lane_indices(D, &indices[0])`.
+
+*   `VI set_lane_indices(D, int* idx)` prepares for `table_lookup_lanes`
+    with lane indices `idx = [0, d.N)` (need not be unique).
 
 ### Misc
+
+*   `void pause()`: call during spin loops to reduce power consumption.
 
 **Note**: the following are only available for full vectors (`N > 1, Target !=
 NONE`):
@@ -385,8 +424,8 @@ NONE`):
     64-bit lane.
 
 *   `V`: `uif32/64` \
-    `V ext::horz_sum(V v)`: returns the sum of all lanes in each lane; to obtain
-    the result, use `get(D, horz_sum_result)`.
+    `V ext::sum_of_lanes(V v)`: returns the sum of all lanes in each lane; to
+    obtain the result, use `get(D, horz_sum_result)`.
 
 *   `V`: `u8x16` \
     `V aes_round(V state, V key)`: returns one-round AES permutation of `state`.

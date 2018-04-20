@@ -21,73 +21,79 @@
 #include <vector>
 
 #include "compiler_specific.h"
+#include "data_parallel.h"
 #include "image.h"
 #include "opsin_params.h"
-#include "simd/simd.h"
+#include "simd_helpers.h"
 
 namespace pik {
 
-// V is scalar<float> or vec<float>.
-
-template <class D, class V>
-PIK_INLINE V XyToR(D d, const V x, const V y) {
-  return set1(d, kInvScaleR) * (y + x);
-}
-
-template <class D, class V>
-PIK_INLINE V XyToG(D d, const V x, const V y) {
-  return set1(d, kInvScaleG) * (y - x);
-}
-
-template <class V>
-PIK_INLINE V SimpleGammaInverse(const V v) {
-  return v * v * v;
-}
-
-template <class D, class V>
-PIK_INLINE V MixedToRed(D d, const V r, const V g, const V b) {
-  return (set1(d, kOpsinAbsorbanceInverseMatrix[0]) * r +
-          set1(d, kOpsinAbsorbanceInverseMatrix[1]) * g +
-          set1(d, kOpsinAbsorbanceInverseMatrix[2]) * b);
-}
-
-template <class D, class V>
-PIK_INLINE V MixedToGreen(D d, const V r, const V g, const V b) {
-  return (set1(d, kOpsinAbsorbanceInverseMatrix[3]) * r +
-          set1(d, kOpsinAbsorbanceInverseMatrix[4]) * g +
-          set1(d, kOpsinAbsorbanceInverseMatrix[5]) * b);
-}
-
-template <class D, class V>
-PIK_INLINE V MixedToBlue(D d, const V r, const V g, const V b) {
-  return (set1(d, kOpsinAbsorbanceInverseMatrix[6]) * r +
-          set1(d, kOpsinAbsorbanceInverseMatrix[7]) * g +
-          set1(d, kOpsinAbsorbanceInverseMatrix[8]) * b);
-}
-
-template <class D, class V>
-PIK_INLINE V Clamp0To255(D d, const V x) {
-  return clamp(x, setzero(d), set1(d, 255.0f));
-}
-
 // Inverts the pixel-wise RGB->XYB conversion in OpsinDynamicsImage() (including
-// the gamma mixing and simple gamma) and clamps the resulting pixel values
-// between 0.0 and 255.0.
+// the gamma mixing and simple gamma), without clamping. "inverse_matrix" points
+// to 9 broadcasted vectors, which are the 3x3 entries of the (row-major)
+// opsin absorbance matrix inverse. Pre-multiplying its entries by c is
+// equivalent to multiplying linear_* by c afterwards.
 template <class D, class V>
-PIK_INLINE void XybToRgb(D d, const V x, const V y, const V b,
-                         V* const PIK_RESTRICT red, V* const PIK_RESTRICT green,
-                         V* const PIK_RESTRICT blue) {
-  const auto r_mix = SimpleGammaInverse(XyToR(d, x, y));
-  const auto g_mix = SimpleGammaInverse(XyToG(d, x, y));
-  const auto b_mix = SimpleGammaInverse(b);
-  *red = Clamp0To255(d, MixedToRed(d, r_mix, g_mix, b_mix));
-  *green = Clamp0To255(d, MixedToGreen(d, r_mix, g_mix, b_mix));
-  *blue = Clamp0To255(d, MixedToBlue(d, r_mix, g_mix, b_mix));
+PIK_INLINE void XybToRgbWithoutClamp(D d, const V opsin_x, const V opsin_y,
+                                     const V opsin_b,
+                                     const V* PIK_RESTRICT inverse_matrix,
+                                     V* const PIK_RESTRICT linear_r,
+                                     V* const PIK_RESTRICT linear_g,
+                                     V* const PIK_RESTRICT linear_b) {
+  using namespace SIMD_NAMESPACE;
+  const auto neg_bias_rgb = load_dup128(d, kNegOpsinAbsorbanceBiasRGB);
+  SIMD_ALIGN const float inv_scale_lanes[4] = {kInvScaleR, kInvScaleG};
+  const auto inv_scale = load_dup128(d, inv_scale_lanes);
+
+  // Color space: XYB -> RGB
+  const auto gamma_r = broadcast<0>(inv_scale) * (opsin_y + opsin_x);
+  const auto gamma_g = broadcast<1>(inv_scale) * (opsin_y - opsin_x);
+  const auto gamma_b = opsin_b;
+
+  // Undo gamma compression: linear = gamma^3 for efficiency.
+  const auto gamma_r2 = gamma_r * gamma_r;
+  const auto gamma_g2 = gamma_g * gamma_g;
+  const auto bias_r = broadcast<0>(neg_bias_rgb);
+  const auto gamma_b2 = gamma_b * gamma_b;
+  const auto bias_g = broadcast<1>(neg_bias_rgb);
+  const auto mixed_r = mul_add(gamma_r2, gamma_r, bias_r);
+  const auto bias_b = broadcast<2>(neg_bias_rgb);
+  const auto mixed_g = mul_add(gamma_g2, gamma_g, bias_g);
+  const auto mixed_b = mul_add(gamma_b2, gamma_b, bias_b);
+
+  // Unmix (multiply by 3x3 inverse_matrix)
+  *linear_r = inverse_matrix[0] * mixed_r;
+  *linear_g = inverse_matrix[3] * mixed_r;
+  *linear_b = inverse_matrix[6] * mixed_r;
+  const auto tmp_r = inverse_matrix[1] * mixed_g;
+  const auto tmp_g = inverse_matrix[4] * mixed_g;
+  const auto tmp_b = inverse_matrix[7] * mixed_g;
+  *linear_r = mul_add(inverse_matrix[2], mixed_b, *linear_r);
+  *linear_g = mul_add(inverse_matrix[5], mixed_b, *linear_g);
+  *linear_b = mul_add(inverse_matrix[8], mixed_b, *linear_b);
+  *linear_r += tmp_r;
+  *linear_g += tmp_g;
+  *linear_b += tmp_b;
 }
 
-void CenteredOpsinToSrgb(const Image3F& opsin, Image3B* srgb);
-void CenteredOpsinToSrgb(const Image3F& opsin, Image3U* srgb);
-void CenteredOpsinToSrgb(const Image3F& opsin, Image3F* srgb);
+// Also clamps the resulting pixel values to [0.0, 255.0].
+template <class D, class V>
+PIK_INLINE void XybToRgb(D d, const V opsin_x, const V opsin_y, const V opsin_b,
+                         const V* PIK_RESTRICT inverse_matrix,
+                         V* const PIK_RESTRICT linear_r,
+                         V* const PIK_RESTRICT linear_g,
+                         V* const PIK_RESTRICT linear_b) {
+  XybToRgbWithoutClamp(d, opsin_x, opsin_y, opsin_b, inverse_matrix, linear_r,
+                       linear_g, linear_b);
+  *linear_r = Clamp0To255(d, *linear_r);
+  *linear_g = Clamp0To255(d, *linear_g);
+  *linear_b = Clamp0To255(d, *linear_b);
+}
+
+// Currently uses a single-node TileFlow. TODO(janwas): Add(builder).
+void CenteredOpsinToSrgb(const Image3F& opsin, ThreadPool* pool, Image3B* srgb);
+void CenteredOpsinToSrgb(const Image3F& opsin, ThreadPool* pool, Image3U* srgb);
+void CenteredOpsinToSrgb(const Image3F& opsin, ThreadPool* pool, Image3F* srgb);
 
 Image3B OpsinDynamicsInverse(const Image3F& opsin);
 Image3F LinearFromOpsin(const Image3F& opsin);

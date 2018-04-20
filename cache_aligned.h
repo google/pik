@@ -36,20 +36,22 @@ class CacheAligned {
   static constexpr size_t kPointerSize = sizeof(void*);
   static constexpr size_t kCacheLineSize = 64;
 
-  static void* Allocate(const size_t bytes) {
-    PIK_ASSERT(bytes < 1ULL << 63);
-    char* const allocated = static_cast<char*>(malloc(bytes + kCacheLineSize));
-    if (allocated == nullptr) {
-      return nullptr;
-    }
-    const uintptr_t misalignment =
-        reinterpret_cast<uintptr_t>(allocated) & (kCacheLineSize - 1);
-    // malloc is at least kPointerSize aligned, so we can store the "allocated"
-    // pointer immediately before the aligned memory.
-    PIK_ASSERT(misalignment % kPointerSize == 0);
-    char* const aligned = allocated + kCacheLineSize - misalignment;
-    memcpy(aligned - kPointerSize, &allocated, kPointerSize);
-    return aligned;
+  // "offset" is added to the allocation size and allocated pointer in an
+  // attempt to avoid 2K aliasing of consecutive allocations (e.g. Image).
+  static void* Allocate(const size_t payload_size, const size_t offset = 0) {
+    PIK_ASSERT(payload_size < (1ULL << 63));
+    // Layout: |<alignment>   Avoid2K|<allocated>  left_padding  | <payload>
+    // Sizes : |kCacheLineSize offset|kPointerSize kMaxVectorSize| payload_size
+    //         ^allocated............^stash...............payload^
+    const size_t header_size =
+        kCacheLineSize + offset + kPointerSize + kMaxVectorSize;
+    void* allocated = malloc(header_size + payload_size);
+    if (allocated == nullptr) return nullptr;
+    uintptr_t payload = reinterpret_cast<uintptr_t>(allocated) + header_size;
+    payload &= ~(kCacheLineSize - 1);  // round down
+    const uintptr_t stash = payload - kMaxVectorSize - kPointerSize;
+    memcpy(reinterpret_cast<void*>(stash), &allocated, kPointerSize);
+    return reinterpret_cast<void*>(payload);
   }
 
   // Template allows freeing pointer-to-const.
@@ -58,12 +60,11 @@ class CacheAligned {
     if (aligned_pointer == nullptr) {
       return;
     }
-    const char* const aligned = reinterpret_cast<const char*>(aligned_pointer);
-    PIK_ASSERT(reinterpret_cast<uintptr_t>(aligned) % kCacheLineSize == 0);
-    char* allocated;
-    memcpy(&allocated, aligned - kPointerSize, kPointerSize);
-    PIK_ASSERT(allocated <= aligned - kPointerSize);
-    PIK_ASSERT(allocated >= aligned - kCacheLineSize);
+    const uintptr_t payload = reinterpret_cast<uintptr_t>(aligned_pointer);
+    PIK_ASSERT(payload % kCacheLineSize == 0);
+    const uintptr_t stash = payload - kMaxVectorSize - kPointerSize;
+    void* allocated;
+    memcpy(&allocated, reinterpret_cast<const void*>(stash), kPointerSize);
     free(allocated);
   }
 
@@ -114,9 +115,10 @@ inline CacheAlignedUniquePtrT<T> Allocate(Args&&... args) {
 
 // Does not invoke constructors.
 template <typename T = uint8_t>
-inline CacheAlignedUniquePtrT<T> AllocateArray(const size_t entries) {
+inline CacheAlignedUniquePtrT<T> AllocateArray(const size_t entries,
+                                               const size_t offset = 0) {
   return CacheAlignedUniquePtrT<T>(
-      static_cast<T*>(CacheAligned::Allocate(entries * sizeof(T))),
+      static_cast<T*>(CacheAligned::Allocate(entries * sizeof(T), offset)),
       CacheAligned::Free);
 }
 

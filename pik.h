@@ -18,6 +18,7 @@
 #include <string>
 
 #include "image.h"
+#include "data_parallel.h"
 #include "pik_info.h"
 #include "status.h"
 #include "padded_bytes.h"
@@ -44,21 +45,22 @@ bool OpsinToPik(const CompressParams& params, const MetaImageF& opsin,
 
 // The output image is an 8-bit sRGB image.
 bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
-                 MetaImageB* image, PikInfo* aux_out);
+                 ThreadPool* pool, MetaImageB* image, PikInfo* aux_out);
 bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
-                 Image3B* image, PikInfo* aux_out);
+                 ThreadPool* pool, Image3B* image, PikInfo* aux_out);
 
 // The output image is a 16-bit sRGB image.
 bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
-                 MetaImageU* image, PikInfo* aux_out);
+                 ThreadPool* pool, MetaImageU* image, PikInfo* aux_out);
 bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
-                 Image3U* image, PikInfo* aux_out);
+                 ThreadPool* pool, Image3U* image, PikInfo* aux_out);
 
-// The output image is a linear (gamma expanded) sRGB image.
+// The output image is a floating-point sRGB image.
 bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
-                 MetaImageF* image, PikInfo* aux_out);
+                 ThreadPool* pool, MetaImageF* image, PikInfo* aux_out);
 bool PikToPixels(const DecompressParams& params, const PaddedBytes& compressed,
-                 Image3F* image, PikInfo* aux_out);
+                 ThreadPool* pool, Image3F* image, PikInfo* aux_out);
+
 }  // namespace pik
 
 #endif  // PIK_H_

@@ -37,7 +37,7 @@
 // and discard packets, thus temporarily adding some observer overhead.
 // Each zone occupies 16 bytes.
 #ifndef PROFILER_THREAD_STORAGE
-#define PROFILER_THREAD_STORAGE 200ULL
+#define PROFILER_THREAD_STORAGE 16ULL
 #endif
 
 #if PROFILER_ENABLED
@@ -79,10 +79,10 @@ namespace pik {
 
 // Upper bounds for various fixed-size data structures (guarded via PIK_ASSERT):
 
-// How many threads can actually enter a zone (those that don't do not count).
+// How many unique threads can enter a zone (those that don't do not count).
 // Memory use is about kMaxThreads * PROFILER_THREAD_STORAGE MiB.
-// WARNING: a fiber library can spawn hundreds of threads.
-static constexpr size_t kMaxThreads = 128;
+// WARNING: fiber libraries and multiple ThreadPool can spawn >100 threads.
+static constexpr size_t kMaxThreads = 1024;
 
 // Maximum nesting of zones.
 static constexpr size_t kMaxDepth = 64;
@@ -95,12 +95,12 @@ static constexpr size_t kMaxZones = 256;
 class Packet {
  public:
   // If offsets do not fit, UpdateOrAdd will overrun our heap allocation
-  // (governed by kMaxZones). We have seen multi-megabyte offsets.
-  static constexpr size_t kOffsetBits = 25;
+  // (governed by kMaxZones). We have seen ~100 MiB static binaries.
+  static constexpr size_t kOffsetBits = 27;
   static constexpr uint64_t kOffsetBias = 1ULL << (kOffsetBits - 1);
 
   // We need full-resolution timestamps; at an effective rate of 4 GHz,
-  // this permits 1 minute zone durations (for longer durations, split into
+  // this permits 34 second zone durations (for longer durations, split into
   // multiple zones). Wraparound is handled by masking.
   static constexpr size_t kTimestampBits = 64 - kOffsetBits;
   static constexpr uint64_t kTimestampMask = (1ULL << kTimestampBits) - 1;
@@ -139,7 +139,7 @@ inline const char* StringOrigin() {
 
 // Representation of an active zone, stored in a stack. Used to deduct
 // child duration from the parent's self time. POD.
-struct Node {
+struct ProfilerNode {
   Packet packet;
   uint64_t child_total;
 };
@@ -214,7 +214,7 @@ class Results {
       }
 
       PIK_ASSERT(depth_ != 0);
-      const Node& node = nodes_[depth_ - 1];
+      const ProfilerNode& node = nodes_[depth_ - 1];
       // Masking correctly handles unsigned wraparound.
       const uint64_t duration =
           (p.Timestamp() - node.packet.Timestamp()) & Packet::kTimestampMask;
@@ -261,16 +261,22 @@ class Results {
               });
 
     const char* string_origin = StringOrigin();
+    uint64_t total_visible_duration = 0;
     for (size_t i = 0; i < num_zones_; ++i) {
       const Accumulator& r = zones_[i];
       const uint64_t num_calls = r.NumCalls();
-      printf("%40s: %10zu x %15zu = %15zu\n", string_origin + r.BiasedOffset(),
-             num_calls, r.total_duration / num_calls, r.total_duration);
+      const char* name = string_origin + r.BiasedOffset();
+      if (name[0] != '@') {
+        total_visible_duration += r.total_duration;
+        printf("%-40s: %10zu x %15zu = %15zu\n", name, num_calls,
+               r.total_duration / num_calls, r.total_duration);
+      }
     }
 
     const uint64_t t1 = Stop<uint64_t>();
     analyze_elapsed_ += t1 - t0;
     printf("Total clocks during analysis: %zu\n", analyze_elapsed_);
+    printf("Total clocks measured: %zu\n", total_visible_duration);
   }
 
  private:
@@ -403,7 +409,7 @@ class Results {
   size_t depth_ = 0;      // Number of active zones.
   size_t num_zones_ = 0;  // Number of retired zones.
 
-  alignas(64) Node nodes_[kMaxDepth];         // Stack
+  alignas(64) ProfilerNode nodes_[kMaxDepth];  // Stack
   alignas(64) Accumulator zones_[kMaxZones];  // Self-organizing list
 };
 

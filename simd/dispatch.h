@@ -30,6 +30,9 @@ namespace dispatch {
 
 // Returns bit array of instruction sets supported by the current CPU,
 // e.g. SIMD_SSE4 | SIMD_AVX2.
+// WARNING: callers that wish to enumerate all targets via BestSupported should
+// take bitwise AND with the SIMD_ENABLE - it may differ from the SIMD_ENABLE
+// used to compile this function.
 int SupportedTargets();
 
 // Returns true if the Target's bit is set in "targets" (from SupportedTargets).
@@ -42,6 +45,16 @@ template <>
 constexpr bool IsSupported<NONE>(const int targets) {
   return true;
 }
+
+// Call via Run(); returns the best bit value (e.g. SIMD_SSE4) among all
+// supported bits. This allows callers to deduce which specialization was/will
+// be called.
+struct BestSupported {
+  template <class Target>
+  int operator()() {
+    return Target::value;
+  }
+};
 
 // Chooses "kTarget", the best instruction set in "supported", and returns
 // func.operator()<Target>(args). The dispatch overhead is low, about 4 cycles,

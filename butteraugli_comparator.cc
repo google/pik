@@ -55,6 +55,12 @@ std::vector<butteraugli::ImageF> OpsinToLinearRgb(
     const int xsize, const int ysize,
     const Image3F& opsin) {
   const Full<float> d;
+  using V = Full<float>::V;
+  V inverse_matrix[9];
+  for (size_t i = 0; i < 9; ++i) {
+    inverse_matrix[i] = set1(d, GetOpsinAbsorbanceInverseMatrix()[i]);
+  }
+
   PIK_ASSERT(xsize <= opsin.xsize());
   PIK_ASSERT(ysize <= opsin.ysize());
   std::vector<butteraugli::ImageF> planes =
@@ -67,8 +73,8 @@ std::vector<butteraugli::ImageF> OpsinToLinearRgb(
       const auto vx = load(d, row_in[0] + x);
       const auto vy = load(d, row_in[1] + x);
       const auto vb = load(d, row_in[2] + x);
-      Full<float>::V r, g, b;
-      XybToRgb(d, vx, vy, vb, &r, &g, &b);
+      V r, g, b;
+      XybToRgb(d, vx, vy, vb, inverse_matrix, &r, &g, &b);
       store(r, d, row_out[0] + x);
       store(g, d, row_out[1] + x);
       store(b, d, row_out[2] + x);

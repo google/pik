@@ -388,18 +388,16 @@ void EncodeTransformedAlpha(const AlphaImage& alpha, int bit_depth,
       EncodeSigned(r.border_r[i] - ref, &storage_ix, storage);
     }
   }
-  size_t jump_bits = ((storage_ix + 31) & ~31) - storage_ix;
-  WriteBits(jump_bits, 0, &storage_ix, storage);
-  PIK_ASSERT(storage_ix % 32 == 0);
-  out->resize(storage_ix >> 3);
+  out->resize((storage_ix >> 3) + 4);
 }
 
 bool DecodeTransformedAlpha(const std::vector<uint8_t>& data, int bit_depth,
                             size_t* bytes_read, AlphaImage* alpha) {
-  const size_t data_size_aligned = data.size() & ~3;
-  if (data_size_aligned == 0) {
+  // TODO(user): This now wastes 4 bytes for simplicity.
+  if (data.size() <= 4) {
     return PIK_FAILURE("Transformed alpha data is empty.");
   }
+  const size_t data_size_aligned = data.size() - 4;
   BitReader br(data.data(), data_size_aligned);
   const int w_bits = Log2FloorNonZero(alpha->xsize) + 1;
   const int h_bits = Log2FloorNonZero(alpha->ysize) + 1;

@@ -25,6 +25,7 @@
 #include "pik_info.h"
 #include "pik_params.h"
 #include "quantizer.h"
+#include "tile_flow.h"
 
 namespace pik {
 
@@ -46,12 +47,11 @@ struct ColorTransform {
 };
 
 struct QuantizedCoeffs {
-  Image3W dct;
+  Image3S dct;
 };
 
 void ComputePredictionResiduals(const Quantizer& quantizer,
-                                Image3F* coeffs,
-                                Image3F* predicted_coeffs);
+                                bool disable_hf_prediction, Image3F* coeffs);
 
 void ApplyColorTransform(const ColorTransform& ctan,
                          const float factor,
@@ -79,11 +79,16 @@ bool DecodeFromBitstream(const uint8_t* data, const size_t data_size,
                          QuantizedCoeffs* qcoeffs,
                          size_t* compressed_size);
 
-// Last optional argument receives (if non-null) the scaled DCT coefficients
-// before the final IDCT.
+enum {
+  kReconDisableHFPrediction = 1,
+};
+
 Image3F ReconOpsinImage(const QuantizedCoeffs& qcoeffs,
                         const Quantizer& quantizer, const ColorTransform& ctan,
-                        Image3F* transposed_scaled_dct = nullptr);
+                        int flags, ThreadPool* pool);
+
+Image3F ConvolveGaborish(const Image3F& in, ThreadPool* pool);
+Image3F ConvolveGaborishTF(const Image3F& in, ThreadPool* pool);
 
 }  // namespace pik
 

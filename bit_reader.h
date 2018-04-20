@@ -18,35 +18,54 @@
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>  // memcpy
 
 #include "compiler_specific.h"
 #include "status.h"
 
 namespace pik {
 
-// Adapter for reading individual bits from a fixed memory buffer, can read up
-// to 30 bits at a time. Reads 4 bytes of input at a time into its accumulator.
-// Performs bounds-checking, returns only 0 bit values after memory buffer
-// is depleted.
+// Adapter for reading individual bits from a fixed memory buffer, can Peek
+// up to 30 bits at a time. Reads 4 bytes (or len % 4 at the end) of input at a
+// time into its accumulator. Performs bounds-checking, returns all-zero values
+// after the memory buffer is depleted.
 class BitReader {
+ private:
  public:
+  // data is not necessarily 4-byte aligned nor padded to RoundUp(len, 4).
   BitReader(const uint8_t* const PIK_RESTRICT data, const size_t len)
       : data32_(reinterpret_cast<const uint32_t*>(data)),
         len32_(len >> 2),
-        val_(static_cast<uint64_t>(data32_[0]) << 32),
-        pos32_(1),
-        bit_pos_(32) {
-    PIK_ASSERT(len % 4 == 0);
+        len_mod4_(len % 4),
+        val_(0),
+        pos32_(0),
+        bit_pos_(64) {
+    FillBitBuffer();
   }
 
   void FillBitBuffer() {
     if (PIK_UNLIKELY(bit_pos_ >= 32)) {
+      bit_pos_ -= 32;
       val_ >>= 32;
-      if (pos32_ < len32_) {
-        val_ |= static_cast<uint64_t>(data32_[pos32_]) << 32;
+
+      if (PIK_LIKELY(pos32_ < len32_)) {
+        // Read unaligned (memcpy avoids ubsan warning)
+        uint32_t next;
+        memcpy(&next, data32_ + pos32_, sizeof(next));
+        val_ |= static_cast<uint64_t>(next) << 32;
+      } else if (pos32_ == len32_) {
+        // Only read the valid bytes.
+        const uint8_t* bytes =
+            reinterpret_cast<const uint8_t*>(data32_ + pos32_);
+        uint64_t next = 0;
+        for (size_t i = 0; i < len_mod4_; ++i) {
+          // Pre-shifted by 32 so we can inject into val_ directly.
+          // Assumes little-endian byte order.
+          next |= static_cast<uint64_t>(bytes[i]) << (i * 8 + 32);
+        }
+        val_ |= next;
       }
       ++pos32_;
-      bit_pos_ -= 32;
     }
   }
 
@@ -84,18 +103,17 @@ class BitReader {
     if (rem > 0) ReadBits(8 - rem);
   }
 
-  // Returns the byte position, aligned to 4 bytes, where the next chunk of
-  // data should be read from after all symbols have been decoded.
+  // Returns the (rounded up) number of bytes consumed so far.
   size_t Position() const {
     size_t bits_read = 32 * pos32_ + bit_pos_ - 64;
-    size_t bytes_read = (bits_read + 7) / 8;
-    return (bytes_read + 3) & ~3;
+    return (bits_read + 7) / 8;
   }
 
  private:
   // *32 counters/pointers are in units of 4 bytes, or 32 bits.
   const uint32_t* const PIK_RESTRICT data32_;
   const size_t len32_;
+  const size_t len_mod4_;
   uint64_t val_;
   size_t pos32_;
   size_t bit_pos_;

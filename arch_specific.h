@@ -73,7 +73,7 @@ double InvariantTicksPerSecond();
 #if PIK_ARCH_X64
 
 // This constant avoids image.h depending on simd.h.
-enum { kVectorSize = 32 };  // AVX-2
+static constexpr size_t kMaxVectorSize = 32;  // AVX2
 
 // Calls CPUID instruction with eax=level and ecx=count and returns the result
 // in abcd array where abcd = {eax, ebx, ecx, edx} (hence the name abcd).
@@ -84,6 +84,10 @@ void Cpuid(const uint32_t level, const uint32_t count,
 uint32_t ApicId();
 
 float X64_Reciprocal12(const float x);
+
+#else
+
+static constexpr size_t kMaxVectorSize = 16;
 
 #endif  // PIK_ARCH_X64
 

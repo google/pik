@@ -30,21 +30,34 @@ ImageF DiffPrecompute(const ImageF& xyb, float cutoff) {
   PIK_ASSERT(xyb.xsize() > 1);
   PIK_ASSERT(xyb.ysize() > 1);
   ImageF result(xyb.xsize(), xyb.ysize());
-  static const double mul0 = 0.972407512222;
+  static const double mul0 = 0.94212356307208356;
+
+  // PIK's gamma is 3.0 to be able to decode faster with two muls.
+  // Butteraugli's gamma is matching the gamma of human eye, around 2.6.
+  // The difference is in match_gamma, and match_gamma_offset1 and
+  // match_gamma_offset2 are related tuning parameters.
+  static const double match_gamma = 0.37960119052725971;
+  static const double match_gamma_offset1 = 0.03686603494771571;
+  static const double match_gamma_offset2 = -0.16041597433190211;
   for (size_t y = 0; y + 1 < xyb.ysize(); ++y) {
     const float* const PIK_RESTRICT row_in = xyb.Row(y);
     const float* const PIK_RESTRICT row_in2 = xyb.Row(y + 1);
     float* const PIK_RESTRICT row_out = result.Row(y);
     for (size_t x = 0; x + 1 < xyb.xsize(); ++x) {
       const size_t x2 = x + 1;
-      const float diff = mul0 * (fabs(row_in[x] - row_in[x2]) +
-                                 fabs(row_in[x] - row_in2[x]));
-      row_out[x] = std::min(cutoff, 0.5f * diff);
+      float diff = mul0 * (fabs(row_in[x] - row_in[x2]) +
+                           fabs(row_in[x] - row_in2[x]));
+      diff *= pow(row_in[x] + match_gamma_offset1, match_gamma) +
+          match_gamma_offset2;
+      row_out[x] = std::min(cutoff, diff);
     }
     // Last pixel of the row.
     {
       const size_t x = xyb.xsize() - 1;
-      row_out[x] = mul0 * (fabs(row_in[x] - row_in2[x]));
+      float diff = 2.0 * mul0 * (fabs(row_in[x] - row_in2[x]));
+      diff *= pow(row_in[x] + match_gamma_offset1, match_gamma) +
+          match_gamma_offset2;
+      row_out[x] = std::min(cutoff, diff);
     }
   }
   // Last row.
@@ -54,13 +67,15 @@ ImageF DiffPrecompute(const ImageF& xyb, float cutoff) {
     float* const PIK_RESTRICT row_out = result.Row(y);
     for (size_t x = 0; x + 1 < xyb.xsize(); ++x) {
       const size_t x2 = x + 1;
-      const float diff = mul0 * fabs(row_in[x] - row_in[x2]);
-      row_out[x] = std::min(cutoff, 0.5f * diff);
+      float diff = 2.0 * mul0 * fabs(row_in[x] - row_in[x2]);
+      diff *= pow(row_in[x] + match_gamma_offset1, match_gamma) +
+          match_gamma_offset2;
+      row_out[x] = std::min(cutoff, diff);
     }
     // Last pixel of the last row.
     {
       const size_t x = xyb.xsize() - 1;
-      row_out[x] = 0;
+      row_out[x] = row_out[x - 1];
     }
   }
   return result;
@@ -84,9 +99,9 @@ ImageF Expand(const ImageF& img, size_t out_xsize, size_t out_ysize) {
 }
 
 ImageF ComputeMask(const ImageF& diffs) {
-  static const float kBase = 0.081994280342603476;
-  static const float kMul = 0.024979129332027221;
-  static const float kOffset = 0.016770665190778019;
+  static const float kBase = 0.39937829172927553;
+  static const float kMul = 0.010005470630454713;
+  static const float kOffset = 0.0071116859907291649;
   ImageF out(diffs.xsize(), diffs.ysize());
   for (int y = 0; y < diffs.ysize(); ++y) {
     const float* const PIK_RESTRICT row_in = diffs.Row(y);
@@ -132,10 +147,10 @@ ImageF AdaptiveQuantizationMap(const ImageF& img, size_t resolution) {
   if (img.ysize() <= 1) {
     return ImageF(out_xsize, 1, 1.0f);
   }
-  static const float kSigma = 5.840439802203778;
+  static const float kSigma = 5.9213959922686561;
   static const int kRadius = static_cast<int>(2 * kSigma + 0.5f);
   std::vector<float> kernel = GaussianKernel(kRadius, kSigma);
-  static const float kDiffCutoff = 0.072750703471576167;
+  static const float kDiffCutoff = 0.15354936151152812;
   ImageF out = DiffPrecompute(img, kDiffCutoff);
   out = Expand(out, resolution * out_xsize, resolution * out_ysize);
   out = ConvolveAndSample(out, kernel, kSampleRate);

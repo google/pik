@@ -408,33 +408,59 @@ struct TestHalf {
   template <typename T, class D>
   void operator()(T, D d) const {
 #if SIMD_TARGET_VALUE != SIMD_NONE
+    size_t i;
     constexpr size_t N2 = (d.N + 1) / 2;
     const Part<T, N2> d2;
 
-    const auto v1 = set1(d, 1);
-    SIMD_ALIGN T lanes[d.N];
-    for (size_t i = 0; i < d.N; ++i) {
-      lanes[i] = 123;
-    }
-    store(any_part(d2, v1), d2, lanes);
-    size_t i = 0;
-    for (; i < N2; ++i) {
-      ASSERT_EQ(T(1), lanes[i]);
-    }
-    // Other half remains unchanged
-    for (; i < d.N; ++i) {
-      ASSERT_EQ(T(123), lanes[i]);
-    }
+    const auto v = iota(d, 1);
+    SIMD_ALIGN T lanes[d.N] = {0};
 
-    const auto part2 = other_half(v1);
-    store(part2, d2, lanes);
+    store(lower_half(v), d2, lanes);
     i = 0;
     for (; i < N2; ++i) {
-      ASSERT_EQ(T(1), lanes[i]);
+      ASSERT_EQ(T(1 + i), lanes[i]);
     }
     // Other half remains unchanged
     for (; i < d.N; ++i) {
-      ASSERT_EQ(T(123), lanes[i]);
+      ASSERT_EQ(T(0), lanes[i]);
+    }
+    store(lower_half(v), d2, lanes);  // Also test the wrapper
+    i = 0;
+    for (; i < N2; ++i) {
+      ASSERT_EQ(T(1 + i), lanes[i]);
+    }
+    // Other half remains unchanged
+    for (; i < d.N; ++i) {
+      ASSERT_EQ(T(0), lanes[i]);
+    }
+
+    store(upper_half(v), d2, lanes);
+    i = 0;
+    for (; i < N2; ++i) {
+      ASSERT_EQ(T(N2 + 1 + i), lanes[i]);
+    }
+    // Other half remains unchanged
+    for (; i < d.N; ++i) {
+      ASSERT_EQ(T(0), lanes[i]);
+    }
+    store(upper_half(v), d2, lanes);  // Also test the wrapper
+    i = 0;
+    for (; i < N2; ++i) {
+      ASSERT_EQ(T(N2 + 1 + i), lanes[i]);
+    }
+    // Other half remains unchanged
+    for (; i < d.N; ++i) {
+      ASSERT_EQ(T(0), lanes[i]);
+    }
+
+    store(any_part(d2, v), d2, lanes);
+    i = 0;
+    for (; i < N2; ++i) {
+      ASSERT_EQ(T(1 + i), lanes[i]);
+    }
+    // Other half remains unchanged
+    for (; i < d.N; ++i) {
+      ASSERT_EQ(T(0), lanes[i]);
     }
 
     // Ensure part lanes are contiguous
@@ -530,17 +556,17 @@ struct TestUnsignedSaturatingArithmetic {
     const auto vi = iota(d, 1);
     const auto vm = set1(d, LimitsMax<T>());
 
-    ASSERT_VEC_EQ(d, v0 + v0, add_sat(v0, v0));
-    ASSERT_VEC_EQ(d, v0 + vi, add_sat(v0, vi));
-    ASSERT_VEC_EQ(d, v0 + vm, add_sat(v0, vm));
-    ASSERT_VEC_EQ(d, vm, add_sat(vi, vm));
-    ASSERT_VEC_EQ(d, vm, add_sat(vm, vm));
+    ASSERT_VEC_EQ(d, v0 + v0, saturated_add(v0, v0));
+    ASSERT_VEC_EQ(d, v0 + vi, saturated_add(v0, vi));
+    ASSERT_VEC_EQ(d, v0 + vm, saturated_add(v0, vm));
+    ASSERT_VEC_EQ(d, vm, saturated_add(vi, vm));
+    ASSERT_VEC_EQ(d, vm, saturated_add(vm, vm));
 
-    ASSERT_VEC_EQ(d, v0, sub_sat(v0, v0));
-    ASSERT_VEC_EQ(d, v0, sub_sat(v0, vi));
-    ASSERT_VEC_EQ(d, v0, sub_sat(vi, vi));
-    ASSERT_VEC_EQ(d, v0, sub_sat(vi, vm));
-    ASSERT_VEC_EQ(d, vm - vi, sub_sat(vm, vi));
+    ASSERT_VEC_EQ(d, v0, saturated_subtract(v0, v0));
+    ASSERT_VEC_EQ(d, v0, saturated_subtract(v0, vi));
+    ASSERT_VEC_EQ(d, v0, saturated_subtract(vi, vi));
+    ASSERT_VEC_EQ(d, v0, saturated_subtract(vi, vm));
+    ASSERT_VEC_EQ(d, vm - vi, saturated_subtract(vm, vi));
   }
 };
 
@@ -553,17 +579,17 @@ struct TestSignedSaturatingArithmetic {
     const auto vn = iota(d, -T(d.N));
     const auto vnm = set1(d, LimitsMin<T>());
 
-    ASSERT_VEC_EQ(d, v0, add_sat(v0, v0));
-    ASSERT_VEC_EQ(d, vi, add_sat(v0, vi));
-    ASSERT_VEC_EQ(d, vpm, add_sat(v0, vpm));
-    ASSERT_VEC_EQ(d, vpm, add_sat(vi, vpm));
-    ASSERT_VEC_EQ(d, vpm, add_sat(vpm, vpm));
+    ASSERT_VEC_EQ(d, v0, saturated_add(v0, v0));
+    ASSERT_VEC_EQ(d, vi, saturated_add(v0, vi));
+    ASSERT_VEC_EQ(d, vpm, saturated_add(v0, vpm));
+    ASSERT_VEC_EQ(d, vpm, saturated_add(vi, vpm));
+    ASSERT_VEC_EQ(d, vpm, saturated_add(vpm, vpm));
 
-    ASSERT_VEC_EQ(d, v0, sub_sat(v0, v0));
-    ASSERT_VEC_EQ(d, v0 - vi, sub_sat(v0, vi));
-    ASSERT_VEC_EQ(d, vn, sub_sat(vn, v0));
-    ASSERT_VEC_EQ(d, vnm, sub_sat(vnm, vi));
-    ASSERT_VEC_EQ(d, vnm, sub_sat(vnm, vpm));
+    ASSERT_VEC_EQ(d, v0, saturated_subtract(v0, v0));
+    ASSERT_VEC_EQ(d, v0 - vi, saturated_subtract(v0, vi));
+    ASSERT_VEC_EQ(d, vn, saturated_subtract(vn, v0));
+    ASSERT_VEC_EQ(d, vnm, saturated_subtract(vnm, vi));
+    ASSERT_VEC_EQ(d, vnm, saturated_subtract(vnm, vpm));
   }
 };
 
@@ -581,11 +607,11 @@ struct TestAverageT {
     const auto v1 = set1(d, T(1));
     const auto v2 = set1(d, T(2));
 
-    ASSERT_VEC_EQ(d, v0, avg(v0, v0));
-    ASSERT_VEC_EQ(d, v1, avg(v0, v1));
-    ASSERT_VEC_EQ(d, v1, avg(v1, v1));
-    ASSERT_VEC_EQ(d, v2, avg(v1, v2));
-    ASSERT_VEC_EQ(d, v2, avg(v2, v2));
+    ASSERT_VEC_EQ(d, v0, average_round(v0, v0));
+    ASSERT_VEC_EQ(d, v1, average_round(v0, v1));
+    ASSERT_VEC_EQ(d, v1, average_round(v1, v1));
+    ASSERT_VEC_EQ(d, v2, average_round(v1, v2));
+    ASSERT_VEC_EQ(d, v2, average_round(v2, v2));
   }
 };
 
@@ -711,31 +737,31 @@ struct TestUnsignedVarShifts {
     SIMD_ALIGN T expected[d.N];
 
     // Shifting out of right side => zero
-    ASSERT_VEC_EQ(d, v0, shift_right_var(vi, set1(d, 7)));
+    ASSERT_VEC_EQ(d, v0, vi >> set1(d, 7));
 
     // Simple left shift
     for (size_t i = 0; i < d.N; ++i) {
       expected[i] = T(i << 1);
     }
-    ASSERT_VEC_EQ(d, expected, shift_left_var(vi, set1(d, 1)));
+    ASSERT_VEC_EQ(d, expected, vi << set1(d, 1));
 
     // Simple right shift
     for (size_t i = 0; i < d.N; ++i) {
       expected[i] = T(i >> 1);
     }
-    ASSERT_VEC_EQ(d, expected, shift_right_var(vi, set1(d, 1)));
+    ASSERT_VEC_EQ(d, expected, vi >> set1(d, 1));
 
     // Verify truncation for left-shift
     for (size_t i = 0; i < d.N; ++i) {
       expected[i] = static_cast<T>((i << kSign) & ~T(0));
     }
-    ASSERT_VEC_EQ(d, expected, shift_left_var(vi, set1(d, kSign)));
+    ASSERT_VEC_EQ(d, expected, vi << set1(d, kSign));
 
     // Verify variable left shift (assumes < 32 lanes)
     for (size_t i = 0; i < d.N; ++i) {
       expected[i] = T(1) << i;
     }
-    ASSERT_VEC_EQ(d, expected, shift_left_var(v1, vi));
+    ASSERT_VEC_EQ(d, expected, v1 << vi);
   }
 };
 
@@ -751,7 +777,7 @@ struct TestSignedVarLeftShifts {
     for (size_t i = 0; i < d.N; ++i) {
       expected[i] = T(i << 1);
     }
-    ASSERT_VEC_EQ(d, expected, shift_left_var(vi, v1));
+    ASSERT_VEC_EQ(d, expected, vi << v1);
 
     // Shifting negative numbers left
     constexpr T min = LimitsMin<T>();
@@ -759,13 +785,13 @@ struct TestSignedVarLeftShifts {
     for (size_t i = 0; i < d.N; ++i) {
       expected[i] = T((min + i) << 1);
     }
-    ASSERT_VEC_EQ(d, expected, shift_left_var(vn, v1));
+    ASSERT_VEC_EQ(d, expected, vn << v1);
 
     // Differing shift counts (assumes < 32 lanes)
     for (size_t i = 0; i < d.N; ++i) {
       expected[i] = T(1) << i;
     }
-    ASSERT_VEC_EQ(d, expected, shift_left_var(v1, vi));
+    ASSERT_VEC_EQ(d, expected, v1 << vi);
   }
 };
 
@@ -778,13 +804,13 @@ struct TestSignedVarRightShifts {
     SIMD_ALIGN T expected[d.N];
 
     // Shifting out of right side => zero
-    ASSERT_VEC_EQ(d, v0, shift_right_var(vi, set1(d, 7)));
+    ASSERT_VEC_EQ(d, v0, vi >> set1(d, 7));
 
     // Simple right shift
     for (size_t i = 0; i < d.N; ++i) {
       expected[i] = T(i >> 1);
     }
-    ASSERT_VEC_EQ(d, expected, shift_right_var(vi, set1(d, 1)));
+    ASSERT_VEC_EQ(d, expected, vi >> set1(d, 1));
 
     // Sign extension
     constexpr T min = LimitsMin<T>();
@@ -792,13 +818,13 @@ struct TestSignedVarRightShifts {
     for (size_t i = 0; i < d.N; ++i) {
       expected[i] = T((min + i) >> 1);
     }
-    ASSERT_VEC_EQ(d, expected, shift_right_var(vn, set1(d, 1)));
+    ASSERT_VEC_EQ(d, expected, vn >> set1(d, 1));
 
     // Differing shift counts (assumes < 32 lanes)
     for (size_t i = 0; i < d.N; ++i) {
       expected[i] = LimitsMax<T>() >> i;
     }
-    ASSERT_VEC_EQ(d, expected, shift_right_var(vmax, vi));
+    ASSERT_VEC_EQ(d, expected, vmax >> vi);
   }
 };
 
@@ -966,9 +992,9 @@ struct TestMulHi16 {
     const auto vni = iota(d, -T(d.N));
 
     const auto v0 = setzero(d);
-    ASSERT_VEC_EQ(d, v0, ext::mulhi(v0, v0));
-    ASSERT_VEC_EQ(d, v0, ext::mulhi(v0, vi));
-    ASSERT_VEC_EQ(d, v0, ext::mulhi(vi, v0));
+    ASSERT_VEC_EQ(d, v0, ext::mul_high(v0, v0));
+    ASSERT_VEC_EQ(d, v0, ext::mul_high(v0, vi));
+    ASSERT_VEC_EQ(d, v0, ext::mul_high(vi, v0));
 
     // Large positive squared
     for (size_t i = 0; i < d.N; ++i) {
@@ -976,21 +1002,21 @@ struct TestMulHi16 {
       expected_lanes[i] = (int32_t(in_lanes[i]) * in_lanes[i]) >> 16;
     }
     auto v = load(d, in_lanes);
-    ASSERT_VEC_EQ(d, expected_lanes, ext::mulhi(v, v));
+    ASSERT_VEC_EQ(d, expected_lanes, ext::mul_high(v, v));
 
     // Large positive * small positive
     for (size_t i = 0; i < d.N; ++i) {
       expected_lanes[i] = (int32_t(in_lanes[i]) * (1 + i)) >> 16;
     }
-    ASSERT_VEC_EQ(d, expected_lanes, ext::mulhi(v, vi));
-    ASSERT_VEC_EQ(d, expected_lanes, ext::mulhi(vi, v));
+    ASSERT_VEC_EQ(d, expected_lanes, ext::mul_high(v, vi));
+    ASSERT_VEC_EQ(d, expected_lanes, ext::mul_high(vi, v));
 
     // Large positive * small negative
     for (size_t i = 0; i < d.N; ++i) {
       expected_lanes[i] = (int32_t(in_lanes[i]) * (i - d.N)) >> 16;
     }
-    ASSERT_VEC_EQ(d, expected_lanes, ext::mulhi(v, vni));
-    ASSERT_VEC_EQ(d, expected_lanes, ext::mulhi(vni, v));
+    ASSERT_VEC_EQ(d, expected_lanes, ext::mul_high(v, vni));
+    ASSERT_VEC_EQ(d, expected_lanes, ext::mul_high(vni, v));
   }
 };
 
@@ -1031,44 +1057,53 @@ struct TestMulAdd {
     ASSERT_VEC_EQ(d, v0, mul_add(v0, v0, v0));
     ASSERT_VEC_EQ(d, v2, mul_add(v0, v1, v2));
     ASSERT_VEC_EQ(d, v2, mul_add(v1, v0, v2));
+    ASSERT_VEC_EQ(d, v0, nmul_add(v0, v0, v0));
+    ASSERT_VEC_EQ(d, v2, nmul_add(v0, v1, v2));
+    ASSERT_VEC_EQ(d, v2, nmul_add(v1, v0, v2));
+
     for (size_t i = 0; i < d.N; ++i) {
       lanes[i] = (i + 1) * (i + 2);
     }
     ASSERT_VEC_EQ(d, lanes, mul_add(v2, v1, v0));
     ASSERT_VEC_EQ(d, lanes, mul_add(v1, v2, v0));
-    for (size_t i = 0; i < d.N; ++i) {
+    ASSERT_VEC_EQ(d, lanes, nmul_add(neg(v2), v1, v0));
+    ASSERT_VEC_EQ(d, lanes, nmul_add(v1, neg(v2), v0));
+
+for (size_t i = 0; i < d.N; ++i) {
       lanes[i] = (i + 2) * (i + 2) + (i + 1);
     }
     ASSERT_VEC_EQ(d, lanes, mul_add(v2, v2, v1));
+    ASSERT_VEC_EQ(d, lanes, nmul_add(neg(v2), v2, v1));
 
-    ASSERT_VEC_EQ(d, v0, mul_sub(v0, v0, v0));
-    for (size_t i = 0; i < d.N; ++i) {
-      lanes[i] = -T(i + 2);
-    }
-    ASSERT_VEC_EQ(d, lanes, mul_sub(v0, v1, v2));
-    ASSERT_VEC_EQ(d, lanes, mul_sub(v1, v0, v2));
-    for (size_t i = 0; i < d.N; ++i) {
-      lanes[i] = (i + 1) * (i + 2);
-    }
-    ASSERT_VEC_EQ(d, lanes, mul_sub(v1, v2, v0));
-    ASSERT_VEC_EQ(d, lanes, mul_sub(v2, v1, v0));
-    for (size_t i = 0; i < d.N; ++i) {
-      lanes[i] = (i + 2) * (i + 2) - (1 + i);
-    }
-    ASSERT_VEC_EQ(d, lanes, mul_sub(v2, v2, v1));
-
-    ASSERT_VEC_EQ(d, v0, nmul_add(v0, v0, v0));
-    ASSERT_VEC_EQ(d, v2, nmul_add(v0, v1, v2));
-    ASSERT_VEC_EQ(d, v2, nmul_add(v1, v0, v2));
-    for (size_t i = 0; i < d.N; ++i) {
-      lanes[i] = -T(i + 1) * (i + 2);
-    }
-    ASSERT_VEC_EQ(d, lanes, nmul_add(v1, v2, v0));
-    ASSERT_VEC_EQ(d, lanes, nmul_add(v2, v1, v0));
     for (size_t i = 0; i < d.N; ++i) {
       lanes[i] = -T(i + 2) * (i + 2) + (1 + i);
     }
     ASSERT_VEC_EQ(d, lanes, nmul_add(v2, v2, v1));
+
+    ASSERT_VEC_EQ(d, v0, ext::mul_subtract(v0, v0, v0));
+    ASSERT_VEC_EQ(d, v0, ext::nmul_subtract(v0, v0, v0));
+
+    for (size_t i = 0; i < d.N; ++i) {
+      lanes[i] = -T(i + 2);
+    }
+    ASSERT_VEC_EQ(d, lanes, ext::mul_subtract(v0, v1, v2));
+    ASSERT_VEC_EQ(d, lanes, ext::mul_subtract(v1, v0, v2));
+    ASSERT_VEC_EQ(d, lanes, ext::nmul_subtract(neg(v0), v1, v2));
+    ASSERT_VEC_EQ(d, lanes, ext::nmul_subtract(v1, neg(v0), v2));
+
+    for (size_t i = 0; i < d.N; ++i) {
+      lanes[i] = (i + 1) * (i + 2);
+    }
+    ASSERT_VEC_EQ(d, lanes, ext::mul_subtract(v1, v2, v0));
+    ASSERT_VEC_EQ(d, lanes, ext::mul_subtract(v2, v1, v0));
+    ASSERT_VEC_EQ(d, lanes, ext::nmul_subtract(neg(v1), v2, v0));
+    ASSERT_VEC_EQ(d, lanes, ext::nmul_subtract(v2, neg(v1), v0));
+
+    for (size_t i = 0; i < d.N; ++i) {
+      lanes[i] = (i + 2) * (i + 2) - (1 + i);
+    }
+    ASSERT_VEC_EQ(d, lanes, ext::mul_subtract(v2, v2, v1));
+    ASSERT_VEC_EQ(d, lanes, ext::nmul_subtract(neg(v2), v2, v1));
   }
 };
 
@@ -1085,7 +1120,7 @@ struct TestReciprocalSquareRoot {
   void operator()(T, D d) const {
     const auto v = set1(d, 123.0f);
     SIMD_ALIGN float lanes[d.N];
-    store(rsqrt_approx(v), d, lanes);
+    store(approximate_reciprocal_sqrt(v), d, lanes);
     for (size_t i = 0; i < d.N; ++i) {
       float err = lanes[i] - 0.090166f;
       if (err < 0.0f) err = -err;
@@ -1100,31 +1135,33 @@ struct TestRound {
     // Integer positive
     {
       const auto v = iota(d, 4.0);
-      ASSERT_VEC_EQ(d, v, round_pos_inf(v));
-      ASSERT_VEC_EQ(d, v, round_neg_inf(v));
-      ASSERT_VEC_EQ(d, v, round_nearest(v));
+      ASSERT_VEC_EQ(d, v, ceil(v));
+      ASSERT_VEC_EQ(d, v, floor(v));
+      ASSERT_VEC_EQ(d, v, round(v));
+      ASSERT_VEC_EQ(d, v, trunc(v));
     }
 
     // Integer negative
     {
       const auto v = iota(d, T(-32.0));
-      ASSERT_VEC_EQ(d, v, round_pos_inf(v));
-      ASSERT_VEC_EQ(d, v, round_neg_inf(v));
-      ASSERT_VEC_EQ(d, v, round_nearest(v));
+      ASSERT_VEC_EQ(d, v, ceil(v));
+      ASSERT_VEC_EQ(d, v, floor(v));
+      ASSERT_VEC_EQ(d, v, round(v));
+      ASSERT_VEC_EQ(d, v, trunc(v));
     }
 
     // Huge positive
     {
       const auto v = set1(d, T(1E15));
-      ASSERT_VEC_EQ(d, v, round_pos_inf(v));
-      ASSERT_VEC_EQ(d, v, round_neg_inf(v));
+      ASSERT_VEC_EQ(d, v, ceil(v));
+      ASSERT_VEC_EQ(d, v, floor(v));
     }
 
     // Huge negative
     {
       const auto v = set1(d, T(-1E15));
-      ASSERT_VEC_EQ(d, v, round_pos_inf(v));
-      ASSERT_VEC_EQ(d, v, round_neg_inf(v));
+      ASSERT_VEC_EQ(d, v, ceil(v));
+      ASSERT_VEC_EQ(d, v, floor(v));
     }
 
     // Above positive
@@ -1132,9 +1169,10 @@ struct TestRound {
       const auto v = iota(d, T(2.0001));
       const auto v3 = iota(d, T(3));
       const auto v2 = iota(d, T(2));
-      ASSERT_VEC_EQ(d, v3, round_pos_inf(v));
-      ASSERT_VEC_EQ(d, v2, round_neg_inf(v));
-      ASSERT_VEC_EQ(d, v2, round_nearest(v));
+      ASSERT_VEC_EQ(d, v3, ceil(v));
+      ASSERT_VEC_EQ(d, v2, floor(v));
+      ASSERT_VEC_EQ(d, v2, round(v));
+      ASSERT_VEC_EQ(d, v2, trunc(v));
     }
 
     // Below positive
@@ -1142,29 +1180,35 @@ struct TestRound {
       const auto v = iota(d, T(3.9999));
       const auto v4 = iota(d, T(4));
       const auto v3 = iota(d, T(3));
-      ASSERT_VEC_EQ(d, v4, round_pos_inf(v));
-      ASSERT_VEC_EQ(d, v3, round_neg_inf(v));
-      ASSERT_VEC_EQ(d, v4, round_nearest(v));
+      ASSERT_VEC_EQ(d, v4, ceil(v));
+      ASSERT_VEC_EQ(d, v3, floor(v));
+      ASSERT_VEC_EQ(d, v4, round(v));
+      ASSERT_VEC_EQ(d, v3, trunc(v));
     }
 
     // Above negative
     {
-      const auto v = iota(d, T(-3.9999));
-      const auto v3 = iota(d, T(-3));
-      const auto v4 = iota(d, T(-4));
-      ASSERT_VEC_EQ(d, v3, round_pos_inf(v));
-      ASSERT_VEC_EQ(d, v4, round_neg_inf(v));
-      ASSERT_VEC_EQ(d, v4, round_nearest(v));
+      // WARNING: using iota => ensure negative value is low enough that
+      // even 16 lanes remain negative, otherwise trunc will behave differently
+      // for positive/negative values.
+      const auto v = iota(d, T(-19.9999));
+      const auto v3 = iota(d, T(-19));
+      const auto v4 = iota(d, T(-20));
+      ASSERT_VEC_EQ(d, v3, ceil(v));
+      ASSERT_VEC_EQ(d, v4, floor(v));
+      ASSERT_VEC_EQ(d, v4, round(v));
+      ASSERT_VEC_EQ(d, v3, trunc(v));
     }
 
     // Below negative
     {
-      const auto v = iota(d, T(-2.0001));
-      const auto v2 = iota(d, T(-2));
-      const auto v3 = iota(d, T(-3));
-      ASSERT_VEC_EQ(d, v2, round_pos_inf(v));
-      ASSERT_VEC_EQ(d, v3, round_neg_inf(v));
-      ASSERT_VEC_EQ(d, v2, round_nearest(v));
+      const auto v = iota(d, T(-18.0001));
+      const auto v2 = iota(d, T(-18));
+      const auto v3 = iota(d, T(-19));
+      ASSERT_VEC_EQ(d, v2, ceil(v));
+      ASSERT_VEC_EQ(d, v3, floor(v));
+      ASSERT_VEC_EQ(d, v2, round(v));
+      ASSERT_VEC_EQ(d, v2, trunc(v));
     }
   }
 };
@@ -1254,7 +1298,7 @@ struct TestHorzSumT {
     }
     const auto v = load(d, in_lanes);
     const auto expected = set1(d, T(sum));
-    ASSERT_VEC_EQ(d, expected, ext::horz_sum(v));
+    ASSERT_VEC_EQ(d, expected, ext::sum_of_lanes(v));
   }
 };
 
@@ -1513,7 +1557,7 @@ struct TestSelectSign {
     }
 
     SIMD_ALIGN T out_lanes[d.N];
-    const auto selector = selector_from_sign(load(d, masks));
+    const auto selector = condition_from_sign(load(d, masks));
     store(select(load(d, lanes1), load(d, lanes2), selector), d, out_lanes);
     for (size_t i = 0; i < d.N; ++i) {
       ASSERT_EQ((masks[i] < T(0.0)) ? lanes2[i] : lanes1[i], out_lanes[i]);
@@ -1608,6 +1652,82 @@ struct TestStreamT {
   }
 };
 
+#if SIMD_TARGET_VALUE == SIMD_AVX2
+
+template <typename Offset, int kShift>
+struct TestGatherT {
+  template <typename T, class D>
+  void operator()(T, D d) const {
+    static_assert(sizeof(T) == (1 << kShift), "Incorrect kShift");
+
+    // Base points to middle; |max_offset| + sizeof(T) <= kNumBytes / 2.
+    constexpr size_t kNumBytes = 64;
+    uint8_t bytes[kNumBytes];
+    for (size_t i = 0; i < kNumBytes; ++i) {
+      bytes[i] = i + 1;
+    }
+    const uint8_t* middle = bytes + kNumBytes / 2;
+
+    // Offsets: combinations of aligned, repeated, negative.
+    SIMD_ALIGN Offset offset_lanes[SIMD_MAX(d.N, 8)] = {2,   12,  4,   4,
+                                                        -16, -16, -21, -20};
+
+    SIMD_ALIGN T expected[d.N];
+    for (size_t i = 0; i < d.N; ++i) {
+      CopyBytes<sizeof(T)>(middle + offset_lanes[i], &expected[i]);
+    }
+
+    const auto offsets = load(Full<Offset>(), offset_lanes);
+    auto actual =
+        ext::gather_offset(d, reinterpret_cast<const T*>(middle), offsets);
+    ASSERT_VEC_EQ(d, expected, actual);
+
+    // Indices
+    SIMD_ALIGN const Offset index_lanes[SIMD_MAX(d.N, 8)] = {1, -2, 0,  1,
+                                                             3, -2, -1, 2};
+    for (size_t i = 0; i < d.N; ++i) {
+      CopyBytes<sizeof(T)>(middle + index_lanes[i] * sizeof(T), &expected[i]);
+    }
+    const auto indices = load(Full<Offset>(), index_lanes);
+    actual = ext::gather_index(d, reinterpret_cast<const T*>(middle), indices);
+    ASSERT_VEC_EQ(d, expected, actual);
+  }
+};
+
+template <typename Offset, int kShift>
+struct TestFloatGatherT {
+  template <typename T, class D>
+  void operator()(T, D d) const {
+    static_assert(sizeof(T) == (1 << kShift), "Incorrect kShift");
+
+    constexpr size_t kNumValues = 16;
+    // Base points to middle; |max_index| < kNumValues / 2.
+    SIMD_ALIGN const T values[SIMD_MAX(d.N, kNumValues)] = {
+        T(100.0), T(110.0), T(111.0), T(128.0), T(1024.0), T(-1.0),
+        T(-2.0),  T(-3.0),  T(0.25),  T(0.5),   T(0.75),   T(1.25),
+        T(1.5),   T(1.75),  T(-0.25), T(-0.5)};
+    const T* middle = values + kNumValues / 2;
+
+    // Indices: combinations of aligned, repeated, negative.
+    SIMD_ALIGN const Offset index_lanes[SIMD_MAX(d.N, 8)] = {1, -6, 0,  1,
+                                                             3, -6, -1, 7};
+    SIMD_ALIGN T expected[d.N];
+    for (size_t i = 0; i < d.N; ++i) {
+      CopyBytes<sizeof(T)>(middle + index_lanes[i], &expected[i]);
+    }
+    const auto indices = load(Full<Offset>(), index_lanes);
+    auto actual = ext::gather_index(d, middle, indices);
+    ASSERT_VEC_EQ(d, expected, actual);
+
+    // Offsets: same as index * sizeof(T).
+    const auto offsets = shift_left<kShift>(indices);
+    actual = ext::gather_offset(d, middle, offsets);
+    ASSERT_VEC_EQ(d, expected, actual);
+  }
+};
+
+#endif  // SIMD_TARGET_VALUE == SIMD_AVX2
+
 void TestStream() {
   // No u8,u16.
   Call<TestStreamT, uint32_t>();
@@ -1619,10 +1739,25 @@ void TestStream() {
   Call<TestStreamT, double>();
 }
 
+void TestGather() {
+#if SIMD_TARGET_VALUE == SIMD_AVX2
+  // No u8,u16.
+  Call<TestGatherT<int32_t, 2>, uint32_t>();
+  Call<TestGatherT<int64_t, 3>, uint64_t>();
+  // No i8,i16.
+  Call<TestGatherT<int32_t, 2>, int32_t>();
+  Call<TestGatherT<int64_t, 3>, int64_t>();
+
+  Call<TestFloatGatherT<int32_t, 2>, float>();
+  Call<TestFloatGatherT<int64_t, 3>, double>();
+#endif
+}
+
 void TestMemory() {
   ForeachLaneType<TestLoadStore>();
   ForeachLaneType<TestLoadDup128>();
   TestStream();
+  TestGather();
 }
 
 }  // namespace memory
@@ -1767,13 +1902,16 @@ void TestDupPromoteT() {
 void TestConvert() {
   TestCast();
 
-#if SIMD_TARGET_VALUE != SIMD_NONE
   const Full<uint8_t> d8;
   const Full<uint32_t> d32;
-  ASSERT_VEC_EQ(d32, iota(d32, 0), u32_from_u8(broadcast_block(iota(d8, 0))));
-  ASSERT_VEC_EQ(d32, iota(d32, 0x7F),
-                u32_from_u8(broadcast_block(iota(d8, 0x7F))));
-#endif
+  SIMD_ALIGN uint8_t lanes8[d8.N];
+  store(iota(d8, 0), d8, lanes8);
+  ASSERT_VEC_EQ(d32, iota(d32, 0), u32_from_u8(load_dup128(d8, lanes8)));
+  store(iota(d8, 0x7F), d8, lanes8);
+  ASSERT_VEC_EQ(d32, iota(d32, 0x7F), u32_from_u8(load_dup128(d8, lanes8)));
+  const Part<uint8_t, d32.N> p8;
+  ASSERT_VEC_EQ(p8, iota(p8, 0), u8_from_u32(iota(d32, 0)));
+  ASSERT_VEC_EQ(p8, iota(p8, 0x7F), u8_from_u32(iota(d32, 0x7F)));
 
   // Promote: no u64,i64
   TestPromoteT<uint8_t, int16_t>();
@@ -1808,8 +1946,8 @@ struct TestShiftBytesT {
 
     // Zero remains zero
     const auto v0 = setzero(d);
-    ASSERT_VEC_EQ(d, v0, shift_bytes_left<1>(v0));
-    ASSERT_VEC_EQ(d, v0, shift_bytes_right<1>(v0));
+    ASSERT_VEC_EQ(d, v0, shift_left_bytes<1>(v0));
+    ASSERT_VEC_EQ(d, v0, shift_right_bytes<1>(v0));
 
     // Zero after shifting out the high/low byte
     SIMD_ALIGN uint8_t bytes[d8.N] = {0};
@@ -1818,26 +1956,35 @@ struct TestShiftBytesT {
     bytes[d8.N - 1] = 0;
     bytes[0] = 0x7F;
     const auto vlo = cast_to(d, load(d8, bytes));
-    ASSERT_EQ(true, ext::all_zero(shift_bytes_left<1>(vhi)));
-    ASSERT_EQ(true, ext::all_zero(shift_bytes_right<1>(vlo)));
+    ASSERT_EQ(true, ext::all_zero(shift_left_bytes<1>(vhi)));
+    ASSERT_EQ(true, ext::all_zero(shift_right_bytes<1>(vlo)));
 
     SIMD_ALIGN T in[d.N];
     const uint8_t* in_bytes = reinterpret_cast<const uint8_t*>(in);
     const auto v = cast_to(d, iota(d8, 1));
     store(v, d, in);
 
+    // Shifting by one lane is the same as shifting #bytes
+    ASSERT_VEC_EQ(d, shift_left_lanes<1>(v), shift_left_bytes<sizeof(T)>(v));
+    ASSERT_VEC_EQ(d, shift_right_lanes<1>(v), shift_right_bytes<sizeof(T)>(v));
+    // Two lanes
+    ASSERT_VEC_EQ(d, shift_left_lanes<2>(v),
+                  shift_left_bytes<2 * sizeof(T)>(v));
+    ASSERT_VEC_EQ(d, shift_right_lanes<2>(v),
+                  shift_right_bytes<2 * sizeof(T)>(v));
+
     SIMD_ALIGN T shifted[d.N];
     const uint8_t* shifted_bytes = reinterpret_cast<const uint8_t*>(shifted);
 
     const size_t kBlockSize = SIMD_MIN(d8.N, 16);
-    store(shift_bytes_left<1>(v), d, shifted);
+    store(shift_left_bytes<1>(v), d, shifted);
     for (size_t block = 0; block < d8.N; block += kBlockSize) {
       ASSERT_EQ(uint8_t(0), shifted_bytes[block]);
       ASSERT_EQ(true, BytesEqual(in_bytes + block, shifted_bytes + block + 1,
                                  kBlockSize - 1));
     }
 
-    store(shift_bytes_right<1>(v), d, shifted);
+    store(shift_right_bytes<1>(v), d, shifted);
     for (size_t block = 0; block < d8.N; block += kBlockSize) {
       ASSERT_EQ(uint8_t(0), shifted_bytes[block + kBlockSize - 1]);
       ASSERT_EQ(true, BytesEqual(in_bytes + block + 1, shifted_bytes + block,
@@ -1898,6 +2045,64 @@ void TestBroadcast() {
   TestBroadcastT<int64_t>();
   TestBroadcastT<float>();
   TestBroadcastT<double>();
+}
+
+#if SIMD_TARGET_VALUE != SIMD_NONE
+
+struct TestPermuteT {
+  template <typename T, class D>
+  void operator()(T, D d) const {
+#if SIMD_TARGET_VALUE == SIMD_AVX2
+    // Test one specific permutation with repeated and cross-block indices.
+    SIMD_ALIGN int32_t idx[d.N] = {1, 7, 2, 2, 4, 1, 3, 6};
+    const auto v = iota(d, 1);
+    SIMD_ALIGN T expected_lanes[d.N];
+    for (size_t i = 0; i < d.N; ++i) {
+      expected_lanes[i] = idx[i] + 1;  // == v[idx[i]]
+    }
+
+    const auto opaque = set_table_indices(d, idx);
+    const auto actual = table_lookup_lanes(v, opaque);
+    ASSERT_VEC_EQ(d, expected_lanes, actual);
+#else
+    // Non-AVX2: test all possible permutations.
+    SIMD_ALIGN int32_t idx[d.N];
+    const auto v = iota(d, 1);
+    SIMD_ALIGN T expected_lanes[d.N];
+
+    for (int i0 = 0; i0 < d.N; ++i0) {
+      idx[0] = i0;
+      for (int i1 = 0; i1 < d.N; ++i1) {
+        idx[1] = i1;
+        for (int i2 = 0; i2 < d.N; ++i2) {
+          idx[2] = i2;
+          for (int i3 = 0; i3 < d.N; ++i3) {
+            idx[3] = i3;
+
+            for (size_t i = 0; i < d.N; ++i) {
+              expected_lanes[i] = idx[i] + 1;  // == v[idx[i]]
+            }
+
+            const auto opaque = set_table_indices(d, idx);
+            const auto actual = table_lookup_lanes(v, opaque);
+            ASSERT_VEC_EQ(d, expected_lanes, actual);
+          }
+        }
+      }
+    }
+#endif
+  }
+};
+
+#endif
+
+void TestPermute() {
+#if SIMD_TARGET_VALUE != SIMD_NONE
+  // Only uif32.
+  Call<TestPermuteT, uint32_t>();
+  Call<TestPermuteT, int32_t>();
+  Call<TestPermuteT, float>();
+#endif
 }
 
 struct TestInterleave {
@@ -1992,7 +2197,7 @@ struct TestShuffleT {
         11, 10, 3, 4, 5,  8,  7,  6,  14, 13, 12, 15, 2, 1, 2,  0};
     const auto indices = load(d8, index_bytes);
     SIMD_ALIGN T out_lanes[d.N];
-    store(shuffle_bytes(cast_to(d, in), indices), d, out_lanes);
+    store(table_lookup_bytes(cast_to(d, in), indices), d, out_lanes);
     const uint8_t* out_bytes = reinterpret_cast<const uint8_t*>(out_lanes);
 
     for (size_t block = 0; block < N8; block += 16) {
@@ -2021,7 +2226,7 @@ struct TestExtractR {
     const auto hi = cast_to(d, iota(d8, 1 + d8.N));
 
     SIMD_ALIGN T lanes[D::N];
-    store(extract_concat_bytes<kBytes>(hi, lo), d, lanes);
+    store(combine_shift_right_bytes<kBytes>(hi, lo), d, lanes);
     const uint8_t* bytes = reinterpret_cast<const uint8_t*>(lanes);
 
     const size_t kBlockSize = 16;
@@ -2118,20 +2323,6 @@ void TestSpecialShuffles() {
 #endif
 }
 
-struct TestBroadcastBlock {
-  template <typename T, class D>
-  void operator()(T, D d) const {
-#if SIMD_TARGET_VALUE != SIMD_NONE
-    constexpr size_t kBlockN = 16 / sizeof(T);
-    T expected[d.N];
-    for (size_t i = 0; i < d.N; ++i) {
-      expected[i] = 1 + (i % kBlockN);
-    }
-    ASSERT_VEC_EQ(d, expected, broadcast_block(iota(d, 1)));
-#endif
-  }
-};
-
 struct TestConcatHalves {
   template <typename T, class D>
   void operator()(T, D d) const {
@@ -2214,11 +2405,11 @@ void TestSwizzle() {
   TestShiftBytes();
   TestBroadcast();
   ForeachLaneType<TestInterleave>();
+  TestPermute();
   TestZip();
   TestShuffle();
   TestExtract();
   TestSpecialShuffles();
-  ForeachLaneType<TestBroadcastBlock>();
   ForeachLaneType<TestConcatHalves>();
   ForeachLaneType<TestConcatLoHi>();
   ForeachLaneType<TestConcatHiLo>();

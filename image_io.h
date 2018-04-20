@@ -121,19 +121,19 @@ bool WriteImage(ImageFormatPNM, const Image3B&, const std::string&);
 // add/subtract 0x8000 to maintain the relative ordering of values.
 
 bool ReadImage(ImageFormatPNG, const std::string&, ImageB*);
-bool ReadImage(ImageFormatPNG, const std::string&, ImageW*);
+bool ReadImage(ImageFormatPNG, const std::string&, ImageS*);
 bool ReadImage(ImageFormatPNG, const std::string&, ImageU*);
 bool ReadImage(ImageFormatPNG, const std::string&, Image3B*);
-bool ReadImage(ImageFormatPNG, const std::string&, Image3W*);
+bool ReadImage(ImageFormatPNG, const std::string&, Image3S*);
 bool ReadImage(ImageFormatPNG, const std::string&, Image3U*);
 bool ReadImage(ImageFormatPNG, const std::string&, MetaImageB*);
 bool ReadImage(ImageFormatPNG, const std::string&, MetaImageU*);
 
 bool WriteImage(ImageFormatPNG, const ImageB&, const std::string&);
-bool WriteImage(ImageFormatPNG, const ImageW&, const std::string&);
+bool WriteImage(ImageFormatPNG, const ImageS&, const std::string&);
 bool WriteImage(ImageFormatPNG, const ImageU&, const std::string&);
 bool WriteImage(ImageFormatPNG, const Image3B&, const std::string&);
-bool WriteImage(ImageFormatPNG, const Image3W&, const std::string&);
+bool WriteImage(ImageFormatPNG, const Image3S&, const std::string&);
 bool WriteImage(ImageFormatPNG, const Image3U&, const std::string&);
 bool WriteImage(ImageFormatPNG, const MetaImageB&, const std::string&);
 bool WriteImage(ImageFormatPNG, const MetaImageU&, const std::string&);

@@ -52,6 +52,14 @@ struct Header {
 
     // A palette precedes the image data (indices, possibly more than 8 bits).
     kPalette = 8,
+
+    // Decoder should apply edge-preserving filter in opsin space. Useful for
+    // deblocking/deringing in lower-quality settings.
+    kDenoise = 16,
+
+    // Decoder should not predict high frequency DCT coefficients from low
+    // frequency coefficients of neighbouring blocks.
+    kNoHFPrediction = 32,
   };
 
   // For loading/storing fields from/to the compressed stream. Accepts Bytes,
@@ -68,7 +76,8 @@ struct Header {
     (*visitor)(0x00100004, &num_components);
     (*visitor)(kU32Selectors, &flags);
 
-    // Do not add other fields - only sections can be added.
+    // To extend: add a section, or add fields conditional on a NEW flag:
+    // if (flag) (*visitor)(..).
   }
 
   uint32_t xsize = 0;

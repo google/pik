@@ -27,9 +27,10 @@ namespace pik {
 
 PIK_INLINE void OpsinAbsorbance(const float in[3], float out[3]) {
   const float* mix = &kOpsinAbsorbanceMatrix[0];
-  out[0] = mix[0] * in[0] + mix[1] * in[1] + mix[2] * in[2];
-  out[1] = mix[3] * in[0] + mix[4] * in[1] + mix[5] * in[2];
-  out[2] = mix[6] * in[0] + mix[7] * in[1] + mix[8] * in[2];
+  const float* bias = &kOpsinAbsorbanceBias[0];
+  out[0] = mix[0] * in[0] + mix[1] * in[1] + mix[2] * in[2] + bias[0];
+  out[1] = mix[3] * in[0] + mix[4] * in[1] + mix[5] * in[2] + bias[1];
+  out[2] = mix[6] * in[0] + mix[7] * in[1] + mix[8] * in[2] + bias[2];
 }
 
 // Returns the opsin dynamics image corresponding to the given SRGB input image.

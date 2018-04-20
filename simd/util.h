@@ -230,6 +230,13 @@ SIMD_INLINE void flush_cacheline(const void* p) {
 #endif
 }
 
+// Call during spin loops to potentially reduce contention/power consumption.
+SIMD_INLINE void pause() {
+#if SIMD_ARCH == SIMD_ARCH_X86
+  _mm_pause();
+#endif
+}
+
 #ifdef SIMD_NAMESPACE
 }  // namespace SIMD_NAMESPACE
 #endif

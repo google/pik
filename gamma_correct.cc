@@ -35,32 +35,6 @@ const float* Srgb8ToLinearTable() {
   return kSrgb8ToLinearTable;
 }
 
-const uint8_t* NewLinearToSrgb8Table(float bias) {
-  uint8_t* table = new uint8_t[4096];
-  for (int i = 0; i < 4096; ++i) {
-    table[i] = std::round(
-        std::min(255.0f, std::max(0.0f, LinearToSrgb8Direct(i / 16.0) + bias)));
-  }
-  return table;
-}
-
-const uint8_t* LinearToSrgb8Table() {
-  static const uint8_t* const kLinearToSrgb8Table = NewLinearToSrgb8Table(0.0f);
-  return kLinearToSrgb8Table;
-}
-
-const uint8_t* LinearToSrgb8TablePlusQuarter() {
-  static const uint8_t* const kLinearToSrgb8TablePlusQuarter =
-      NewLinearToSrgb8Table(0.25);
-  return kLinearToSrgb8TablePlusQuarter;
-}
-
-const uint8_t* LinearToSrgb8TableMinusQuarter() {
-  static const uint8_t* const kLinearToSrgb8TableMinusQuarter =
-      NewLinearToSrgb8Table(-0.25);
-  return kLinearToSrgb8TableMinusQuarter;
-}
-
 ImageF LinearFromSrgb(const ImageB& srgb) {
   PROFILER_FUNC;
   const float* lut = Srgb8ToLinearTable();

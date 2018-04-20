@@ -21,9 +21,9 @@ void CumulativeDistributionFunction(const int* PIK_RESTRICT histogram,
   V sum = setzero(d);
   for (size_t idx_bin = 0; idx_bin < num_bins; idx_bin += d.N) {
     const V h3210 = load_unaligned(d, histogram + idx_bin);
-    const V h210z = shift_bytes_left<4>(h3210);
+    const V h210z = shift_left_bytes<4>(h3210);
     const V h32_21_10_0z = h3210 + h210z;
-    const V h10_0z_zz_zz = shift_bytes_left<8>(h32_21_10_0z);
+    const V h10_0z_zz_zz = shift_left_bytes<8>(h32_21_10_0z);
     const V prefix_sum = h32_21_10_0z + h10_0z_zz_zz;
     sum += prefix_sum;
     store(sum, d, cdf + idx_bin);

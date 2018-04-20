@@ -21,15 +21,14 @@
 #include "padded_bytes.h"
 #include "pik.h"
 #include "pik_info.h"
+#include "profiler.h"
 #include "simd/dispatch.h"
 
 namespace pik {
 namespace {
 
-// main() function, within namespace for convenience.
 int Compress(const char* pathname_in, const char* pathname_out,
-             const float butteraugli_distance, const size_t target_size,
-             const bool fast_mode, const bool verbose) {
+             const CompressParams& params) {
 #if SIMD_ENABLE_AVX2
   if ((dispatch::SupportedTargets() & SIMD_AVX2) == 0) {
     fprintf(stderr, "Cannot continue because CPU lacks AVX2/FMA support.\n");
@@ -48,20 +47,13 @@ int Compress(const char* pathname_in, const char* pathname_out,
     return 1;
   }
 
-  CompressParams params;
-
-  if (fast_mode) {
-    printf("Compressing with fast mode\n");
-    params.fast_mode = true;
-    params.butteraugli_distance = -1;
-  } else if (target_size > 0) {
-    printf("Compressing to target size %zd\n", target_size);
-    params.target_size = target_size;
-    params.butteraugli_distance = -1;
+  if (params.fast_mode) {
+    fprintf(stderr, "Compressing with fast mode\n");
+  } else if (params.target_size != 0) {
+    fprintf(stderr, "Compressing to target size %zd\n", params.target_size);
   } else {
-    printf("Compressing with maximum Butteraugli distance %f\n",
-           butteraugli_distance);
-    params.butteraugli_distance = butteraugli_distance;
+    fprintf(stderr, "Compressing with maximum Butteraugli distance %f\n",
+            params.butteraugli_distance);
   }
 
   PaddedBytes compressed;
@@ -71,8 +63,8 @@ int Compress(const char* pathname_in, const char* pathname_out,
     return 1;
   }
 
-  printf("Compressed to %zu bytes\n", compressed.size());
-  if (verbose) {
+  fprintf(stderr, "Compressed to %zu bytes\n", compressed.size());
+  if (params.verbose) {
     aux_out.Print(1);
   }
 
@@ -88,54 +80,78 @@ int Compress(const char* pathname_in, const char* pathname_out,
     return 1;
   }
   fclose(f);
+  PROFILER_PRINT_RESULTS();
   return 0;
 }
 
-}  // namespace
-}  // namespace pik
-
 void PrintArgHelp(int argc, char** argv) {
   fprintf(stderr,
-      "Usage: %s in.png out.pik [--distance <maxError>] [--fast]\n"
-      " --distance: Maximum butteraugli distance, smaller value means higher"
-      " quality.\n"
-      "             Good default: 1.0. Supported range: 0.5 .. 3.0.\n"
-      " --fast: Use fast encoding, ignores distance.\n"
-      " --help: Show this help.\n",
-      argv[0]);
+          "Usage: %s in.png out.pik [--distance <maxError>] [--fast] "
+          "[--denoise <0,1>] [--noise <0,1>]\n"
+          " --distance: Maximum butteraugli distance, lower = higher quality.\n"
+          "             Good default: 1.0. Supported range: 0.5 .. 3.0.\n"
+          " --fast: Use fast encoding, ignores distance.\n"
+          " --denoise: force enable/disable edge-preserving smoothing.\n"
+          " --noise: force enable/disable noise generation.\n"
+          " --help: Show this help.\n",
+          argv[0]);
 }
 
-void ExitWithArgError(int argc, char** argv) {
+PIK_NORETURN void ExitWithArgError(int argc, char** argv) {
   PrintArgHelp(argc, argv);
   std::exit(1);
 }
 
-int main(int argc, char** argv) {
-  bool fast_mode = false;
-  bool verbose = false;
-  const char* arg_maxError = nullptr;
-  const char* arg_maxSize = nullptr;
+Override GetOverride(const int argc, char** argv, int* i) {
+  *i += 1;
+  if (*i >= argc) {
+    fprintf(stderr, "Expected a 0 or 1 flagnn\n");
+    ExitWithArgError(argc, argv);
+  }
+  const std::string flag = argv[*i];
+  if (flag == "1") {
+    return Override::kOn;
+  } else if (flag == "0") {
+    return Override::kOff;
+  } else {
+    fprintf(stderr, "Invalid flag, must be 0 or 1\n");
+    ExitWithArgError(argc, argv);
+  }
+}
+
+int Run(int argc, char** argv) {
+  CompressParams params;
   const char* arg_in = nullptr;
   const char* arg_out = nullptr;
   for (int i = 1; i < argc; i++) {
     if (argv[i][0] == '-') {
-      std::string arg = argv[i];
+      const std::string arg = argv[i];
       if (arg == "--fast") {
-        fast_mode = true;
+        params.fast_mode = true;
+      } else if (arg == "--denoise") {
+        params.denoise = GetOverride(argc, argv, &i);
+      } else if (arg == "--noise") {
+        params.apply_noise = GetOverride(argc, argv, &i);
       } else if (arg == "-v") {
-        verbose = true;
+        params.verbose = true;
       } else if (arg == "--distance") {
-        if (i + 1 >= argc) {
-          printf("Must give a distance value\n");
+        if (++i >= argc) {
+          fprintf(stderr, "Must give a distance value\n");
           ExitWithArgError(argc, argv);
         }
-        arg_maxError = argv[++i];
+        params.butteraugli_distance = strtod(argv[i], nullptr);
+        if (!(0.5f <= params.butteraugli_distance &&
+              params.butteraugli_distance <= 3.0f)) {
+          fprintf(stderr, "Invalid/out of range distance '%s', try 0.5 to 3.\n",
+                  argv[i]);
+          return 1;
+        }
       } else if (arg == "--target_size") {
-        if (i + 1 >= argc) {
-          printf("Must give a size value\n");
+        if (++i >= argc) {
+          fprintf(stderr, "Must give a size value\n");
           ExitWithArgError(argc, argv);
         }
-        arg_maxSize = argv[++i];
+        params.target_size = strtoul(argv[i], nullptr, 0);
       } else if (arg == "--help") {
         PrintArgHelp(argc, argv);
         return 0;
@@ -152,31 +168,20 @@ int main(int argc, char** argv) {
     }
   }
 
-  if (arg_maxError && arg_maxSize) {
+  if (params.target_size != 0 && params.butteraugli_distance != -1.0f) {
     fprintf(stderr,
             "Only one of --distance or --target_size can be specified.\n");
     ExitWithArgError(argc, argv);
-  }
-
-  float butteraugli_distance = 1.0;
-  if (arg_maxError) {
-    butteraugli_distance = strtod(arg_maxError, nullptr);
-    if (!(0.5f <= butteraugli_distance && butteraugli_distance <= 3.0f)) {
-      fprintf(stderr, "Invalid/out of range distance '%s', try 0.5 to 3.\n",
-              arg_maxError);
-      return 1;
-    }
-  }
-
-  size_t target_size = 0;
-  if (arg_maxSize) {
-    target_size = strtoul(arg_maxSize, nullptr, 0);
   }
 
   if (!arg_in || !arg_out) {
     ExitWithArgError(argc, argv);
   }
 
-  return pik::Compress(arg_in, arg_out, butteraugli_distance, target_size,
-                       fast_mode, verbose);
+  return Compress(arg_in, arg_out, params);
 }
+
+}  // namespace
+}  // namespace pik
+
+int main(int argc, char** argv) { return pik::Run(argc, argv); }

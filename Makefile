@@ -1,12 +1,15 @@
 PNG_FLAGS := $(shell pkg-config --cflags libpng)
 PNG_LIBS := $(shell pkg-config --libs libpng)
 
-override CXXFLAGS += -std=c++11 -Wall -O3 -fPIC -DSIMD_ENABLE=4 -msse4.2 -maes -I. -I../ -Ithird_party/brotli/c/include/ -Wno-sign-compare
+SIMD_FLAGS := -DSIMD_ENABLE=4 -msse4.2 -maes
+override CXXFLAGS += -std=c++11 -Wall -O3 -fPIC -I. -I../ -Ithird_party/brotli/c/include/ -Wno-sign-compare
 override LDFLAGS += $(PNG_LIBS) -ljpeg -lpthread
 
 PIK_OBJS := $(addprefix obj/, \
 	simd/dispatch.o \
 	adaptive_quantization.o \
+	af_edge_preserving_filter.o \
+	af_edge_preserving_filter_none.o \
 	af_stats.o \
 	alpha_blend.o \
 	ans_decode.o \
@@ -39,8 +42,11 @@ PIK_OBJS := $(addprefix obj/, \
 	opsin_codec.o \
 	opsin_inverse.o \
 	opsin_image.o \
+	opsin_params.o \
+	os_specific.o \
 	padded_bytes.o \
 	quantizer.o \
+	tile_flow.o \
 	yuv_convert.o \
 	yuv_opsin_convert.o \
 )
@@ -56,6 +62,11 @@ endif
 third_party/brotli/libbrotli.a:
 	make -C third_party/brotli lib
 
+obj/af_edge_preserving_filter_none.o: af_edge_preserving_filter.cc
+	@mkdir -p obj
+	$(CXX) -c $(CPPFLAGS) $(CXXFLAGS) af_edge_preserving_filter.cc -o obj/af_edge_preserving_filter_none.o
+
+
 bin/cpik: $(PIK_OBJS) obj/cpik.o third_party/brotli/libbrotli.a
 bin/dpik: $(PIK_OBJS) obj/dpik.o third_party/brotli/libbrotli.a
 bin/butteraugli_main: $(PIK_OBJS) obj/butteraugli_main.o third_party/brotli/libbrotli.a
@@ -64,7 +75,7 @@ bin/y4m2png: $(PIK_OBJS) obj/y4m2png.o third_party/brotli/libbrotli.a
 
 obj/%.o: %.cc
 	@mkdir -p -- $(dir $@)
-	$(CXX) -c $(CPPFLAGS) $(CXXFLAGS) $(PNG_FLAGS) $< -o $@
+	$(CXX) -c $(CPPFLAGS) $(CXXFLAGS) $(SIMD_FLAGS) $(PNG_FLAGS) $< -o $@
 
 bin/%: obj/%.o
 	@mkdir -p -- $(dir $@)

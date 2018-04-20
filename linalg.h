@@ -164,6 +164,26 @@ void FindClosestLatticeVector(const ImageD& A, const ImageD& y,
 void OptimizeIntegerQuadraticForm(const ImageD& A, const ImageD& y,
                                   Image<int>* const PIK_RESTRICT z0);
 
+// Inverts a 3x3 matrix in place
+template <typename T>
+void Inv3x3Matrix(T* matrix) {
+  T temp[9];
+  temp[0] = matrix[4] * matrix[8] - matrix[5] * matrix[7];
+  temp[1] = matrix[2] * matrix[7] - matrix[1] * matrix[8];
+  temp[2] = matrix[1] * matrix[5] - matrix[2] * matrix[4];
+  temp[3] = matrix[5] * matrix[6] - matrix[3] * matrix[8];
+  temp[4] = matrix[0] * matrix[8] - matrix[2] * matrix[6];
+  temp[5] = matrix[2] * matrix[3] - matrix[0] * matrix[5];
+  temp[6] = matrix[3] * matrix[7] - matrix[4] * matrix[6];
+  temp[7] = matrix[1] * matrix[6] - matrix[0] * matrix[7];
+  temp[8] = matrix[0] * matrix[4] - matrix[1] * matrix[3];
+  T idet =
+      1.0 / (matrix[0] * temp[0] + matrix[1] * temp[3] + matrix[2] * temp[6]);
+  for (int i = 0; i < 9; i++) {
+    matrix[i] = temp[i] * idet;
+  }
+}
+
 }  // namespace pik
 
 #endif  // LINALG_H_
