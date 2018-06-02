@@ -123,6 +123,9 @@ size_t HistogramBuilder::EncodedSize(
   for (int c = 0; c < histograms_.size(); ++c) {
     size_t histogram_bits;
     size_t data_bits;
+	if(histograms_[c].data_.empty()) {
+		continue;
+	}
     BuildHuffmanTreeAndCountBits(histograms_[c].data_.data(),
                                  histograms_[c].data_.size(),
                                  &histogram_bits, &data_bits);
