@@ -674,6 +674,28 @@ static void L2Diff(const ImageF& i0, const ImageF& i1, const double w,
   }
 }
 
+static void L2DiffAsymmetric(const ImageF& i0, const ImageF& i1,
+                             const double w_0gt1,
+                             const double w_0lt1,
+                             ImageF* BUTTERAUGLI_RESTRICT diffmap) {
+  if (w_0gt1 == 0 && w_0lt1 == 0) {
+    return;
+  }
+  for (size_t y = 0; y < i0.ysize(); ++y) {
+    const float* BUTTERAUGLI_RESTRICT const row0 = i0.Row(y);
+    const float* BUTTERAUGLI_RESTRICT const row1 = i1.Row(y);
+    float* BUTTERAUGLI_RESTRICT const row_diff = diffmap->Row(y);
+    for (size_t x = 0; x < i0.xsize(); ++x) {
+      double diff = row0[x] - row1[x];
+      if (fabs(row0[x]) < 2.0 * fabs(row1[x])) {
+        row_diff[x] += w_0lt1 * diff * diff;
+      } else {
+        row_diff[x] += w_0gt1 * diff * diff;
+      }
+    }
+  }
+}
+
 // Making a cluster of local errors to be more impactful than
 // just a single error.
 ImageF CalculateDiffmap(const ImageF& diffmap_in) {
@@ -727,10 +749,12 @@ void MaskPsychoImage(const PsychoImage& pi0, const PsychoImage& pi1,
   Mask(mask_xyb0, mask_xyb1, mask, mask_dc);
 }
 
-ButteraugliComparator::ButteraugliComparator(const std::vector<ImageF>& rgb0)
+ButteraugliComparator::ButteraugliComparator(const std::vector<ImageF>& rgb0,
+                                             double hf_asymmetry)
     : xsize_(rgb0[0].xsize()),
       ysize_(rgb0[0].ysize()),
-      num_pixels_(xsize_ * ysize_) {
+      num_pixels_(xsize_ * ysize_),
+      hf_asymmetry_(hf_asymmetry) {
   if (xsize_ < 8 || ysize_ < 8) return;
   std::vector<ImageF> xyb0 = OpsinDynamicsImage(rgb0);
   SeparateFrequencies(xsize_, ysize_, xyb0, pi0_);
@@ -775,32 +799,44 @@ void ButteraugliComparator::DiffmapPsychoImage(const PsychoImage& pi1,
 
   static const double wUhfMalta = 5.1409625726;
   static const double norm1Uhf = 58.5001247061;
-  MaltaDiffMap(pi0_.uhf[1], pi1.uhf[1], wUhfMalta, norm1Uhf,
+  MaltaDiffMap(pi0_.uhf[1], pi1.uhf[1],
+               wUhfMalta * hf_asymmetry_,
+               wUhfMalta / hf_asymmetry_,
+               norm1Uhf,
                &block_diff_ac[1]);
 
   static const double wUhfMaltaX = 4.91743441556;
   static const double norm1UhfX = 687196.39002;
-  MaltaDiffMap(pi0_.uhf[0], pi1.uhf[0], wUhfMaltaX, norm1UhfX,
+  MaltaDiffMap(pi0_.uhf[0], pi1.uhf[0],
+               wUhfMaltaX * hf_asymmetry_,
+               wUhfMaltaX / hf_asymmetry_,
+               norm1UhfX,
                &block_diff_ac[0]);
 
   static const double wHfMalta = 153.671655716;
   static const double norm1Hf = 83150785.9592;
-  MaltaDiffMapLF(pi0_.hf[1], pi1.hf[1], wHfMalta, norm1Hf,
-               &block_diff_ac[1]);
+  MaltaDiffMapLF(pi0_.hf[1], pi1.hf[1],
+                 wHfMalta * sqrt(hf_asymmetry_),
+                 wHfMalta / sqrt(hf_asymmetry_),
+                 norm1Hf,
+                 &block_diff_ac[1]);
 
   static const double wHfMaltaX = 668.358918152;
   static const double norm1HfX = 0.882954368025;
-  MaltaDiffMapLF(pi0_.hf[0], pi1.hf[0], wHfMaltaX, norm1HfX,
-               &block_diff_ac[0]);
+  MaltaDiffMapLF(pi0_.hf[0], pi1.hf[0],
+                 wHfMaltaX * sqrt(hf_asymmetry_),
+                 wHfMaltaX / sqrt(hf_asymmetry_),
+                 norm1HfX,
+                 &block_diff_ac[0]);
 
   static const double wMfMalta = 6841.81248144;
   static const double norm1Mf = 0.0135134962487;
-  MaltaDiffMapLF(pi0_.mf[1], pi1.mf[1], wMfMalta, norm1Mf,
+  MaltaDiffMapLF(pi0_.mf[1], pi1.mf[1], wMfMalta, wMfMalta, norm1Mf,
                  &block_diff_ac[1]);
 
   static const double wMfMaltaX = 813.901703816;
   static const double norm1MfX = 16792.9322251;
-  MaltaDiffMapLF(pi0_.mf[0], pi1.mf[0], wMfMaltaX, norm1MfX,
+  MaltaDiffMapLF(pi0_.mf[0], pi1.mf[0], wMfMaltaX, wMfMaltaX, norm1MfX,
                  &block_diff_ac[0]);
 
   static const double wmul[9] = {
@@ -823,7 +859,10 @@ void ButteraugliComparator::DiffmapPsychoImage(const PsychoImage& pi1,
 
   for (int c = 0; c < 3; ++c) {
     if (c < 2) {
-      L2Diff(pi0_.hf[c], pi1.hf[c], wmul[c], &block_diff_ac[c]);
+      L2DiffAsymmetric(pi0_.hf[c], pi1.hf[c],
+                       wmul[c] * hf_asymmetry_,
+                       wmul[c] / hf_asymmetry_,
+                       &block_diff_ac[c]);
     }
     L2Diff(pi0_.mf[c], pi1.mf[c], wmul[3 + c], &block_diff_ac[c]);
     L2Diff(pi0_.lf[c], pi1.lf[c], wmul[6 + c], &block_diff_dc[c]);
@@ -1390,11 +1429,15 @@ static BUTTERAUGLI_INLINE float PaddedMaltaUnit(
 template <class Tag>
 static void MaltaDiffMapImpl(const ImageF& lum0, const ImageF& lum1,
                              const size_t xsize_, const size_t ysize_,
-                             const double weight, const double norm1,
+                             const double w_0gt1,
+                             const double w_0lt1,
+                             const double norm1,
                              const double len, const double mulli,
                              ImageF* block_diff_ac) {
-  const double w = mulli * sqrt(weight) / (len * 2 + 1);
-  const float norm2 = w * norm1;
+  const double w_pre0gt1 = mulli * sqrt(w_0gt1) / (len * 2 + 1);
+  const double w_pre0lt1 = mulli * sqrt(w_0lt1) / (len * 2 + 1);
+  const float norm2_0gt1 = w_pre0gt1 * norm1;
+  const float norm2_0lt1 = w_pre0lt1 * norm1;
 
   std::vector<float> diffs(ysize_ * xsize_);
   for (size_t y = 0, ix = 0; y < ysize_; ++y) {
@@ -1403,7 +1446,10 @@ static void MaltaDiffMapImpl(const ImageF& lum0, const ImageF& lum1,
     for (size_t x = 0; x < xsize_; ++x, ++ix) {
       const float absval = 0.5f * (std::abs(row0[x]) + std::abs(row1[x]));
       const float diff = row0[x] - row1[x];
-      const float scaler = norm2 / (static_cast<float>(norm1) + absval);
+      bool is_0lt1 = fabs(row0[x]) < 2.0 * fabs(row1[x]);
+      const float scaler =
+         (is_0lt1 ? norm2_0lt1 : norm2_0gt1) /
+         (static_cast<float>(norm1) + absval);
       diffs[ix] = scaler * diff;
     }
   }
@@ -1448,22 +1494,29 @@ static void MaltaDiffMapImpl(const ImageF& lum0, const ImageF& lum1,
 }
 
 void ButteraugliComparator::MaltaDiffMap(
-    const ImageF& lum0, const ImageF& lum1, const double weight,
+    const ImageF& lum0, const ImageF& lum1,
+    const double w_0gt1,
+    const double w_0lt1,
     const double norm1, ImageF* BUTTERAUGLI_RESTRICT block_diff_ac) const {
   PROFILER_FUNC;
   const double len = 3.75;
   static const double mulli = 0.354191303559;
-  MaltaDiffMapImpl<MaltaTag>(lum0, lum1, xsize_, ysize_, weight, norm1, len,
+  MaltaDiffMapImpl<MaltaTag>(lum0, lum1, xsize_, ysize_, w_0gt1, w_0lt1,
+                             norm1, len,
                              mulli, block_diff_ac);
 }
 
 void ButteraugliComparator::MaltaDiffMapLF(
-    const ImageF& lum0, const ImageF& lum1, const double weight,
+    const ImageF& lum0, const ImageF& lum1,
+    const double w_0gt1,
+    const double w_0lt1,
     const double norm1, ImageF* BUTTERAUGLI_RESTRICT block_diff_ac) const {
   PROFILER_FUNC;
   const double len = 3.75;
   static const double mulli = 0.405371989604;
-  MaltaDiffMapImpl<MaltaTagLF>(lum0, lum1, xsize_, ysize_, weight, norm1, len,
+  MaltaDiffMapImpl<MaltaTagLF>(lum0, lum1, xsize_, ysize_,
+                               w_0gt1, w_0lt1,
+                               norm1, len,
                                mulli, block_diff_ac);
 }
 
@@ -1691,6 +1744,7 @@ void Mask(const std::vector<ImageF>& xyb0,
 
 void ButteraugliDiffmap(const std::vector<ImageF> &rgb0_image,
                         const std::vector<ImageF> &rgb1_image,
+                        double hf_asymmetry,
                         ImageF &result_image) {
   PROFILER_FUNC;
   const size_t xsize = rgb0_image[0].xsize();
@@ -1718,7 +1772,7 @@ void ButteraugliDiffmap(const std::vector<ImageF> &rgb0_image,
       }
     }
     ImageF diffmap_scaled;
-    ButteraugliDiffmap(scaled0, scaled1, diffmap_scaled);
+    ButteraugliDiffmap(scaled0, scaled1, hf_asymmetry, diffmap_scaled);
     result_image = ImageF(xsize, ysize);
     for (int y = 0; y < ysize; ++y) {
       for (int x = 0; x < xsize; ++x) {
@@ -1727,12 +1781,13 @@ void ButteraugliDiffmap(const std::vector<ImageF> &rgb0_image,
     }
     return;
   }
-  ButteraugliComparator butteraugli(rgb0_image);
+  ButteraugliComparator butteraugli(rgb0_image, hf_asymmetry);
   butteraugli.Diffmap(rgb1_image, result_image);
 }
 
 bool ButteraugliInterface(const std::vector<ImageF> &rgb0,
                           const std::vector<ImageF> &rgb1,
+                          float hf_asymmetry,
                           ImageF &diffmap,
                           double &diffvalue) {
   const size_t xsize = rgb0[0].xsize();
@@ -1746,7 +1801,7 @@ bool ButteraugliInterface(const std::vector<ImageF> &rgb0,
       return false;  // Image planes must have same dimensions.
     }
   }
-  ButteraugliDiffmap(rgb0, rgb1, diffmap);
+  ButteraugliDiffmap(rgb0, rgb1, hf_asymmetry, diffmap);
   diffvalue = ButteraugliScoreFromDiffmap(diffmap);
   return true;
 }

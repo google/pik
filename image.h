@@ -204,14 +204,24 @@ class Image {
   // Returns pointer to the start of a row, with at least xsize (rounded up to
   // the number of vector lanes) accessible values.
   PIK_INLINE T* PIK_RESTRICT Row(const size_t y) {
-    PIK_ASSERT(y < ysize_);
+#ifdef PIK_ENABLE_ASSERT
+    if (y >= ysize_) {
+      fprintf(stderr, "Row(%zu) >= %d\n", y, ysize_);
+      abort();
+    }
+#endif
     void* row = bytes_.get() + y * bytes_per_row_;
     return static_cast<T*>(PIK_ASSUME_ALIGNED(row, 64));
   }
 
   // Returns pointer to const (see above).
   PIK_INLINE const T* PIK_RESTRICT Row(const size_t y) const {
-    PIK_ASSERT(y < ysize_);
+#ifdef PIK_ENABLE_ASSERT
+    if (y >= ysize_) {
+      fprintf(stderr, "Row(%zu) >= %d\n", y, ysize_);
+      abort();
+    }
+#endif
     void* row = bytes_.get() + y * bytes_per_row_;
     return static_cast<T*>(PIK_ASSUME_ALIGNED(row, 64));
   }
@@ -407,52 +417,71 @@ bool SamePixels(const Image<T>& image1, const Image<T>& image2) {
 // Use for floating-point images with fairly large numbers; tolerates small
 // absolute errors and/or small relative errors. Returns max_relative.
 template <typename T>
-float VerifyRelativeError(const Image<T>& expected, const Image<T>& actual,
-                          const float threshold_l1,
-                          const float threshold_relative,
-                          const size_t border = 0) {
+double VerifyRelativeError(const Image<T>& expected, const Image<T>& actual,
+                           const double threshold_l1,
+                           const double threshold_relative,
+                           const size_t border = 0) {
   PIK_CHECK(SameSize(expected, actual));
-  // Max over one scanline to give a better idea whether there are systematic
-  // errors or just one outlier.
-  float max_l1 = -1E30f;
-  float max_relative = -1E30f;
+  // Max over current scanline to give a better idea whether there are
+  // systematic errors or just one outlier. Invalid if negative.
+  double max_l1 = -1;
+  double max_relative = -1;
   for (size_t y = border; y < expected.ysize() - border; ++y) {
     const T* const PIK_RESTRICT row_expected = expected.Row(y);
     const T* const PIK_RESTRICT row_actual = actual.Row(y);
+    bool any_bad = false;
     for (size_t x = border; x < expected.xsize() - border; ++x) {
-      const float l1 = std::abs(row_expected[x] - row_actual[x]);
-      max_l1 = std::max(max_l1, l1);
-      const float relative =
-          row_expected[x] == T(0)
-              ? 0.0f
-              : l1 / std::abs(static_cast<float>(row_expected[x]));
-      max_relative = std::max(max_relative, relative);
-    }
+      const double l1 = std::abs(row_expected[x] - row_actual[x]);
 
-    if (max_l1 >= threshold_l1 && max_relative >= threshold_relative) {
-      printf("Max +/- %f, %fx exceeds +/- %f, %fx\n", max_l1, max_relative,
-             threshold_l1, threshold_relative);
-      // Find first failing x for further debugging.
-      for (size_t x = border; x < expected.xsize() - border; ++x) {
-        const float l1 = std::abs(row_expected[x] - row_actual[x]);
-        const float relative =
-            row_expected[x] == T(0)
-                ? 0.0f
-                : l1 / std::abs(static_cast<float>(row_expected[x]));
-        if (l1 >= threshold_l1 && relative >= threshold_relative) {
-          printf("x %zu y %zu expected %f actual %f\n", x, y,
-                 static_cast<float>(row_expected[x]),
-                 static_cast<float>(row_actual[x]));
-          exit(1);
+      // Cannot compute relative, only check/update L1.
+      if (row_expected[x] < 1E-10) {
+        if (l1 > threshold_l1) {
+          any_bad = true;
+          max_l1 = std::max(max_l1, l1);
+        }
+      } else {
+        const double relative = l1 / std::abs(double(row_expected[x]));
+        if (l1 > threshold_l1 && relative > threshold_relative) {
+          // Fails both tolerances => will exit below, update max_*.
+          any_bad = true;
+          max_l1 = std::max(max_l1, l1);
+          max_relative = std::max(max_relative, relative);
         }
       }
     }
 
-    // Didn't find the exact same value => avoid printing repeatedly.
-    return max_relative;
+    if (any_bad) {
+      // Never had a valid relative value, don't print it.
+      if (max_relative < 0) {
+        printf("Max +/- %E exceeds +/- %.2E\n", max_l1, threshold_l1);
+      } else {
+        printf("Max +/- %E, x %E exceeds +/- %.2E, x %.2E\n", max_l1,
+               max_relative, threshold_l1, threshold_relative);
+      }
+      // Find first failing x for further debugging.
+      for (size_t x = border; x < expected.xsize() - border; ++x) {
+        const double l1 = std::abs(row_expected[x] - row_actual[x]);
+
+        bool bad = l1 > threshold_l1;
+        if (row_expected[x] > 1E-10) {
+          const double relative = l1 / std::abs(double(row_expected[x]));
+          bad &= relative > threshold_relative;
+        }
+        if (bad) {
+          printf("%zu, %zu (%zu x %zu) expected %f actual %f\n", x, y,
+                 expected.xsize(), expected.ysize(),
+                 static_cast<double>(row_expected[x]),
+                 static_cast<double>(row_actual[x]));
+          fflush(stdout);
+          exit(1);
+        }
+      }
+
+      PIK_CHECK(false);  // if any_bad, we should have exited.
+    }
   }
 
-  return max_relative;
+  return (max_relative < 0) ? 0.0 : max_relative;
 }
 
 template <class ImageIn, class ImageOut>
@@ -603,7 +632,7 @@ struct WrapMirror {
 // Repeats the edge pixel.
 struct WrapClamp {
   PIK_INLINE int64_t operator()(const int64_t coord, const int64_t size) const {
-    return std::min(std::max(0L, coord), size - 1L);
+    return std::min(std::max<int64_t>(0, coord), size - 1);
   }
 };
 
@@ -612,6 +641,41 @@ struct WrapClamp {
 struct WrapUnchanged {
   PIK_INLINE int64_t operator()(const int64_t coord, const int64_t size) const {
     return coord;
+  }
+};
+
+// Similar to Wrap* but for row pointers (reduces Row() multiplications).
+
+class WrapRowMirror {
+ public:
+  template <class ImageOrView>
+  WrapRowMirror(const ImageOrView& image, const size_t ysize)
+      : first_row_(image.ConstRow(0)), last_row_(image.ConstRow(ysize - 1)) {}
+
+  const float* const PIK_RESTRICT
+  operator()(const float* const PIK_RESTRICT row, const int64_t stride) const {
+    if (row < first_row_) {
+      const int64_t num_before = first_row_ - row;
+      // Mirrored; one row before => row 0, two before = row 1, ...
+      return first_row_ + num_before - stride;
+    }
+    if (row > last_row_) {
+      const int64_t num_after = row - last_row_;
+      // Mirrored; one row after => last row, two after = last - 1, ...
+      return last_row_ - num_after + stride;
+    }
+    return row;
+  }
+
+ private:
+  const float* const PIK_RESTRICT first_row_;
+  const float* const PIK_RESTRICT last_row_;
+};
+
+struct WrapRowUnchanged {
+  PIK_INLINE const float* const PIK_RESTRICT
+  operator()(const float* const PIK_RESTRICT row, const int64_t stride) const {
+    return row;
   }
 };
 
@@ -1006,6 +1070,21 @@ bool SamePixels(const Image3<T>& image1, const Image3<T>& image2) {
   return true;
 }
 
+template <typename T>
+float VerifyRelativeError(const Image3<T>& expected, const Image3<T>& actual,
+                          const float threshold_l1,
+                          const float threshold_relative,
+                          const size_t border = 0) {
+  float max_relative = 0.0f;
+  for (int c = 0; c < 3; ++c) {
+    const float rel =
+        VerifyRelativeError(expected.plane(c), actual.plane(c), threshold_l1,
+                            threshold_relative, border);
+    max_relative = std::max(max_relative, rel);
+  }
+  return max_relative;
+}
+
 // Sets "thickness" pixels on each border to "value". This is faster than
 // initializing the entire image and overwriting valid/interior pixels.
 template <typename T>
@@ -1041,20 +1120,34 @@ void SetBorder(const size_t thickness, const T value, Image3<T>* image) {
 
 // Computes independent minimum and maximum values for each plane.
 template <typename T>
-void Image3MinMax(const Image3<T>& image, std::array<T, 3>* min,
-                  std::array<T, 3>* max) {
+void Image3MinMax(const Image3<T>& image, std::array<T, 3>* out_min,
+                  std::array<T, 3>* out_max) {
   for (int c = 0; c < 3; ++c) {
-    (*min)[c] = std::numeric_limits<T>::max();
-    (*max)[c] = std::numeric_limits<T>::min();
-  }
-  for (size_t y = 0; y < image.ysize(); ++y) {
-    const auto rows = image.ConstRow(y);
-    for (size_t x = 0; x < image.xsize(); ++x) {
-      for (int c = 0; c < 3; ++c) {
-        (*min)[c] = std::min((*min)[c], rows[c][x]);
-        (*max)[c] = std::max((*max)[c], rows[c][x]);
+    T min = std::numeric_limits<T>::max();
+    T max = std::numeric_limits<T>::min();
+    for (size_t y = 0; y < image.ysize(); ++y) {
+      const T* PIK_RESTRICT row = image.ConstPlaneRow(c, y);
+      for (size_t x = 0; x < image.xsize(); ++x) {
+        min = std::min(min, row[x]);
+        max = std::max(max, row[x]);
       }
     }
+    (*out_min)[c] = min;
+    (*out_max)[c] = max;
+  }
+}
+
+template <typename T>
+void Image3Max(const Image3<T>& image, std::array<T, 3>* out_max) {
+  for (int c = 0; c < 3; ++c) {
+    T max = std::numeric_limits<T>::min();
+    for (size_t y = 0; y < image.ysize(); ++y) {
+      const T* PIK_RESTRICT row = image.ConstPlaneRow(c, y);
+      for (size_t x = 0; x < image.xsize(); ++x) {
+        max = std::max(max, row[x]);
+      }
+    }
+    (*out_max)[c] = max;
   }
 }
 
@@ -1105,8 +1198,8 @@ template <typename Tin, typename Tout>
 void SubtractFrom(const Image3<Tin>& what, Image3<Tout>* to) {
   const size_t xsize = what.xsize();
   const size_t ysize = what.ysize();
-  for (size_t y = 0; y < ysize; ++y) {
-    for (int c = 0; c < 3; ++c) {
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < ysize; ++y) {
       const Tin* PIK_RESTRICT row_what = what.ConstPlaneRow(c, y);
       Tout* PIK_RESTRICT row_to = to->PlaneRow(c, y);
       for (size_t x = 0; x < xsize; ++x) {
@@ -1120,8 +1213,8 @@ template <typename Tin, typename Tout>
 void AddTo(const Image3<Tin>& what, Image3<Tout>* to) {
   const size_t xsize = what.xsize();
   const size_t ysize = what.ysize();
-  for (size_t y = 0; y < ysize; ++y) {
-    for (int c = 0; c < 3; ++c) {
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < ysize; ++y) {
       const Tin* PIK_RESTRICT row_what = what.ConstPlaneRow(c, y);
       Tout* PIK_RESTRICT row_to = to->PlaneRow(c, y);
       for (size_t x = 0; x < xsize; ++x) {

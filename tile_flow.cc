@@ -50,7 +50,7 @@ static constexpr size_t kMaxNodes = 32;
 // Upper bound on TFBuilder::Add* num_ports. Determines SinkTLS array size.
 static constexpr size_t kMaxPorts = 3;
 
-static constexpr size_t kMaxSourceUsers = 1;
+static constexpr size_t kMaxSourceUsers = 2;
 
 static_assert(kMaxPorts <= sizeof(TFPortBits) * 8, "Too many ports");
 static_assert(kMaxNodes <= sizeof(NodeBits) * 8, "Too many nodes");
@@ -77,7 +77,7 @@ class CoordFromIndex {
   static CoordFromIndex FromTileSize(const uint32_t size) {
     CoordFromIndex ret;
     PIK_CHECK(size != 0);
-    ret.shift_ = FloorLog2NonZero32(size);
+    ret.shift_ = FloorLog2Nonzero(size);
     ret.border_ = 0;
     return ret;
   }
@@ -261,7 +261,6 @@ struct SourcePortTLS {
 
   // Offset is smaller than pointer and enables an efficient power-of-two size.
   User users_[kMaxSourceUsers];
-  uint32_t padding;
 };
 #pragma pack(pop)
 static_assert(sizeof(SourcePortTLS) == 32, "Check size, 2^n more efficient");
@@ -368,7 +367,7 @@ class TFNode {
 
       // Indicate this node is a user of all specified input ports.
       for (TFPortBits bits = input.bits; bits != 0; bits &= bits - 1) {
-        const TFPortIndex port = NumZeroBitsBelowLSB32Nonzero(bits);
+        const TFPortIndex port = NumZeroBitsBelowLSBNonzero(bits);
         input.node->ports_[port].users |= 1ULL << Index();
       }
     }
@@ -597,7 +596,7 @@ class TFNode {
 
       // Foreach port, lowest to highest:
       for (TFPortBits bits = input.bits; bits != 0; bits &= bits - 1) {
-        const TFPortIndex idx_port = NumZeroBitsBelowLSB32Nonzero(bits);
+        const TFPortIndex idx_port = NumZeroBitsBelowLSBNonzero(bits);
         ConstImageViewF& input_tls = inputs_tls[idx_input_tls++];
 
         input_tls.Init(prev->output_pointers_.Get(idx_port), border_x,
@@ -1403,7 +1402,7 @@ TFGraph::TFGraph(const ImageSize sink_size, const ImageSize tile_size,
       num_tiles_y_(CeilDiv(sink_size.ysize, tile_size.ysize)),
       num_tiles_(num_tiles_x_ * num_tiles_y_),
       pool_(pool),
-      num_instances_(std::max(pool->NumThreads(), 1ul)) {
+      num_instances_(std::max<size_t>(pool->NumThreads(), 1)) {
   for (int i = 0; i < num_instances_; ++i) {
     instances_[i] = builder->CreateInstance(i);
   }
@@ -1445,7 +1444,7 @@ void TFGraph::Run() {
 
   // Second-best: scatter tiles but avoid Divider.
   if ((num_tiles_x_ & mask) == 0) {  // Power of two (including 1)
-    const int shift = FloorLog2NonZero32(num_tiles_x_);
+    const int shift = FloorLog2Nonzero(num_tiles_x_);
     pool_->Run(0, num_tiles_,
                [mask, shift, self](const int task, const int thread) {
                  PROFILER_ZONE("|| TF task 2^x");

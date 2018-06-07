@@ -17,8 +17,11 @@
 #include <math.h>
 #include <algorithm>
 
+#undef PROFILER_ENABLED
+#define PROFILER_ENABLED 1
 #include "compiler_specific.h"
 #include "gamma_correct.h"
+#include "profiler.h"
 
 namespace pik {
 
@@ -39,6 +42,13 @@ inline void ExtrapolateBorders(const float* const PIK_RESTRICT row_in,
 ImageF ConvolveXSampleAndTranspose(const ImageF& in,
                                    const std::vector<float>& kernel,
                                    const size_t res) {
+  std::unique_ptr<Zone> zone;
+  if (kernel.size() == 3 && res == 1) {
+    zone.reset(new Zone("ConvolveX_3"));
+  }
+  if (kernel.size() == 5 && res == 1) {
+    zone.reset(new Zone("ConvolveX_5"));
+  }
   PIK_ASSERT(kernel.size() % 2 == 1);
   PIK_ASSERT(in.xsize() % res == 0);
   const int offset = res / 2;

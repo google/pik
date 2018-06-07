@@ -215,78 +215,14 @@ void EncodeCoeffOrder(const int* order, size_t* storage_ix, uint8_t* storage) {
   }
 }
 
-template <class EntropyEncodingData, class SymbolWriter>
-struct EncodeImageInternal {
-  template <class Processor>
-  std::string operator()(const Image3S& img, Processor* processor,
-                         PikImageSizeInfo* info) {
-    // Build histograms.
-    HistogramBuilder builder(Processor::num_contexts());
-    ProcessImage3(img, processor, &builder);
-    // Encode histograms.
-    const size_t max_out_size = 2 * builder.EncodedSize(1, 2) + 1024;
-    std::string output(max_out_size, 0);
-    size_t storage_ix = 0;
-    uint8_t* storage = reinterpret_cast<uint8_t*>(&output[0]);
-    storage[0] = 0;
-    std::vector<EntropyEncodingData> codes;
-    std::vector<uint8_t> context_map;
-    std::vector<double> entropy_per_context;
-    builder.BuildAndStoreEntropyCodes(
-        &codes, &context_map, &storage_ix, storage,
-        info ? &entropy_per_context : nullptr, info);
-    // Close the histogram bit stream.
-    size_t jump_bits = ((storage_ix + 7) & ~7) - storage_ix;
-    WriteBits(jump_bits, 0, &storage_ix, storage);
-    PIK_ASSERT(storage_ix % 8 == 0);
-    const size_t histo_bytes = storage_ix >> 3;
-    // Entropy encode data.
-    SymbolWriter symbol_writer(codes, context_map, &storage_ix, storage);
-    ProcessImage3(img, processor, &symbol_writer);
-    symbol_writer.FlushToBitStream();
-    const size_t data_bits = storage_ix - 8 * histo_bytes;
-    const size_t data_bytes = (data_bits + 7) >> 3;
-    const int out_size = histo_bytes + data_bytes;
-    PIK_CHECK(out_size <= max_out_size);
-    output.resize(out_size);
-    if (info) {
-      info->num_clustered_histograms += codes.size();
-      info->histogram_size += histo_bytes;
-      info->entropy_coded_bits += data_bits - builder.num_extra_bits();
-      info->extra_bits += builder.num_extra_bits();
-      info->total_size += out_size;
-      for (int c = 0; c < 3; ++c) {
-        if (context_map.size() == 3) {
-          info->entropy_per_channel[c] += entropy_per_context[c];
-        } else if (context_map.size() == ACBlockProcessor::num_contexts()) {
-          for (int i = 0; i < 32; ++i) {
-            info->entropy_per_channel[c] += entropy_per_context[c * 32 + i];
-          }
-          for (int i = 0; i < 120; ++i) {
-            info->entropy_per_channel[c] +=
-                entropy_per_context[96 + c * 120 + i];
-          }
-        }
-        info->entropy_per_channel[c] += builder.num_extra_bits(c);
-      }
-    }
-    return output;
-  }
-};
-
-template <class Processor>
-size_t EncodedImageSizeInternal(const Image3S& img,
-                                Processor* processor) {
-  HistogramBuilder builder(Processor::num_contexts());
-  ProcessImage3(img, processor, &builder);
-  return builder.EncodedSize(1, 2);
-}
-
 std::string EncodeImage(const Image3S& img, int stride,
                         PikImageSizeInfo* info) {
   CoeffProcessor processor(stride);
-  return EncodeImageInternal<ANSEncodingData, ANSSymbolWriter>()(
-      img, &processor, info);
+  std::vector<ANSEncodingData> codes;
+  std::vector<uint8_t> context_map;
+  return (
+      BuildAndEncodeHistograms(img, &processor, &codes, &context_map, info) +
+      EncodeImageData(img, codes, context_map, &processor, info));
 }
 
 // Returns an image with a per-block count of zeroes, given an image of
@@ -334,34 +270,49 @@ static std::string EncodeNumNonzeroes(const Image3I& num_nzeroes,
   return encoded_num_nzeroes;
 }
 
-std::string EncodeAC(const Image3S& coeffs,
-                     const Image3B& block_ctx,
-                     PikInfo* pik_info) {
-  ACBlockProcessor processor(&block_ctx, coeffs.xsize());
-  int order[kOrderContexts * 64];
-  ComputeCoeffOrder(coeffs, block_ctx, order);
-  // TODO(user): Check this upper bound on size of encoded order.
+std::string EncodeCoeffOrders(const int* order, PikInfo* pik_info) {
   std::string encoded_coeff_order(kOrderContexts * 1024, 0);
-  {
-    uint8_t* storage = reinterpret_cast<uint8_t*>(&encoded_coeff_order[0]);
-    size_t storage_ix = 0;
-    for(int c = 0; c < kOrderContexts; c++) {
-      EncodeCoeffOrder(&order[c * 64], &storage_ix, storage);
-    }
-    PIK_CHECK(storage_ix < encoded_coeff_order.size() * 8);
-    encoded_coeff_order.resize((storage_ix + 7) / 8);
+  uint8_t* storage = reinterpret_cast<uint8_t*>(&encoded_coeff_order[0]);
+  size_t storage_ix = 0;
+  for (int c = 0; c < kOrderContexts; c++) {
+    EncodeCoeffOrder(&order[c * 64], &storage_ix, storage);
   }
+  PIK_CHECK(storage_ix < encoded_coeff_order.size() * 8);
+  encoded_coeff_order.resize((storage_ix + 7) / 8);
   if (pik_info) {
     pik_info->layers[kLayerOrder].total_size += encoded_coeff_order.size();
   }
+  return encoded_coeff_order;
+}
+
+std::string EncodeNaturalCoeffOrders(PikInfo* pik_info) {
+  std::string encoded_coeff_order(kOrderContexts * 1024, 0);
+  uint8_t* storage = reinterpret_cast<uint8_t*>(&encoded_coeff_order[0]);
+  size_t storage_ix = 0;
+  for (int c = 0; c < kOrderContexts; c++) {
+    EncodeCoeffOrder(kNaturalCoeffOrder, &storage_ix, storage);
+  }
+  PIK_CHECK(storage_ix < encoded_coeff_order.size() * 8);
+  encoded_coeff_order.resize((storage_ix + 7) / 8);
+  if (pik_info) {
+    pik_info->layers[kLayerOrder].total_size += encoded_coeff_order.size();
+  }
+  return encoded_coeff_order;
+}
+
+std::string EncodeAC(const Image3S& coeffs, const Image3B& block_ctx,
+                     const std::vector<ANSEncodingData>& codes,
+                     const std::vector<uint8_t>& context_map, const int* order,
+                     PikInfo* pik_info) {
   PikImageSizeInfo* ac_info = pik_info ? &pik_info->layers[kLayerAC] : nullptr;
   Image3I num_nzeroes = ExtractNumNZeroes(coeffs);
   std::string encoded_num_nzeroes =
       EncodeNumNonzeroes(num_nzeroes, block_ctx, ac_info);
+  ACBlockProcessor processor(&block_ctx, coeffs.xsize());
   processor.SetCoeffOrder(order);
-  std::string output = EncodeImageInternal<ANSEncodingData, ANSSymbolWriter>()(
-      coeffs, &processor, ac_info);
-  return encoded_coeff_order + encoded_num_nzeroes + output;
+  std::string coeffs_code =
+      EncodeImageData(coeffs, codes, context_map, &processor, ac_info);
+  return encoded_num_nzeroes + coeffs_code;
 }
 
 PIK_INLINE uint32_t MakeToken(const uint32_t context, const uint32_t symbol,
@@ -369,10 +320,10 @@ PIK_INLINE uint32_t MakeToken(const uint32_t context, const uint32_t symbol,
   return (context << 26) | (symbol << 18) | (nbits << 14) | bits;
 }
 
-std::string EncodeACFast(const Image3S& coeffs,
-                         const Image3B& block_ctx,
-                         PikInfo* pik_info) {
-  // Build static context map.
+static const int kNumStaticZdensContexts = 7;
+static const int kNumStaticContexts = 4 * kNumStaticZdensContexts;
+
+std::vector<uint8_t> StaticContextMap() {
   static const int kNumContexts = kOrderContexts * 120;
   static const int kStaticZdensContextMap[120] = {
     0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3,
@@ -384,8 +335,6 @@ std::string EncodeACFast(const Image3S& coeffs,
     6, 6, 6, 6, 5, 5, 2, 2, 2, 2, 2, 3, 3, 3,
     6, 6, 6, 6, 5, 5, 2, 2, 2, 2, 2,
   };
-  static const int kNumStaticZdensContexts = 7;
-  static const int kNumStaticContexts = 4 * kNumStaticZdensContexts;
   PIK_ASSERT(kNumStaticContexts <= 64);
   std::vector<uint8_t> context_map(kNumContexts);
   for (int c = 0; c < kOrderContexts; ++c) {
@@ -395,11 +344,15 @@ std::string EncodeACFast(const Image3S& coeffs,
           ctx * kNumStaticZdensContexts + kStaticZdensContextMap[i];
     }
   }
-  Image3I num_nzeroes = ExtractNumNZeroes(coeffs);
-  // Tokenize the coefficient stream.
+  return context_map;
+}
+
+std::vector<uint32_t> TokenizeCoefficients(
+    const Image3S& coeffs,
+    const Image3B& block_ctx,
+    const std::vector<uint8_t>& context_map) {
   std::vector<uint32_t> tokens;
   tokens.reserve(3 * coeffs.xsize() * coeffs.ysize());
-  size_t num_extra_bits = 0;
   for (int y = 0; y < coeffs.ysize(); ++y) {
     auto row = coeffs.Row(y);
     for (int x = 0; x < coeffs.xsize(); x += 64) {
@@ -422,7 +375,6 @@ std::string EncodeACFast(const Image3S& coeffs,
             r++;
             continue;
           }
-          PIK_ASSERT(histo_idx < kNumContexts);
           while (r > 15) {
             tokens.push_back(MakeToken(histo_idx, kIndexLut[0xf0], 0, 0));
             r -= 16;
@@ -432,7 +384,6 @@ std::string EncodeACFast(const Image3S& coeffs,
           PIK_ASSERT(nbits <= 14);
           int symbol = kIndexLut[(r << 4) + nbits];
           tokens.push_back(MakeToken(histo_idx, symbol, nbits, bits));
-          num_extra_bits += nbits;
           r = 0;
           histo_idx = histo_offset + ZeroDensityContext(num_nzeros - 1, k, 4);
           histo_idx = context_map[histo_idx];
@@ -441,6 +392,14 @@ std::string EncodeACFast(const Image3S& coeffs,
       }
     }
   }
+  return tokens;
+}
+
+std::string BuildAndEncodeHistogramsFast(
+    const std::vector<uint8_t>& context_map,
+    const std::vector<uint32_t>& tokens,
+    std::vector<ANSEncodingData>* codes,
+    PikInfo* pik_info) {
   // Build histograms from tokens.
   std::vector<uint32_t> histograms(kNumStaticContexts << 8);
   for (int i = 0; i < tokens.size(); ++i) {
@@ -452,46 +411,50 @@ std::string EncodeACFast(const Image3S& coeffs,
       ac_info->clustered_entropy += ShannonEntropy(&histograms[c << 8], 256);
     }
   }
-  // Estimate total output size.
-  size_t num_bits = num_extra_bits;
-  for (int c = 0; c < kNumStaticContexts; ++c) {
-    size_t histogram_bits;
-    size_t data_bits;
-    BuildHuffmanTreeAndCountBits(&histograms[c << 8], 256,
-                                 &histogram_bits, &data_bits);
-    num_bits += histogram_bits + data_bits;
-  }
-  size_t num_bytes = (num_bits + 7) >> 3;
-  std::string encoded_num_nzeroes =
-      EncodeNumNonzeroes(num_nzeroes, block_ctx, ac_info);
-  const size_t max_out_size = 2 * num_bytes + 1024 + encoded_num_nzeroes.size();
+  const size_t max_out_size = kNumStaticContexts * 1024;
   std::string output(max_out_size, 0);
   size_t storage_ix = 0;
   uint8_t* storage = reinterpret_cast<uint8_t*>(&output[0]);
   storage[0] = 0;
-  for (int c = 0; c < kOrderContexts; c++)
-    EncodeCoeffOrder(kNaturalCoeffOrder, &storage_ix, storage);
-  WriteZeroesToByteBoundary(&storage_ix, storage);
-  const size_t order_bytes = storage_ix >> 3;
-  if (pik_info) {
-    pik_info->layers[kLayerOrder].total_size += order_bytes;
-  }
-  memcpy(storage + (storage_ix >> 3), encoded_num_nzeroes.data(),
-         encoded_num_nzeroes.size());
-  storage_ix += encoded_num_nzeroes.size() << 3;
-  const size_t nonzeroes_bytes = encoded_num_nzeroes.size();
   // Encode the histograms.
-  std::vector<ANSEncodingData> codes;
   EncodeContextMap(context_map, kNumStaticContexts, &storage_ix, storage);
   for (int c = 0; c < kNumStaticContexts; ++c) {
     ANSEncodingData code;
     code.BuildAndStore(&histograms[c << 8], 256, &storage_ix, storage);
-    codes.emplace_back(std::move(code));
+    codes->emplace_back(std::move(code));
   }
   // Close the histogram bit stream.
   WriteZeroesToByteBoundary(&storage_ix, storage);
-  const size_t histo_bytes = (storage_ix >> 3) - order_bytes - nonzeroes_bytes;
-  // Entropy encode data.
+  const size_t histo_bytes = (storage_ix >> 3);
+  PIK_CHECK(histo_bytes <= max_out_size);
+  output.resize(histo_bytes);
+  if (ac_info) {
+    ac_info->num_clustered_histograms += codes->size();
+    ac_info->histogram_size += histo_bytes;
+  }
+  return output;
+}
+
+std::string EncodeACFast(const Image3S& coeffs,
+                         const Image3B& block_ctx,
+                         const std::vector<ANSEncodingData>& codes,
+                         const std::vector<uint8_t>& context_map,
+                         PikInfo* pik_info) {
+  PikImageSizeInfo* ac_info = pik_info ? &pik_info->layers[kLayerAC] : nullptr;
+  Image3I num_nzeroes = ExtractNumNZeroes(coeffs);
+  std::vector<uint32_t> tokens = TokenizeCoefficients(
+      coeffs, block_ctx, context_map);
+  std::string encoded_num_nzeroes =
+      EncodeNumNonzeroes(num_nzeroes, block_ctx, ac_info);
+  const size_t max_out_size = 3 * coeffs.xsize() * coeffs.ysize() + 4096;
+  std::string output(max_out_size, 0);
+  size_t storage_ix = 0;
+  uint8_t* storage = reinterpret_cast<uint8_t*>(&output[0]);
+  storage[0] = 0;
+  memcpy(storage, encoded_num_nzeroes.data(), encoded_num_nzeroes.size());
+  storage_ix += encoded_num_nzeroes.size() << 3;
+  const size_t nonzeroes_bytes = encoded_num_nzeroes.size();
+  size_t num_extra_bits = 0;
   PIK_ASSERT(kANSBufferSize <= (1 << 16));
   for (int start = 0; start < tokens.size(); start += kANSBufferSize) {
     std::vector<uint32_t> out;
@@ -520,31 +483,24 @@ std::string EncodeACFast(const Image3S& coeffs,
         const uint32_t nbits = (token >> 14) & 0xf;
         const uint32_t bits = token & 0x3fff;
         WriteBits(nbits, bits, &storage_ix, storage);
+        num_extra_bits += nbits;
       }
       if (i > 0) {
         WriteBits(16, out[i - 1] & 0xffff, &storage_ix, storage);
       }
     }
   }
-  const size_t data_bits =
-      storage_ix - 8 * histo_bytes - 8 * nonzeroes_bytes - 8 * order_bytes;
+  const size_t data_bits = storage_ix - 8 * nonzeroes_bytes;
   const size_t data_bytes = (data_bits + 7) >> 3;
-  const int out_size = order_bytes + nonzeroes_bytes + histo_bytes + data_bytes;
+  const int out_size = nonzeroes_bytes + data_bytes;
   PIK_CHECK(out_size <= max_out_size);
   output.resize(out_size);
   if (ac_info) {
-    ac_info->num_clustered_histograms += codes.size();
-    ac_info->histogram_size += histo_bytes;
     ac_info->entropy_coded_bits += data_bits - num_extra_bits;
     ac_info->extra_bits += num_extra_bits;
     ac_info->total_size += out_size;
   }
   return output;
-}
-
-size_t EncodedImageSize(const Image3S& img, int stride) {
-  CoeffProcessor processor(stride);
-  return EncodedImageSizeInternal(img, &processor);
 }
 
 class ANSBitCounter {
@@ -569,44 +525,6 @@ class ANSBitCounter {
   const std::vector<ANSEncodingData>& codes_;
   const std::vector<uint8_t>& context_map_;
   float nbits_;
-};
-
-static const int kArithCoderPrecision = 24;
-
-
-static const uint8_t kSymbolLut[256] = {
-  0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x21, 0x12,
-  0x31, 0x41, 0x05, 0x51, 0x13, 0x61, 0x22, 0x71,
-  0x81, 0x06, 0x91, 0x32, 0xa1, 0xf0, 0x14, 0xb1,
-  0xc1, 0xd1, 0x23, 0x42, 0x52, 0xe1, 0xf1, 0x15,
-  0x07, 0x62, 0x33, 0x72, 0x24, 0x82, 0x92, 0x43,
-  0xa2, 0x53, 0xb2, 0x16, 0x34, 0xc2, 0x63, 0x73,
-  0x25, 0xd2, 0x93, 0x83, 0x44, 0x54, 0xa3, 0xb3,
-  0xc3, 0x35, 0xd3, 0x94, 0x17, 0x45, 0x84, 0x64,
-  0x55, 0x74, 0x26, 0xe2, 0x08, 0x75, 0xc4, 0xd4,
-  0x65, 0xf2, 0x85, 0x95, 0xa4, 0xb4, 0x36, 0x46,
-  0x56, 0xe3, 0xa5, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
-  0x0e, 0x0f, 0x10, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
-  0x1d, 0x1e, 0x1f, 0x20, 0x27, 0x28, 0x29, 0x2a,
-  0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x30, 0x37, 0x38,
-  0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f, 0x40,
-  0x47, 0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e,
-  0x4f, 0x50, 0x57, 0x58, 0x59, 0x5a, 0x5b, 0x5c,
-  0x5d, 0x5e, 0x5f, 0x60, 0x66, 0x67, 0x68, 0x69,
-  0x6a, 0x6b, 0x6c, 0x6d, 0x6e, 0x6f, 0x70, 0x76,
-  0x77, 0x78, 0x79, 0x7a, 0x7b, 0x7c, 0x7d, 0x7e,
-  0x7f, 0x80, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x8b,
-  0x8c, 0x8d, 0x8e, 0x8f, 0x90, 0x96, 0x97, 0x98,
-  0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f, 0xa0,
-  0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad,
-  0xae, 0xaf, 0xb0, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9,
-  0xba, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf, 0xc0, 0xc5,
-  0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xcb, 0xcc, 0xcd,
-  0xce, 0xcf, 0xd0, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9,
-  0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xdf, 0xe0, 0xe4,
-  0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xeb, 0xec,
-  0xed, 0xee, 0xef, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7,
-  0xf8, 0xf9, 0xfa, 0xfb, 0xfc, 0xfd, 0xfe, 0xff,
 };
 
 bool DecodeHistograms(BitReader* br, const size_t num_contexts,
@@ -700,7 +618,6 @@ bool DecodeACData(BitReader* const PIK_RESTRICT br,
       // TODO(user): Deinterlave this.
       for (int c = 0; c < 3; ++c, ++ix) {
         memset(&row[c][x + 1], 0, 63 * sizeof(row[0][0]));
-        br->FillBitBuffer();
         const int block_ctx = row_bctx[c][bx];
         int num_nzeros = num_nzeroes.plane(c).Row(y)[x / 64];
         if (num_nzeros > 63) {
@@ -779,21 +696,12 @@ bool DecodeNumNZeroes(BitReader* br, Image3I* num_nzeroes,
   return true;
 }
 
-bool DecodeAC(const Image3B& block_ctx, BitReader* br, Image3S* coeffs) {
+bool DecodeAC(const Image3B& block_ctx, const ANSCode& code,
+              const std::vector<uint8_t>& context_map, const int* coeff_order,
+              BitReader* br, Image3S* coeffs) {
   PIK_ASSERT(coeffs->xsize() % 64 == 0);
-  std::vector<uint8_t> context_map;
-  int coeff_order[kOrderContexts * 64];
-  for (int c = 0; c < kOrderContexts; ++c) {
-    DecodeCoeffOrder(&coeff_order[c * 64], br);
-  }
-  br->JumpToByteBoundary();
   Image3I num_nzeroes(coeffs->xsize() / 64, coeffs->ysize());
   if (!DecodeNumNZeroes(br, &num_nzeroes, block_ctx)) {
-    return false;
-  }
-  ANSCode code;
-  if (!DecodeHistograms(br, ACBlockProcessor::num_contexts(), 256, kSymbolLut,
-                        sizeof(kSymbolLut), &code, &context_map)) {
     return false;
   }
   ANSSymbolReader decoder(&code);
@@ -950,8 +858,8 @@ EncodedIntPlane EncodePlane(const ImageI& img, int minval, int maxval,
       PIK_CHECK(out_size <= max_out_size);
       result.tiles[y][x].resize(out_size);
       if (info) {
-        info->entropy_coded_bits += storage_ix - builder.num_extra_bits();
-        info->extra_bits += builder.num_extra_bits();
+        info->entropy_coded_bits += storage_ix - symbol_writer.num_extra_bits();
+        info->extra_bits += symbol_writer.num_extra_bits();
         info->total_size += out_size;
       }
     }

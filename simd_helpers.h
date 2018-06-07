@@ -17,6 +17,9 @@
 
 #include "simd/simd.h"
 
+// 4 instances of a given literal value, useful as input to load_dup128.
+#define PIK_REP4(literal) literal, literal, literal, literal
+
 namespace pik {
 
 template <class V>

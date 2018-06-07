@@ -7,6 +7,24 @@ override LDFLAGS += $(PNG_LIBS) -ljpeg -lpthread
 
 PIK_OBJS := $(addprefix obj/, \
 	simd/dispatch.o \
+	guetzli/butteraugli_comparator.o \
+	guetzli/dct_double.o \
+	guetzli/debug_print.o \
+	guetzli/entropy_encode.o \
+	guetzli/fdct.o \
+	guetzli/gamma_correct.o \
+	guetzli/idct.o \
+	guetzli/jpeg_data.o \
+	guetzli/jpeg_data_decoder.o \
+	guetzli/jpeg_data_encoder.o \
+	guetzli/jpeg_data_reader.o \
+	guetzli/jpeg_data_writer.o \
+	guetzli/jpeg_huffman_decode.o \
+	guetzli/output_image.o \
+	guetzli/processor.o \
+	guetzli/preprocess_downsample.o \
+	guetzli/quantize.o \
+	guetzli/score.o \
 	adaptive_quantization.o \
 	af_edge_preserving_filter.o \
 	af_edge_preserving_filter_none.o \
@@ -15,18 +33,23 @@ PIK_OBJS := $(addprefix obj/, \
 	ans_decode.o \
 	ans_encode.o \
 	arch_specific.o \
+	brunsli_v2_decode.o \
+	brunsli_v2_encode.o \
 	butteraugli/butteraugli.o \
 	butteraugli_comparator.o \
 	butteraugli_distance.o \
 	compressed_image.o \
+	context.o \
 	context_map_encode.o \
 	context_map_decode.o \
 	dct.o \
 	dct_util.o \
 	dc_predictor.o \
+	deconvolve.o \
 	gamma_correct.o \
 	gauss_blur.o \
 	header.o \
+	histogram_decode.o \
 	linalg.o \
 	pik.o \
 	pik_alpha.o \
@@ -37,6 +60,8 @@ PIK_OBJS := $(addprefix obj/, \
 	histogram_decode.o \
 	histogram_encode.o \
 	image_io.o \
+	jpeg_data_decoder.o \
+	jpeg_quant_tables.o \
 	lehmer_code.o \
 	noise.o \
 	opsin_codec.o \
@@ -47,6 +72,7 @@ PIK_OBJS := $(addprefix obj/, \
 	padded_bytes.o \
 	quantizer.o \
 	tile_flow.o \
+	upscaler.o \
 	yuv_convert.o \
 	yuv_opsin_convert.o \
 )

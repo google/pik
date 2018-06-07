@@ -20,6 +20,7 @@
 #include <string>
 
 #include "common.h"
+#include "header.h"
 #include "image.h"
 #include "noise.h"
 #include "pik_info.h"
@@ -50,8 +51,8 @@ struct QuantizedCoeffs {
   Image3S dct;
 };
 
-void ComputePredictionResiduals(const Quantizer& quantizer,
-                                bool disable_hf_prediction, Image3F* coeffs);
+void ComputePredictionResiduals(const Quantizer& quantizer, int flags,
+                                Image3F* coeffs);
 
 void ApplyColorTransform(const ColorTransform& ctan,
                          const float factor,
@@ -59,17 +60,18 @@ void ApplyColorTransform(const ColorTransform& ctan,
                          Image3F* coeffs);
 
 QuantizedCoeffs ComputeCoefficients(const CompressParams& params,
+                                    const Header& header,
                                     const Image3F& opsin,
                                     const Quantizer& quantizer,
                                     const ColorTransform& ctan,
-                                    const PikInfo* aux_out);
+                                    ThreadPool* pool,
+                                    const PikInfo* aux_out = nullptr);
 
 std::string EncodeToBitstream(const QuantizedCoeffs& qcoeffs,
                               const Quantizer& quantizer,
                               const NoiseParams& noise_params,
-                              const ColorTransform& ctan,
-                              bool fast_mode,
-                              PikInfo* info);
+                              const ColorTransform& ctan, bool fast_mode,
+                              PikInfo* info = nullptr);
 
 bool DecodeFromBitstream(const uint8_t* data, const size_t data_size,
                          const size_t xsize, const size_t ysize,
@@ -79,14 +81,13 @@ bool DecodeFromBitstream(const uint8_t* data, const size_t data_size,
                          QuantizedCoeffs* qcoeffs,
                          size_t* compressed_size);
 
-enum {
-  kReconDisableHFPrediction = 1,
-};
-
-Image3F ReconOpsinImage(const QuantizedCoeffs& qcoeffs,
+Image3F ReconOpsinImage(const Header& header,
+                        const QuantizedCoeffs& qcoeffs,
                         const Quantizer& quantizer, const ColorTransform& ctan,
-                        int flags, ThreadPool* pool);
+                        ThreadPool* pool,
+                        PikInfo* pik_info = nullptr);
 
+void GaborishInverse(Image3F &opsin);
 Image3F ConvolveGaborish(const Image3F& in, ThreadPool* pool);
 Image3F ConvolveGaborishTF(const Image3F& in, ThreadPool* pool);
 

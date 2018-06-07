@@ -45,7 +45,8 @@ void ComputeBlockIDCTFloat(float block[64]);
 // REQUIRES: coeffs.xsize() == 64*N, coeffs.ysize() == M
 Image3F TransposedScaledIDCT(const Image3F& coeffs);
 
-TFNode* AddTransposedScaledIDCT(const TFPorts in_xyb, TFBuilder* builder);
+TFNode* AddTransposedScaledIDCT(const TFPorts in_xyb, bool zero_dc,
+                                TFBuilder* builder);
 
 // Returns a 64*N x M image where each 64x1 block is produced with
 // ComputeTransposedScaledBlockDCTFloat() from the corresponding 8x8 block of
@@ -285,112 +286,6 @@ class ToLines {
   size_t stride_;  // move to next line by adding this to pointer
 };
 
-template <class From, class To>
-PIK_INLINE void ColumnDCT(const From& from, const To& to) {
-  using namespace SIMD_NAMESPACE;
-  const DCTDesc d;
-
-  const auto c1 = set1(d, 0.707106781186548f);
-  const auto c2 = set1(d, -0.382683432365090f);
-  const auto c3 = set1(d, 1.30656296487638f);
-  const auto c4 = set1(d, 0.541196100146197f);
-
-  for (size_t i = 0; i < 8; i += d.N) {
-    const auto i0 = from.Load(0, i);
-    const auto i1 = from.Load(1, i);
-    const auto i2 = from.Load(2, i);
-    const auto i3 = from.Load(3, i);
-    const auto i4 = from.Load(4, i);
-    const auto i5 = from.Load(5, i);
-    const auto i6 = from.Load(6, i);
-    const auto i7 = from.Load(7, i);
-    const auto t00 = i0 + i7;
-    const auto t01 = i0 - i7;
-    const auto t02 = i3 + i4;
-    const auto t03 = i3 - i4;
-    const auto t04 = i2 + i5;
-    const auto t05 = i2 - i5;
-    const auto t06 = i1 + i6;
-    const auto t07 = i1 - i6;
-    const auto t08 = t00 + t02;
-    const auto t09 = t00 - t02;
-    const auto t10 = t06 + t04;
-    const auto t11 = t06 - t04;
-    const auto t12 = t07 + t05;
-    const auto t13 = t01 + t07;
-    const auto t14 = t05 + t03;
-    const auto t15 = t11 + t09;
-    const auto t16 = t13 - t14;
-    const auto t17 = c1 * t15;
-    const auto t18 = c1 * t12;
-    const auto t19 = c2 * t16;
-    const auto t20 = t01 + t18;
-    const auto t21 = t01 - t18;
-    const auto t22 = mul_add(c3, t13, t19);
-    const auto t23 = mul_add(c4, t14, t19);
-    to.Store(t08 + t10, 0, i);
-    to.Store(t20 + t22, 1, i);
-    to.Store(t09 + t17, 2, i);
-    to.Store(t21 - t23, 3, i);
-    to.Store(t08 - t10, 4, i);
-    to.Store(t21 + t23, 5, i);
-    to.Store(t09 - t17, 6, i);
-    to.Store(t20 - t22, 7, i);
-  }
-}
-
-template <class From, class To>
-PIK_INLINE void ColumnIDCT(const From& from, const To& to) {
-  using namespace SIMD_NAMESPACE;
-  const DCTDesc d;
-
-  const auto c1 = set1(d, 1.41421356237310f);
-  const auto c2 = set1(d, 0.76536686473018f);
-  const auto c3 = set1(d, 2.61312592975275f);
-  const auto c4 = set1(d, 1.08239220029239f);
-
-  for (size_t i = 0; i < 8; i += d.N) {
-    const auto i0 = from.Load(0, i);
-    const auto i1 = from.Load(1, i);
-    const auto i2 = from.Load(2, i);
-    const auto i3 = from.Load(3, i);
-    const auto i4 = from.Load(4, i);
-    const auto i5 = from.Load(5, i);
-    const auto i6 = from.Load(6, i);
-    const auto i7 = from.Load(7, i);
-    const auto t00 = i0 + i4;
-    const auto t01 = i0 - i4;
-    const auto t02 = i2 + i6;
-    const auto t03 = i2 - i6;
-    const auto t04 = i1 + i7;
-    const auto t05 = i1 - i7;
-    const auto t06 = i5 + i3;
-    const auto t07 = i5 - i3;
-    const auto t08 = t04 + t06;
-    const auto t09 = t04 - t06;
-    const auto t10 = t00 + t02;
-    const auto t11 = t00 - t02;
-    const auto t12 = t05 + t07;
-    const auto t13 = c2 * t12;
-    const auto t14 = SIMD_NAMESPACE::ext::mul_subtract(c1, t03, t02);
-    const auto t15 = t01 + t14;
-    const auto t16 = t01 - t14;
-    const auto t17 = SIMD_NAMESPACE::ext::mul_subtract(c3, t05, t13);
-    const auto t18 = mul_add(c4, t07, t13);
-    const auto t19 = t08 - t17;
-    const auto t20 = mul_add(c1, t09, t19);
-    const auto t21 = t18 - t20;
-    to.Store(t10 + t08, 0, i);
-    to.Store(t15 - t19, 1, i);
-    to.Store(t16 + t20, 2, i);
-    to.Store(t11 + t21, 3, i);
-    to.Store(t11 - t21, 4, i);
-    to.Store(t16 - t20, 5, i);
-    to.Store(t15 + t19, 6, i);
-    to.Store(t10 - t08, 7, i);
-  }
-}
-
 #if SIMD_TARGET_VALUE == SIMD_AVX2
 
 // Each vector holds one row of the input/output block.
@@ -481,6 +376,115 @@ PIK_INLINE void ColumnIDCT_AVX2(V& i0, V& i1, V& i2, V& i3, V& i4, V& i5, V& i6,
   i7 = t10 - t08;
 }
 
+#else
+
+template <class From, class To>
+PIK_INLINE void ColumnDCT(const From& from, const To& to) {
+  using namespace SIMD_NAMESPACE;
+  const DCTDesc d;
+
+  const auto c1 = set1(d, 0.707106781186548f);
+  const auto c2 = set1(d, -0.382683432365090f);
+  const auto c3 = set1(d, 1.30656296487638f);
+  const auto c4 = set1(d, 0.541196100146197f);
+
+  for (size_t i = 0; i < 8; i += d.N) {
+    const auto i0 = from.Load(0, i);
+    const auto i1 = from.Load(1, i);
+    const auto i2 = from.Load(2, i);
+    const auto i3 = from.Load(3, i);
+    const auto i4 = from.Load(4, i);
+    const auto i5 = from.Load(5, i);
+    const auto i6 = from.Load(6, i);
+    const auto i7 = from.Load(7, i);
+    const auto t00 = i0 + i7;
+    const auto t01 = i0 - i7;
+    const auto t02 = i3 + i4;
+    const auto t03 = i3 - i4;
+    const auto t04 = i2 + i5;
+    const auto t05 = i2 - i5;
+    const auto t06 = i1 + i6;
+    const auto t07 = i1 - i6;
+    const auto t08 = t00 + t02;
+    const auto t09 = t00 - t02;
+    const auto t10 = t06 + t04;
+    const auto t11 = t06 - t04;
+    const auto t12 = t07 + t05;
+    const auto t13 = t01 + t07;
+    const auto t14 = t05 + t03;
+    const auto t15 = t11 + t09;
+    const auto t16 = t13 - t14;
+    const auto t17 = c1 * t15;
+    const auto t18 = c1 * t12;
+    const auto t19 = c2 * t16;
+    const auto t20 = t01 + t18;
+    const auto t21 = t01 - t18;
+    const auto t22 = mul_add(c3, t13, t19);
+    const auto t23 = mul_add(c4, t14, t19);
+    to.Store(t08 + t10, 0, i);
+    to.Store(t20 + t22, 1, i);
+    to.Store(t09 + t17, 2, i);
+    to.Store(t21 - t23, 3, i);
+    to.Store(t08 - t10, 4, i);
+    to.Store(t21 + t23, 5, i);
+    to.Store(t09 - t17, 6, i);
+    to.Store(t20 - t22, 7, i);
+  }
+}
+
+template <class From, class To, class DC_Op>
+PIK_INLINE void ColumnIDCT(const From& from, const To& to, const DC_Op dc_op) {
+  using namespace SIMD_NAMESPACE;
+  const DCTDesc d;
+
+  const auto c1 = set1(d, 1.41421356237310f);
+  const auto c2 = set1(d, 0.76536686473018f);
+  const auto c3 = set1(d, 2.61312592975275f);
+  const auto c4 = set1(d, 1.08239220029239f);
+
+  for (size_t i = 0; i < 8; i += d.N) {
+    // Apply dc_op to the first value (= DC)
+    const auto i0 = (i == 0) ? dc_op(from.Load(0, i)) : from.Load(0, i);
+    const auto i1 = from.Load(1, i);
+    const auto i2 = from.Load(2, i);
+    const auto i3 = from.Load(3, i);
+    const auto i4 = from.Load(4, i);
+    const auto i5 = from.Load(5, i);
+    const auto i6 = from.Load(6, i);
+    const auto i7 = from.Load(7, i);
+    const auto t00 = i0 + i4;
+    const auto t01 = i0 - i4;
+    const auto t02 = i2 + i6;
+    const auto t03 = i2 - i6;
+    const auto t04 = i1 + i7;
+    const auto t05 = i1 - i7;
+    const auto t06 = i5 + i3;
+    const auto t07 = i5 - i3;
+    const auto t08 = t04 + t06;
+    const auto t09 = t04 - t06;
+    const auto t10 = t00 + t02;
+    const auto t11 = t00 - t02;
+    const auto t12 = t05 + t07;
+    const auto t13 = c2 * t12;
+    const auto t14 = SIMD_NAMESPACE::ext::mul_subtract(c1, t03, t02);
+    const auto t15 = t01 + t14;
+    const auto t16 = t01 - t14;
+    const auto t17 = SIMD_NAMESPACE::ext::mul_subtract(c3, t05, t13);
+    const auto t18 = mul_add(c4, t07, t13);
+    const auto t19 = t08 - t17;
+    const auto t20 = mul_add(c1, t09, t19);
+    const auto t21 = t18 - t20;
+    to.Store(t10 + t08, 0, i);
+    to.Store(t15 - t19, 1, i);
+    to.Store(t16 + t20, 2, i);
+    to.Store(t11 + t21, 3, i);
+    to.Store(t11 - t21, 4, i);
+    to.Store(t16 - t20, 5, i);
+    to.Store(t15 + t19, 6, i);
+    to.Store(t10 - t08, 7, i);
+  }
+}
+
 #endif  // SIMD_TARGET_VALUE == SIMD_AVX2
 
 // Same as ComputeBlockDCTFloat(), but the output is further transformed with
@@ -520,15 +524,36 @@ static PIK_INLINE void ComputeTransposedScaledBlockDCTFloat(const From& from,
 #endif
 }
 
+// Sets the DC lane to zero.
+struct DC_Zero {
+  template <class V>
+  V operator()(const V v) const {
+    using namespace SIMD_NAMESPACE;
+    const Full<float> df;
+    const Full<int32_t> di;
+    // Negated so upper lanes can default-initialize to 0.
+    SIMD_ALIGN static constexpr int32_t neg_mask_lanes[di.N] = {-1};
+    const auto neg_mask = cast_to(df, load(di, neg_mask_lanes));
+    return andnot(neg_mask, v);
+  }
+};
+
+struct DC_Unchanged {
+  template <class V>
+  constexpr V operator()(const V v) const {
+    return v;
+  }
+};
+
 // Same as ComputeBlockIDCTFloat(), but the input is first transformed with
 // the following:
 //   block'[8 * ky + kx] =
 //     block[8 * kx + ky] / (kIDCTScales[kx] * kIDCTScales[ky])
-template <class From, class To>
-static PIK_INLINE void ComputeTransposedScaledBlockIDCTFloat(const From& from,
-                                                             const To& to) {
+template <class From, class To, class DC_Op>
+static PIK_INLINE void ComputeTransposedScaledBlockIDCTFloat(
+    const From& from, const To& to, const DC_Op dc_op) {
 #if SIMD_TARGET_VALUE == SIMD_AVX2
-  auto i0 = from.Load(0, 0);
+  auto i0 = dc_op(from.Load(0, 0));
   auto i1 = from.Load(1, 0);
   auto i2 = from.Load(2, 0);
   auto i3 = from.Load(3, 0);
@@ -551,9 +576,9 @@ static PIK_INLINE void ComputeTransposedScaledBlockIDCTFloat(const From& from,
   to.Store(i7, 7, 0);
 #else
   SIMD_ALIGN float block[64];
-  ColumnIDCT(from, ToBlock(block));
+  ColumnIDCT(from, ToBlock(block), dc_op);
   TransposeBlock(block);
-  ColumnIDCT(FromBlock(block), to);
+  ColumnIDCT(FromBlock(block), to, DC_Unchanged());
 #endif
 }
 
@@ -563,8 +588,11 @@ static PIK_INLINE void ComputeTransposedScaledBlockDCTFloat(float block[64]) {
 }
 
 // Requires that block is 32-bytes aligned.
-static PIK_INLINE void ComputeTransposedScaledBlockIDCTFloat(float block[64]) {
-  ComputeTransposedScaledBlockIDCTFloat(FromBlock(block), ToBlock(block));
+template <class DC_Op>
+static PIK_INLINE void ComputeTransposedScaledBlockIDCTFloat(
+    float block[64], const DC_Op dc_op) {
+  ComputeTransposedScaledBlockIDCTFloat(FromBlock(block), ToBlock(block),
+                                        dc_op);
 }
 
 }  // namespace pik

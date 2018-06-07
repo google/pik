@@ -352,7 +352,7 @@ class TFBuilder {
   template <typename T>
   void SetSource(const TFPorts& ports, const Image<T>* source) {
     PIK_CHECK(ports.IsSinglePort());
-    const TFPortIndex port = NumZeroBitsBelowLSB32Nonzero(ports.bits);
+    const TFPortIndex port = NumZeroBitsBelowLSBNonzero(ports.bits);
     BindSource(ports.node, port, reinterpret_cast<const ImageF*>(source),
                TFTypeUtils::FromImage(source));
   }
@@ -363,7 +363,7 @@ class TFBuilder {
     TFPortBits bits = ports.bits;
     for (int c = 0; c < 3; ++c) {
       PIK_CHECK(bits != 0);
-      const TFPortIndex port = NumZeroBitsBelowLSB32Nonzero(bits);
+      const TFPortIndex port = NumZeroBitsBelowLSBNonzero(bits);
       bits &= bits - 1;
       BindSource(ports.node, port,
                  reinterpret_cast<const ImageF*>(&source->plane(c)),
@@ -385,7 +385,7 @@ class TFBuilder {
   template <typename T>
   void SetSink(const TFPorts& ports, const Image<T>* sink) {
     PIK_CHECK(ports.IsSinglePort());
-    const TFPortIndex port = NumZeroBitsBelowLSB32Nonzero(ports.bits);
+    const TFPortIndex port = NumZeroBitsBelowLSBNonzero(ports.bits);
     BindSink(ports.node, port, reinterpret_cast<const ImageF*>(sink),
              TFTypeUtils::FromImage(sink));
   }
@@ -398,7 +398,7 @@ class TFBuilder {
     TFPortBits bits = ports.bits;
     for (int c = 0; c < 3; ++c) {
       PIK_CHECK(bits != 0);
-      const TFPortIndex port = NumZeroBitsBelowLSB32Nonzero(bits);
+      const TFPortIndex port = NumZeroBitsBelowLSBNonzero(bits);
       bits &= bits - 1;
       BindSink(ports.node, port,
                reinterpret_cast<const ImageF*>(&sink->plane(c)), type);

@@ -54,39 +54,49 @@ Image3F TransposedScaledIDCT(const Image3F& coeffs) {
 
       for (size_t x = 0; x < coeffs.xsize(); x += 64) {
         ComputeTransposedScaledBlockIDCTFloat(FromBlock(row_in + x),
-                                              ToLines(row_out + x / 8, stride));
+                                              ToLines(row_out + x / 8, stride),
+                                              DC_Unchanged());
       }
     }
   }
   return img;
 }
 
-TFNode* AddTransposedScaledIDCT(const TFPorts in_xyb, TFBuilder* builder) {
+namespace {
+
+template <class DC_Op>
+void TransposedScaledIDCT_Func(const void*, const ConstImageViewF* in,
+                               const OutputRegion& output_region,
+                               const MutableImageViewF* PIK_RESTRICT out) {
+  PROFILER_ZONE("|| IDCT");
+  const size_t xsize = output_region.xsize;
+  const size_t ysize = output_region.ysize;
+
+  const size_t stride = out->bytes_per_row() / sizeof(float);
+
+  for (int c = 0; c < 3; ++c) {
+    // x,y = top-left corner of 8x8 output block; 0,0 is the top-left of
+    // the current output tile.
+    for (size_t y = 0; y < ysize; y += 8) {
+      const float* PIK_RESTRICT row_in = in[c].ConstRow(y / 8);
+      float* PIK_RESTRICT row_out = out[c].Row(y);
+
+      for (size_t x = 0; x < xsize; x += 8) {
+        ComputeTransposedScaledBlockIDCTFloat(
+            FromBlock(row_in + x * 8), ToLines(row_out + x, stride), DC_Op());
+      }
+    }
+  }
+}
+
+}  // namespace
+
+TFNode* AddTransposedScaledIDCT(const TFPorts in_xyb, bool zero_dc,
+                                TFBuilder* builder) {
   PIK_CHECK(OutType(in_xyb.node) == TFType::kF32);
-  return builder->AddClosure(
-      "idct", Borders(), Scale(), {in_xyb}, 3, TFType::kF32,
-      [](const ConstImageViewF* in, const OutputRegion& output_region,
-         const MutableImageViewF* PIK_RESTRICT out) {
-        PROFILER_ZONE("|| IDCT");
-        const size_t xsize = output_region.xsize;
-        const size_t ysize = output_region.ysize;
-
-        const size_t stride = out->bytes_per_row() / sizeof(float);
-
-        for (int c = 0; c < 3; ++c) {
-          // x,y = top-left corner of 8x8 output block; 0,0 is the top-left of
-          // the current output tile.
-          for (size_t y = 0; y < ysize; y += 8) {
-            const float* PIK_RESTRICT row_in = in[c].ConstRow(y / 8);
-            float* PIK_RESTRICT row_out = out[c].Row(y);
-
-            for (size_t x = 0; x < xsize; x += 8) {
-              ComputeTransposedScaledBlockIDCTFloat(
-                  FromBlock(row_in + x * 8), ToLines(row_out + x, stride));
-            }
-          }
-        }
-      });
+  return builder->Add("idct", Borders(), Scale(), {in_xyb}, 3, TFType::kF32,
+                      zero_dc ? &TransposedScaledIDCT_Func<DC_Zero>
+                              : &TransposedScaledIDCT_Func<DC_Unchanged>);
 }
 
 void ComputeBlockDCTFloat(float block[64]) {
@@ -106,7 +116,7 @@ void ComputeBlockIDCTFloat(float block[64]) {
     }
   }
   TransposeBlock(block);
-  ComputeTransposedScaledBlockIDCTFloat(block);
+  ComputeTransposedScaledBlockIDCTFloat(block, DC_Unchanged());
 }
 
 void RotateDCT(float angle, float block[64]) {

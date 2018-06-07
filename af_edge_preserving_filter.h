@@ -49,10 +49,10 @@ struct EdgePreservingFilter {
   // Self-guided filter. If the min/max input value are already known,
   // passing them in avoids recomputing them.
   template <class Target>
-  void operator()(ImageF* in_out, int sigma, float min = 0.0f,
+  void operator()(ImageF* in_out, float sigma, float min = 0.0f,
                   float max = 0.0f);
   template <class Target>
-  void operator()(Image3F* in_out, int sigma, float min = 0.0f,
+  void operator()(Image3F* in_out, float sigma, float min = 0.0f,
                   float max = 0.0f);
 
   // For PIK: adaptive sigma based on quantization intervals.
@@ -63,10 +63,10 @@ struct EdgePreservingFilter {
   // Low-level version with separate guide image: "in" and "guide" must have
   // kBorder extra pixels on each side.
   template <class Target>
-  void operator()(const ImageB& guide, const ImageF& in, int sigma,
+  void operator()(const ImageB& guide, const ImageF& in, float sigma,
                   ImageF* PIK_RESTRICT out);
   template <class Target>
-  void operator()(const Image3B& guide, const Image3F& in, int sigma,
+  void operator()(const Image3B& guide, const Image3F& in, float sigma,
                   Image3F* PIK_RESTRICT out);
 };
 
@@ -75,32 +75,18 @@ struct EdgePreservingFilter {
 // Same as above, but unoptimized version for comparison.
 struct EdgePreservingFilterSlow {
   template <class Target>
-  void operator()(ImageF* in_out, int sigma, float min = 0.0f,
+  void operator()(ImageF* in_out, float sigma, float min = 0.0f,
                   float max = 0.0f);
   template <class Target>
-  void operator()(Image3F* in_out, int sigma, float min = 0.0f,
+  void operator()(Image3F* in_out, float sigma, float min = 0.0f,
                   float max = 0.0f);
 
   template <class Target>
-  void operator()(const ImageB& guide, const ImageF& in, int sigma,
+  void operator()(const ImageB& guide, const ImageF& in, float sigma,
                   ImageF* PIK_RESTRICT out);
   template <class Target>
-  void operator()(const Image3B& guide, const Image3F& in, int sigma,
+  void operator()(const Image3B& guide, const Image3F& in, float sigma,
                   Image3F* PIK_RESTRICT out);
-};
-
-struct EdgePreservingFilterTwoPhase {
-  template <class Target>
-  void operator()(const ImageF& in, ImageF* PIK_RESTRICT out, float min = 0.0f,
-                  float max = 0.0f);
-  // Not yet implemented for Image3F.
-};
-
-struct TestEstimateNoise {
-  template <class Target>
-  void operator()(const char* message, const ImageF& in, float min = 0.0f,
-                  float max = 0.0f);
-  // Not yet implemented for Image3F.
 };
 
 }  // namespace epf

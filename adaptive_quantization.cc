@@ -19,14 +19,19 @@
 #include <cmath>
 #include <vector>
 
+#undef PROFILER_ENABLED
+#define PROFILER_ENABLED 1
+#include "approx_cube_root.h"
 #include "compiler_specific.h"
 #include "gauss_blur.h"
+#include "profiler.h"
 #include "status.h"
 
 namespace pik {
 namespace {
 
 ImageF DiffPrecompute(const ImageF& xyb, float cutoff) {
+  PROFILER_ZONE("aq DiffPrecompute");
   PIK_ASSERT(xyb.xsize() > 1);
   PIK_ASSERT(xyb.ysize() > 1);
   ImageF result(xyb.xsize(), xyb.ysize());
@@ -34,11 +39,10 @@ ImageF DiffPrecompute(const ImageF& xyb, float cutoff) {
 
   // PIK's gamma is 3.0 to be able to decode faster with two muls.
   // Butteraugli's gamma is matching the gamma of human eye, around 2.6.
-  // The difference is in match_gamma, and match_gamma_offset1 and
-  // match_gamma_offset2 are related tuning parameters.
-  static const double match_gamma = 0.37960119052725971;
-  static const double match_gamma_offset1 = 0.03686603494771571;
-  static const double match_gamma_offset2 = -0.16041597433190211;
+  // The difference is compensated by multiplying with cube root, and
+  // match_gamma_offset1 and match_gamma_offset2 are related tuning parameters.
+  static const double match_gamma_offset1 = 0.033624298781580172;
+  static const double match_gamma_offset2 = -0.15934608406618475;
   for (size_t y = 0; y + 1 < xyb.ysize(); ++y) {
     const float* const PIK_RESTRICT row_in = xyb.Row(y);
     const float* const PIK_RESTRICT row_in2 = xyb.Row(y + 1);
@@ -47,16 +51,16 @@ ImageF DiffPrecompute(const ImageF& xyb, float cutoff) {
       const size_t x2 = x + 1;
       float diff = mul0 * (fabs(row_in[x] - row_in[x2]) +
                            fabs(row_in[x] - row_in2[x]));
-      diff *= pow(row_in[x] + match_gamma_offset1, match_gamma) +
-          match_gamma_offset2;
+      diff *= ApproxCubeRoot(row_in[x] + match_gamma_offset1) +
+              match_gamma_offset2;
       row_out[x] = std::min(cutoff, diff);
     }
     // Last pixel of the row.
     {
       const size_t x = xyb.xsize() - 1;
       float diff = 2.0 * mul0 * (fabs(row_in[x] - row_in2[x]));
-      diff *= pow(row_in[x] + match_gamma_offset1, match_gamma) +
-          match_gamma_offset2;
+      diff *= ApproxCubeRoot(row_in[x] + match_gamma_offset1) +
+              match_gamma_offset2;
       row_out[x] = std::min(cutoff, diff);
     }
   }
@@ -68,8 +72,8 @@ ImageF DiffPrecompute(const ImageF& xyb, float cutoff) {
     for (size_t x = 0; x + 1 < xyb.xsize(); ++x) {
       const size_t x2 = x + 1;
       float diff = 2.0 * mul0 * fabs(row_in[x] - row_in[x2]);
-      diff *= pow(row_in[x] + match_gamma_offset1, match_gamma) +
-          match_gamma_offset2;
+      diff *= ApproxCubeRoot(row_in[x] + match_gamma_offset1) +
+              match_gamma_offset2;
       row_out[x] = std::min(cutoff, diff);
     }
     // Last pixel of the last row.
@@ -99,36 +103,44 @@ ImageF Expand(const ImageF& img, size_t out_xsize, size_t out_ysize) {
 }
 
 ImageF ComputeMask(const ImageF& diffs) {
-  static const float kBase = 0.39937829172927553;
-  static const float kMul = 0.010005470630454713;
-  static const float kOffset = 0.0071116859907291649;
+  static const float kBase = 0.39937917285783603;
+  static const float kMul1 = 0.0066894964664284537;
+  static const float kOffset1 = 0.007738949543181094;
+  static const float kMul2 = -9.1421822896833158e-05;
+  static const float kOffset2 = 0.082229004239615142;
   ImageF out(diffs.xsize(), diffs.ysize());
   for (int y = 0; y < diffs.ysize(); ++y) {
     const float* const PIK_RESTRICT row_in = diffs.Row(y);
     float * const PIK_RESTRICT row_out = out.Row(y);
     for (int x = 0; x < diffs.xsize(); ++x) {
-      row_out[x] = kBase + kMul / (row_in[x] + kOffset);
+      const float val = row_in[x];
+      row_out[x] = kBase +
+          kMul1 / (val + kOffset1) +
+          kMul2 / (val * val + kOffset2);
     }
   }
   return out;
 }
 
 ImageF SubsampleWithMax(const ImageF& in, int factor) {
+  PROFILER_ZONE("aq Subsample");
   PIK_ASSERT(in.xsize() % factor == 0);
   PIK_ASSERT(in.ysize() % factor == 0);
   const size_t out_xsize = in.xsize() / factor;
   const size_t out_ysize = in.ysize() / factor;
   ImageF out(out_xsize, out_ysize);
-  for (int oy = 0; oy < out_ysize; ++oy) {
-    for (int ox = 0; ox < out_xsize; ++ox) {
+  for (size_t oy = 0; oy < out_ysize; ++oy) {
+    float* PIK_RESTRICT row_out = out.Row(oy);
+    for (size_t ox = 0; ox < out_xsize; ++ox) {
       float maxval = 0.0f;
       for (int iy = 0; iy < factor; ++iy) {
+        const float* PIK_RESTRICT row_in = in.Row(oy * factor + iy);
         for (int ix = 0; ix < factor; ++ix) {
-          const float val = in.Row(oy * factor + iy)[ox * factor + ix];
+          const float val = row_in[ox * factor + ix];
           maxval = std::max(maxval, val);
         }
       }
-      out.Row(oy)[ox] = maxval;
+      row_out[ox] = maxval;
     }
   }
   return out;
@@ -137,6 +149,7 @@ ImageF SubsampleWithMax(const ImageF& in, int factor) {
 }  // namespace
 
 ImageF AdaptiveQuantizationMap(const ImageF& img, size_t resolution) {
+  PROFILER_ZONE("aq AdaptiveQuantMap");
   static const int kSampleRate = 8;
   PIK_ASSERT(resolution % kSampleRate == 0);
   const size_t out_xsize = (img.xsize() + resolution - 1) / resolution;
@@ -147,10 +160,10 @@ ImageF AdaptiveQuantizationMap(const ImageF& img, size_t resolution) {
   if (img.ysize() <= 1) {
     return ImageF(out_xsize, 1, 1.0f);
   }
-  static const float kSigma = 5.9213959922686561;
+  static const float kSigma = 5.9183203763195085;
   static const int kRadius = static_cast<int>(2 * kSigma + 0.5f);
   std::vector<float> kernel = GaussianKernel(kRadius, kSigma);
-  static const float kDiffCutoff = 0.15354936151152812;
+  static const float kDiffCutoff = 0.153548916857423;
   ImageF out = DiffPrecompute(img, kDiffCutoff);
   out = Expand(out, resolution * out_xsize, resolution * out_ysize);
   out = ConvolveAndSample(out, kernel, kSampleRate);

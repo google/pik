@@ -18,6 +18,7 @@
 
 #define PROFILER_ENABLED 1
 #include "arch_specific.h"
+#include "args.h"
 #include "gamma_correct.h"
 #include "image.h"
 #include "image_io.h"
@@ -32,45 +33,7 @@
 namespace pik {
 namespace {
 
-struct Args {
-  static bool ParseOverride(const int argc, char* argv[], int* i,
-                            Override* out) {
-    *i += 1;
-    if (*i >= argc) {
-      fprintf(stderr, "Expected an override argument.\n");
-      return false;
-    }
-
-    const std::string arg(argv[*i]);
-    if (arg == "1") {
-      *out = Override::kOn;
-      return true;
-    }
-    if (arg == "0") {
-      *out = Override::kOff;
-      return true;
-    }
-    fprintf(stderr, "Invalid flag, must be 0 or 1\n");
-    return false;
-  }
-
-  static bool ParseUnsigned(const int argc, char* argv[], int* i, size_t* out) {
-    *i += 1;
-    if (*i >= argc) {
-      fprintf(stderr, "Expected an unsigned integer argument.\n");
-      return false;
-    }
-
-    char* end;
-    *out = static_cast<size_t>(strtoull(argv[*i], &end, 0));
-    if (end[0] != '\0') {
-      fprintf(stderr, "Unable to interpret as unsigned integer: %s.\n",
-              argv[*i]);
-      return false;
-    }
-    return true;
-  }
-
+struct DecompressArgs {
   bool Init(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
       if (argv[i][0] == '-') {
@@ -190,7 +153,7 @@ int Decompress(const PaddedBytes& compressed, const DecompressParams& params,
 }
 
 int Run(int argc, char* argv[]) {
-  Args args;
+  DecompressArgs args;
   if (!args.Init(argc, argv)) {
     fprintf(
         stderr,

@@ -24,6 +24,7 @@ namespace pik {
 
 template <typename T>
 std::vector<T> GaussianKernel(int radius, T sigma) {
+  PIK_ASSERT(sigma > 0.0);
   std::vector<T> kernel(2 * radius + 1);
   const T scaler = -1.0 / (2 * sigma * sigma);
   double sum = 0.0;
@@ -46,31 +47,32 @@ std::vector<T> GaussianKernel(int radius, T sigma) {
 //
 // where R is the radius of the kernel (i.e. kernel size is 2*R+1).
 
+// TODO(janwas): Deprecated, use ConvolveT instead (if |kernel| <= 5).
 ImageF Convolve(const ImageF& in, const std::vector<float>& kernel);
 Image3F Convolve(const Image3F& in, const std::vector<float>& kernel);
 
+// TODO(janwas): Deprecated, use ConvolveT instead (if |kernel| <= 5).
 ImageF Convolve(const ImageF& in,
                 const std::vector<float>& kernel_x,
                 const std::vector<float>& kernel_y);
-
 Image3F Convolve(const Image3F& in,
                  const std::vector<float>& kernel_x,
                  const std::vector<float>& kernel_y);
 
+// TODO(janwas): Use ConvolveT instead (if |kernel| <= 5 and res == 1).
 // REQUIRES: in.xsize() and in.ysize() are integer multiples of res.
 ImageF ConvolveAndSample(const ImageF& in,
                          const std::vector<float>& kernel,
                          const size_t res);
-
 ImageF ConvolveAndSample(const ImageF& in,
                          const std::vector<float>& kernel_x,
                          const std::vector<float>& kernel_y,
                          const size_t res);
 
+// TODO(janwas): Use ConvolveT instead (if |kernel| <= 5 and res == 1).
 ImageF ConvolveXSampleAndTranspose(const ImageF& in,
                                    const std::vector<float>& kernel,
                                    const size_t res);
-
 Image3F ConvolveXSampleAndTranspose(const Image3F& in,
                                     const std::vector<float>& kernel,
                                     const size_t res);

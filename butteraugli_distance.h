@@ -25,14 +25,17 @@ namespace pik {
 // Both rgb0 and rgb1 are assumed to be in sRGB color space.
 // If distmap is not null, it must be the same size as rgb0 and rgb1.
 float ButteraugliDistance(const Image3B& rgb0, const Image3B& rgb1,
+                          float hf_asymmetry,
                           ImageF* distmap);
 
 // Same as above, but rgb0 and rgb1 are linear RGB images.
 float ButteraugliDistance(const Image3F& rgb0, const Image3F& rgb1,
+                          float hf_asymmetry,
                           ImageF* distmap);
 
 // rgb0 and rgb1 are linear RGB images with optional alpha channel.
 float ButteraugliDistance(const MetaImageF& rgb0, const MetaImageF& rgb1,
+                          float hf_asymmetry,
                           ImageF* distmap_out);
 
 }  // namespace pik

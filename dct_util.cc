@@ -1,7 +1,11 @@
 #include "dct_util.h"
 
+#undef PROFILER_ENABLED
+#define PROFILER_ENABLED 1
+#include "bits.h"
 #include "dct.h"
 #include "gauss_blur.h"
+#include "profiler.h"
 #include "simd/simd.h"
 #include "status.h"
 
@@ -250,7 +254,7 @@ Image3F UpSample8x8BlurDCT(const Image3F& img, const float sigma) {
           }
         }
         ComputeTransposedScaledBlockDCTFloat(block);
-        block[0] = 0.0f;
+        block[0] -= img.PlaneRow(c, by)[bx];
       }
     }
   }
@@ -518,22 +522,59 @@ Image3F UpSample4x4Blur(const Image3F& img, const float sigma) {
   return UpSampleBlur<4>(img, sigma);
 }
 
-
 ImageF Subsample(const ImageF& image, int f) {
-  PIK_ASSERT(image.xsize() % f == 0);
-  PIK_ASSERT(image.ysize() % f == 0);
-  const int nxs = image.xsize() / f;
-  const int nys = image.ysize() / f;
+  PROFILER_FUNC;
+  PIK_CHECK(image.xsize() % f == 0);
+  PIK_CHECK(image.ysize() % f == 0);
+  const int shift = CeilLog2Nonzero(static_cast<uint32_t>(f));
+  PIK_CHECK(f == (1 << shift));
+  const size_t nxs = image.xsize() >> shift;
+  const size_t nys = image.ysize() >> shift;
   ImageF retval(nxs, nys, 0.0f);
-  float mul = 1.0f / (f * f);
-  for (int y = 0; y < image.ysize(); ++y) {
-    for (int x = 0; x < image.xsize(); ++x) {
-      int ny = y / f;
-      int nx = x / f;
-      retval.Row(ny)[nx] += mul * image.Row(y)[x];
+  const float mul = 1.0f / (f * f);
+  for (size_t y = 0; y < image.ysize(); ++y) {
+    const float* PIK_RESTRICT row_in = image.Row(y);
+    const size_t ny = y >> shift;
+    float* PIK_RESTRICT row_out = retval.Row(ny);
+    for (size_t x = 0; x < image.xsize(); ++x) {
+      size_t nx = x >> shift;
+      row_out[nx] += mul * row_in[x];
     }
   }
   return retval;
+}
+
+// Averages 8x8 blocks to match DCT behavior.
+ImageF Subsample8(const ImageF& image) {
+  PROFILER_FUNC;
+
+  PIK_CHECK(image.xsize() % 8 == 0);
+  PIK_CHECK(image.ysize() % 8 == 0);
+  const size_t block_xsize = image.xsize() / 8;
+  const size_t block_ysize = image.ysize() / 8;
+
+  ImageF out(block_xsize, block_ysize);
+
+  using namespace SIMD_NAMESPACE;
+  using D = Part<float, SIMD_MIN(Full<float>::N, 8)>;
+  const D d;
+  const auto mul = set1(d, 1.0f / 64);
+
+  for (size_t y = 0; y < block_ysize; ++y) {
+    float* PIK_RESTRICT row_out = out.Row(y);
+    for (size_t x = 0; x < block_xsize; ++x) {
+      // Produce a single output pixel by averaging an 8x8 input block.
+      auto sum = setzero(d);
+      for (size_t iy = 0; iy < 8; ++iy) {
+        for (size_t ix = 0; ix < 8; ix += d.N) {
+          sum += load(d, image.Row(8 * y + iy) + 8 * x + ix);
+        }
+      }
+      sum = ext::sum_of_lanes(sum);
+      row_out[x] = get_part(Part<float, 1>(), sum * mul);
+    }
+  }
+  return out;
 }
 
 Image3F Subsample(const Image3F& in, int f) {

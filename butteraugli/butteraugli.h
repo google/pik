@@ -424,7 +424,7 @@ struct PsychoImage {
 
 class ButteraugliComparator {
  public:
-  ButteraugliComparator(const std::vector<ImageF>& rgb0);
+  ButteraugliComparator(const std::vector<ImageF>& rgb0, double hf_asymmetry);
 
   // Computes the butteraugli map between the original image given in the
   // constructor and the distorted image give here.
@@ -443,13 +443,15 @@ class ButteraugliComparator {
  private:
   void MaltaDiffMapLF(const ImageF& y0,
                       const ImageF& y1,
-                      double w,
+                      double w_0gt1,
+                      double w_0lt1,
                       double normalization,
                       ImageF* BUTTERAUGLI_RESTRICT block_diff_ac) const;
 
   void MaltaDiffMap(const ImageF& y0,
                     const ImageF& y1,
-                    double w,
+                    double w_0gt1,
+                    double w_0lt1,
                     double normalization,
                     ImageF* BUTTERAUGLI_RESTRICT block_diff_ac) const;
 
@@ -461,11 +463,13 @@ class ButteraugliComparator {
   const size_t xsize_;
   const size_t ysize_;
   const size_t num_pixels_;
+  float hf_asymmetry_;
   PsychoImage pi0_;
 };
 
 void ButteraugliDiffmap(const std::vector<ImageF> &rgb0,
                         const std::vector<ImageF> &rgb1,
+                        double hf_asymmetry,
                         ImageF &diffmap);
 
 double ButteraugliScoreFromDiffmap(const ImageF& distmap);

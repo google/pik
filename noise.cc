@@ -34,7 +34,7 @@ ImageF RandomImage(ImageF* PIK_RESTRICT temp, Xorshift128Plus* rng) {
   }
 
   ImageF out(xsize, ysize);
-  ConvolveT<Direct3Laplacian, Kernel::Laplacian3>::Run(*temp, &out);
+  ConvolveT<strategy::Laplacian3>::Run(*temp, kernel::Laplacian3(), &out);
   return out;
 }
 

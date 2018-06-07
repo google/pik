@@ -34,6 +34,8 @@ namespace pik {
 class CacheAligned {
  public:
   static constexpr size_t kPointerSize = sizeof(void*);
+  // Actually need alignment to PAIRS of cache lines but we can't increase this
+  // due to use of Window() with insufficient alignment.
   static constexpr size_t kCacheLineSize = 64;
 
   // "offset" is added to the allocation size and allocated pointer in an

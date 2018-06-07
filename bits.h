@@ -23,50 +23,50 @@ static PIK_INLINE int PopCount(const uint32_t x) {
 }
 
 // Undefined results for x == 0.
-static PIK_INLINE int NumZeroBitsAboveMSB32Nonzero(const uint32_t x) {
+static PIK_INLINE int NumZeroBitsAboveMSBNonzero(const uint32_t x) {
   return __builtin_clz(x);
 }
-static PIK_INLINE int NumZeroBitsAboveMSB64Nonzero(const uint64_t x) {
+static PIK_INLINE int NumZeroBitsAboveMSBNonzero(const uint64_t x) {
   return __builtin_clzl(x);
 }
-static PIK_INLINE int NumZeroBitsBelowLSB32Nonzero(const uint32_t x) {
+static PIK_INLINE int NumZeroBitsBelowLSBNonzero(const uint32_t x) {
   return __builtin_ctz(x);
 }
-static PIK_INLINE int NumZeroBitsBelowLSB64Nonzero(const uint64_t x) {
+static PIK_INLINE int NumZeroBitsBelowLSBNonzero(const uint64_t x) {
   return __builtin_ctzl(x);
 }
 
 // Returns bit width for x == 0.
-static PIK_INLINE int NumZeroBitsAboveMSB32(const uint32_t x) {
-  return (x == 0) ? 32 : NumZeroBitsAboveMSB32Nonzero(x);
+static PIK_INLINE int NumZeroBitsAboveMSB(const uint32_t x) {
+  return (x == 0) ? 32 : NumZeroBitsAboveMSBNonzero(x);
 }
-static PIK_INLINE int NumZeroBitsAboveMSB64(const uint64_t x) {
-  return (x == 0) ? 64 : NumZeroBitsAboveMSB64Nonzero(x);
+static PIK_INLINE int NumZeroBitsAboveMSB(const uint64_t x) {
+  return (x == 0) ? 64 : NumZeroBitsAboveMSBNonzero(x);
 }
-static PIK_INLINE int NumZeroBitsBelowLSB32(const uint32_t x) {
-  return (x == 0) ? 32 : NumZeroBitsBelowLSB32Nonzero(x);
+static PIK_INLINE int NumZeroBitsBelowLSB(const uint32_t x) {
+  return (x == 0) ? 32 : NumZeroBitsBelowLSBNonzero(x);
 }
-static PIK_INLINE int NumZeroBitsBelowLSB64(const uint64_t x) {
-  return (x == 0) ? 64 : NumZeroBitsBelowLSB64Nonzero(x);
+static PIK_INLINE int NumZeroBitsBelowLSB(const uint64_t x) {
+  return (x == 0) ? 64 : NumZeroBitsBelowLSBNonzero(x);
 }
 
 // Returns base-2 logarithm, rounded down.
-static PIK_INLINE int FloorLog2NonZero32(const uint32_t x) {
-  return 31 ^ NumZeroBitsAboveMSB32Nonzero(x);
+static PIK_INLINE int FloorLog2Nonzero(const uint32_t x) {
+  return 31 ^ NumZeroBitsAboveMSBNonzero(x);
 }
-static PIK_INLINE int FloorLog2NonZero64(const uint64_t x) {
-  return 63 ^ NumZeroBitsAboveMSB64Nonzero(x);
+static PIK_INLINE int FloorLog2Nonzero(const uint64_t x) {
+  return 63 ^ NumZeroBitsAboveMSBNonzero(x);
 }
 
 // Returns base-2 logarithm, rounded up.
-static PIK_INLINE int CeilLog2NonZero32(const uint32_t x) {
-  const int floor_log2 = FloorLog2NonZero32(x);
+static PIK_INLINE int CeilLog2Nonzero(const uint32_t x) {
+  const int floor_log2 = FloorLog2Nonzero(x);
   if ((x & (x - 1)) == 0) return floor_log2;  // power of two
   return floor_log2 + 1;
 }
 
-static PIK_INLINE int CeilLog2NonZero64(const uint64_t x) {
-  const int floor_log2 = FloorLog2NonZero64(x);
+static PIK_INLINE int CeilLog2Nonzero(const uint64_t x) {
+  const int floor_log2 = FloorLog2Nonzero(x);
   if ((x & (x - 1)) == 0) return floor_log2;  // power of two
   return floor_log2 + 1;
 }

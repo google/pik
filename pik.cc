@@ -31,6 +31,8 @@
 #include "arch_specific.h"
 #include "bit_buffer.h"
 #include "bits.h"
+#include "brunsli_v2_decode.h"
+#include "brunsli_v2_encode.h"
 #include "butteraugli_comparator.h"
 #include "byte_order.h"
 #include "common.h"
@@ -39,8 +41,15 @@
 #include "convolve.h"
 #include "dct_util.h"
 #include "fast_log.h"
+#include "guetzli/jpeg_data.h"
+#include "guetzli/jpeg_data_encoder.h"
+#include "guetzli/jpeg_data_reader.h"
+#include "guetzli/jpeg_data_writer.h"
+#include "guetzli/jpeg_error.h"
+#include "guetzli/processor.h"
 #include "header.h"
 #include "image_io.h"
+#include "jpeg_data_decoder.h"
 #include "noise.h"
 #include "opsin_codec.h"
 #include "opsin_image.h"
@@ -54,35 +63,11 @@ bool FLAGS_log_search_state = false;
 // If true, prints the quantization maps at each iteration.
 bool FLAGS_dump_quant_state = false;
 
+const float kEpfMulScale = 10000.0f;
+const int32_t FLAGS_epf_mul = 256;
+
 namespace pik {
 namespace {
-
-void EncodeU32(const uint32_t val, uint8_t* dest) {
-#if PIK_BYTE_ORDER_LITTLE
-  memcpy(dest, &val, sizeof(val));
-#else
-  dest[0] = (val >>  0) & 0xff;
-  dest[1] = (val >>  8) & 0xff;
-  dest[2] = (val >> 16) & 0xff;
-  dest[3] = (val >> 24) & 0xff;
-#endif
-}
-
-uint32_t DecodeU32(const uint8_t* src) {
-  uint32_t val;
-#if PIK_BYTE_ORDER_LITTLE
-  memcpy(&val, src, sizeof(val));
-#else
-  val = src[3];
-  val <<= 8;
-  val += src[2];
-  val <<= 8;
-  val += src[1];
-  val <<= 8;
-  val += src[0];
-#endif
-  return val;
-}
 
 template <class Image>
 size_t TargetSize(const CompressParams& params, const Image& img) {
@@ -99,19 +84,24 @@ inline int Clamp(int minval, int maxval, int val) {
   return std::min(maxval, std::max(minval, val));
 }
 
-ImageF TileDistMap(const butteraugli::ImageF& distmap, int tile_size) {
+ImageF TileDistMap(const butteraugli::ImageF& distmap, int tile_size,
+                   int margin) {
+  PROFILER_FUNC;
   const int tile_xsize = (distmap.xsize() + tile_size - 1) / tile_size;
   const int tile_ysize = (distmap.ysize() + tile_size - 1) / tile_size;
   ImageF tile_distmap(tile_xsize, tile_ysize);
   for (int tile_y = 0; tile_y < tile_ysize; ++tile_y) {
     for (int tile_x = 0; tile_x < tile_xsize; ++tile_x) {
-      int x_max = std::min<int>(distmap.xsize(), tile_size * (tile_x + 1));
-      int y_max = std::min<int>(distmap.ysize(), tile_size * (tile_y + 1));
+      int y_min = std::max<int>(0, tile_size * tile_y - margin);
+      int x_min = std::max<int>(0, tile_size * tile_x - margin);
+      int x_max = std::min<int>(distmap.xsize(), tile_size * (tile_x + 1) + margin);
+      int y_max = std::min<int>(distmap.ysize(), tile_size * (tile_y + 1) + margin);
       float max_dist = 0.0;
-      for (int y = tile_size * tile_y; y < y_max; ++y) {
+      for (int y = y_min; y < y_max; ++y) {
         const float* const PIK_RESTRICT row = distmap.Row(y);
-        for (int x = tile_size * tile_x; x < x_max; ++x) {
-          max_dist = std::max(max_dist, row[x]);
+        for (int x = x_min; x < x_max; ++x) {
+          float v = row[x];
+          max_dist = std::max(max_dist, v);
         }
       }
       tile_distmap.Row(tile_y)[tile_x] = max_dist;
@@ -166,8 +156,8 @@ void DumpHeatmap(const PikInfo* info, const std::string& label,
                  const std::vector<float>& vals, size_t xsize, size_t ysize,
                  float good_threshold, float bad_threshold) {
   std::vector<uint8_t> heatmap(3 * xsize * ysize);
-  butteraugli::CreateHeatMapImage(vals, good_threshold, bad_threshold, xsize,
-                                  ysize, &heatmap);
+  butteraugli::CreateHeatMapImage(vals, good_threshold, bad_threshold,
+                                  xsize, ysize, &heatmap);
   char filename[200];
   snprintf(filename, sizeof(filename), "%s%05d", label.c_str(),
            info->num_butteraugli_iters);
@@ -180,7 +170,7 @@ void DumpHeatmaps(const PikInfo* info,
                   float ba_target,
                   const ImageF& quant_field,
                   const ImageF& tile_heatmap) {
-  if (info->debug_prefix.empty()) return;
+  if (!WantDebugOutput(info)) return;
   std::vector<float> qmap(xsize * ysize);
   std::vector<float> dmap(xsize * ysize);
   for (int y = 0; y < quant_field.ysize(); ++y) {
@@ -205,23 +195,154 @@ void DumpHeatmaps(const PikInfo* info,
               ba_target, 1.5f * ba_target);
 }
 
+void DoDenoise(const Quantizer& quantizer, Image3F* PIK_RESTRICT opsin) {
+  const float scale = quantizer.Scale() * kEpfMulScale;
+  epf::AdaptiveFilterParams epf_params;
+  epf_params.dc_quant = quantizer.RawDC();  // unused
+  // TODO(janwas): also store min/max opsin value, pass to epf
+  epf_params.ac_quant = &quantizer.RawQuantField();
+  epf_params.sigma_add = 0;
+  epf_params.sigma_mul = scale / (FLAGS_epf_mul << epf::kSigmaShift);
+  dispatch::Run(dispatch::SupportedTargets(), epf::EdgePreservingFilter(),
+                opsin, epf_params);
+}
+
 void FindBestQuantization(const Image3F& opsin_orig,
                           const Image3F& opsin_arg,
                           const CompressParams& cparams,
+                          const Header& header,
                           float butteraugli_target,
                           const ColorTransform& ctan,
                           Quantizer* quantizer,
                           PikInfo* aux_out) {
-  Image3F opsin = CopyImage(opsin_arg);
-  ButteraugliComparator comparator(opsin_orig);
+  ButteraugliComparator comparator(opsin_orig, cparams.hf_asymmetry);
   const float butteraugli_target_dc =
       std::min<float>(butteraugli_target,
-                      pow(butteraugli_target, 0.7));
-  const float kInitialQuantDC = 1.3031578728997887 / butteraugli_target_dc;
-  const float kInitialQuantAC = 0.8438025097606608 / butteraugli_target;
-  const int block_xsize = opsin.xsize() / 8;
-  const int block_ysize = opsin.ysize() / 8;
-  ImageF quant_field(block_xsize, block_ysize, kInitialQuantAC);
+                      pow(butteraugli_target, 0.74519026534314259));
+  const float kInitialQuantDC = (0.93865229808098116 ) / butteraugli_target_dc;
+  const float kQuantAC = (1.175733631024483 ) / butteraugli_target;
+  ImageF quant_field =
+      ScaleImage(kQuantAC,
+                 AdaptiveQuantizationMap(opsin_orig.plane(1), 8));
+  ImageF best_quant_field = CopyImage(quant_field);
+  float best_butteraugli = 1000.0f;
+  ImageF tile_distmap;
+  CompressParams search_params = cparams;
+  for (int i = 0; i < cparams.max_butteraugli_iters; ++i) {
+    if (FLAGS_dump_quant_state) {
+      printf("\nQuantization field:\n");
+      for (int y = 0; y < quant_field.ysize(); ++y) {
+        for (int x = 0; x < quant_field.xsize(); ++x) {
+          printf(" %.5f", quant_field.Row(y)[x]);
+        }
+        printf("\n");
+      }
+    }
+    float qmin, qmax;
+    ImageMinMax(quant_field, &qmin, &qmax);
+    if (quantizer->SetQuantField(kInitialQuantDC, quant_field, cparams)) {
+      ThreadPool null_pool(0);
+      // TODO(janwas): split into DC (hoisted outside) and AC
+      QuantizedCoeffs qcoeffs = ComputeCoefficients(
+          search_params, header, opsin_arg, *quantizer, ctan, &null_pool);
+      // TODO(janwas): Avoid by caching?
+      Image3F recon =
+          ReconOpsinImage(header, qcoeffs, *quantizer, ctan, &null_pool);
+
+      // (no need for any additional override: in the encoder, kDenoise is only
+      // set if the override allowed it)
+      if (header.flags & Header::kDenoise) {
+        DoDenoise(*quantizer, &recon);
+      }
+
+      Image3B srgb;
+      const bool dither = (header.flags & Header::kDither) != 0;
+      CenteredOpsinToSrgb(recon, dither, &null_pool, &srgb);
+      comparator.Compare(srgb);
+      bool best_quant_updated = false;
+      if (comparator.distance() <= best_butteraugli) {
+        best_quant_field = CopyImage(quant_field);
+        best_butteraugli = std::max(comparator.distance(), butteraugli_target);
+        best_quant_updated = true;
+      }
+      static const int kMargins[100] = { 0, 0, 1, 2, 1, 0, 0 };
+      tile_distmap = TileDistMap(comparator.distmap(), 8, kMargins[i]);
+      if (WantDebugOutput(aux_out)) {
+        DumpHeatmaps(aux_out, opsin_orig.xsize(), opsin_orig.ysize(),
+                     8, butteraugli_target, quant_field, tile_distmap);
+          char pathname[200];
+          snprintf(pathname, 200, "%s%s%05d.png", aux_out->debug_prefix.c_str(),
+                   "rgb_out", aux_out->num_butteraugli_iters);
+          WriteImage(ImageFormatPNG(), srgb, pathname);
+          ++aux_out->num_butteraugli_iters;
+      }
+      if (FLAGS_log_search_state) {
+        float minval, maxval;
+        ImageMinMax(quant_field, &minval, &maxval);
+        printf("\nButteraugli iter: %d/%d%s\n", i,
+               cparams.max_butteraugli_iters,
+               best_quant_updated ? " (*)" : "");
+        printf("Butteraugli distance: %f\n", comparator.distance());
+        printf("quant range: %f ... %f  DC quant: %f\n", minval, maxval,
+               kInitialQuantDC);
+        if (FLAGS_dump_quant_state) {
+          quantizer->DumpQuantizationMap();
+        }
+      }
+    }
+    static const double kPow[7] = {
+        1.0036861826562358,
+        1.0056998697519905,
+        0.74617073038693837,
+        0.82769059771562947,
+        0.0,
+        0.0,
+        0.0,
+    };
+    const double cur_pow = kPow[i];
+    // pow(x, 0) == x, so skip pow.
+    if (cur_pow == 0.0) {
+      for (int y = 0; y < quant_field.ysize(); ++y) {
+        const float* const PIK_RESTRICT row_dist = tile_distmap.Row(y);
+        float* const PIK_RESTRICT row_q = quant_field.Row(y);
+        for (int x = 0; x < quant_field.xsize(); ++x) {
+          const float diff = row_dist[x] / butteraugli_target;
+          if (diff >= 1.0f) {
+            row_q[x] *= diff;
+          }
+        }
+      }
+    } else {
+      for (int y = 0; y < quant_field.ysize(); ++y) {
+        const float* const PIK_RESTRICT row_dist = tile_distmap.Row(y);
+        float* const PIK_RESTRICT row_q = quant_field.Row(y);
+        for (int x = 0; x < quant_field.xsize(); ++x) {
+          const float diff = row_dist[x] / butteraugli_target;
+          if (diff < 1.0f) {
+            row_q[x] *= pow(diff, cur_pow);
+          } else {
+            row_q[x] *= diff;
+          }
+        }
+      }
+    }
+  }
+  quantizer->SetQuantField(kInitialQuantDC, best_quant_field, cparams);
+}
+
+void FindBestQuantizationHQ(const Image3F& opsin_orig,
+                            const Image3F& opsin,
+                            const CompressParams& cparams,
+                            const Header& header,
+                            float butteraugli_target,
+                            const ColorTransform& ctan,
+                            Quantizer* quantizer,
+                            PikInfo* aux_out) {
+  const bool slow = cparams.really_slow_mode;
+  ButteraugliComparator comparator(opsin_orig, cparams.hf_asymmetry);
+  ImageF quant_field =
+      ScaleImage(slow ? 1.2f : 1.5f,
+                 AdaptiveQuantizationMap(opsin_orig.plane(1), 8));
   ImageF best_quant_field = CopyImage(quant_field);
   float best_butteraugli = 1000.0f;
   ImageF tile_distmap;
@@ -229,8 +350,11 @@ void FindBestQuantization(const Image3F& opsin_orig,
   int outer_iter = 0;
   int butteraugli_iter = 0;
   int search_radius = 0;
-  float quant_ceil = 3.0f;
+  float quant_ceil = 5.0f;
+  float quant_dc = slow ? 1.2f : 1.6f;
   int num_stalling_iters = 0;
+  int max_iters = slow ? cparams.max_butteraugli_iters_really_slow_mode :
+                  cparams.max_butteraugli_iters;
   CompressParams search_params = cparams;
   for (;;) {
     if (FLAGS_dump_quant_state) {
@@ -244,22 +368,20 @@ void FindBestQuantization(const Image3F& opsin_orig,
     }
     float qmin, qmax;
     ImageMinMax(quant_field, &qmin, &qmax);
-    if (quantizer->SetQuantField(kInitialQuantDC, quant_field, cparams)) {
-      QuantizedCoeffs qcoeffs =
-          ComputeCoefficients(search_params, opsin, *quantizer, ctan, nullptr);
+    if (quantizer->SetQuantField(quant_dc, quant_field, cparams)) {
       ThreadPool null_pool(0);
-      int flags = 0;
-      if (cparams.exp_disable_hf_prediction) flags |= kReconDisableHFPrediction;
+      // TODO(janwas): split into DC (hoisted outside) and AC
+      QuantizedCoeffs qcoeffs = ComputeCoefficients(
+          search_params, header, opsin, *quantizer, ctan, &null_pool);
+      // TODO(janwas): Avoid by caching?
       Image3F recon =
-          ReconOpsinImage(qcoeffs, *quantizer, ctan, flags, &null_pool);
+          ReconOpsinImage(header, qcoeffs, *quantizer, ctan, &null_pool);
 
-      bool kGaborish = true;
-      if (kGaborish) {
-        recon = ConvolveGaborish(recon, &null_pool);
-      }
       Image3B srgb;
-      CenteredOpsinToSrgb(recon, &null_pool, &srgb);
+      const bool dither = (header.flags & Header::kDither) != 0;
+      CenteredOpsinToSrgb(recon, dither, &null_pool, &srgb);
       comparator.Compare(srgb);
+      ++butteraugli_iter;
       bool best_quant_updated = false;
       if (comparator.distance() <= best_butteraugli) {
         best_quant_field = CopyImage(quant_field);
@@ -269,36 +391,32 @@ void FindBestQuantization(const Image3F& opsin_orig,
       } else if (outer_iter == 0) {
         ++num_stalling_iters;
       }
-      tile_distmap = TileDistMap(comparator.distmap(), 8);
-      ++butteraugli_iter;
-      if (aux_out) {
+      tile_distmap = TileDistMap(comparator.distmap(), 8, 0);
+      if (WantDebugOutput(aux_out)) {
         DumpHeatmaps(aux_out, opsin_orig.xsize(), opsin_orig.ysize(),
                      8, butteraugli_target, quant_field, tile_distmap);
-        if (!aux_out->debug_prefix.empty()) {
           char pathname[200];
           snprintf(pathname, 200, "%s%s%05d.png", aux_out->debug_prefix.c_str(),
                    "rgb_out", aux_out->num_butteraugli_iters);
           WriteImage(ImageFormatPNG(), srgb, pathname);
-        }
+      }
+      if (aux_out) {
         ++aux_out->num_butteraugli_iters;
       }
       if (FLAGS_log_search_state) {
         float minval, maxval;
         ImageMinMax(quant_field, &minval, &maxval);
-        printf("\nButteraugli iter: %d/%d%s\n", butteraugli_iter,
-               cparams.max_butteraugli_iters,
+        printf("\nButteraugli iter: %d/%d%s\n", butteraugli_iter, max_iters,
                best_quant_updated ? " (*)" : "");
         printf("Butteraugli distance: %f\n", comparator.distance());
         printf("quant range: %f ... %f  DC quant: %f\n", minval, maxval,
-               kInitialQuantDC);
-        printf("quant_ceil: %f\n", quant_ceil);
-        printf("search_radius: %d\n", search_radius);
-        printf("outer iters: %d\n", outer_iter);
+               quant_dc);
+        printf("search radius: %d\n", search_radius);
         if (FLAGS_dump_quant_state) {
           quantizer->DumpQuantizationMap();
         }
       }
-      if (butteraugli_iter >= cparams.max_butteraugli_iters) {
+      if (butteraugli_iter >= max_iters) {
         break;
       }
     }
@@ -312,12 +430,10 @@ void FindBestQuantization(const Image3F& opsin_orig,
           const float* const PIK_RESTRICT row_dist = dist_to_peak_map.Row(y);
           for (int x = 0; x < quant_field.xsize(); ++x) {
             if (row_dist[x] >= 0.0f) {
-              static const double kAdjSpeed[kMaxOuterIters] = {
-                0.11898778549379123,
-                0.02685018855681567,
-              };
+              static const float kAdjSpeed[kMaxOuterIters] = { 0.1, 0.04 };
               const float factor =
-                  kAdjSpeed[outer_iter] * tile_distmap.Row(y)[x];
+                  (slow ? kAdjSpeed[outer_iter] : 0.2f) *
+                  tile_distmap.Row(y)[x];
               if (AdjustQuantVal(&row_q[x], row_dist[x], factor, quant_ceil)) {
                 changed = true;
               }
@@ -325,37 +441,38 @@ void FindBestQuantization(const Image3F& opsin_orig,
           }
         }
       }
-      if (!changed || num_stalling_iters >= 3) {
+      if (!changed || num_stalling_iters >= (slow ? 3 : 1)) {
         // Try to extend the search parameters.
-        if (search_radius < 4) {
-          if (qmax < 0.99f * quant_ceil ||
-              quant_ceil >= 3.0f + search_radius) {
-            ++search_radius;
-          } else {
-            quant_ceil += 0.5f;
-          }
-        } else if (quant_ceil < 8.0f) {
-          quant_ceil += 0.5f;
-        } else {
-          break;
+        if ((search_radius < 4) &&
+            (qmax < 0.99f * quant_ceil ||
+             quant_ceil >= 3.0f + search_radius)) {
+          ++search_radius;
+          continue;
         }
+        if (quant_dc < 0.4f * quant_ceil - 0.8f) {
+          quant_dc += 0.2f;
+          changed = true;
+          continue;
+        }
+        if (quant_ceil < 8.0f) {
+          quant_ceil += 0.5f;
+          continue;
+        }
+        break;
       }
     }
     if (!changed) {
-      if (++outer_iter == kMaxOuterIters) break;
-      static const double kQuantScale[kMaxOuterIters] = {
-        0.0,
-        0.73751205348900917,
-      };
+      if (!slow || ++outer_iter == kMaxOuterIters) break;
+      static const float kQuantScale = 0.75f;
       for (int y = 0; y < quant_field.ysize(); ++y) {
         for (int x = 0; x < quant_field.xsize(); ++x) {
-          quant_field.Row(y)[x] *= kQuantScale[outer_iter];
+          quant_field.Row(y)[x] *= kQuantScale;
         }
       }
       num_stalling_iters = 0;
     }
   }
-  quantizer->SetQuantField(kInitialQuantDC, best_quant_field, cparams);
+  quantizer->SetQuantField(quant_dc, best_quant_field, cparams);
 }
 
 template <typename T>
@@ -373,17 +490,17 @@ inline size_t IndexOfMaximum(const T* array, const size_t len) {
 }
 
 void FindBestYToBCorrelation(const Image3F& opsin,
-                             Image<int>* ytob_map,
-                             int* ytob_dc) {
+                             ImageI* PIK_RESTRICT ytob_map,
+                             int* PIK_RESTRICT ytob_dc) {
   const float kYToBScale = 128.0f;
   const float kZeroThresh = kYToBScale * 0.7f;
-  const float* const PIK_RESTRICT kDequantMatrix = &DequantMatrix()[128];
+  const float* const PIK_RESTRICT kDequantMatrix = &DequantMatrix(0)[128];
   float qm[64];
   for (int k = 0; k < 64; ++k) {
     qm[k] = 1.0f / kDequantMatrix[k];
   }
   Image3F dct = TransposedScaledDCT(opsin);
-  size_t num_zeros[256] = { 0 };
+  uint32_t num_zeros[256] = {0};
   for (size_t y = 0; y < dct.ysize(); ++y) {
     const float* const PIK_RESTRICT row_y = dct.ConstPlaneRow(1, y);
     const float* const PIK_RESTRICT row_b = dct.ConstPlaneRow(2, y);
@@ -400,12 +517,13 @@ void FindBestYToBCorrelation(const Image3F& opsin,
   }
   *ytob_dc = IndexOfMaximum(num_zeros, 256);
   for (int tile_y = 0; tile_y < ytob_map->ysize(); ++tile_y) {
+    int* PIK_RESTRICT row_ytob = ytob_map->Row(tile_y);
     for (int tile_x = 0; tile_x < ytob_map->xsize(); ++tile_x) {
       const int y0 = tile_y * kTileInBlocks;
       const int x0 = tile_x * kTileInBlocks * 64;
       const int y1 = std::min<int>(y0 + kTileInBlocks, dct.ysize());
       const int x1 = std::min<int>(x0 + kTileInBlocks * 64, dct.xsize());
-      size_t num_zeros[256] = { 0 };
+      uint32_t num_zeros[256] = {0};
       for (size_t y = y0; y < y1; ++y) {
         const float* const PIK_RESTRICT row_y = dct.ConstPlaneRow(1, y);
         const float* const PIK_RESTRICT row_b = dct.ConstPlaneRow(2, y);
@@ -426,23 +544,23 @@ void FindBestYToBCorrelation(const Image3F& opsin,
       if (num_zeros[best_ytob] - num_zeros[*ytob_dc] <= 10) {
         best_ytob = *ytob_dc;
       }
-      ytob_map->Row(tile_y)[tile_x] = best_ytob;
+      row_ytob[tile_x] = best_ytob;
     }
   }
 }
 
 void FindBestYToXCorrelation(const Image3F& opsin,
-                             Image<int>* ytox_map,
-                             int* ytox_dc) {
+                             ImageI* PIK_RESTRICT ytox_map,
+                             int* PIK_RESTRICT ytox_dc) {
   const float kYToXScale = 256.0f;
   const float kZeroThresh = kYToXScale * 0.65f;
-  const float* const PIK_RESTRICT kDequantMatrix = DequantMatrix();
+  const float* const PIK_RESTRICT kDequantMatrix = DequantMatrix(0);
   float qm[64];
   for (int k = 0; k < 64; ++k) {
     qm[k] = 1.0f / kDequantMatrix[k];
   }
   Image3F dct = TransposedScaledDCT(opsin);
-  size_t num_zeros[256] = { 0 };
+  uint32_t num_zeros[256] = {0};
   for (size_t y = 0; y < dct.ysize(); ++y) {
     const float* const PIK_RESTRICT row_y = dct.ConstPlaneRow(1, y);
     const float* const PIK_RESTRICT row_x = dct.ConstPlaneRow(0, y);
@@ -459,6 +577,7 @@ void FindBestYToXCorrelation(const Image3F& opsin,
   }
   *ytox_dc = IndexOfMaximum(num_zeros, 256);
   for (int tile_y = 0; tile_y < ytox_map->ysize(); ++tile_y) {
+    int* PIK_RESTRICT row_ytox = ytox_map->Row(tile_y);
     for (int tile_x = 0; tile_x < ytox_map->xsize(); ++tile_x) {
       const int y0 = tile_y * kTileInBlocks;
       const int x0 = tile_x * kTileInBlocks * 64;
@@ -485,7 +604,7 @@ void FindBestYToXCorrelation(const Image3F& opsin,
       if (num_zeros[best_ytox] == num_zeros[*ytox_dc]) {
         best_ytox = *ytox_dc;
       }
-      ytox_map->Row(tile_y)[tile_x] = best_ytox;
+      row_ytox[tile_x] = best_ytox;
     }
   }
 }
@@ -508,10 +627,12 @@ bool ScaleQuantizationMap(const float quant_dc,
 void ScaleToTargetSize(const Image3F& opsin,
                        const CompressParams& cparams,
                        const NoiseParams& noise_params,
+                       const Header& header,
                        size_t target_size,
                        const ColorTransform& ctan,
                        Quantizer* quantizer,
                        PikInfo* aux_out) {
+  ThreadPool null_pool(0);
   float quant_dc;
   ImageF quant_ac;
   quantizer->GetQuantField(&quant_dc, &quant_ac);
@@ -522,7 +643,8 @@ void ScaleToTargetSize(const Image3F& opsin,
   for (int i = 0; i < 10; ++i) {
     ScaleQuantizationMap(quant_dc, quant_ac, cparams, scale_good, quantizer);
     QuantizedCoeffs qcoeffs =
-        ComputeCoefficients(cparams, opsin, *quantizer, ctan, nullptr);
+        ComputeCoefficients(cparams, header, opsin, *quantizer, ctan,
+                            &null_pool);
     candidate = EncodeToBitstream(qcoeffs, *quantizer, noise_params, ctan,
                                   false, nullptr);
     if (candidate.size() <= target_size) {
@@ -546,7 +668,8 @@ void ScaleToTargetSize(const Image3F& opsin,
       break;
     }
     QuantizedCoeffs qcoeffs =
-        ComputeCoefficients(cparams, opsin, *quantizer, ctan, nullptr);
+        ComputeCoefficients(cparams, header, opsin, *quantizer, ctan,
+                            &null_pool);
     candidate = EncodeToBitstream(qcoeffs, *quantizer, noise_params, ctan,
                                   false, nullptr);
     if (candidate.size() <= target_size) {
@@ -562,10 +685,12 @@ void CompressToTargetSize(const Image3F& opsin_orig,
                           const Image3F& opsin,
                           const CompressParams& cparams,
                           const NoiseParams& noise_params,
+                          const Header& header,
                           size_t target_size,
                           const ColorTransform& ctan,
                           Quantizer* quantizer,
                           PikInfo* aux_out) {
+  ThreadPool null_pool(0);
   float quant_dc_good = 1.0;
   ImageF quant_ac_good;
   const float kIntervalLenThresh = 0.05f;
@@ -589,10 +714,11 @@ void CompressToTargetSize(const Image3F& opsin_orig,
         break;
       }
     }
-    FindBestQuantization(opsin_orig, opsin, cparams, dist,
+    FindBestQuantization(opsin_orig, opsin, cparams, header, dist,
                          ctan, quantizer, aux_out);
     QuantizedCoeffs qcoeffs =
-        ComputeCoefficients(cparams, opsin, *quantizer, ctan, nullptr);
+        ComputeCoefficients(cparams, header, opsin, *quantizer, ctan,
+                            &null_pool);
     std::string candidate = EncodeToBitstream(
         qcoeffs, *quantizer, noise_params, ctan, false, nullptr);
     if (candidate.size() <= target_size) {
@@ -605,11 +731,75 @@ void CompressToTargetSize(const Image3F& opsin_orig,
   quantizer->SetQuantField(quant_dc_good, quant_ac_good, cparams);
 }
 
+bool JpegToPikLossless(const guetzli::JPEGData& jpg, PaddedBytes* compressed,
+                       PikInfo* aux_out) {
+  Header header;
+  header.bitstream = Header::kBitstreamBrunsli;
+  compressed->resize(MaxCompressedHeaderSize() +
+                     BrunsliV2MaximumEncodedSize(jpg));
+  uint8_t* end = StoreHeader(header, compressed->data());
+  if (end == nullptr) return false;
+  const size_t header_size = end - compressed->data();
+  if (!BrunsliV2EncodeJpegData(jpg, header_size, compressed)) {
+    return PIK_FAILURE("Invalid jpeg input.");
+  }
+  return true;
+}
 
+bool BrunsliToPixels(const PaddedBytes& compressed, size_t pos, Image3B* srgb) {
+  guetzli::JPEGData jpg;
+  if (!BrunsliV2DecodeJpegData(compressed.data() + pos,
+      compressed.size() - pos, &jpg)) {
+    return PIK_FAILURE("Brunsli v2 decoding error");
+  }
+  std::vector<uint8_t> rgb = DecodeJpegToRGB(jpg, /* thumbnail = */ false);
+  if (rgb.empty()) {
+    return PIK_FAILURE("JPEG decoding error.");
+  }
+  *srgb = Image3FromInterleaved(&rgb[0], jpg.width, jpg.height, 3 * jpg.width);
+  return true;
+}
 
+bool BrunsliToPixels(const PaddedBytes& compressed, size_t pos, Image3U* srgb) {
+  return PIK_FAILURE("Brunsli not supported for Image3U");
+}
+
+bool BrunsliToPixels(const PaddedBytes& compressed, size_t pos, Image3F* srgb) {
+  return PIK_FAILURE("Brunsli not supported for Image3F");
+}
 
 }  // namespace
 
+bool PixelsToBrunsli(const CompressParams& params, const Image3B& srgb,
+                     PaddedBytes* compressed, PikInfo* aux_out) {
+  const std::vector<uint8_t>& rgb = InterleavedFromImage3(srgb);
+  guetzli::JPEGData jpeg;
+  if (params.butteraugli_distance >= 0.0) {
+    guetzli::Params guetzli_params;
+    guetzli_params.butteraugli_target = params.butteraugli_distance;
+    if (!guetzli::Process(guetzli_params, rgb, srgb.xsize(), srgb.ysize(),
+                          &jpeg)) {
+      return PIK_FAILURE("Guetzli processing failed.");
+    }
+  } else {
+    // TODO(janwas): use params.jpeg_quality to derive a quant matrix (arg 3).
+    if (!EncodeRGBToJpeg(rgb, srgb.xsize(), srgb.ysize(), &jpeg)) {
+      return PIK_FAILURE("Guetzli processing failed.");
+    }
+  }
+  return JpegToPikLossless(jpeg, compressed, aux_out);
+}
+
+bool PixelsToBrunsli(const CompressParams& params, const Image3F& srgb,
+                     PaddedBytes* compressed, PikInfo* aux_out) {
+  return PIK_FAILURE("Brunsli not supported for Image3F");
+}
+
+template<typename T>
+bool PixelsToBrunsli(const CompressParams& params, const MetaImage<T>& image,
+                     PaddedBytes* compressed, PikInfo* aux_out) {
+  return PixelsToBrunsli(params, image.GetColor(), compressed, aux_out);
+}
 
 template<typename T>
 MetaImageF OpsinDynamicsMetaImage(const Image3<T>& image) {
@@ -626,30 +816,44 @@ MetaImageF OpsinDynamicsMetaImage(const MetaImage<T>& image) {
   return out;
 }
 
-template<typename Image>
+template <typename Image>
 bool PixelsToPikT(const CompressParams& params_in, const Image& image,
-                  PaddedBytes* compressed, PikInfo* aux_out) {
+                  ThreadPool* pool, PaddedBytes* compressed, PikInfo* aux_out) {
   if (image.xsize() == 0 || image.ysize() == 0) {
     return PIK_FAILURE("Empty image");
   }
+  if (params_in.use_brunsli_v2) {
+    return PixelsToBrunsli(params_in, image, compressed, aux_out);
+  }
   MetaImageF opsin = OpsinDynamicsMetaImage(image);
+
   Header header;
   header.xsize = image.xsize();
   header.ysize = image.ysize();
   if (opsin.HasAlpha()) {
     header.flags |= Header::kAlpha;
   }
-  bool denoise = false;  // default decision (later: depending on quality)
+  // default decision (later: depending on quality)
+  bool enable_denoise = false;
   if (params_in.denoise != Override::kDefault) {
-    denoise = params_in.denoise == Override::kOn;
+    enable_denoise = params_in.denoise == Override::kOn;
   }
-  if (denoise) {
+  if (enable_denoise) {
     header.flags |= Header::kDenoise;
   }
-  if (params_in.exp_disable_hf_prediction) {
-    header.flags |= Header::kNoHFPrediction;
-  }
 
+  if (params_in.butteraugli_distance < kMaxButteraugliForHQ) {
+    header.quant_template = kQuantHQ;
+  } else {
+    header.quant_template = kQuantDefault;
+    header.flags |= Header::kSmoothDCPred;
+    header.flags |= Header::kGaborishTransform;
+  }
+  // Dithering is important at higher distances but leads to visible
+  // checkboarding at very high qualities.
+  if (params_in.butteraugli_distance > kMinButteraugliForDither) {
+    header.flags |= Header::kDither;
+  }
   compressed->resize(MaxCompressedHeaderSize());
   uint8_t* header_end = StoreHeader(header, compressed->data());
   if (header_end == nullptr) return false;
@@ -660,6 +864,7 @@ bool PixelsToPikT(const CompressParams& params_in, const Image& image,
   }
 
   if (opsin.HasAlpha()) {
+    PROFILER_ZONE("enc alpha");
     size_t bytepos = compressed->size();
     if (!AlphaToPik(params_in, opsin.GetAlpha(), opsin.AlphaBitDepth(),
                     &bytepos, compressed)) {
@@ -678,34 +883,36 @@ bool PixelsToPikT(const CompressParams& params_in, const Image& image,
   if (params.target_size > 0 || params.target_bitrate > 0.0) {
     params.target_size = opsin_target_size;
   }
-  if (!OpsinToPik(params, opsin, compressed, aux_out)) {
+  if (!OpsinToPik(params, header, opsin, pool, compressed, aux_out)) {
     return false;
   }
   return true;
 }
 
 bool PixelsToPik(const CompressParams& params, const Image3B& image,
-                 PaddedBytes* compressed, PikInfo* aux_out) {
-  return PixelsToPikT(params, image, compressed, aux_out);
+                 ThreadPool* pool, PaddedBytes* compressed, PikInfo* aux_out) {
+  return PixelsToPikT(params, image, pool, compressed, aux_out);
 }
 
 bool PixelsToPik(const CompressParams& params, const Image3F& image,
-                 PaddedBytes* compressed, PikInfo* aux_out) {
-  return PixelsToPikT(params, image, compressed, aux_out);
+                 ThreadPool* pool, PaddedBytes* compressed, PikInfo* aux_out) {
+  return PixelsToPikT(params, image, pool, compressed, aux_out);
 }
 
 bool PixelsToPik(const CompressParams& params, const MetaImageB& image,
-                 PaddedBytes* compressed, PikInfo* aux_out) {
-  return PixelsToPikT(params, image, compressed, aux_out);
+                 ThreadPool* pool, PaddedBytes* compressed, PikInfo* aux_out) {
+  return PixelsToPikT(params, image, pool, compressed, aux_out);
 }
 
 bool PixelsToPik(const CompressParams& params, const MetaImageF& image,
-                 PaddedBytes* compressed, PikInfo* aux_out) {
-  return PixelsToPikT(params, image, compressed, aux_out);
+                 ThreadPool* pool, PaddedBytes* compressed, PikInfo* aux_out) {
+  return PixelsToPikT(params, image, pool, compressed, aux_out);
 }
 
-bool OpsinToPik(const CompressParams& params, const MetaImageF& opsin_orig,
-                PaddedBytes* compressed, PikInfo* aux_out) {
+bool OpsinToPik(const CompressParams& params, const Header& header,
+                const MetaImageF& opsin_orig,
+                ThreadPool* pool, PaddedBytes* compressed, PikInfo* aux_out) {
+  PROFILER_ZONE("enc OpsinToPik uninstrumented");
   if (opsin_orig.xsize() == 0 || opsin_orig.ysize() == 0) {
     return PIK_FAILURE("Empty image");
   }
@@ -735,6 +942,7 @@ bool OpsinToPik(const CompressParams& params, const MetaImageF& opsin_orig,
     enable_noise = params.apply_noise == Override::kOn;
   }
   if (enable_noise) {
+    PROFILER_ZONE("enc GetNoiseParam");
     // TODO(user) test and properly select quality_coef with smooth filter
     float quality_coef = 1.0f;
     const double rampup =
@@ -746,80 +954,64 @@ bool OpsinToPik(const CompressParams& params, const MetaImageF& opsin_orig,
     }
     GetNoiseParameter(opsin, &noise_params, quality_coef);
   }
+  if (header.flags & Header::kGaborishTransform) {
+    GaborishInverse(opsin);
+  }
   ColorTransform ctan(xsize, ysize);
-  if (params.butteraugli_distance >= 0.0 || params.target_bitrate > 0.0 ||
-      params.target_size > 0) {
+  if (!params.fast_mode &&
+      (params.butteraugli_distance >= 0.0 || params.target_bitrate > 0.0 ||
+       params.target_size > 0)) {
+    PROFILER_ZONE("enc YTo* correlation");
     FindBestYToBCorrelation(opsin, &ctan.ytob_map, &ctan.ytob_dc);
     FindBestYToXCorrelation(opsin, &ctan.ytox_map, &ctan.ytox_dc);
   }
-  bool kGaborish = true;
-  if (kGaborish) {
-    static const double kGaborish[5] = {
-      -0.095336974121859999,
-      -0.049147719433952346,
-      0.00917293007962648,
-      0.0031287055481802016,
-      0.0063673837572018844,
-    };
-    const float smooth_weights5[9] = {
-      1.0f,
-      static_cast<float>(kGaborish[0]),
-      static_cast<float>(kGaborish[2]),
-
-      static_cast<float>(kGaborish[0]),
-      static_cast<float>(kGaborish[1]),
-      static_cast<float>(kGaborish[3]),
-
-      static_cast<float>(kGaborish[2]),
-      static_cast<float>(kGaborish[3]),
-      static_cast<float>(kGaborish[4]),
-    };
-    ImageF res[3] = {ImageF(opsin.xsize(), opsin.ysize()),
-                     ImageF(opsin.xsize(), opsin.ysize()),
-                     ImageF(opsin.xsize(), opsin.ysize())};
-    for (int i = 0; i < 3; ++i) {
-      SIMD_NAMESPACE::Slow::ConvolveSymmetric<2, WrapClamp>(
-          opsin.plane(i), opsin.xsize(), opsin.ysize(), smooth_weights5,
-          &res[i]);
-    }
-    Image3F smooth(std::move(res[0]), std::move(res[1]), std::move(res[2]));
-    smooth.Swap(opsin);
-  }
-  Quantizer quantizer(block_xsize, block_ysize);
+  Quantizer quantizer(header.quant_template, block_xsize, block_ysize);
   quantizer.SetQuant(1.0f);
   if (params.fast_mode) {
+    PROFILER_ZONE("enc fast quant");
     const float butteraugli_target = params.butteraugli_distance;
     const float butteraugli_target_dc =
         std::min<float>(butteraugli_target,
-                        pow(butteraugli_target, 0.7));
-    const float kQuantDC = 1.0 / butteraugli_target_dc;
-    const float kQuantAC = 1.9863091768715795 / butteraugli_target;
+                        pow(butteraugli_target, 0.69822238825785388));
+    const float kQuantDC = 0.57 / butteraugli_target_dc;
+    const float kQuantAC = ( 1.8570494508273865 ) / butteraugli_target;
     ImageF qf = AdaptiveQuantizationMap(opsin_orig.GetColor().plane(1), 8);
     quantizer.SetQuantField(kQuantDC, ScaleImage(kQuantAC, qf), params);
   } else if (params.target_size > 0 || params.target_bitrate > 0.0) {
     size_t target_size = TargetSize(params, opsin);
     if (params.target_size_search_fast_mode) {
-      FindBestQuantization(opsin_orig.GetColor(), opsin, params, 1.0,
+      PROFILER_ZONE("enc find best + scaleToTarget");
+      FindBestQuantization(opsin_orig.GetColor(), opsin, params, header, 1.0,
                            ctan, &quantizer, aux_out);
-      ScaleToTargetSize(opsin, params, noise_params, target_size, ctan,
+      ScaleToTargetSize(opsin, params, noise_params, header, target_size, ctan,
                         &quantizer, aux_out);
     } else {
+      PROFILER_ZONE("enc compressToTarget");
       CompressToTargetSize(opsin_orig.GetColor(), opsin, params, noise_params,
-                           target_size, ctan, &quantizer, aux_out);
+                           header, target_size, ctan, &quantizer, aux_out);
     }
   } else if (params.uniform_quant > 0.0) {
+    PROFILER_ZONE("enc SetQuant");
     quantizer.SetQuant(params.uniform_quant, params);
   } else {
     // Normal PIK encoding to a butteraugli score.
     if(params.butteraugli_distance < 0) {
       return false;
     }
-    FindBestQuantization(opsin_orig.GetColor(), opsin, params,
-                         params.butteraugli_distance, ctan,
-                         &quantizer, aux_out);
+    PROFILER_ZONE("enc find best2");
+    if (params.butteraugli_distance <= kNoiseModelingRampUpDistanceMin) {
+      FindBestQuantizationHQ(opsin_orig.GetColor(), opsin, params, header,
+                             params.butteraugli_distance, ctan,
+                             &quantizer, aux_out);
+    } else {
+      FindBestQuantization(opsin_orig.GetColor(), opsin, params, header,
+                           params.butteraugli_distance, ctan,
+                           &quantizer, aux_out);
+    }
   }
   QuantizedCoeffs qcoeffs =
-      ComputeCoefficients(params, opsin, quantizer, ctan, aux_out);
+      ComputeCoefficients(params, header, opsin, quantizer, ctan, pool,
+                          aux_out);
   std::string compressed_data = EncodeToBitstream(
       qcoeffs, quantizer, noise_params, ctan, params.fast_mode, aux_out);
 
@@ -830,6 +1022,21 @@ bool OpsinToPik(const CompressParams& params, const MetaImageF& opsin_orig,
   return true;
 }
 
+bool JpegToPik(const CompressParams& params, const guetzli::JPEGData& jpeg,
+               ThreadPool* pool, PaddedBytes* compressed, PikInfo* aux_out) {
+  if (params.butteraugli_distance <= 0.0) {
+    return JpegToPikLossless(jpeg, compressed, aux_out);
+  }
+
+  guetzli::Params guetzli_params;
+  guetzli_params.butteraugli_target = params.butteraugli_distance;
+  guetzli_params.clear_metadata = params.clear_metadata;
+  guetzli::JPEGData jpeg_out;
+  if (!guetzli::Process(guetzli_params, jpeg, &jpeg_out)) {
+    return PIK_FAILURE("Guetzli processing failed.");
+  }
+  return JpegToPikLossless(jpeg_out, compressed, aux_out);
+}
 
 template <typename T>
 bool PikToPixelsT(const DecompressParams& params, const PaddedBytes& compressed,
@@ -850,10 +1057,18 @@ bool PikToPixelsT(const DecompressParams& params, const PaddedBytes& compressed,
   size_t byte_pos = header_end - compressed.data();
   PIK_ASSERT(byte_pos <= compressed.size());
 
-  if (header.flags & Header::kWebPLossless) {
-    return PIK_FAILURE("Invalid format code");
+  if (header.bitstream == Header::kBitstreamBrunsli) {
+    if (!BrunsliToPixels(compressed, byte_pos, &srgb)) {
+      return false;
+    }
+    image->SetColor(std::move(srgb));
+    return true;
   }
-  // Else: Pik
+  if (header.bitstream != Header::kBitstreamDefault) {
+    return PIK_FAILURE("Unsupported bitstream");
+  }
+
+  // Default bitstream:
   if (header.xsize == 0 || header.ysize == 0) {
     return PIK_FAILURE("Empty image.");
   }
@@ -864,6 +1079,9 @@ bool PikToPixelsT(const DecompressParams& params, const PaddedBytes& compressed,
   uint64_t num_pixels = static_cast<uint64_t>(header.xsize) * header.ysize;
   if (num_pixels > params.max_num_pixels) {
     return PIK_FAILURE("Image too big.");
+  }
+  if (header.quant_template >= kNumQuantTables) {
+    return PIK_FAILURE("Invalid quant table.");
   }
 
   ImageU alpha(header.xsize, header.ysize);
@@ -880,7 +1098,7 @@ bool PikToPixelsT(const DecompressParams& params, const PaddedBytes& compressed,
 
   int block_xsize = (header.xsize + 7) / 8;
   int block_ysize = (header.ysize + 7) / 8;
-  Quantizer quantizer(block_xsize, block_ysize);
+  Quantizer quantizer(header.quant_template, block_xsize, block_ysize);
   QuantizedCoeffs qcoeffs;
   NoiseParams noise_params;
   ColorTransform ctan(header.xsize, header.ysize);
@@ -896,37 +1114,23 @@ bool PikToPixelsT(const DecompressParams& params, const PaddedBytes& compressed,
   }
   byte_pos += bytes_read;
   PIK_ASSERT(byte_pos <= compressed.size());
-  int flags = 0;
-  if (header.flags & Header::kNoHFPrediction) {
-    flags |= kReconDisableHFPrediction;
-  }
-  Image3F opsin = ReconOpsinImage(qcoeffs, quantizer, ctan, flags, pool);
-  bool kGaborish = true;
-  if (kGaborish) {
-    opsin = ConvolveGaborish(opsin, pool);
-  }
+  Image3F opsin =
+      ReconOpsinImage(header, qcoeffs, quantizer, ctan, pool, aux_out);
   bool enable_denoise = (header.flags & Header::kDenoise) != 0;
   if (params.denoise != Override::kDefault) {
     enable_denoise = params.denoise == Override::kOn;
   }
   if (enable_denoise) {
     PROFILER_ZONE("denoise");
-    const float scale = quantizer.Scale();
-    epf::AdaptiveFilterParams epf_params;
-    epf_params.dc_quant = quantizer.RawDC();
-    // TODO(janwas): also store min/max opsin value, pass to epf
-    epf_params.ac_quant = &quantizer.RawQuantField();
-    epf_params.sigma_add = 0;
-    epf_params.sigma_mul = scale / (4 << epf::kSigmaShift);
-    dispatch::Run(dispatch::SupportedTargets(), epf::EdgePreservingFilter(),
-                  &opsin, epf_params);
+    DoDenoise(quantizer, &opsin);
   }
   {
     PROFILER_ZONE("add_noise");
     AddNoise(noise_params, &opsin);
   }
   // TODO(janwas): merge with TF graphs for Gaborish, denoise, AddNoise.
-  CenteredOpsinToSrgb(opsin, pool, &srgb);
+  const bool dither = (header.flags & Header::kDither) != 0;
+  CenteredOpsinToSrgb(opsin, dither, pool, &srgb);
   srgb.ShrinkTo(header.xsize, header.ysize);
 
   image->SetColor(std::move(srgb));

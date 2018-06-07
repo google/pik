@@ -29,6 +29,7 @@
 namespace pik {
 
 float ButteraugliDistance(const Image3F& rgb0, const Image3F& rgb1,
+                          float hf_asymmetry,
                           ImageF* distmap_out) {
   const size_t xsize = rgb0.xsize();
   const size_t ysize = rgb0.ysize();
@@ -46,7 +47,7 @@ float ButteraugliDistance(const Image3F& rgb0, const Image3F& rgb1,
     rgb1b.emplace_back(std::move(plane1));
   }
   butteraugli::ImageF distmap;
-  butteraugli::ButteraugliDiffmap(rgb0b, rgb1b, distmap);
+  butteraugli::ButteraugliDiffmap(rgb0b, rgb1b, hf_asymmetry, distmap);
   if (distmap_out) {
     *distmap_out = ImageF(rgb0.xsize(), rgb0.ysize());
     for (int y = 0; y < rgb0.ysize(); ++y) {
@@ -59,23 +60,29 @@ float ButteraugliDistance(const Image3F& rgb0, const Image3F& rgb1,
 }
 
 float ButteraugliDistance(const Image3B& rgb0, const Image3B& rgb1,
+                          float hf_asymmetry,
                           ImageF* distmap_out) {
   return ButteraugliDistance(LinearFromSrgb(rgb0),
                              LinearFromSrgb(rgb1),
+                             hf_asymmetry,
                              distmap_out);
 }
 
 float ButteraugliDistance(const MetaImageF& rgb0, const MetaImageF& rgb1,
+                          float hf_asymmetry,
                           ImageF* distmap_out) {
   if (!rgb0.HasAlpha() && !rgb1.HasAlpha()) {
-    return ButteraugliDistance(rgb0.GetColor(), rgb1.GetColor(), distmap_out);
+    return ButteraugliDistance(rgb0.GetColor(), rgb1.GetColor(),
+                               hf_asymmetry, distmap_out);
   }
   ImageF distmap_black, distmap_white;
   float dist_black = ButteraugliDistance(AlphaBlend(rgb0, 0),
                                          AlphaBlend(rgb1, 0),
+                                         hf_asymmetry,
                                          &distmap_black);
   float dist_white = ButteraugliDistance(AlphaBlend(rgb0, 255),
                                          AlphaBlend(rgb1, 255),
+                                         hf_asymmetry,
                                          &distmap_white);
   if (distmap_out != nullptr) {
     const size_t xsize = rgb0.xsize();

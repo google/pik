@@ -4,6 +4,8 @@
 #include "image_io.h"
 #include "butteraugli_distance.h"
 
+static const float kHfAsymmetry = 3.14;
+
 int PrintArgHelp(int argc, char** argv) {
   fprintf(stderr, "Usage: %s <image a> <image b>\n", argv[0]);
   return 1;
@@ -35,7 +37,7 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  float distance = pik::ButteraugliDistance(a, b, nullptr);
+  float distance = pik::ButteraugliDistance(a, b, kHfAsymmetry, nullptr);
   printf("%.10f\n", distance);
 
   return 0;

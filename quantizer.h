@@ -17,10 +17,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <sys/types.h>
-#include <array>
 #include <cmath>
-#include <map>
 #include <string>
 #include <vector>
 
@@ -36,10 +33,13 @@
 namespace pik {
 
 static const int kGlobalScaleDenom = 1 << 16;
+static const int kNumQuantTables = 2;
+static const int kQuantDefault = 0;
+static const int kQuantHQ = 1;
 
 class Quantizer {
  public:
-  Quantizer(int quant_xsize, int quant_ysize);
+  Quantizer(int template_id, int quant_xsize, int quant_ysize);
 
   bool SetQuantField(const float quant_dc, const ImageF& qf,
                      const CompressParams& cparams);
@@ -71,24 +71,12 @@ class Quantizer {
     return inv_global_scale_ / quant_img_ac_.Row(quant_y)[quant_x];
   }
 
-  void QuantizeBlock(int quant_x, int quant_y, int c,
+  const float* DequantMatrix() const;
+
+  void QuantizeBlock(size_t quant_x, size_t quant_y, int c,
                      const float* PIK_RESTRICT block_in,
                      int16_t* PIK_RESTRICT block_out) const {
-    const BlockQuantizer& bq = GetBlockQuantizer(quant_x, quant_y, c);
-    if (bq.lattice_idx >= 0) {
-      ImageD y(64, 1);
-      for (int k = 0; k < 64; ++k) {
-        const float val = block_in[k] * bq.scales[k];
-        y.Row(0)[k] = val;
-      }
-      ImageI z;
-      lattices_[bq.lattice_idx].Search(y, &z);
-      for (int k = 0; k < 64; ++k) {
-        // TODO(user): Add some form of zero-bias.
-        block_out[k] = z.Row(0)[k];
-      }
-      return;
-    }
+    const BlockQuantizer& bq = bq_[c].Get(QuantizerKey(quant_x, quant_y));
     for (int k = 0; k < 64; ++k) {
       const float val = block_in[k] * bq.scales[k];
       static const float kZeroBias[3] = { 0.65f, 0.6f, 0.7f };
@@ -97,12 +85,20 @@ class Quantizer {
     }
   }
 
+  // Returns only DC.
+  int16_t QuantizeBlockDC(size_t quant_x, size_t quant_y, int c,
+                          const float* PIK_RESTRICT block_in) const {
+    const BlockQuantizer& bq = bq_[c].Get(QuantizerKey(quant_x, quant_y));
+    const float val = block_in[0] * bq.scales[0];
+    return std::round(val);
+  }
+
   // Returns the sum of squared errors in pixel space (i.e. after applying
   // ComputeTransposedScaledBlockIDCTFloat() on error) that would result from
   // quantizing and dequantizing the given block.
-  float PixelErrorSquared(int qx, int qy, int c,
+  float PixelErrorSquared(size_t qx, size_t qy, int c,
                           const float* PIK_RESTRICT block_in) const {
-    const BlockQuantizer& bq = GetBlockQuantizer(qx, qy, c);
+    const BlockQuantizer& bq = bq_[c].Get(QuantizerKey(qx, qy));
     int16_t coeffs[64];
     QuantizeBlock(qx, qy, c, block_in, coeffs);
     float sumsq = 0.0f;
@@ -123,25 +119,48 @@ class Quantizer {
   void DumpQuantizationMap() const;
 
  private:
-  struct BlockQuantizer {
-    BlockQuantizer() : scales(64), lattice_idx(-1) {}
-    std::vector<float> scales;
-    int lattice_idx;
+  using Key = uint64_t;
+
+  Key QuantizerKey(size_t qx, size_t qy) const {
+    return (static_cast<uint64_t>(global_scale_) << 32) +
+           (static_cast<uint64_t>(quant_dc_) << 16) +
+           static_cast<uint64_t>(quant_img_ac_.Row(qy)[qx]);
+  }
+
+  struct BlockQuantizer {  // POD
+    float scales[64];
   };
 
-  const BlockQuantizer& GetBlockQuantizer(int qx, int qy, int c) const {
-    auto it = qmap_.find(QuantizerKey(qx, qy, c));
-    PIK_ASSERT(it != qmap_.end());
-    return it->second;
-  }
+  class BQCache {
+   public:
+    // Returns pointer or nullptr.
+    const BlockQuantizer* Find(const Key key) const {
+      for (size_t i = 0; i < keys_.size(); ++i) {
+        if (keys_[i] == key) return &qmap_[i];
+      }
+      return nullptr;
+    }
 
-  uint64_t QuantizerKey(int qx, int qy, int c) const {
-    return ((static_cast<uint64_t>(global_scale_) << 22) +
-            (static_cast<uint64_t>(quant_dc_) << 12) +
-            (static_cast<uint64_t>(quant_img_ac_.Row(qy)[qx]) << 2) +
-            c);
-  }
+    // WARNING: reference is potentially invalidated by Add (SetQuantField).
+    const BlockQuantizer& Get(const Key key) const {
+      const BlockQuantizer* bq = Find(key);
+      PIK_ASSERT(bq != nullptr);
+      return *bq;
+    }
 
+    // Returns pointer to newly added BQ. Precondition: !Find(key).
+    BlockQuantizer* Add(const Key key) {
+      keys_.push_back(key);
+      qmap_.resize(qmap_.size() + 1);
+      return &qmap_.back();
+    }
+
+   private:
+    std::vector<Key> keys_;
+    std::vector<BlockQuantizer> qmap_;
+  };
+
+  const int template_id_;
   const int quant_xsize_;
   const int quant_ysize_;
   int global_scale_;
@@ -151,17 +170,19 @@ class Quantizer {
   float inv_global_scale_;
   float inv_quant_patch_;
   float inv_quant_dc_;
-  std::vector<LatticeOptimizer> lattices_;
-  std::map<uint64_t, BlockQuantizer> qmap_;
   bool initialized_ = false;
+  BQCache bq_[3];  // one per channel
 };
 
-const float* DequantMatrix();
+const float* DequantMatrix(int id);
 
 Image3S QuantizeCoeffs(const Image3F& in, const Quantizer& quantizer);
 Image3F DequantizeCoeffs(const Image3S& in, const Quantizer& quantizer);
 
 ImageF QuantizeRoundtrip(const Quantizer& quantizer, int c, const ImageF& img);
+Image3F QuantizeRoundtrip(const Quantizer& quantizer, const Image3F& img);
+
+Image3F QuantizeRoundtripDC(const Quantizer& quantizer, const Image3F& img);
 
 // Returns the matrix of the quadratic function
 //
@@ -173,6 +194,9 @@ ImageD ComputeBlockDistanceQForm(const double lambda,
 
 TFNode* AddDequantize(const TFPorts in_xyb, const TFPorts in_quant_ac,
                       const Quantizer& quantizer, TFBuilder* builder);
+
+TFNode* AddDequantizeDC(const TFPorts in_xyb, const Quantizer& quantizer,
+                        TFBuilder* builder);
 
 }  // namespace pik
 

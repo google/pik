@@ -38,7 +38,7 @@
 
 namespace pik {
 
-// Highly scalable thread pool, especially suitable for data-parallel
+// Scalable, lower-overhead thread pool, especially suitable for data-parallel
 // computations in the fork-join model, where clients need to know when all
 // tasks have completed.
 //
@@ -49,23 +49,19 @@ namespace pik {
 // lambda function adapter that simply calls task_funcs[task].
 //
 // This thread pool can efficiently load-balance millions of tasks using an
-// atomic counter, thus avoiding per-task syscalls. With 48 hyperthreads and
-// 1M tasks that add to an atomic counter, overall runtime is 10-20x higher
-// when using std::async, and up to 200x for a queue-based ThreadPool.
+// atomic counter, thus avoiding per-task virtual or system calls. With 48
+// hyperthreads and 1M tasks that add to an atomic counter, overall runtime is
+// 10-20x higher when using std::async, and ~200x for a queue-based ThreadPool.
 //
 // Usage:
-// ThreadPool pool;
-// pool.Run(0, 1000000, [](const int task, const int thread) { Func1(task); });
-// // When Run returns, all of its tasks have finished.
-// // The destructor waits until all worker threads have exited cleanly.
+//   ThreadPool pool;
+//   pool.Run(0, 1000000, [](int task, int thread) { Func1(task, thread); });
+//
+// When Run returns, all of its tasks have finished. The destructor waits until
+// all worker threads have exited cleanly. "thread" is useful for accessing
+// thread-local data, typically a pre-allocated array of kMaxThreads
+// cache-aligned elements.
 class ThreadPool {
-  // Calls f(task, thread). Used for type erasure of Func arguments. The
-  // signature must match TypeErasedFunc, hence a const void* argument.
-  template <class Closure>
-  static void CallClosure(const void* f, const int task, const int thread) {
-    (*reinterpret_cast<const Closure*>(f))(task, thread);
-  }
-
  public:
   // For per-thread arrays. Can increase if needed.
   static constexpr int kMaxThreads = 256;
@@ -170,6 +166,13 @@ class ThreadPool {
   static constexpr WorkerCommand kWorkerOnce = ~1ULL;
   static constexpr WorkerCommand kWorkerExit = ~2ULL;
 
+  // Calls f(task, thread). Used for type erasure of Func arguments. The
+  // signature must match TypeErasedFunc, hence a const void* argument.
+  template <class Closure>
+  static void CallClosure(const void* f, const int task, const int thread) {
+    (*reinterpret_cast<const Closure*>(f))(task, thread);
+  }
+
   void WorkersReadyBarrier() {
     std::unique_lock<std::mutex> lock(mutex_);
     workers_ready_cv_.wait(
@@ -205,8 +208,7 @@ class ThreadPool {
     for (;;) {
 #if 0
       // dynamic
-      const int my_size =
-          std::max(num_tasks / (num_threads * 4), 1);
+      const int my_size = std::max(num_tasks / (num_threads * 4), 1);
 #else
       // guided
       const int num_reserved = self->num_reserved_.load();
@@ -278,6 +280,30 @@ class ThreadPool {
   int padding[15];
 };
 
+// Adapters for zero-cost switching between ThreadPool and non-threaded loop.
+
+struct ExecutorLoop {
+  // Lambda must accept int task = [begin, end) and int thread = 0 arguments.
+  template <class Lambda>
+  void Run(const int begin, const int end, const Lambda& lambda) const {
+    for (int i = begin; i < end; ++i) {
+      lambda(i, 0);
+    }
+  }
+};
+
+struct ExecutorPool {
+  explicit ExecutorPool(ThreadPool* pool) : pool(pool) {}
+
+  // Lambda must accept int task = [begin, end) and int thread arguments.
+  template <class Lambda>
+  void Run(const int begin, const int end, const Lambda& lambda) const {
+    pool->Run(begin, end, lambda);
+  }
+
+  ThreadPool* pool;  // not owned
+};
+
 // Accelerates multiple unsigned 32-bit divisions with the same divisor by
 // precomputing a multiplier. This is useful for splitting a contiguous range of
 // indices (the task index) into 2D indices. Exhaustively tested on dividends
@@ -307,185 +333,6 @@ class Divider {
  private:
   uint32_t mul_;
   const int shift_;
-};
-
-// DEPRECATED in favor of PerThread2.
-//
-// Thread-local storage with support for reduction (combining into one result).
-// The "T" type must be unique to the call site because the list of threads'
-// copies is a static member. (With knowledge of the underlying threads, we
-// could eliminate this list and T allocations, but that is difficult to
-// arrange and we prefer this to be usable independently of ThreadPool.)
-//
-// Usage:
-// for (int i = 0; i < N; ++i) {
-//   // in each thread:
-//   T& my_copy = PerThread<T>::Get();
-//   my_copy.Modify();
-//
-//   // single-threaded:
-//   T& combined = PerThread<T>::Reduce();
-//   Use(combined);
-//   PerThread<T>::Destroy();
-// }
-//
-// T is duck-typed and implements the following interface:
-//
-// // Returns true if T is default-initialized or Destroy was called without
-// // any subsequent re-initialization.
-// bool IsNull() const;
-//
-// // Releases any resources. Postcondition: IsNull() == true.
-// void Destroy();
-//
-// // Merges in data from "victim". Precondition: !IsNull() && !victim.IsNull().
-// void Assimilate(const T& victim);
-template <class T>
-class PerThread {
- public:
-  // Returns reference to this thread's T instance (dynamically allocated,
-  // so its address is unique). Callers are responsible for any initialization
-  // beyond the default ctor.
-  static T& Get() {
-    static thread_local T* t;
-    if (t == nullptr) {
-      t = new T;
-      static std::mutex mutex;
-      std::lock_guard<std::mutex> lock(mutex);
-      Threads().push_back(t);
-    }
-    return *t;
-  }
-
-  // Returns vector of all per-thread T. Used inside Reduce() or by clients
-  // that require direct access to T instead of Assimilating them.
-  // Function wrapper avoids separate static member variable definition.
-  static std::vector<T*>& Threads() {
-    static std::vector<T*> threads;
-    return threads;
-  }
-
-  // Returns the first non-null T after assimilating all other threads' T
-  // into it. Precondition: at least one non-null T exists (caller must have
-  // called Get() and initialized the result).
-  static T& Reduce() {
-    std::vector<T*>& threads = Threads();
-
-    // Find first non-null T
-    const auto it = std::find_if(threads.begin(), threads.end(),
-                                 [](const T* t) { return !t->IsNull(); });
-    if (it == threads.end()) {
-      abort();
-    }
-    T* const first = *it;
-
-    for (const T* t : threads) {
-      if (t != first && !t->IsNull()) {
-        first->Assimilate(*t);
-      }
-    }
-    return *first;
-  }
-
-  // Calls each thread's T::Reset to release resources and/or prepare for
-  // reuse by the same threads/ThreadPool. Note that all T remain allocated
-  // until DeleteAll because threads retain local pointers to them, which must
-  // remain valid as long as threads can potentially call Get.
-  static void Reset() {
-    for (T* t : Threads()) {
-      t->Reset();
-    }
-  }
-
-  // Deallocates all threads' allocated T to avoid memory leak warnings.
-  // No other member functions may be called after this is called!
-  static void DeleteAll() {
-    for (T* t : Threads()) {
-      delete t;
-    }
-  }
-};
-
-// Enables efficient concurrent updates of T (e.g. counters/statistics) followed
-// by reduction (combining all counters into one final value).
-//
-// Avoids user-allocated arrays of T by dynamically allocating them per thread,
-// referenced via thread_local pointer. Avoids is_initialized checks in each
-// task by initializing all threads' instances up-front. This requires support
-// from ThreadPool; a sequence of Initialize/Reduce/Reset/Delete must be called
-// with the same ThreadPool* argument.
-//
-// T is duck-typed and implements the following interface:
-//   T(), operator=(const T&)
-//   void Assimilate(const T& victim) : merges victim into *this.
-//
-// Usage:
-//   ThreadPool pool(kNumThreads);
-//   struct T {
-//     void Assimilate(const T& victim) { counter += victim.counter; }
-//     int counter = 0;
-//   };
-//   PerThread2<T>::Allocate(&pool);
-//   START:
-//   pool.Run(0, kNumTasks, []() {
-//     T& my_copy = PerThread2<T>::Get();  // cheap: POD TLS access
-//     my_copy.Modify();  // no synchronization needed
-//   });
-//
-//   T& combined = PerThread2<T>::Reduce(&pool);  // internally synchronized
-//   Use(combined);
-//
-//   // optional: PerThread2<T>::Reset(&pool); goto START;
-//   PerThread2<T>::Delete(&pool);  // frees all memory
-//
-template <class T>
-class PerThread2 {
- public:
-  // Allocates each thread's instance of T and calls its default ctor.
-  static void Allocate(ThreadPool* pool) {
-    pool->RunOnEachThread([](int task, int thread) { GetPtrRef() = new T; });
-  }
-
-  // Returns this thread's dynamically allocated instance of T.
-  // Must not be called before Allocate!
-  static T& Get() { return *GetPtrRef(); }
-
-  // Returns a pointer to T that has all other threads' T assimilated into it.
-  static T& Reduce(ThreadPool* pool) {
-    T* first = nullptr;
-    std::mutex mutex;
-    pool->RunOnEachThread([&first, &mutex](int task, int thread) {
-      mutex.lock();
-      if (first == nullptr) {
-        first = &Get();
-      } else {
-        first->Assimilate(Get());
-      }
-      mutex.unlock();
-    });
-    return *first;
-  }
-
-  // Prepares for reuse by assigning a default-constructed T. Note that all T
-  // remain allocated until Delete; each thread retains a local pointer, which
-  // must remain valid as long as threads can potentially call Get.
-  static void Reset(ThreadPool* pool) {
-    pool->RunOnEachThread([](int task, int thread) { Get() = T(); });
-  }
-
-  // Deallocates all threads' allocated T to avoid memory leak warnings.
-  // Do not call Get/Reduce/Reset again without calling Allocate first.
-  static void Delete(ThreadPool* pool) {
-    pool->RunOnEachThread([](int task, int thread) { delete GetPtrRef(); });
-  }
-
- private:
-  // Returns a reference to this thread's private pointer to T, which is
-  // initially nullptr until Allocate is called.
-  static T*& GetPtrRef() {
-    static thread_local T* t;
-    return t;
-  }
 };
 
 }  // namespace pik

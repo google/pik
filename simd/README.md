@@ -173,9 +173,6 @@ and/or instruction sets from the same source, and improves runtime dispatch.
     automatic FLOPS counting, and "if/else branches" using lambda functions.
     It supports IBM Power8, but only provides float and double types.
 
-We are unaware of any existing vector libraries with support for safely bundling
-code targeting multiple instruction sets into the same binary (see HOWTO below).
-
 ### Overloaded function API
 
 Most C++ vector APIs rely on class templates. However, two PPC compilers

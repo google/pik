@@ -16,19 +16,156 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#undef PROFILER_ENABLED
+#define PROFILER_ENABLED 1
+#include "arch_specific.h"
+#include "args.h"
 #include "image.h"
 #include "image_io.h"
+#include "os_specific.h"
 #include "padded_bytes.h"
 #include "pik.h"
 #include "pik_info.h"
 #include "profiler.h"
 #include "simd/dispatch.h"
+#include "tsc_timer.h"
 
 namespace pik {
 namespace {
 
-int Compress(const char* pathname_in, const char* pathname_out,
-             const CompressParams& params) {
+bool WriteFile(const PaddedBytes& compressed, const char* pathname) {
+  FILE* f = fopen(pathname, "wb");
+  if (f == nullptr) {
+    fprintf(stderr, "Failed to open %s.\n", pathname);
+    return false;
+  }
+  const size_t bytes_written =
+      fwrite(compressed.data(), 1, compressed.size(), f);
+  if (bytes_written != compressed.size()) {
+    fprintf(stderr, "I/O error, only wrote %zu bytes.\n", bytes_written);
+    return false;
+  }
+  fclose(f);
+  return true;
+}
+
+struct CompressArgs {
+  bool Init(int argc, char** argv) {
+    for (int i = 1; i < argc; i++) {
+      if (argv[i][0] == '-') {
+        const std::string arg = argv[i];
+        if (arg == "--fast") {
+          params.fast_mode = true;
+        } else if (arg == "--denoise") {
+          if (!ParseOverride(argc, argv, &i, &params.denoise)) return false;
+        } else if (arg == "--noise") {
+          if (!ParseOverride(argc, argv, &i, &params.apply_noise)) return false;
+        } else if (arg == "--num_threads") {
+          if (!ParseUnsigned(argc, argv, &i, &num_threads)) return false;
+        } else if (arg == "-v") {
+          params.verbose = true;
+        } else if (arg == "--distance") {
+          if (!ParseFloat(argc, argv, &i, &params.butteraugli_distance)) {
+            return false;
+          }
+          if (!(0.5f <= params.butteraugli_distance &&
+                params.butteraugli_distance <= 3.0f)) {
+            fprintf(stderr,
+                    "Invalid/out of range distance '%s', try 0.5 to 3.\n",
+                    argv[i]);
+            return false;
+          }
+        } else if (arg == "--target_size") {
+          if (!ParseUnsigned(argc, argv, &i, &params.target_size)) return false;
+        } else {
+          // Unknown arg or --help: caller will print help string
+          return false;
+        }
+      } else {
+        if (file_in == nullptr) {
+          file_in = argv[i];
+        } else if (file_out == nullptr) {
+          file_out = argv[i];
+        } else {
+          fprintf(stderr, "Extra argument after in/out names: %s.\n", argv[i]);
+          return false;
+        }
+      }
+    }
+
+    if (file_in == nullptr) {
+      fprintf(stderr, "Missing input filename.\n");
+      return false;
+    }
+
+    return true;
+  }
+
+  const char* file_in = nullptr;
+  const char* file_out = nullptr;
+  CompressParams params;
+  size_t num_threads = 4;
+};
+
+bool Compress(const CompressArgs& args, ThreadPool* pool,
+              PaddedBytes* compressed) {
+  MetaImageF in = ReadMetaImageLinear(args.file_in);
+  if (in.xsize() == 0 || in.ysize() == 0) {
+    fprintf(stderr, "Failed to open image %s.\n", args.file_in);
+    return false;
+  }
+
+  if (args.params.target_size != 0 &&
+      args.params.butteraugli_distance != -1.0f) {
+    fprintf(stderr,
+            "Only one of --distance or --target_size can be specified.\n");
+    return false;
+  }
+
+  if (args.params.fast_mode) {
+    fprintf(stderr, "Compressing with fast mode\n");
+  } else if (args.params.target_size != 0) {
+    fprintf(stderr, "Compressing to target size %zd\n",
+            args.params.target_size);
+  } else {
+    fprintf(stderr, "Compressing with maximum Butteraugli distance %f\n",
+            args.params.butteraugli_distance);
+  }
+
+  PikInfo aux_out;
+  const uint64_t t0 = Start<uint64_t>();
+  if (!PixelsToPik(args.params, in, pool, compressed, &aux_out)) {
+    fprintf(stderr, "Failed to compress.\n");
+    return false;
+  }
+  const uint64_t t1 = Stop<uint64_t>();
+  const double elapsed = (t1 - t0) / InvariantTicksPerSecond();
+  const size_t xsize = in.xsize();
+  const size_t ysize = in.ysize();
+  // TODO(janwas): account for 8 vs 16-bit input
+  const size_t bytes = xsize * ysize * (in.HasAlpha() ? 4 : 3);
+  fprintf(
+      stderr,
+      "Compressed %zu x %zu pixels to %zu bytes (%.2f MB/s, %zu threads).\n",
+      xsize, ysize, compressed->size(), bytes * 1E-6 / elapsed,
+      pool->NumThreads());
+
+  if (args.params.verbose) {
+    aux_out.Print(1);
+  }
+
+  return true;
+}
+
+void InitThreads(ThreadPool* pool) {
+  // Warm up profiler on main AND worker threads so its expensive initialization
+  // doesn't count towards the timer measurements below for encode throughput.
+  PROFILER_ZONE("@InitMainThread");
+  pool->RunOnEachThread(
+      [](const int task, const int thread) { PROFILER_ZONE("@InitWorkers"); });
+}
+
+int CompressAndWrite(int argc, char** argv) {
 #if SIMD_ENABLE_AVX2
   if ((dispatch::SupportedTargets() & SIMD_AVX2) == 0) {
     fprintf(stderr, "Cannot continue because CPU lacks AVX2/FMA support.\n");
@@ -41,147 +178,36 @@ int Compress(const char* pathname_in, const char* pathname_out,
   }
 #endif
 
-  MetaImageF in = ReadMetaImageLinear(pathname_in);
-  if (in.xsize() == 0 || in.ysize() == 0) {
-    fprintf(stderr, "Failed to open image %s.\n", pathname_in);
+  CompressArgs args;
+  if (!args.Init(argc, argv)) {
+    fprintf(
+        stderr,
+        "Usage: %s in.png out.pik [--distance <maxError>] [--fast] "
+        "[--denoise <0,1>] [--noise <0,1>] [--num_threads <0..N>\n"
+        " --distance: Maximum butteraugli distance, lower = higher quality.\n"
+        "             Good default: 1.0. Supported range: 0.5 .. 3.0.\n"
+        " --fast: Use fast encoding, ignores distance.\n"
+        " --denoise: force enable/disable edge-preserving smoothing.\n"
+        " --noise: force enable/disable noise generation.\n"
+        " --num_threads: number of threads to use (zero = none).\n"
+        " --help: Show this help.\n",
+        argv[0]);
     return 1;
   }
 
-  if (params.fast_mode) {
-    fprintf(stderr, "Compressing with fast mode\n");
-  } else if (params.target_size != 0) {
-    fprintf(stderr, "Compressing to target size %zd\n", params.target_size);
-  } else {
-    fprintf(stderr, "Compressing with maximum Butteraugli distance %f\n",
-            params.butteraugli_distance);
-  }
+  ThreadPool pool(static_cast<int>(args.num_threads));
+  InitThreads(&pool);
 
   PaddedBytes compressed;
-  PikInfo aux_out;
-  if (!PixelsToPik(params, in, &compressed, &aux_out)) {
-    fprintf(stderr, "Failed to compress.\n");
-    return 1;
-  }
+  if (!Compress(args, &pool, &compressed)) return 1;
 
-  fprintf(stderr, "Compressed to %zu bytes\n", compressed.size());
-  if (params.verbose) {
-    aux_out.Print(1);
-  }
+  if (!WriteFile(compressed, args.file_out)) return 1;
 
-  FILE* f = fopen(pathname_out, "wb");
-  if (f == nullptr) {
-    fprintf(stderr, "Failed to open %s.\n", pathname_out);
-    return 1;
-  }
-  const size_t bytes_written =
-      fwrite(compressed.data(), 1, compressed.size(), f);
-  if (bytes_written != compressed.size()) {
-    fprintf(stderr, "I/O error, only wrote %zu bytes.\n", bytes_written);
-    return 1;
-  }
-  fclose(f);
   PROFILER_PRINT_RESULTS();
   return 0;
-}
-
-void PrintArgHelp(int argc, char** argv) {
-  fprintf(stderr,
-          "Usage: %s in.png out.pik [--distance <maxError>] [--fast] "
-          "[--denoise <0,1>] [--noise <0,1>]\n"
-          " --distance: Maximum butteraugli distance, lower = higher quality.\n"
-          "             Good default: 1.0. Supported range: 0.5 .. 3.0.\n"
-          " --fast: Use fast encoding, ignores distance.\n"
-          " --denoise: force enable/disable edge-preserving smoothing.\n"
-          " --noise: force enable/disable noise generation.\n"
-          " --help: Show this help.\n",
-          argv[0]);
-}
-
-PIK_NORETURN void ExitWithArgError(int argc, char** argv) {
-  PrintArgHelp(argc, argv);
-  std::exit(1);
-}
-
-Override GetOverride(const int argc, char** argv, int* i) {
-  *i += 1;
-  if (*i >= argc) {
-    fprintf(stderr, "Expected a 0 or 1 flagnn\n");
-    ExitWithArgError(argc, argv);
-  }
-  const std::string flag = argv[*i];
-  if (flag == "1") {
-    return Override::kOn;
-  } else if (flag == "0") {
-    return Override::kOff;
-  } else {
-    fprintf(stderr, "Invalid flag, must be 0 or 1\n");
-    ExitWithArgError(argc, argv);
-  }
-}
-
-int Run(int argc, char** argv) {
-  CompressParams params;
-  const char* arg_in = nullptr;
-  const char* arg_out = nullptr;
-  for (int i = 1; i < argc; i++) {
-    if (argv[i][0] == '-') {
-      const std::string arg = argv[i];
-      if (arg == "--fast") {
-        params.fast_mode = true;
-      } else if (arg == "--denoise") {
-        params.denoise = GetOverride(argc, argv, &i);
-      } else if (arg == "--noise") {
-        params.apply_noise = GetOverride(argc, argv, &i);
-      } else if (arg == "-v") {
-        params.verbose = true;
-      } else if (arg == "--distance") {
-        if (++i >= argc) {
-          fprintf(stderr, "Must give a distance value\n");
-          ExitWithArgError(argc, argv);
-        }
-        params.butteraugli_distance = strtod(argv[i], nullptr);
-        if (!(0.5f <= params.butteraugli_distance &&
-              params.butteraugli_distance <= 3.0f)) {
-          fprintf(stderr, "Invalid/out of range distance '%s', try 0.5 to 3.\n",
-                  argv[i]);
-          return 1;
-        }
-      } else if (arg == "--target_size") {
-        if (++i >= argc) {
-          fprintf(stderr, "Must give a size value\n");
-          ExitWithArgError(argc, argv);
-        }
-        params.target_size = strtoul(argv[i], nullptr, 0);
-      } else if (arg == "--help") {
-        PrintArgHelp(argc, argv);
-        return 0;
-      } else {
-        ExitWithArgError(argc, argv);
-      }
-    } else {
-      if (arg_in) {
-        if (arg_out) ExitWithArgError(argc, argv);
-        arg_out = argv[i];
-      } else {
-        arg_in = argv[i];
-      }
-    }
-  }
-
-  if (params.target_size != 0 && params.butteraugli_distance != -1.0f) {
-    fprintf(stderr,
-            "Only one of --distance or --target_size can be specified.\n");
-    ExitWithArgError(argc, argv);
-  }
-
-  if (!arg_in || !arg_out) {
-    ExitWithArgError(argc, argv);
-  }
-
-  return Compress(arg_in, arg_out, params);
 }
 
 }  // namespace
 }  // namespace pik
 
-int main(int argc, char** argv) { return pik::Run(argc, argv); }
+int main(int argc, char** argv) { return pik::CompressAndWrite(argc, argv); }

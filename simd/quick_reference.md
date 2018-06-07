@@ -1,5 +1,17 @@
 # API synopsis / quick reference
 
+## Compiler support
+
+Some compilers require e.g. -mavx2 flags in order to use SIMD intrinsics.
+However, this enables AVX2 instructions in the entire translation unit. That can
+violate the one-definition rule and cause crashes. We work around this problem
+by ensuring all SIMD code resides within target-specific namespaces.
+
+As an alternative, we support 'attr mode', in which our SIMD headers ensure all
+functions have a target-specific attribute that allows the use of SIMD
+intrinsics without -mavx2. However, user code must also add `SIMD_ATTR` to each
+function using SIMD.
+
 ## Preprocessor macros
 
 Let `Target` denote an instruction set: `NONE/SSE4/AVX2/AVX512/PPC8/ARM8`.

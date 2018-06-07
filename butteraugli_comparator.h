@@ -24,8 +24,8 @@ namespace pik {
 
 class ButteraugliComparator {
  public:
-  ButteraugliComparator(const Image3B& srgb);
-  ButteraugliComparator(const Image3F& opsin);
+  ButteraugliComparator(const Image3B& srgb, float hf_asymmetry);
+  ButteraugliComparator(const Image3F& opsin, float hf_asymmetry);
 
   void Compare(const Image3B& srgb);
 

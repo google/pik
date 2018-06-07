@@ -41,25 +41,36 @@ PIK_INLINE void XybToRgbWithoutClamp(D d, const V opsin_x, const V opsin_y,
                                      V* const PIK_RESTRICT linear_g,
                                      V* const PIK_RESTRICT linear_b) {
   using namespace SIMD_NAMESPACE;
+
+#if SIMD_TARGET_VALUE == SIMD_NONE
+  const auto inv_scale_x = set1(d, kInvScaleR);
+  const auto inv_scale_y = set1(d, kInvScaleG);
+  const auto neg_bias_r = set1(d, kNegOpsinAbsorbanceBiasRGB[0]);
+  const auto neg_bias_g = set1(d, kNegOpsinAbsorbanceBiasRGB[1]);
+  const auto neg_bias_b = set1(d, kNegOpsinAbsorbanceBiasRGB[2]);
+#else
   const auto neg_bias_rgb = load_dup128(d, kNegOpsinAbsorbanceBiasRGB);
   SIMD_ALIGN const float inv_scale_lanes[4] = {kInvScaleR, kInvScaleG};
   const auto inv_scale = load_dup128(d, inv_scale_lanes);
+  const auto inv_scale_x = broadcast<0>(inv_scale);
+  const auto inv_scale_y = broadcast<1>(inv_scale);
+  const auto neg_bias_r = broadcast<0>(neg_bias_rgb);
+  const auto neg_bias_g = broadcast<1>(neg_bias_rgb);
+  const auto neg_bias_b = broadcast<2>(neg_bias_rgb);
+#endif
 
   // Color space: XYB -> RGB
-  const auto gamma_r = broadcast<0>(inv_scale) * (opsin_y + opsin_x);
-  const auto gamma_g = broadcast<1>(inv_scale) * (opsin_y - opsin_x);
+  const auto gamma_r = inv_scale_x * (opsin_y + opsin_x);
+  const auto gamma_g = inv_scale_y * (opsin_y - opsin_x);
   const auto gamma_b = opsin_b;
 
   // Undo gamma compression: linear = gamma^3 for efficiency.
   const auto gamma_r2 = gamma_r * gamma_r;
   const auto gamma_g2 = gamma_g * gamma_g;
-  const auto bias_r = broadcast<0>(neg_bias_rgb);
   const auto gamma_b2 = gamma_b * gamma_b;
-  const auto bias_g = broadcast<1>(neg_bias_rgb);
-  const auto mixed_r = mul_add(gamma_r2, gamma_r, bias_r);
-  const auto bias_b = broadcast<2>(neg_bias_rgb);
-  const auto mixed_g = mul_add(gamma_g2, gamma_g, bias_g);
-  const auto mixed_b = mul_add(gamma_b2, gamma_b, bias_b);
+  const auto mixed_r = mul_add(gamma_r2, gamma_r, neg_bias_r);
+  const auto mixed_g = mul_add(gamma_g2, gamma_g, neg_bias_g);
+  const auto mixed_b = mul_add(gamma_b2, gamma_b, neg_bias_b);
 
   // Unmix (multiply by 3x3 inverse_matrix)
   *linear_r = inverse_matrix[0] * mixed_r;
@@ -91,9 +102,14 @@ PIK_INLINE void XybToRgb(D d, const V opsin_x, const V opsin_y, const V opsin_b,
 }
 
 // Currently uses a single-node TileFlow. TODO(janwas): Add(builder).
-void CenteredOpsinToSrgb(const Image3F& opsin, ThreadPool* pool, Image3B* srgb);
-void CenteredOpsinToSrgb(const Image3F& opsin, ThreadPool* pool, Image3U* srgb);
-void CenteredOpsinToSrgb(const Image3F& opsin, ThreadPool* pool, Image3F* srgb);
+// "dither" enables 2x2 dithering, but only if SIMD_TARGET_VALUE != SIMD_NONE
+// and the output is U8 (first overload).
+void CenteredOpsinToSrgb(const Image3F& opsin, const bool dither,
+                         ThreadPool* pool, Image3B* srgb);
+void CenteredOpsinToSrgb(const Image3F& opsin, const bool dither,
+                         ThreadPool* pool, Image3U* srgb);
+void CenteredOpsinToSrgb(const Image3F& opsin, const bool dither,
+                         ThreadPool* pool, Image3F* srgb);
 
 Image3B OpsinDynamicsInverse(const Image3F& opsin);
 Image3F LinearFromOpsin(const Image3F& opsin);

@@ -20,10 +20,18 @@
 #include <sys/types.h>
 #include <vector>
 
+#include "distributions.h"
+#include "fast_log.h"
 #include "status.h"
 
 namespace pik {
 
+using coeff_t = int16_t;
+
+static const int kDCTBlockSize = 64;
+static const int kMaxAverageContext = 8;
+static const int kNumAvrgContexts = kMaxAverageContext + 1;
+static const int kInterSymbolContexts = 63;
 
 static const uint8_t kNonzeroBuckets[64] = {
    0,   1,   2,   3,   4,   4,   5,   5,   5,   6,   6,   6,   6,   7,   7,   7,
@@ -116,6 +124,171 @@ inline int ZeroDensityContext(int nonzeros_left, int k, int bits) {
   return kNumNonzeroContext[bits][nonzeros_left] + kFreqContext[bits][k];
 }
 
+// Returns the context for the absolute value of the prediction error of
+// the next DC coefficient in column x, using the one row size ringbuffer of
+// previous absolute prediction errors in vals.
+inline int WeightedAverageContextDC(const int* vals, int x) {
+  // Since vals is a ringbuffer, vals[x] and vals[x + 1] refer to the
+  // previous row.
+  int sum = 1 + vals[x - 2] + vals[x - 1] + vals[x] + vals[x + 1];
+  if ((sum >> kMaxAverageContext) != 0) {
+    return kMaxAverageContext;
+  }
+  return Log2FloorNonZero(sum);
+}
+
+inline int WeightedAverageContext(const int* vals, int prev_row_delta) {
+  int sum = 4 +
+      vals[0] +
+      (vals[-kDCTBlockSize] + vals[prev_row_delta]) * 2 +
+      vals[-2 * kDCTBlockSize] +
+      vals[prev_row_delta - kDCTBlockSize] +
+      vals[prev_row_delta + kDCTBlockSize];
+  if ((sum >> (kMaxAverageContext + 2)) != 0) {
+    return kMaxAverageContext;
+  }
+  return Log2FloorNonZero(sum) - 2;
+}
+
+static const int kACPredictPrecisionBits = 13;
+static const int kACPredictPrecision = 1 << kACPredictPrecisionBits;
+
+void ComputeACPredictMultipliers(const int* quant,
+                                 int* mult_row,
+                                 int* mult_col);
+
+// Returns a context value from the AC prediction in the range
+// [-kMaxAverageContext, kMaxAverageContext]
+inline int ACPredictContext(int p_orig) {
+  int p = unsigned(p_orig) << 1;
+  static const int kMaxPred = (1 << (kMaxAverageContext + 1)) - 1;
+  if (p_orig >= 0) {
+    if (p > kMaxPred) {
+      return kMaxAverageContext;
+    }
+    return Log2FloorNonZero(++p);
+  }
+  p = -p;
+  if (p > kMaxPred) {
+    return -kMaxAverageContext;
+  } else {
+    return -Log2FloorNonZero(++p);
+  }
+}
+
+inline int ACPredictContextCol(const coeff_t* prev,
+                               const coeff_t* cur,
+                               const int* mult) {
+  int p = prev[0] - ((cur[1] + prev[1]) * mult[1] +
+                     (cur[2] - prev[2]) * mult[2] +
+                     (cur[3] + prev[3]) * mult[3] +
+                     (cur[4] - prev[4]) * mult[4] +
+                     (cur[5] + prev[5]) * mult[5] +
+                     (cur[6] - prev[6]) * mult[6] +
+                     (cur[7] + prev[7]) * mult[7]) / kACPredictPrecision;
+  return ACPredictContext(p);
+}
+
+inline int ACPredictContextRow(const coeff_t* prev,
+                               const coeff_t* cur,
+                               const int* mult) {
+  int p = prev[0] - ((cur[ 8] + prev[ 8]) * mult[ 8] +
+                     (cur[16] - prev[16]) * mult[16] +
+                     (cur[24] + prev[24]) * mult[24] +
+                     (cur[32] - prev[32]) * mult[32] +
+                     (cur[40] + prev[40]) * mult[40] +
+                     (cur[48] - prev[48]) * mult[48] +
+                     (cur[56] + prev[56]) * mult[56]) / kACPredictPrecision;
+  return ACPredictContext(p);
+}
+
+inline int NumNonzerosContext(const int* prev, int x, int y) {
+  return (y == 0 ? (prev[x - 1] >> 1) :
+          x == 0 ? (prev[0] >> 1) :
+          (prev[x - 1] + prev[x] + 1) >> 2);
+}
+
+// Context for the emptyness of a block is the number of non-empty blocks in the
+// previous and up neighborhood (blocks beyond the border are assumed
+// non-empty).
+static const int kNumIsEmptyBlockContexts = 3;
+inline int IsEmptyBlockContext(const int* prev, int x) {
+  return prev[x - 1] + prev[x];
+}
+
+// Holds all encoding/decoding state for an image component that is needed to
+// switch between components during interleaved encoding/decoding.
+struct ComponentStateDC {
+  ComponentStateDC() :
+      width(0),
+      is_empty_block_prob(kNumIsEmptyBlockContexts),
+      sign_prob(9),
+      first_extra_bit_prob(10) {
+    InitAll();
+  }
+
+  void SetWidth(int w) {
+    width = w;
+    prev_is_nonempty.resize(w + 1, 1);
+    prev_abs_coeff.resize(w + 3);
+    prev_sign.resize(w + 1);
+  }
+
+  int width;
+  Prob is_zero_prob;
+  std::vector<Prob> is_empty_block_prob;
+  std::vector<Prob> sign_prob;
+  std::vector<Prob> first_extra_bit_prob;
+  std::vector<int> prev_is_nonempty;
+  std::vector<int> prev_abs_coeff;
+  std::vector<int> prev_sign;
+
+ protected:
+  void InitAll();
+};
+
+struct ComponentState {
+  ComponentState() :
+      width(0),
+      is_zero_prob(kNumNonzeroBuckets * kDCTBlockSize),
+      sign_prob((2 * kMaxAverageContext + 1) * kDCTBlockSize),
+      first_extra_bit_prob(10 * kDCTBlockSize) {
+    InitAll();
+  }
+
+  void SetWidth(int w) {
+    width = w;
+    prev_is_nonempty.resize(w + 1, 1);
+    prev_num_nonzeros.resize(w + 1);
+    prev_abs_coeff.resize(kDCTBlockSize * 2 * (w + 3));
+    prev_sign.resize(kDCTBlockSize * (w + 1));
+  }
+
+  // Returns the size of the object after constructor and SetWidth(w).
+  // Used in estimating peak heap memory usage of the brunsli codec.
+  static size_t SizeInBytes(int w) {
+    return (4 + (10 + 3 * w) * kDCTBlockSize + 2 * w) * sizeof(int) +
+        ((kNumNonzeroBuckets + 2 * kMaxAverageContext + 11) * kDCTBlockSize +
+         32 * kInterSymbolContexts) * sizeof(Prob);
+  }
+
+  int width;
+  int context_offset;
+  int order[kDCTBlockSize];
+  int mult_row[kDCTBlockSize];
+  int mult_col[kDCTBlockSize];
+  std::vector<Prob> is_zero_prob;
+  std::vector<Prob> sign_prob;
+  Prob num_nonzero_prob[32][kInterSymbolContexts];
+  std::vector<Prob> first_extra_bit_prob;
+  std::vector<int> prev_is_nonempty;
+  std::vector<int> prev_num_nonzeros;
+  std::vector<int> prev_abs_coeff;
+  std::vector<int> prev_sign;
+
+ protected:
+  void InitAll();
+};
 
 }  // namespace pik
 

@@ -32,17 +32,21 @@ struct CompressParams {
   // find a trade-off between quality and file size that optimizes the
   // quality-adjusted-bits-per-pixel metric.
   bool fast_mode = false;
-  int max_butteraugli_iters = 100;
+  int max_butteraugli_iters = 7;
+
+  bool really_slow_mode = false;
+  int max_butteraugli_iters_really_slow_mode = 100;
 
   Override denoise = Override::kDefault;
 
   Override apply_noise = Override::kDefault;
 
+  bool use_brunsli_v2 = false;
 
   // Prints extra information after encoding.
   bool verbose = false;
 
-  bool exp_disable_hf_prediction = false;
+  float hf_asymmetry = 1.0;
 };
 
 struct DecompressParams {
@@ -54,6 +58,10 @@ struct DecompressParams {
   // kDefault := whatever the encoder decided (stored in header).
   Override denoise = Override::kDefault;
 };
+
+static constexpr float kMaxButteraugliForHQ = 2.0f;
+static constexpr float kMinButteraugliForDither = 1.0f;
+
 }  // namespace pik
 
 #endif  // PIK_PARAMS_H_

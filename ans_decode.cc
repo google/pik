@@ -6,6 +6,30 @@
 #include "histogram_decode.h"
 
 namespace pik {
+namespace {
+
+bool ANSBuildMapTable(const std::vector<int>& counts,
+                      ANSSymbolInfo map[ANS_TAB_SIZE]) {
+  int i;
+  int pos = 0;
+  for (i = 0; i < counts.size(); ++i) {
+    int j;
+    for (j = 0; j < counts[i]; ++j, ++pos) {
+      map[pos].symbol_ = i;
+      map[pos].freq_ = counts[i];
+      map[pos].offset_ = j;
+    }
+  }
+  return (pos == ANS_TAB_SIZE);
+}
+
+} // namespace
+
+bool ANSDecodingData::ReadFromBitStream(BitReader* input) {
+  std::vector<int> counts;
+  return (ReadHistogram(ANS_LOG_TAB_SIZE, &counts, input) &&
+          ANSBuildMapTable(counts, map_));
+}
 
 bool DecodeANSCodes(const size_t num_histograms, const size_t max_alphabet_size,
                     const uint8_t* symbol_lut, size_t symbol_lut_size,

@@ -141,6 +141,12 @@ struct PikInfo {
   std::string debug_prefix;
 };
 
+// Used to skip image creation if they won't be written to debug directory.
+static inline bool WantDebugOutput(const PikInfo* info) {
+  // Need valid pointer and filename.
+  return info != nullptr && !info->debug_prefix.empty();
+}
+
 }  // namespace pik
 
 #endif  // PIK_INFO_H_

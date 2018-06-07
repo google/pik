@@ -1274,7 +1274,6 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> load<double>(
 template <typename T>
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T> load_unaligned(
     Full<T, AVX2>, const T* SIMD_RESTRICT p) {
-  // TODO(janwas): _mm256_lddqu_si256?
   return vec_avx2<T>(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(p)));
 }
 template <>

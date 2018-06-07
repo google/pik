@@ -279,6 +279,15 @@ class Results {
     printf("Total clocks measured: %zu\n", total_visible_duration);
   }
 
+  // Single-threaded. Clears all results as if no zones had been recorded.
+  void Reset() {
+    analyze_elapsed_ = 0;
+    PIK_CHECK(depth_ == 0);
+    num_zones_ = 0;
+    memset(nodes_, 0, sizeof(nodes_));
+    memset(zones_, 0, sizeof(zones_));
+  }
+
  private:
 #if PIK_ARCH_X64
   static bool SameOffset(const __m128i zone, const size_t biased_offset) {
@@ -462,6 +471,7 @@ class ThreadSpecific {
     }
     memcpy(packets_ + num_packets_, buffer_, buffer_size_ * sizeof(Packet));
     num_packets_ += buffer_size_;
+    buffer_size_ = 0;
 #endif
 
     results_.AnalyzePackets(packets_, num_packets_);
@@ -539,6 +549,10 @@ class ThreadList {
 
     if (num_threads != 0) {
       threads_[0]->GetResults().Print();
+
+      for (uint32_t i = 0; i < num_threads; ++i) {
+        threads_[i]->GetResults().Reset();
+      }
     }
   }
 

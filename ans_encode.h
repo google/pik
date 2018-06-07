@@ -106,18 +106,26 @@ class ANSCoder {
 class ANSSymbolWriter {
  public:
   ANSSymbolWriter(const std::vector<ANSEncodingData>& codes,
-                  const std::vector<uint8_t>& context_map,
-                  size_t* storage_ix, uint8_t* storage)
-      : idx_(0), symbol_idx_(0), code_words_(2 * kANSBufferSize),
-        symbols_(kANSBufferSize), codes_(codes), context_map_(context_map),
-        storage_ix_(storage_ix), storage_(storage) {}
+                  const std::vector<uint8_t>& context_map, size_t* storage_ix,
+                  uint8_t* storage)
+      : idx_(0),
+        symbol_idx_(0),
+        code_words_(2 * kANSBufferSize),
+        symbols_(kANSBufferSize),
+        codes_(codes),
+        context_map_(context_map),
+        storage_ix_(storage_ix),
+        storage_(storage) {
+    num_extra_bits_[0] = num_extra_bits_[1] = num_extra_bits_[2] = 0;
+  }
 
-  void VisitBits(size_t nbits, uint64_t bits, int unused_c) {
+  void VisitBits(size_t nbits, uint64_t bits, int c) {
     PIK_ASSERT(nbits <= 16);
     PIK_ASSERT(idx_ < code_words_.size());
     if (nbits > 0) {
       code_words_[idx_++] = (bits << 16) + nbits;
     }
+    num_extra_bits_[c] += nbits;
   }
 
   void VisitSymbol(int symbol, int ctx) {
@@ -131,6 +139,11 @@ class ANSSymbolWriter {
       FlushToBitStream();
     }
   }
+
+  size_t num_extra_bits() const {
+    return num_extra_bits_[0] + num_extra_bits_[1] + num_extra_bits_[2];
+  }
+  size_t num_extra_bits(int c) const { return num_extra_bits_[c]; }
 
   void FlushToBitStream() {
     const int num_codewords = idx_;
@@ -176,6 +189,7 @@ class ANSSymbolWriter {
   std::vector<uint32_t> symbols_;
   const std::vector<ANSEncodingData>& codes_;
   const std::vector<uint8_t>& context_map_;
+  size_t num_extra_bits_[3];
   size_t* storage_ix_;
   uint8_t* storage_;
 };

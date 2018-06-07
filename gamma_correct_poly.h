@@ -114,11 +114,21 @@ void LinearToSrgb8PolyWithoutClamp(const V x0, const V x1, const V x2,
       1.5849762703E+00, 1.5849762703E+00, 1.5849762703E+00, 1.5849762703E+00};
 
   const Full<float> d;
+#if SIMD_TARGET_VALUE == SIMD_NONE
+  const auto shrink = set1(d, 1.0f / 255);
+  const auto linear = set1(d, 12.92f);
+  const auto expand = set1(d, 255.0f);
+  const auto min_poly_x = set1(d, 0.00313080495356f);
+#else
   SIMD_ALIGN constexpr float lanes[4] = {1.0 / 255, 12.92, 255.0,
                                          0.00313080495356};
   const auto constants = load_dup128(d, lanes);
-
   const auto shrink = broadcast<0>(constants);
+  const auto linear = broadcast<1>(constants);
+  const auto expand = broadcast<2>(constants);
+  const auto min_poly_x = broadcast<3>(constants);
+#endif
+
   // Range reduction: 2 extra constants, but half the max error vs 5/4.
   const V x0_01 = x0 * shrink;
   const V x1_01 = x1 * shrink;
@@ -126,9 +136,6 @@ void LinearToSrgb8PolyWithoutClamp(const V x0, const V x1, const V x2,
 
   EvalRationalPolynomialTriple(x0_01, x1_01, x2_01, p, q, y0, y1, y2);
 
-  const auto linear = broadcast<1>(constants);
-  const auto expand = broadcast<2>(constants);
-  const auto min_poly_x = broadcast<3>(constants);
 
   *y0 = select(x0 * linear, *y0 * expand, x0_01 > min_poly_x);
   *y1 = select(x1 * linear, *y1 * expand, x1_01 > min_poly_x);
@@ -138,6 +145,15 @@ void LinearToSrgb8PolyWithoutClamp(const V x0, const V x1, const V x2,
 template <class D, typename V>
 V LinearToSrgb8Poly(D d, V z) {
   return Clamp0To255(d, LinearToSrgb8PolyWithoutClamp(z));
+}
+
+template <class D, typename V>
+void LinearToSrgb8Poly(D d, const V x0, const V x1, const V x2,
+                       V* PIK_RESTRICT y0, V* PIK_RESTRICT y1,
+                       V* PIK_RESTRICT y2) {
+  *y0 = LinearToSrgb8Poly(d, x0);
+  *y1 = LinearToSrgb8Poly(d, x1);
+  *y2 = LinearToSrgb8Poly(d, x2);
 }
 
 }  // namespace SIMD_NAMESPACE

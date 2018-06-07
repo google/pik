@@ -1,31 +1,23 @@
 #include "af_edge_preserving_filter.h"
 
-// Edge-preserving smoothing for denoising and texture/cartoon decomposition.
-// Uses 7x8 weighted average based on L1 patch similarity.
+// Edge-preserving smoothing: 7x8 weighted average based on L1 patch similarity.
 
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <numeric>  // std::accumulate
-#include <mutex>
 
 #define DUMP_SIGMA 0
 
+#undef PROFILER_ENABLED
+#define PROFILER_ENABLED 1
 #include "af_stats.h"
-#if DUMP_SIGMA
-#include "image_io.h"
-#endif
 #include "profiler.h"
 #include "simd/dispatch.h"
 #include "simd_helpers.h"
-
-#ifndef CHECK
-#define CHECK(condition)                                            \
-  while (!(condition)) {                                            \
-    fprintf(stderr, "Check failed at %s:%d\n", __FILE__, __LINE__); \
-    abort();                                                        \
-  }
+#include "status.h"
+#if DUMP_SIGMA
+#include "image_io.h"
 #endif
 
 namespace pik {
@@ -319,7 +311,7 @@ class WeightFast {
   WeightFast() : bias_(set1(d16, 127 << (23 - 16))) { InitMulTable(); }
 
   void SetSigma(const int sigma) {
-    // CHECK(kMinSigma <= sigma && sigma <= kMaxSigma);
+    // PIK_CHECK(kMinSigma <= sigma && sigma <= kMaxSigma);
     mul_ = set1(d16, mul_table[sigma]);
   }
 
@@ -433,7 +425,7 @@ class InternalWeightTests {
     weight_func(set1(d16, sad), &lo, &hi);
     const float w0 = get_part(df1, lo);
     const float w1 = get_part(df1, hi);
-    CHECK(w0 == w1);
+    PIK_CHECK(w0 == w1);
 
     if (std::abs(w0 - expected) > tolerance) {
       printf("Weight %f too far from %f for sigma %d, sad %d\n", w0, expected,
@@ -487,7 +479,7 @@ class InternalWeightTests {
       VF lo, hi;
       weight_func(set1(d16, sad), &lo, &hi);
       const float w = get_part(df1, lo);
-      CHECK(w <= last_w);
+      PIK_CHECK(w <= last_w);
       last_w = w;
     }
   }
@@ -847,7 +839,7 @@ class WeightedSum {
       const float expected = X64_Reciprocal12(expected1) * expected0;
 
       const float actual = get_part(df1, RatioOfHorizontalSums(in0, in1));
-      CHECK(std::abs(expected - actual) < 2E-2f);
+      PIK_CHECK(std::abs(expected - actual) < 2E-2f);
     }
   }
 };
@@ -875,22 +867,21 @@ void Filter(const Guide& guide, const Image& in, const WeightFunc& weight_func,
   }
 }
 
-int Sigma(const AdaptiveFilterParams& params, const int ac_quant) {
-  const int min_quant = ac_quant;
-  int sigma = 1.0f / (params.sigma_mul * min_quant);
-  // int sigma = 1.0f / (params.sigma_mul * min_quant * sqrtf(min_quant));
+int Sigma(const float weight_mul, const int ac_quant) {
+  // ac_quant is larger in blocks with more detail => less smoothing there.
+  const int sigma = weight_mul / ac_quant;
+  // const int sigma = weight_mul / sqrtf(ac_quant);
+  // No need to clamp to kMinSigma, we skip blocks with very low sigma.
   return std::min(sigma, epf::kMaxSigma);
 }
 
 template <class Guide, class Image>
 void FilterAdaptive(const Guide& guide, const Image& in,
-                    const AdaptiveFilterParams& params,
+                    const AdaptiveFilterParams& params, const float stretch,
                     Image* SIMD_RESTRICT out) {
   const size_t xsize = out->xsize();
   const size_t ysize = out->ysize();
-#if PROFILER_ENABLED
-  printf("filter %zu pix\n", xsize * ysize);
-#endif
+  // printf("filter %zu x %zu = %zu pix\n", xsize, ysize, xsize * ysize);
   PROFILER_FUNC;
   PIK_CHECK(xsize != 0 && ysize != 0);
   PIK_CHECK((xsize | ysize) % 8 == 0);
@@ -902,6 +893,7 @@ void FilterAdaptive(const Guide& guide, const Image& in,
   auto args = MakeArgs(guide, in);
   const int kSkipThreshold = kMinSigma;
   WeightFast weight_func;
+  const float weight_mul = stretch / params.sigma_mul;
 
 #if DUMP_SIGMA
   ImageB dump(xsize / 8, ysize / 8);
@@ -914,9 +906,9 @@ void FilterAdaptive(const Guide& guide, const Image& in,
 #endif
 
     for (size_t bx = 0; bx < xsize; bx += 8) {
-      const int sigma = Sigma(params, ac_quant_row[bx / 8]);
+      const int sigma = Sigma(weight_mul, ac_quant_row[bx / 8]);
 #if DUMP_SIGMA
-      dump_row[bx / 8] = sigma;
+      dump_row[bx / 8] = std::min(std::max(0, sigma), 255);
 #endif
       if (sigma < kSkipThreshold) continue;
       weight_func.SetSigma(sigma);
@@ -1025,7 +1017,8 @@ class Padding {
 // Returns a guide image for "in". Required for the SAD hardware acceleration;
 // precomputing is faster than converting a 7x8 window for each pixel.
 // Providing min/max values avoids an additional scan through the image.
-ImageB MakeGuide(const ImageF& in, float min = 0.0f, float max = 0.0f) {
+ImageB MakeGuide(const ImageF& in, float* PIK_RESTRICT stretch,
+                 float min = 0.0f, float max = 0.0f) {
   const size_t xsize = in.xsize();
   const size_t ysize = in.ysize();
   ImageB out(xsize, ysize);
@@ -1033,12 +1026,13 @@ ImageB MakeGuide(const ImageF& in, float min = 0.0f, float max = 0.0f) {
   if (max == 0.0f) {
     PROFILER_ZONE("minmax");
     ImageMinMax(in, &min, &max);
-    CHECK(max != 0.0f);
+    PIK_CHECK(max != 0.0f);
   }
-  CHECK(max > min);
+  PIK_CHECK(max > min);
 
   const Part<uint8_t, df.N> d8;
-  const auto vmul = set1(df, 255.0f / (max - min));
+  *stretch = 255.0f / (max - min);
+  const auto vmul = set1(df, *stretch);
   const auto vmin = set1(df, min);
 
   for (size_t y = 0; y < ysize; ++y) {
@@ -1057,7 +1051,8 @@ ImageB MakeGuide(const ImageF& in, float min = 0.0f, float max = 0.0f) {
 }
 
 // Same as above for RGB.
-Image3B MakeGuide(const Image3F& in, float min = 0.0f, float max = 0.0f) {
+Image3B MakeGuide(const Image3F& in, float* PIK_RESTRICT stretch,
+                  float min = 0.0f, float max = 0.0f) {
   const size_t xsize = in.xsize();
   const size_t ysize = in.ysize();
   Image3B out(xsize, ysize);
@@ -1068,12 +1063,13 @@ Image3B MakeGuide(const Image3F& in, float min = 0.0f, float max = 0.0f) {
     Image3MinMax(in, &min3, &max3);
     min = *std::min_element(min3.begin(), min3.end());
     max = *std::max_element(max3.begin(), max3.end());
-    CHECK(max != 0.0f);
+    PIK_CHECK(max != 0.0f);
   }
 
-  CHECK(max > min);
+  PIK_CHECK(max > min);
   const Part<uint8_t, df.N> d8;
-  const auto vmul = set1(df, 255.0f / (max - min));
+  *stretch = 255.0f / (max - min);
+  const auto vmul = set1(df, *stretch);
   const auto vmin = set1(df, min);
 
   for (size_t c = 0; c < 3; ++c) {
@@ -1093,263 +1089,18 @@ Image3B MakeGuide(const Image3F& in, float min = 0.0f, float max = 0.0f) {
   return out;
 }
 
-// Calls filter after padding "in" and creating a guide from it.
-// Image and WeightFunc are deduced.
-template <class Image, class WeightFunc>
+// Calls filter after padding and creating a guide.
+template <class WeightFunc, class Image>
 void PadAndFilter(Image* in_out, const float min, const float max,
-                  const WeightFunc& weight_func) {
+                  const float sigma) {
   PROFILER_FUNC;
-
   Image padded = Padding::PadImage(*in_out);
-  auto guide = MakeGuide(padded, min, max);
+  float stretch;
+  auto guide = MakeGuide(padded, &stretch, min, max);
+
+  WeightFunc weight_func;
+  weight_func.SetSigma(sigma * stretch);
   Filter(guide, padded, weight_func, in_out);
-}
-
-//-----------------------------------------------------------------------------
-// The following are unused in PIK, where we care about decode speed and could
-// use side information to estimate the local sigma.
-
-// Partitions intensities into "bands" containing similar numbers of pixels.
-template <size_t kNumBands>
-class BandPartition {
- public:
-  template <class Guide>
-  BandPartition(const Guide& guide) {
-    const size_t xsize = guide.xsize();
-    const size_t ysize = guide.ysize();
-
-    const size_t kNumIntensities = 256;
-    int histogram[kNumIntensities] = {0};
-    for (size_t y = 0; y < ysize; ++y) {
-      const auto guide_row = guide.ConstRow(y);
-      for (size_t x = 0; x < xsize; ++x) {
-        ++histogram[static_cast<int>(guide_row[x])];
-      }
-    }
-
-    const size_t votes_per_band = xsize * ysize / kNumBands;
-    size_t bin = 0;
-    // Do not reset to zero in every band so that excess votes
-    // will count towards the next band.
-    size_t votes = 0;
-    for (size_t band = 0; band < kNumBands; ++band) {
-      while (votes < votes_per_band && bin < kNumIntensities) {
-        votes += histogram[bin];
-        ++bin;
-      }
-      votes -= votes_per_band;
-      band_end_[band] = bin;
-      // TODO(janwas): remove
-      printf("%zu: %zu\n", band, bin);
-    }
-  }
-
-  size_t BandFromIntensity(const int intensity) const {
-    // TODO(janwas): SIMD broadcast, compare, movemask, clz
-    for (size_t band = 0; band < kNumBands; ++band) {
-      if (intensity < band_end_[band]) return band;
-    }
-    CHECK(false);  // not within any range => possibly negative?
-    return 0;
-  }
-
- private:
-  std::array<int, kNumBands> band_end_;
-};
-
-// Modified from edge_detector.cc.
-// https://en.wikipedia.org/wiki/Otsu%27s_method
-float OtsuThreshold(const Histogram& hist, const int max_bin) {
-  int64_t total = 0;
-  for (size_t i = 0; i < max_bin; ++i) {
-    total += hist.Bin(i);
-  }
-  const double scale = 1.0 / total;
-  double omega0 = 0.0;
-  double mu0 = 0.0;
-  double mu_total = 0.0;
-  for (int i = 0; i < max_bin; ++i) {
-    mu_total += i * hist.Bin(i) * scale;
-  }
-  int best_i = 0;
-  double best_sigma = 0.0;
-  for (int i = 1; i < max_bin; ++i) {
-    const double prob = hist.Bin(i - 1) * scale;
-    omega0 += prob;
-    mu0 += (i - 1) * prob;
-    const double omega1 = 1.0 - omega0;
-    const double mu1 = mu_total - mu0;
-    const double delta = mu0 / omega0 - mu1 / omega1;
-    const double sigma = omega0 * omega1 * delta * delta;
-    if (sigma > best_sigma) {
-      best_sigma = sigma;
-      best_i = i;
-    }
-  }
-  return best_i;
-}
-
-class DifferenceDistribution {
- public:
-  static float Mul() {
-    return 1.0f;  // clamp
-  }
-  static double Encode(double x) { return std::min(x, 255.0); }
-  static double Decode(double x) { return x; }
-
-  void Add(const uint8_t* SIMD_RESTRICT guide_m4, const size_t guide_stride) {
-    // The last 8 are duplicates.
-    SIMD_ALIGN int16_t sad[Distance::kNeighbors + 8];
-    // TODO(janwas): specialized version for smaller 5x5 neighborhood?
-    Distance::SumsOfAbsoluteDifferences(guide_m4, guide_stride, sad);
-    CHECK(sad[3 * 8 + 3] == 0);
-
-    // Rank Order Absolute Difference: sum of the smallest differences
-    // indicates how much a pixel resembles impulse noise. We use a much
-    // larger window of patch-based SADs to increase robustness.
-    const size_t kSamples = (Distance::kNeighbors - 1) / 2;
-    std::sort(sad, sad + Distance::kNeighbors);
-    const int sad_sum = std::accumulate(sad, sad + kSamples, 0);
-    const float sad_avg = static_cast<float>(sad_sum) / kSamples;
-    sad_org_.Increment(sad_avg);
-    const float x = Encode(sad_avg);
-    sad_histogram_.Increment(x);
-    stats_.Notify(x);
-  }
-  /*
-      // We expect a heavy-tailed distribution with many values outside the
-      // histogram domain (assigned to the last bin). The Half-Range Mode
-      // estimator will ignore the final peak because its mass is much less than
-      // around the mode, so the estimator will zoom in on the first half and
-      // never see the final peak again. Similarly, a smaller peak around zero
-      // is also ignored.
-
-      const int mode = sad_histogram_.Mode();
-      int64_t sum = 0;
-      for (size_t i = 0; i < Histogram::kBins - 1; ++i) {
-        sum += sad_histogram_.Bin(i);
-      }
-      if (sad_histogram_.Bin(Histogram::kBins - 1) > sum / 2)  return 0;
-
-      return exp(mode / Mul());
-    }
-  */
-  void Print(const char* message = "") const {
-    const int mode = sad_histogram_.Mode();
-    int64_t sum = 0;
-    for (size_t i = 0; i < Histogram::kBins - 1; ++i) {
-      sum += sad_histogram_.Bin(i);
-    }
-    const bool heavy_tail = sad_histogram_.Bin(Histogram::kBins - 1) > sum / 2;
-
-    // TODO(janwas): iterate over IQR candidates, compute probability of
-    // observing the histogram.
-    const int tail_begin = Decode(mode);
-    Stats stats2;
-    for (size_t i = 0; i < Histogram::kBins; ++i) {
-      if (i > tail_begin) break;
-      for (size_t j = 0; j < sad_org_.Bin(i); ++j) {
-        stats2.Notify(i);
-      }
-    }
-
-    const int otsu = OtsuThreshold(sad_org_, mode);
-
-    static std::mutex mutex;
-    mutex.lock();
-
-    if (heavy_tail) {
-      printf("%s: heavy\n", message);
-      mutex.unlock();
-      return;
-    }
-    printf("%s: cutoff %d otsu %d iqr %f skew %f kurt %f heavy %d\n", message,
-           tail_begin, otsu, sad_org_.IQR(), stats2.Skewness(),
-           stats2.Kurtosis(), heavy_tail);
-    GaussianMixture mix[3];
-    const int num_mix = EstimateGaussianMixture(stats2, mix);
-    for (int i = 0; i < num_mix; ++i) {
-      if (mix[i].mean0 < 0.0 && mix[i].weight > 0.01) continue;
-      if (mix[i].mean1 < 0.0 && mix[i].weight < 0.99) continue;
-      printf("  w %f %f %f (var %f)\n", mix[i].weight, mix[i].mean0,
-             mix[i].mean1, mix[i].var0);
-    }
-    // TODO(janwas): remove
-    sad_org_.Print();
-    // sad_histogram_.Print();
-    mutex.unlock();
-  }
-
- private:
-  Histogram sad_histogram_;
-  Histogram sad_org_;
-  Stats stats_;
-};
-
-// Estimates sigma and filters twice.
-template <class Image>
-void TwoPhase(const Image& in, Image* SIMD_RESTRICT out, float min, float max) {
-  Image padded = Padding::PadImage(in);
-  const size_t xsize = padded.xsize();
-  const size_t ysize = padded.ysize();
-
-  auto guide = MakeGuide(padded, min, max);
-  const size_t guide_stride = guide.bytes_per_row();
-
-  constexpr size_t kNumBands = 1;
-  const BandPartition<kNumBands> band_partition(guide);
-
-  std::vector<DifferenceDistribution> diff_distributions(kNumBands);
-
-  for (int y = kBorder; y < ysize - kBorder; y += 1) {
-    const uint8_t* SIMD_RESTRICT guide_m4 = guide.ConstRow(y - 4);
-    const uint8_t* SIMD_RESTRICT guide_row = guide.ConstRow(y);
-
-    for (int x = kBorder; x < xsize - kBorder; x += 1) {
-      const size_t band = band_partition.BandFromIntensity(guide_row[x]);
-      diff_distributions[band].Add(guide_m4 + x, guide_stride);
-    }
-  }
-
-  for (size_t band = 0; band < kNumBands; ++band) {
-    printf("=================================%zu\n", band);
-    diff_distributions[band].Print();
-  }
-
-  // TODO(janwas): find better mapping of mode -> filter sigma.
-
-  // const int sigma = std::min(std::max(kMinSigma, mode), kMaxSigma);
-  // Filter with estimated parameter
-}
-
-template <class Image>
-int EstimateNoise(const char* message, const Image& in, float min, float max) {
-  const size_t xsize = in.xsize();
-  const size_t ysize = in.ysize();
-
-  Image vst(xsize, ysize);
-  for (size_t y = 0; y < ysize; ++y) {
-    const float* SIMD_RESTRICT row_in = in.ConstRow(y);
-    float* SIMD_RESTRICT row_out = vst.Row(y);
-    for (size_t x = 0; x < xsize; ++x) {
-      row_out[x] = std::sqrt(row_in[x]);
-    }
-  }
-
-  auto guide = MakeGuide(vst, min, max);
-  const size_t guide_stride = guide.bytes_per_row();
-
-  DifferenceDistribution diff_distribution;
-  for (int y = kBorder; y < ysize - kBorder; y += 2) {
-    const uint8_t* SIMD_RESTRICT guide_m4 = guide.ConstRow(y - 4);
-
-    for (int x = kBorder; x < xsize - kBorder; x += 2) {
-      diff_distribution.Add(guide_m4 + x, guide_stride);
-    }
-  }
-
-  diff_distribution.Print(message);
-  return 0;
 }
 
 }  // namespace
@@ -1360,19 +1111,15 @@ using namespace pik::SIMD_NAMESPACE;
 
 // Self-guided.
 template <>
-void EdgePreservingFilter::operator()<SIMD_TARGET>(ImageF* in_out, int sigma,
+void EdgePreservingFilter::operator()<SIMD_TARGET>(ImageF* in_out, float sigma,
                                                    float min, float max) {
-  WeightFast weight_func;
-  weight_func.SetSigma(sigma);
-  PadAndFilter(in_out, min, max, weight_func);
+  PadAndFilter<WeightFast>(in_out, min, max, sigma);
 }
 
 template <>
-void EdgePreservingFilter::operator()<SIMD_TARGET>(Image3F* in_out, int sigma,
+void EdgePreservingFilter::operator()<SIMD_TARGET>(Image3F* in_out, float sigma,
                                                    float min, float max) {
-  WeightFast weight_func;
-  weight_func.SetSigma(sigma);
-  PadAndFilter(in_out, min, max, weight_func);
+  PadAndFilter<WeightFast>(in_out, min, max, sigma);
 }
 
 // PIK adaptive
@@ -1380,14 +1127,16 @@ template <>
 void EdgePreservingFilter::operator()<SIMD_TARGET>(
     Image3F* in_out, const AdaptiveFilterParams& params, float min, float max) {
   Image3F padded = Padding::PadImage(*in_out);
-  auto guide = MakeGuide(padded, min, max);
-  FilterAdaptive(guide, padded, params, in_out);
+  float stretch;
+  auto guide = MakeGuide(padded, &stretch, min, max);
+  FilterAdaptive(guide, padded, params, stretch, in_out);
 }
 
 // Separate guide image.
 template <>
 void EdgePreservingFilter::operator()<SIMD_TARGET>(const ImageB& guide,
-                                                   const ImageF& in, int sigma,
+                                                   const ImageF& in,
+                                                   float sigma,
                                                    ImageF* SIMD_RESTRICT out) {
   WeightFast weight_func;
   weight_func.SetSigma(sigma);
@@ -1396,7 +1145,8 @@ void EdgePreservingFilter::operator()<SIMD_TARGET>(const ImageB& guide,
 
 template <>
 void EdgePreservingFilter::operator()<SIMD_TARGET>(const Image3B& guide,
-                                                   const Image3F& in, int sigma,
+                                                   const Image3F& in,
+                                                   float sigma,
                                                    Image3F* SIMD_RESTRICT out) {
   WeightFast weight_func;
   weight_func.SetSigma(sigma);
@@ -1405,25 +1155,21 @@ void EdgePreservingFilter::operator()<SIMD_TARGET>(const Image3B& guide,
 
 template <>
 void EdgePreservingFilterSlow::operator()<SIMD_TARGET>(ImageF* in_out,
-                                                       int sigma, float min,
+                                                       float sigma, float min,
                                                        float max) {
-  WeightExp weight_func;
-  weight_func.SetSigma(sigma);
-  PadAndFilter(in_out, min, max, weight_func);
+  PadAndFilter<WeightExp>(in_out, min, max, sigma);
 }
 
 template <>
 void EdgePreservingFilterSlow::operator()<SIMD_TARGET>(Image3F* in_out,
-                                                       int sigma, float min,
+                                                       float sigma, float min,
                                                        float max) {
-  WeightExp weight_func;
-  weight_func.SetSigma(sigma);
-  PadAndFilter(in_out, min, max, weight_func);
+  PadAndFilter<WeightExp>(in_out, min, max, sigma);
 }
 
 template <>
 void EdgePreservingFilterSlow::operator()<SIMD_TARGET>(
-    const ImageB& guide, const ImageF& in, int sigma,
+    const ImageB& guide, const ImageF& in, float sigma,
     ImageF* SIMD_RESTRICT out) {
   WeightExp weight_func;
   weight_func.SetSigma(sigma);
@@ -1432,26 +1178,11 @@ void EdgePreservingFilterSlow::operator()<SIMD_TARGET>(
 
 template <>
 void EdgePreservingFilterSlow::operator()<SIMD_TARGET>(
-    const Image3B& guide, const Image3F& in, int sigma,
+    const Image3B& guide, const Image3F& in, float sigma,
     Image3F* SIMD_RESTRICT out) {
   WeightExp weight_func;
   weight_func.SetSigma(sigma);
   Filter(guide, in, weight_func, out);
-}
-
-template <>
-void EdgePreservingFilterTwoPhase::operator()<SIMD_TARGET>(
-    const ImageF& in, ImageF* SIMD_RESTRICT out, const float min,
-    const float max) {
-  TwoPhase(in, out, min, max);
-}
-
-template <>
-void TestEstimateNoise::operator()<SIMD_TARGET>(const char* message,
-                                                const ImageF& in,
-                                                const float min,
-                                                const float max) {
-  EstimateNoise(message, in, min, max);
 }
 
 template <>

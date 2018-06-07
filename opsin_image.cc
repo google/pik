@@ -17,9 +17,12 @@
 #include <stddef.h>
 #include <array>
 
+#undef PROFILER_ENABLED
+#define PROFILER_ENABLED 1
 #include "approx_cube_root.h"
 #include "compiler_specific.h"
 #include "gamma_correct.h"
+#include "profiler.h"
 
 namespace pik {
 
@@ -57,6 +60,7 @@ void RgbToXyb(uint8_t r, uint8_t g, uint8_t b, float* PIK_RESTRICT valx,
 }
 
 Image3F OpsinDynamicsImage(const Image3B& srgb) {
+  PROFILER_FUNC;
   // This is different from butteraugli::OpsinDynamicsImage() in the sense that
   // it does not contain a sensitivity multiplier based on the blurred image.
   const size_t xsize = srgb.xsize();
@@ -74,6 +78,7 @@ Image3F OpsinDynamicsImage(const Image3B& srgb) {
 }
 
 Image3F OpsinDynamicsImage(const Image3F& linear) {
+  PROFILER_FUNC;
   // This is different from butteraugli::OpsinDynamicsImage() in the sense that
   // it does not contain a sensitivity multiplier based on the blurred image.
   const size_t xsize = linear.xsize();

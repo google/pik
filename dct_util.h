@@ -73,6 +73,9 @@ Image3F UpSample4x4Blur(const Image3F& img, const float sigma);
 ImageF Subsample(const ImageF& image, int f);
 Image3F Subsample(const Image3F& image, int f);
 
+// Same as above for f=8.
+ImageF Subsample8(const ImageF& image);
+
 // Returns an f*N x f*M upsampled image where each fxf block has the same value
 // as the corresponding pixel in the original image.
 ImageF Upsample(const ImageF& image, int f);

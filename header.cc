@@ -39,9 +39,10 @@ class U32Coder {
     return 2 + sizeof(uint32_t) * 8;
   }
 
-  // The four bytes of "selector_bits" (sorted in ascending order from
-  // low to high bit indices) indicate how many bits for each selector, or
-  // zero if the selector represents the value directly.
+  // The four bytes of "selector_bits" are interpreted as a little-endian array
+  // with the first (least-significant) byte indicating how many bits for the
+  // first selector. Any byte at index i can be zero to indicate that selector i
+  // has zero associated bits and represents the value i directly.
   static uint32_t Load(const uint32_t selector_bits,
                        BitSource* const PIK_RESTRICT source) {
     if (source->CanRead32()) {
@@ -72,7 +73,7 @@ class U32Coder {
       }
     }
 
-    const int bits_required = 32 - NumZeroBitsAboveMSB32(value);
+    const int bits_required = 32 - NumZeroBitsAboveMSB(value);
     // kBits (except the zeros) are sorted in ascending order,
     // so choose the first selector that provides enough bits.
     for (int selector = 0; selector < 4; ++selector) {
@@ -290,7 +291,7 @@ class SectionBits {
   void Foreach(const Visitor& visitor) const {
     uint32_t remaining = bits_;
     while (remaining != 0) {
-      const int idx = NumZeroBitsBelowLSB32Nonzero(remaining);
+      const int idx = NumZeroBitsBelowLSBNonzero(remaining);
       visitor(idx);
       remaining &= remaining - 1;  // clear lowest
     }

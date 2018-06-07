@@ -1022,7 +1022,8 @@ bool ReadJpegImage(const JpegInput& input, Image3B* rgb) {
   std::unique_ptr<FileWrapper> input_file;
   if (!input.filename.empty()) {
     input_file.reset(new FileWrapper(input.filename, "rb"));
-    if (input_file.get() == nullptr) {
+    FILE* f = *input_file.get();
+    if (f == nullptr) {
       return PIK_FAILURE("File open");
     }
   } else if (input.inbuffer == nullptr) {

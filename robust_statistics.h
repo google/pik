@@ -19,7 +19,6 @@
 
 #include <stddef.h>
 #include <algorithm>
-#include <cassert>
 #include <cmath>
 #include <limits>
 #include <utility>
@@ -27,6 +26,7 @@
 
 #include "arch_specific.h"
 #include "compiler_specific.h"
+#include "status.h"
 
 namespace pik {
 
@@ -39,7 +39,7 @@ size_t MinRange(const T* const PIK_RESTRICT sorted, const size_t idx_begin,
   size_t min_idx = 0;
 
   for (size_t idx = idx_begin; idx < idx_begin + half_count; ++idx) {
-    assert(sorted[idx] <= sorted[idx + half_count]);
+    PIK_ASSERT(sorted[idx] <= sorted[idx + half_count]);
     const T range = sorted[idx + half_count] - sorted[idx];
     if (range < min_range) {
       min_range = range;
@@ -69,7 +69,7 @@ T Mode(const T* const PIK_RESTRICT sorted, const size_t num_values) {
   if (half_count == 0) {
     return x;
   }
-  assert(half_count == 1);
+  PIK_ASSERT(half_count == 1);
   const T average = (x + sorted[idx_begin + 1] + 1) / 2;
   return average;
 }
@@ -102,33 +102,52 @@ void CountingSort(T* begin, T* end) {
     std::fill(p, p + value_count.second, value_count.first);
     p += value_count.second;
   }
-  assert(p == end);
+  PIK_ASSERT(p == end);
+}
+
+template <typename T>
+static inline T Half(const T x) {
+  return x / 2;
+}
+// Mul is faster than div.
+template <>
+inline float Half<float>(const float x) {
+  return x * 0.5f;
 }
 
 // Returns the median value. Side effect: sorts "samples".
 template <typename T>
-T Median(std::vector<T>* samples) {
-  assert(!samples->empty());
-  std::sort(samples->begin(), samples->end());
-  const size_t half = samples->size() / 2;
+T Median(T* samples, const size_t num_samples) {
+  PIK_ASSERT(num_samples != 0);
+  std::sort(samples, samples + num_samples);
+  const size_t half = num_samples / 2;
   // Odd count: return middle
-  if (samples->size() % 2) {
-    return (*samples)[half];
-  }
+  if (num_samples % 2) return samples[half];
   // Even count: return average of middle two.
-  return ((*samples)[half] + (*samples)[half - 1]) / 2;
+  return Half(samples[half] + samples[half - 1]);
+}
+
+template <typename T>
+T Median(std::vector<T>* samples) {
+  return Median(samples->data(), samples->size());
 }
 
 // Returns a robust measure of variability.
 template <typename T>
-T MedianAbsoluteDeviation(const std::vector<T>& samples, const T median) {
-  assert(!samples.empty());
+T MedianAbsoluteDeviation(const T* samples, const size_t num_samples,
+                          const T median) {
+  PIK_ASSERT(num_samples != 0);
   std::vector<T> abs_deviations;
-  abs_deviations.reserve(samples.size());
-  for (const T sample : samples) {
-    abs_deviations.push_back(std::abs(sample - median));
+  abs_deviations.reserve(num_samples);
+  for (size_t i = 0; i < num_samples; ++i) {
+    abs_deviations.push_back(std::abs(samples[i] - median));
   }
   return Median(&abs_deviations);
+}
+
+template <typename T>
+T MedianAbsoluteDeviation(const std::vector<T>& samples, const T median) {
+  return MedianAbsoluteDeviation(samples.data(), samples.size(), median);
 }
 
 }  // namespace pik

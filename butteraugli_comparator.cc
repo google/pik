@@ -101,17 +101,21 @@ Image3F Image3FromButteraugliPlanes(
 }  // namespace
 }  // namespace
 
-ButteraugliComparator::ButteraugliComparator(const Image3B& srgb)
+ButteraugliComparator::ButteraugliComparator(const Image3B& srgb,
+                                             float hf_asymmetry)
     : xsize_(srgb.xsize()),
       ysize_(srgb.ysize()),
-      comparator_(SIMD_NAMESPACE::SrgbToLinearRgb(xsize_, ysize_, srgb)),
+      comparator_(SIMD_NAMESPACE::SrgbToLinearRgb(xsize_, ysize_, srgb),
+                  hf_asymmetry),
       distance_(0.0),
       distmap_(xsize_, ysize_, 0) {}
 
-ButteraugliComparator::ButteraugliComparator(const Image3F& opsin)
+ButteraugliComparator::ButteraugliComparator(const Image3F& opsin,
+                                             float hf_asymmetry)
     : xsize_(opsin.xsize()),
       ysize_(opsin.ysize()),
-      comparator_(SIMD_NAMESPACE::OpsinToLinearRgb(xsize_, ysize_, opsin)),
+      comparator_(SIMD_NAMESPACE::OpsinToLinearRgb(xsize_, ysize_, opsin),
+                  hf_asymmetry),
       distance_(0.0),
       distmap_(xsize_, ysize_, 0) {}
 

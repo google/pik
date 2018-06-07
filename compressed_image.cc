@@ -27,13 +27,17 @@
 #include "convolve.h"
 #include "dc_predictor.h"
 #include "dct_util.h"
+#include "deconvolve.h"
 #include "gauss_blur.h"
 #include "huffman_encode.h"
 #include "opsin_codec.h"
+#include "opsin_inverse.h"
 #include "opsin_params.h"
 #include "profiler.h"
+#include "resample.h"
 #include "simd/simd.h"
 #include "status.h"
+#include "upscaler.h"
 
 namespace pik {
 
@@ -43,6 +47,8 @@ static const int kBlockEdge = 8;
 static const int kBlockSize = kBlockEdge * kBlockEdge;
 
 constexpr ImageSize kDctTileSize{512, 8};
+
+const double kDCBlurSigma = 5.5;
 
 }  // namespace
 
@@ -78,12 +84,15 @@ Image3F AlignImage(const Image3F& in, const size_t N) {
   return out;
 }
 
-void CenterOpsinValues(Image3F* img) {
-  for (int y = 0; y < img->ysize(); ++y) {
-    auto row = img->Row(y);
-    for (int x = 0; x < img->xsize(); ++x) {
-      for (int c = 0; c < 3; ++c) {
-        row[c][x] -= kXybCenter[c];
+void CenterOpsinValues(Image3F* PIK_RESTRICT img) {
+  PROFILER_FUNC;
+  const size_t xsize = img->xsize();
+  const size_t ysize = img->ysize();
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < ysize; ++y) {
+      float* PIK_RESTRICT row = img->PlaneRow(c, y);
+      for (size_t x = 0; x < xsize; ++x) {
+        row[x] -= kXybCenter[c];
       }
     }
   }
@@ -191,6 +200,40 @@ PIK_INLINE void ApplyColorTransformT(const ConstImageViewF* in_xyb,
   }
 }
 
+// ytox_dc already has 128 subtracted; both are pre-multiplied by kColorFactor*.
+PIK_INLINE void ApplyColorTransformDC(const ConstImageViewF* in_xyb,
+                                      const float ytox_dc, const float ytob_dc,
+                                      const OutputRegion& output_region,
+                                      const MutableImageViewF* out_xyb) {
+  PROFILER_ZONE("|| colorTransformDC");
+
+  using namespace SIMD_NAMESPACE;
+  const Full<float> d;
+
+  const auto ytox = set1(d, ytox_dc);
+  const auto ytob = set1(d, ytob_dc);
+
+  for (uint32_t y = 0; y < output_region.ysize; ++y) {
+    const float* const PIK_RESTRICT row_in_x = in_xyb[0].ConstRow(y);
+    const float* const PIK_RESTRICT row_in_y = in_xyb[1].ConstRow(y);
+    const float* const PIK_RESTRICT row_in_b = in_xyb[2].ConstRow(y);
+    float* const PIK_RESTRICT row_out_x = out_xyb[0].Row(y);
+    float* const PIK_RESTRICT row_out_y = out_xyb[1].Row(y);
+    float* const PIK_RESTRICT row_out_b = out_xyb[2].Row(y);
+
+    for (uint32_t x = 0; x < output_region.xsize; x += d.N) {
+      const auto in_x = load(d, row_in_x + x);
+      const auto in_y = load(d, row_in_y + x);
+      const auto in_b = load(d, row_in_b + x);
+      const auto out_x = mul_add(ytox, in_y, in_x);
+      const auto out_b = mul_add(ytob, in_y, in_b);
+      store(out_x, d, row_out_x + x);
+      store(in_y, d, row_out_y + x);
+      store(out_b, d, row_out_b + x);
+    }
+  }
+}
+
 TFNode* AddColorTransform(const ColorTransform& ctan, TFNode* dq_xyb,
                           TFNode* ytox_ac, TFNode* ytob_ac,
                           TFBuilder* builder) {
@@ -209,20 +252,75 @@ TFNode* AddColorTransform(const ColorTransform& ctan, TFNode* dq_xyb,
       });
 }
 
-struct KernelGaborish3 {
-  static constexpr size_t kRadius = 1;
-  using D = SIMD_NAMESPACE::Full<float>;
-  static PIK_INLINE D::V HorzWeights() {
-    const float w0 = 1.0f;
-    const float w1 = static_cast<float>(0.11000238179658321);
-    const float w2 = static_cast<float>(0.089979079587015454);
-    const float mul = 1.0 / (w0 + 4 * (w1 + w2));
-    SIMD_ALIGN const float lanes[4] = {w0 * mul, w1 * mul, w2 * mul, 0.0f};
-    return D::V(load_dup128(D(), lanes).raw);
-  }
+TFNode* AddColorTransformDC(const ColorTransform& ctan, TFNode* dq_xyb,
+                            TFBuilder* builder) {
+  PIK_CHECK(OutType(dq_xyb) == TFType::kF32);
+  const float ytox_dc = (ctan.ytox_dc - 128) * kColorFactorX;
+  const float ytob_dc = ctan.ytob_dc * kColorFactorB;
+  return builder->AddClosure(
+      "ctan_dc", Borders(), Scale(), {dq_xyb}, 3, TFType::kF32,
+      [ytox_dc, ytob_dc](const ConstImageViewF* in,
+                         const OutputRegion& output_region,
+                         const MutableImageViewF* out) {
+        ApplyColorTransformDC(in + 0, ytox_dc, ytob_dc, output_region, out + 0);
+      });
+}
 
-  static PIK_INLINE D::V VertWeights() { return HorzWeights(); }
+namespace kernel {
+
+struct Gaborish3 {
+  PIK_INLINE const Weights3x3& Weights() const {
+    // Unnormalized.
+    constexpr float wu0 = 1.0f;
+    constexpr float wu1 = static_cast<float>(0.11000238179658321);
+    constexpr float wu2 = static_cast<float>(0.089979079587015454);
+    constexpr float mul = 1.0 / (wu0 + 4 * (wu1 + wu2));
+    constexpr float w0 = wu0 * mul;
+    constexpr float w1 = wu1 * mul;
+    constexpr float w2 = wu2 * mul;
+    static constexpr Weights3x3 weights = {
+        {PIK_REP4(w2)}, {PIK_REP4(w1)}, {PIK_REP4(w2)},
+        {PIK_REP4(w1)}, {PIK_REP4(w0)}, {PIK_REP4(w1)},
+        {PIK_REP4(w2)}, {PIK_REP4(w1)}, {PIK_REP4(w2)}};
+    return weights;
+  }
 };
+
+}  // namespace kernel
+
+void GaborishInverse(Image3F &opsin) {
+  PROFILER_FUNC;
+  static const double kGaborish[5] = {
+    -0.095336974121859999,
+    -0.049147719433952346,
+    0.00917293007962648,
+    0.0031287055481802016,
+    0.0063673837572018844,
+  };
+  const float smooth_weights5[9] = {
+    1.0f,
+    static_cast<float>(kGaborish[0]),
+    static_cast<float>(kGaborish[2]),
+
+    static_cast<float>(kGaborish[0]),
+    static_cast<float>(kGaborish[1]),
+    static_cast<float>(kGaborish[3]),
+
+    static_cast<float>(kGaborish[2]),
+    static_cast<float>(kGaborish[3]),
+    static_cast<float>(kGaborish[4]),
+  };
+  ImageF res[3] = {ImageF(opsin.xsize(), opsin.ysize()),
+                   ImageF(opsin.xsize(), opsin.ysize()),
+                   ImageF(opsin.xsize(), opsin.ysize())};
+  for (int i = 0; i < 3; ++i) {
+    slow::SymmetricConvolution<2, WrapClamp>::Run(
+        opsin.plane(i), opsin.xsize(), opsin.ysize(), smooth_weights5,
+        &res[i]);
+  }
+  Image3F smooth(std::move(res[0]), std::move(res[1]), std::move(res[2]));
+  smooth.Swap(opsin);
+}
 
 Image3F ConvolveGaborish(const Image3F& in, ThreadPool* pool) {
   PROFILER_ZONE("|| gaborish");
@@ -230,8 +328,9 @@ Image3F ConvolveGaborish(const Image3F& in, ThreadPool* pool) {
   using namespace SIMD_NAMESPACE;
   auto out = Image3F(in.xsize(), in.ysize()).Deconstruct();
   for (int i = 0; i < 3; ++i) {
-    ConvolveT<Direct3, KernelGaborish3>::RunExecutor(in.plane(i), &out[i],
-                                                     ExecutorPool(pool));
+    ConvolveT<strategy::Symmetric3>::Run(BorderNeverUsed(), ExecutorPool(pool),
+                                         in.plane(i), kernel::Gaborish3(),
+                                         &out[i]);
   }
   return Image3F(out);
 }
@@ -243,89 +342,55 @@ Image3F ConvolveGaborishTF(const Image3F& in, ThreadPool* pool) {
   TFNode* src = builder.AddSource("src", 3, TFType::kF32, TFWrap::kMirror);
   builder.SetSource(src, &in);
 
-  using namespace SIMD_NAMESPACE;
-  TFNode* smoothed =
-      builder.Add("gaborish", Borders(1), Scale(), {src}, 3, TFType::kF32,
-                  &ConvolveT<Direct3, KernelGaborish3,
-                             BorderAlreadyValid>::template RunPlanes<3>);
+  TFNode* smoothed = builder.Add(
+      "gaborish", Borders(1), Scale(), {src}, 3, TFType::kF32,
+      [](const void*, const ConstImageViewF* in,
+         const OutputRegion& output_region, const MutableImageViewF* out) {
+        kernel::Gaborish3 kernel;
+        for (int c = 0; c < 3; ++c) {
+          using namespace SIMD_NAMESPACE;
+          ConvolveT<strategy::Symmetric3>::RunView(
+              in + c, kernel, BorderAlreadyValid(), output_region, out + c);
+        }
+      });
 
   Image3F out(in.xsize(), in.ysize());
   builder.SetSink(smoothed, &out);
 
   auto graph = builder.Finalize(ImageSize::Make(in.xsize(), in.ysize()),
-                                ImageSize{128, 128}, pool);
+                                ImageSize{512, 32}, pool);
   graph->Run();
   return out;
 }
 
-// Fills coeffs with zeros and directional adjustments at ac01/10/11.
-// WARNING: keep in sync with Add2x2ACFromDC below, used by decoder.
-// TODO(janwas): smaller "coeffs", 4x1 instead of 64x1.
-void Adjust2x2ACFromDC(const Image3F& dc, const int direction,
-                       Image3F* coeffs) {
-  const float kWeight0 = 0.017367273579512846;
-  const float kWeight1 = 0.13753865853650102;
-  const float kWeight2 = 0.016356047330531105;
-  const float kKernel0[3] = {1.0f, 0.0f, -1.0f};
-  const float kKernel1[3] = {kWeight0, kWeight1, kWeight0};
-  const float kKernel2[3] = {kWeight2, 0.0f, -kWeight2};
-  const std::vector<float> kernel0(kKernel0, kKernel0 + 3);
-  const std::vector<float> kernel1(kKernel1, kKernel1 + 3);
-  const std::vector<float> kernel2(kKernel2, kKernel2 + 3);
-  Image3F tmp0 = ConvolveXSampleAndTranspose(dc, kernel0, 1);  // vert edge
-  Image3F tmp1 = ConvolveXSampleAndTranspose(dc, kernel1, 1);  // smooth
-  Image3F ac01 = ConvolveXSampleAndTranspose(tmp1, kernel0, 1);  // smooth+horz
-  Image3F ac10 = ConvolveXSampleAndTranspose(tmp0, kernel1, 1);  // vert+smooth
-  Image3F ac11 = ConvolveXSampleAndTranspose(tmp0, kernel2, 1);  // horz+vert
-  for (int c = 0; c < 3; ++c) {
-    for (size_t by = 0; by < dc.ysize(); ++by) {
-      auto row01 = ac01.ConstPlaneRow(c, by);
-      auto row10 = ac10.ConstPlaneRow(c, by);
-      auto row11 = ac11.ConstPlaneRow(c, by);
-      float* SIMD_RESTRICT row_out = coeffs->PlaneRow(c, by);
-      for (size_t bx = 0, x = 0; bx < dc.xsize(); ++bx, x += kBlockSize) {
-        for (int i = 0; i < kBlockSize; ++i) {
-          row_out[x + i] = 0.0f;
-        }
-        row_out[x + 1] = direction * row01[bx];
-        row_out[x + 8] = direction * row10[bx];
-        row_out[x + 9] = direction * row11[bx];
-      }
-    }
+// Avoid including <functional> for such tiny functions.
+struct Plus {
+  constexpr float operator()(const float first, const float second) const {
+    return first + second;
   }
-}
+};
+struct Minus {
+  constexpr float operator()(const float first, const float second) const {
+    return first - second;
+  }
+};
 
-// Adds ac01/10/11 predicted from "dc" to "dcoeffs". Copied from the above.
-// TODO(janwas): port to TileFlow once we have a separate materialized dc.
-// (note: simple parallelization with 8 threads is slower due to y/c order)
-void Add2x2ACFromDC(const Image3F& dc, Image3F* PIK_RESTRICT dcoeffs) {
-  const size_t xsize = dc.xsize();
-  const size_t ysize = dc.ysize();
+// Adds/subtracts all AC coefficients to "out"; leaves DC unchanged.
+template <class Operator>  // Plus/Minus
+void InjectExceptDC(const Image3F& what, Image3F* out) {
+  const size_t xsize = what.xsize();
+  const size_t ysize = what.ysize();
+  PIK_CHECK(xsize % 64 == 0);
+  const Operator op;
 
-  const float kWeight0 = 0.017367273579512846;
-  const float kWeight1 = 0.13753865853650102;
-  const float kWeight2 = 0.016356047330531105;
-  const float kKernel0[3] = {1.0f, 0.0f, -1.0f};
-  const float kKernel1[3] = {kWeight0, kWeight1, kWeight0};
-  const float kKernel2[3] = {kWeight2, 0.0f, -kWeight2};
-  const std::vector<float> kernel0(kKernel0, kKernel0 + 3);
-  const std::vector<float> kernel1(kKernel1, kKernel1 + 3);
-  const std::vector<float> kernel2(kKernel2, kKernel2 + 3);
-  Image3F tmp0 = ConvolveXSampleAndTranspose(dc, kernel0, 1);    // vert edge
-  Image3F tmp1 = ConvolveXSampleAndTranspose(dc, kernel1, 1);    // smooth
-  Image3F ac01 = ConvolveXSampleAndTranspose(tmp1, kernel0, 1);  // smooth+horz
-  Image3F ac10 = ConvolveXSampleAndTranspose(tmp0, kernel1, 1);  // vert+smooth
-  Image3F ac11 = ConvolveXSampleAndTranspose(tmp0, kernel2, 1);  // horz+vert
   for (int c = 0; c < 3; ++c) {
-    for (size_t by = 0; by < ysize; ++by) {
-      const float* PIK_RESTRICT row01 = ac01.ConstPlaneRow(c, by);
-      const float* PIK_RESTRICT row10 = ac10.ConstPlaneRow(c, by);
-      const float* PIK_RESTRICT row11 = ac11.ConstPlaneRow(c, by);
-      float* SIMD_RESTRICT row_out = dcoeffs->PlaneRow(c, by);
-      for (size_t bx = 0; bx < xsize; ++bx) {
-        row_out[64 * bx + 1] += row01[bx];
-        row_out[64 * bx + 8] += row10[bx];
-        row_out[64 * bx + 9] += row11[bx];
+    for (size_t y = 0; y < ysize; ++y) {
+      const float* PIK_RESTRICT row_what = what.ConstPlaneRow(c, y);
+      float* PIK_RESTRICT row_out = out->PlaneRow(c, y);
+      for (size_t bx = 0; bx < xsize; bx += 64) {
+        for (size_t x = 1; x < 64; ++x) {
+          row_out[bx + x] = op(row_out[bx + x], row_what[bx + x]);
+        }
       }
     }
   }
@@ -336,49 +401,263 @@ static double UpsampleFactor() {
   return f;
 }
 
-void ComputePredictionResiduals(const Quantizer& quantizer,
-                                bool disable_hf_prediction, Image3F* coeffs) {
-  Image3S qcoeffs = QuantizeCoeffs(*coeffs, quantizer);
-  Image3F dcoeffs = DequantizeCoeffs(qcoeffs, quantizer);
-  Image3F prediction_from_dc(coeffs->xsize(), coeffs->ysize());
-  Adjust2x2ACFromDC(DCImage(dcoeffs), 1, &prediction_from_dc);
-  SubtractFrom(prediction_from_dc, coeffs);
-  qcoeffs = QuantizeCoeffs(*coeffs, quantizer);
-  dcoeffs = DequantizeCoeffs(qcoeffs, quantizer);
-  AddTo(prediction_from_dc, &dcoeffs);
-  Image3F pred = GetPixelSpaceImageFrom2x2Corners(dcoeffs);
-  ThreadPool null_pool(0);
-  // Subtract from coeffs
-  if (!disable_hf_prediction) {
-    UpSample4x4BlurDCT(pred, UpsampleFactor(), -0.0f, /*add_all=*/false,
-                       &null_pool, coeffs);
-  }
-}
-
-static void ZeroDC(Image3S* coeffs) {
+template <typename T>
+void ZeroDC(Image3<T>* img) {
   for (int c = 0; c < 3; c++) {
-    for (int y = 0; y < coeffs->ysize(); y++) {
-      auto row = coeffs->PlaneRow(c, y);
-      for (int x = 0; x < coeffs->xsize(); x += 64) {
-        row[x] = 0;
+    for (size_t y = 0; y < img->ysize(); y++) {
+      T* PIK_RESTRICT row = img->PlaneRow(c, y);
+      for (size_t x = 0; x < img->xsize(); x += 64) {
+        row[x] = T(0);
       }
     }
   }
 }
 
+// Scatters dc into "coeffs" at offset 0 within 1x64 blocks.
+void FillDC(const Image3F& dc, Image3F* coeffs) {
+  const size_t xsize = dc.xsize();
+  const size_t ysize = dc.ysize();
+
+  for (int c = 0; c < 3; c++) {
+    for (size_t y = 0; y < ysize; y++) {
+      const float* PIK_RESTRICT row_dc = dc.PlaneRow(c, y);
+      float* PIK_RESTRICT row_out = coeffs->PlaneRow(c, y);
+      for (size_t x = 0; x < xsize; ++x) {
+        row_out[64 * x] = row_dc[x];
+      }
+    }
+  }
+}
+
+std::vector<float> DCfiedGaussianKernel(float sigma) {
+  std::vector<float> result(3, 0.0);
+  std::vector<float> hires = GaussianKernel<float>(8, sigma);
+  for (int i = 0; i < 8; i++) {
+    for (int j = 0; j < hires.size(); j++) {
+      result[(i + j) / 8] += hires[j] / 8.0;
+    }
+  }
+  return result;
+}
+
+// Called from local static ctor.
+kernel::Custom<3> MakeUpsampleKernel() {
+  Image3F impulse_dc(20, 20, 0.0);
+  impulse_dc.PlaneRow(0, 10)[10] = 1.0;
+  Image3F probe_expected = UpscalerReconstruct(impulse_dc);
+  // We are trying to extract a kernel with a smaller radius. This kernel will
+  // be unnormalized. However, we don't mind that: the encoder will compensate
+  // when encoding.
+  auto kernel6 = kernel::Custom<3>::FromResult(probe_expected.plane(0));
+
+  ImageF probe_test(probe_expected.xsize(), probe_expected.ysize());
+  Upsample<GeneralUpsampler8_6x6>(ExecutorLoop(), impulse_dc.plane(0), kernel6,
+                                  &probe_test);
+  VerifyRelativeError(probe_expected.plane(0), probe_test, 5e-2, 5e-2);
+
+  return kernel6;
+}
+
+template <class Image>  // ImageF or Image3F
+Image BlurUpsampleDC(const Image& original_dc, ThreadPool* pool) {
+  const ExecutorPool executor(pool);
+  Image out(original_dc.xsize() * 8, original_dc.ysize() * 8);
+  // TODO(user): In the encoder we want only the DC of the result. That could
+  // be done more quickly.
+  static auto kernel6 = MakeUpsampleKernel();
+  Upsample<GeneralUpsampler8_6x6>(executor, original_dc, kernel6, &out);
+  return out;
+}
+
+// Returns DCT(blur) - original_dc
+Image3F BlurUpsampleDCAndDCT(const Image3F& original_dc, ThreadPool* pool) {
+  Image3F blurred = BlurUpsampleDC(original_dc, pool);
+  Image3F dct = TransposedScaledDCT(blurred);
+  for (int c = 0; c < 3; c++) {
+    for (size_t y = 0; y < dct.ysize(); y++) {
+      float* PIK_RESTRICT dct_row = dct.PlaneRow(c, y);
+      const float* PIK_RESTRICT original_dc_row =
+          original_dc.ConstPlaneRow(c, y);
+      for (size_t x = 0; x < dct.xsize() / 64; x++) {
+        dct_row[64 * x] -= original_dc_row[x];
+      }
+    }
+  }
+  return dct;
+}
+
+// Called by local static ctor.
+std::vector<float> MakeSharpenKernel() {
+  // TODO(user): With the new blur, this makes no sense.
+  std::vector<float> blur_kernel = DCfiedGaussianKernel(kDCBlurSigma);
+  constexpr int kSharpenKernelSize = 3;
+  std::vector<float> sharpen_kernel(kSharpenKernelSize);
+  InvertConvolution(&blur_kernel[0], blur_kernel.size(), &sharpen_kernel[0],
+                    sharpen_kernel.size());
+  return sharpen_kernel;
+}
+
+// Returns true if L1(residual) < max_error.
+bool AddResidualAndCompare(const ImageF& dc, const ImageF& blurred_dc,
+                           const float max_error,
+                           ImageF* PIK_RESTRICT dc_to_encode) {
+  PIK_CHECK(SameSize(dc, blurred_dc) && SameSize(dc, *dc_to_encode));
+  const size_t xsize = dc.xsize();
+  const size_t ysize = dc.ysize();
+  bool all_less = true;
+  for (size_t y = 0; y < ysize; ++y) {
+    const float* PIK_RESTRICT row_dc = dc.ConstRow(y);
+    const float* PIK_RESTRICT row_blurred = blurred_dc.ConstRow(y);
+    float* PIK_RESTRICT row_out = dc_to_encode->Row(y);
+    for (size_t x = 0; x < xsize; ++x) {
+      const float diff = row_dc[x] - row_blurred[x];
+      all_less &= fabsf(diff) < max_error;
+      row_out[x] += diff;
+    }
+  }
+  return all_less;
+}
+
+Image3F SharpenDC(const Image3F& original_dc, ThreadPool* pool) {
+  PROFILER_FUNC;
+  constexpr int kMaxIters = 200;
+  constexpr float kAcceptableError[3] = {1e-4, 1e-4, 1e-4};
+
+  static const std::vector<float> sharpen_kernel = MakeSharpenKernel();
+  auto dc_to_encode = Convolve(original_dc, sharpen_kernel).Deconstruct();
+
+  // Individually per channel, until error is acceptable:
+  for (int c = 0; c < 3; ++c) {
+    for (int iter = 0; iter < kMaxIters; iter++) {
+      const ImageF up = BlurUpsampleDC(dc_to_encode[c], pool);
+      const ImageF blurred = Subsample8(up);
+      if (AddResidualAndCompare(original_dc.plane(c), blurred,
+                                kAcceptableError[c], &dc_to_encode[c])) {
+        break;  // next channel
+      }
+    }
+  }
+
+  return Image3F(dc_to_encode);
+}
+
+void ComputePredictionResiduals_Smooth(const Quantizer& quantizer,
+                                       ThreadPool* pool, Image3F* coeffs) {
+  PROFILER_FUNC;
+  const Image3F original_dc = DCImage(*coeffs);
+  const Image3F dc_to_encode = SharpenDC(original_dc, pool);
+  FillDC(dc_to_encode, coeffs);
+
+  const Image3F dcoeffs_dc = QuantizeRoundtripDC(quantizer, *coeffs);
+  const Image3F prediction_from_dc = BlurUpsampleDCAndDCT(dcoeffs_dc, pool);
+  // We have already tried to take into account the effect on DC. We will
+  // assume here that we've done that correctly.
+  InjectExceptDC<Minus>(prediction_from_dc, coeffs);
+}
+
+namespace kernel {
+
+constexpr float kWeight0 = 0.027630534023046f;
+constexpr float kWeight1 = 0.133676439523697f;
+constexpr float kWeight2 = 0.035697385668755f;
+
+struct AC11 {
+  PIK_INLINE const Weights3x3& Weights() const {
+    static constexpr Weights3x3 weights = {
+        {PIK_REP4(kWeight2)},  {PIK_REP4(0.)}, {PIK_REP4(-kWeight2)},
+        {PIK_REP4(0.)},        {PIK_REP4(0.)}, {PIK_REP4(0.)},
+        {PIK_REP4(-kWeight2)}, {PIK_REP4(0.)}, {PIK_REP4(kWeight2)}};
+    return weights;
+  }
+};
+
+struct AC01 {
+  PIK_INLINE const Weights3x3& Weights() const {
+    static constexpr Weights3x3 weights = {
+        {PIK_REP4(kWeight0)},  {PIK_REP4(kWeight1)},  {PIK_REP4(kWeight0)},
+        {PIK_REP4(0.)},        {PIK_REP4(0.)},        {PIK_REP4(0.)},
+        {PIK_REP4(-kWeight0)}, {PIK_REP4(-kWeight1)}, {PIK_REP4(-kWeight0)}};
+    return weights;
+  }
+};
+
+struct AC10 {
+  PIK_INLINE const Weights3x3& Weights() const {
+    static constexpr Weights3x3 weights = {
+        {PIK_REP4(kWeight0)}, {PIK_REP4(0.)}, {PIK_REP4(-kWeight0)},
+        {PIK_REP4(kWeight1)}, {PIK_REP4(0.)}, {PIK_REP4(-kWeight1)},
+        {PIK_REP4(kWeight0)}, {PIK_REP4(0.)}, {PIK_REP4(-kWeight0)}};
+    return weights;
+  }
+};
+
+}  // namespace kernel
+
+void Adjust2x2ACFromDC(const Image3F& dc, const int direction,
+                       Image3F* coeffs) {
+  const size_t xsize = dc.xsize();
+  const size_t ysize = dc.ysize();
+  Image3F ac01(xsize, ysize);
+  Image3F ac10(xsize, ysize);
+  Image3F ac11(xsize, ysize);
+  // Must avoid ConvolveT for tiny images (PIK_CHECK fails)
+  if (xsize <= 8) {
+    using Convolution = slow::General3x3Convolution<1, WrapMirror>;
+    Convolution::Run(dc, xsize, ysize, kernel::AC01(), &ac01);
+    Convolution::Run(dc, xsize, ysize, kernel::AC10(), &ac10);
+    Convolution::Run(dc, xsize, ysize, kernel::AC11(), &ac11);
+  } else {
+    ConvolveT<strategy::GradY3>::Run(dc, kernel::AC01(), &ac01);
+    ConvolveT<strategy::GradX3>::Run(dc, kernel::AC10(), &ac10);
+    ConvolveT<strategy::Corner3>::Run(dc, kernel::AC11(), &ac11);
+  }
+  for (int c = 0; c < 3; ++c) {
+    for (int by = 0; by < ysize; ++by) {
+      const float* PIK_RESTRICT const row01 = ac01.ConstPlaneRow(c, by);
+      const float* PIK_RESTRICT const row10 = ac10.ConstPlaneRow(c, by);
+      const float* PIK_RESTRICT const row11 = ac11.ConstPlaneRow(c, by);
+      float* SIMD_RESTRICT row_out = coeffs->PlaneRow(c, by);
+      for (int bx = 0; bx < xsize; ++bx) {
+        row_out[kBlockSize * bx + 1] += direction * row01[bx];
+        row_out[kBlockSize * bx + 8] += direction * row10[bx];
+        row_out[kBlockSize * bx + 9] += direction * row11[bx];
+      }
+    }
+  }
+}
+
+void ComputePredictionResiduals(const Quantizer& quantizer,
+                                ThreadPool* pool,
+                                Image3F* coeffs) {
+  Image3F dc_image = QuantizeRoundtripDC(quantizer, *coeffs);
+  Adjust2x2ACFromDC(dc_image, -1, coeffs);
+  Image3F dcoeffs = QuantizeRoundtrip(quantizer, *coeffs);
+  Adjust2x2ACFromDC(dc_image, 1, &dcoeffs);
+  Image3F pred = GetPixelSpaceImageFrom2x2Corners(dcoeffs);
+  UpSample4x4BlurDCT(pred, 1.5f, -0.0f, false, pool, coeffs);
+}
+
 QuantizedCoeffs ComputeCoefficients(const CompressParams& params,
+                                    const Header& header,
                                     const Image3F& opsin,
                                     const Quantizer& quantizer,
                                     const ColorTransform& ctan,
-                                    const PikInfo* aux_out) {
+                                    ThreadPool* pool, const PikInfo* aux_out) {
   Image3F coeffs = TransposedScaledDCT(opsin);
-  ComputePredictionResiduals(quantizer, params.exp_disable_hf_prediction,
-                             &coeffs);
+
+  if (header.flags & Header::kSmoothDCPred) {
+    ComputePredictionResiduals_Smooth(quantizer, pool, &coeffs);
+  } else {
+    ComputePredictionResiduals(quantizer, pool, &coeffs);
+  }
+
+  PROFILER_ZONE("enc ctan+quant");
   ApplyColorTransform(
       ctan, -1.0f, QuantizeRoundtrip(quantizer, 1, coeffs.plane(1)), &coeffs);
   QuantizedCoeffs qcoeffs;
   qcoeffs.dct = QuantizeCoeffs(coeffs, quantizer);
-  if (aux_out) {
+
+  if (WantDebugOutput(aux_out)) {
     Image3S dct_copy = CopyImage(qcoeffs.dct);
     ZeroDC(&dct_copy);
     aux_out->DumpCoeffImage("coeff_residuals", dct_copy);
@@ -392,7 +671,7 @@ void ComputeBlockContextFromDC(const Image3S& coeffs,
   const int bysize = coeffs.ysize();
   const float iquant_base = quantizer.inv_quant_dc();
   for (int c = 0; c < 3; ++c) {
-    const float iquant = iquant_base * DequantMatrix()[c * 64];
+    const float iquant = iquant_base * quantizer.DequantMatrix()[c * 64];
     const float range = kXybRange[c] / iquant;
     const int kR2Thresh = 10.24f * range * range + 1.0f;
     for (int x = 0; x < bxsize; ++x) {
@@ -423,7 +702,7 @@ void ComputeBlockContextFromDC(const Image3S& coeffs,
         const int dx2 = dx * dx;
         const int dy2 = dy * dy;
         const int dxdy = std::abs(2 * dx * dy);
-        const int r2 = dx2 + dy2;
+        const long long r2 = (long long)(dx2) + dy2;
         const int d2 = dy2 - dx2;
         if (r2 < kR2Thresh) {
           row_out[bx] = c;
@@ -482,6 +761,7 @@ std::string EncodeToBitstream(const QuantizedCoeffs& qcoeffs,
                               const NoiseParams& noise_params,
                               const ColorTransform& ctan, bool fast_mode,
                               PikInfo* info) {
+  PROFILER_FUNC;
   const Image3S& qdct = qcoeffs.dct;
   const size_t x_tilesize =
       DivCeil(qdct.xsize(), kSupertileInBlocks * kBlockSize);
@@ -492,6 +772,7 @@ std::string EncodeToBitstream(const QuantizedCoeffs& qcoeffs,
       EncodeColorMap(ctan.ytox_map, ctan.ytox_dc, ctan_info);
   PikImageSizeInfo* quant_info = info ? &info->layers[kLayerQuant] : nullptr;
   PikImageSizeInfo* dc_info = info ? &info->layers[kLayerDC] : nullptr;
+  PikImageSizeInfo* ac_info = info ? &info->layers[kLayerAC] : nullptr;
   std::string noise_code = EncodeNoise(noise_params);
   std::string quant_code = quantizer.Encode(quant_info);
   std::string dc_code = "";
@@ -513,9 +794,44 @@ std::string EncodeToBitstream(const QuantizedCoeffs& qcoeffs,
       ComputeBlockContextFromDC(qdct_tile.get(), quantizer, &block_ctx_tile);
     }
   }
-  std::string ac_code = fast_mode ? EncodeACFast(qdct, block_ctx, info)
-                                  : EncodeAC(qdct, block_ctx, info);
-  std::string out = ctan_code + noise_code + quant_code + dc_code + ac_code;
+  std::string ac_code = "";
+  std::string order_code = "";
+  std::string histo_code = "";
+  int order[kOrderContexts * 64];
+  std::vector<uint32_t> tokens;
+  std::vector<ANSEncodingData> codes;
+  std::vector<uint8_t> context_map;
+  if (fast_mode) {
+    order_code = EncodeNaturalCoeffOrders(info);
+    context_map = StaticContextMap();
+    tokens = TokenizeCoefficients(qdct, block_ctx, context_map);
+    histo_code = BuildAndEncodeHistogramsFast(context_map, tokens, &codes,
+                                              info);
+  } else {
+    ComputeCoeffOrder(qdct, block_ctx, order);
+    order_code = EncodeCoeffOrders(order, info);
+    ACBlockProcessor processor(&block_ctx, qdct.xsize());
+    processor.SetCoeffOrder(order);
+    histo_code = BuildAndEncodeHistograms(qdct, &processor, &codes,
+                                          &context_map, ac_info);
+  }
+  for (int y = 0; y < y_tilesize; y++) {
+    for (int x = 0; x < x_tilesize; x++) {
+      ConstWrapper<Image3S> qdct_tile = ConstWindow(
+          qdct, x * kSupertileInBlocks * kBlockSize, y * kSupertileInBlocks,
+          kSupertileInBlocks * kBlockSize, kSupertileInBlocks);
+      ConstWrapper<Image3B> block_ctx_tile =
+          ConstWindow(block_ctx, x * kSupertileInBlocks, y * kSupertileInBlocks,
+                      kSupertileInBlocks, kSupertileInBlocks);
+      ac_code += fast_mode ?
+                 EncodeACFast(qdct_tile.get(), block_ctx_tile.get(), codes,
+                              context_map, info) :
+                 EncodeAC(qdct_tile.get(), block_ctx_tile.get(), codes,
+                          context_map, order, info);
+    }
+  }
+  std::string out = ctan_code + noise_code + quant_code + dc_code + order_code +
+                    histo_code + ac_code;
   if (info) {
     info->layers[kLayerHeader].total_size += noise_code.size();
   }
@@ -583,9 +899,35 @@ bool DecodeFromBitstream(const uint8_t* data, const size_t data_size,
       }
     }
   }
-  PROFILER_ZONE("BR decodeAC");
-  if (!DecodeAC(block_ctx, &br, &qcoeffs->dct)) {
-    return PIK_FAILURE("DecodeAC failed.");
+  {
+    PROFILER_ZONE("BR decodeAC");
+    int coeff_order[kOrderContexts * 64];
+    for (int c = 0; c < kOrderContexts; ++c) {
+      DecodeCoeffOrder(&coeff_order[c * 64], &br);
+    }
+    br.JumpToByteBoundary();
+    ANSCode code;
+    std::vector<uint8_t> context_map;
+    if (!DecodeHistograms(&br, ACBlockProcessor::num_contexts(), 256,
+                          kSymbolLut, sizeof(kSymbolLut), &code,
+                          &context_map)) {
+      return PIK_FAILURE("DecodeHistograms failed");
+    }
+    for (int y = 0; y < y_stilesize; y++) {
+      for (int x = 0; x < x_stilesize; x++) {
+        ConstWrapper<Image3B> block_ctx_tile = ConstWindow(
+            block_ctx, x * kSupertileInBlocks, y * kSupertileInBlocks,
+            kSupertileInBlocks, kSupertileInBlocks);
+        Image3S qdct_tile =
+            Window(&qcoeffs->dct, x * kSupertileInBlocks * kBlockSize,
+                   y * kSupertileInBlocks, kSupertileInBlocks * kBlockSize,
+                   kSupertileInBlocks);
+        if (!DecodeAC(block_ctx_tile.get(), code, context_map, coeff_order, &br,
+                      &qdct_tile)) {
+          return PIK_FAILURE("DecodeAC failed.");
+        }
+      }
+    }
   }
   *compressed_size = br.Position();
   return true;
@@ -624,9 +966,31 @@ TFGraphPtr MakeTileFlow(const QuantizedCoeffs& qcoeffs,
       pool);
 }
 
-TFGraphPtr MakeTileFlowIDCT(const Image3F& dcoeffs, const size_t xsize,
-                            const size_t ysize, Image3F* out,
-                            ThreadPool* pool) {
+TFGraphPtr MakeTileFlowDC(const QuantizedCoeffs& qcoeffs,
+                          const Quantizer& quantizer,
+                          const ColorTransform& ctan, Image3F* dcoeffs,
+                          ThreadPool* pool) {
+  PROFILER_FUNC;
+  PIK_CHECK(dcoeffs->xsize() != 0);  // output must already be allocated.
+
+  TFBuilder builder;
+  TFNode* dct = builder.AddSource("src_dct_dc", 3, TFType::kI16, TFWrap::kZero,
+                                  Scale(6, 0));
+  builder.SetSource(dct, &qcoeffs.dct);
+
+  TFNode* dq_xyb = AddDequantizeDC(dct, quantizer, &builder);
+
+  TFNode* ctan_xyb = AddColorTransformDC(ctan, dq_xyb, &builder);
+  builder.SetSink(ctan_xyb, dcoeffs);
+
+  return builder.Finalize(
+      ImageSize::Make(qcoeffs.dct.xsize() / 64, qcoeffs.dct.ysize()),
+      ImageSize{64, 64}, pool);
+}
+
+TFGraphPtr MakeTileFlowIDCT(const Image3F& dcoeffs, bool dc_zero,
+                            const size_t xsize, const size_t ysize,
+                            Image3F* out, ThreadPool* pool) {
   PROFILER_FUNC;
   PIK_CHECK(dcoeffs.xsize() % 64 == 0);
   PIK_CHECK(out->xsize() != 0);  // output must already be allocated.
@@ -636,7 +1000,7 @@ TFGraphPtr MakeTileFlowIDCT(const Image3F& dcoeffs, const size_t xsize,
                                   Scale(3, -3));
   builder.SetSource(dct, &dcoeffs);
 
-  TFNode* opsin = AddTransposedScaledIDCT(dct, &builder);
+  TFNode* opsin = AddTransposedScaledIDCT(dct, dc_zero, &builder);
 
   // Note: integrating Gaborish here is difficult - IDCT cannot easily produce
   // more border data (only in 8x8 units) and not crossing tile boundaries
@@ -647,38 +1011,72 @@ TFGraphPtr MakeTileFlowIDCT(const Image3F& dcoeffs, const size_t xsize,
                           pool);
 }
 
-Image3F ReconOpsinImage(const QuantizedCoeffs& qcoeffs,
+void AddPredictions_Smooth(const Image3F& dcoeffs_dc,
+                           ThreadPool* pool,
+                           Image3F* PIK_RESTRICT dcoeffs,
+                           Image3F* PIK_RESTRICT idct,
+                           PikInfo* pik_info) {
+  PROFILER_FUNC;
+
+  const Image3F pixel_delta = BlurUpsampleDC(dcoeffs_dc, pool);
+
+  if (WantDebugOutput(pik_info)) {
+    Image3B dc_pred_srgb(pixel_delta.xsize(), pixel_delta.ysize());
+    const bool dither = true;
+    CenteredOpsinToSrgb(pixel_delta, dither, pool, &dc_pred_srgb);
+    pik_info->DumpImage("dc_pred", dc_pred_srgb);
+  }
+
+  const bool dc_zero = true;
+  TFGraphPtr tile_flow_idct = MakeTileFlowIDCT(*dcoeffs, dc_zero, idct->xsize(),
+                                               idct->ysize(), idct, pool);
+  tile_flow_idct->Run();
+
+  AddTo(pixel_delta, idct);
+}
+
+void AddPredictions(const Image3F& dcoeffs_dc,
+                    ThreadPool* pool,
+                    Image3F* PIK_RESTRICT dcoeffs,
+                    Image3F* PIK_RESTRICT idct, PikInfo* pik_info) {
+  Adjust2x2ACFromDC(dcoeffs_dc, 1, dcoeffs);
+  FillDC(dcoeffs_dc, dcoeffs);
+  Image3F pred = GetPixelSpaceImageFrom2x2Corners(*dcoeffs);
+  UpSample4x4BlurDCT(pred, 1.5f, 0.0f, false, pool, dcoeffs);
+  *idct = TransposedScaledIDCT(*dcoeffs);
+}
+
+Image3F ReconOpsinImage(const Header& header,
+                        const QuantizedCoeffs& qcoeffs,
                         const Quantizer& quantizer, const ColorTransform& ctan,
-                        int flags, ThreadPool* pool) {
+                        ThreadPool* pool, PikInfo* pik_info) {
   PROFILER_ZONE("recon");
   const size_t dct_xsize = qcoeffs.dct.xsize();
   const size_t dct_ysize = qcoeffs.dct.ysize();
+
+  Image3F dcoeffs_dc(dct_xsize / 64, dct_ysize);
+  auto tile_flow_dc =
+      MakeTileFlowDC(qcoeffs, quantizer, ctan, &dcoeffs_dc, pool);
+  tile_flow_dc->Run();
 
   Image3F dcoeffs(dct_xsize, dct_ysize);
   auto tile_flow = MakeTileFlow(qcoeffs, quantizer, ctan, &dcoeffs, pool);
   tile_flow->Run();
 
-  // from DC, no "cross block" because all DC finished already
-  {
-    PROFILER_ZONE("Add2x2ACFromDC");
-    Add2x2ACFromDC(DCImage(dcoeffs), &dcoeffs);
-  }
-
-  // TODO: cross-block dependencies (border)
-  if (!(flags & kReconDisableHFPrediction)) {
-    PROFILER_ZONE("|| upsampleDCT");
-    Image3F pred = GetPixelSpaceImageFrom2x2Corners(dcoeffs);
-    UpSample4x4BlurDCT(pred, UpsampleFactor(), +0.0f, /*add_all=*/false, pool,
-                       &dcoeffs);
-  }
-
   const size_t out_xsize = dct_xsize / 8;
   const size_t out_ysize = dct_ysize * 8;
   Image3F idct(out_xsize, out_ysize);
-  TFGraphPtr tile_flow_idct =
-      MakeTileFlowIDCT(dcoeffs, out_xsize, out_ysize, &idct, pool);
 
-  tile_flow_idct->Run();
+  // Does IDCT already internally to save work.
+  if (header.flags & Header::kSmoothDCPred) {
+    AddPredictions_Smooth(dcoeffs_dc, pool, &dcoeffs, &idct, pik_info);
+  } else {
+    AddPredictions(dcoeffs_dc, pool, &dcoeffs, &idct, pik_info);
+  }
+
+  if (header.flags & Header::kGaborishTransform) {
+    idct = ConvolveGaborish(idct, pool);
+  }
   return idct;
 }
 

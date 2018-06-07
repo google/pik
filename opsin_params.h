@@ -55,7 +55,7 @@ static const float kInvScaleR = 1.0f / kScaleR;
 static const float kInvScaleG = 1.0f / kScaleG;
 
 // kXybCenter[3] is used by opsin_inverse.cc.
-SIMD_ALIGN static constexpr float kXybCenter[4] = {
+static constexpr float kXybCenter[4] = {
     0.0090238451957702637f, 0.53151017427444458f, 0.57673406600952148f, 257.0f};
 
 // This is the radius of the range, not the diameter.

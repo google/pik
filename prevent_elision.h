@@ -16,7 +16,7 @@ inline void PreventElision(T&& output) {
   // RTL constraints). Self-assignment with #pragma optimize("off") might be
   // expected to prevent elision, but it does not with MSVC 2015. Type-punning
   // with volatile pointers generates inefficient code on MSVC 2017.
-  static std::atomic<T> dummy;
+  static std::atomic<T> dummy(T{});
   dummy.store(output, std::memory_order_relaxed);
 #endif
 }
