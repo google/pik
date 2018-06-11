@@ -42,6 +42,7 @@
 #include "dct_util.h"
 #include "fast_log.h"
 #include "guetzli/jpeg_data.h"
+#include "guetzli/jpeg_data_decoder.h"
 #include "guetzli/jpeg_data_encoder.h"
 #include "guetzli/jpeg_data_reader.h"
 #include "guetzli/jpeg_data_writer.h"
@@ -49,7 +50,6 @@
 #include "guetzli/processor.h"
 #include "header.h"
 #include "image_io.h"
-#include "jpeg_data_decoder.h"
 #include "noise.h"
 #include "opsin_codec.h"
 #include "opsin_image.h"
@@ -218,9 +218,9 @@ void FindBestQuantization(const Image3F& opsin_orig,
   ButteraugliComparator comparator(opsin_orig, cparams.hf_asymmetry);
   const float butteraugli_target_dc =
       std::min<float>(butteraugli_target,
-                      pow(butteraugli_target, 0.74519026534314259));
-  const float kInitialQuantDC = (0.93865229808098116 ) / butteraugli_target_dc;
-  const float kQuantAC = (1.175733631024483 ) / butteraugli_target;
+                      pow(butteraugli_target, 0.74500252220422669));
+  const float kInitialQuantDC = (0.93831260858660503 ) / butteraugli_target_dc;
+  const float kQuantAC = (1.176060090135594 ) / butteraugli_target;
   ImageF quant_field =
       ScaleImage(kQuantAC,
                  AdaptiveQuantizationMap(opsin_orig.plane(1), 8));
@@ -291,10 +291,10 @@ void FindBestQuantization(const Image3F& opsin_orig,
       }
     }
     static const double kPow[7] = {
-        1.0036861826562358,
-        1.0056998697519905,
-        0.74617073038693837,
-        0.82769059771562947,
+        0.99905005931122937,
+        1.0027778288237166,
+        0.74286297793691547,
+        0.85172198919496955,
         0.0,
         0.0,
         0.0,
@@ -752,7 +752,7 @@ bool BrunsliToPixels(const PaddedBytes& compressed, size_t pos, Image3B* srgb) {
       compressed.size() - pos, &jpg)) {
     return PIK_FAILURE("Brunsli v2 decoding error");
   }
-  std::vector<uint8_t> rgb = DecodeJpegToRGB(jpg, /* thumbnail = */ false);
+  std::vector<uint8_t> rgb = DecodeJpegToRGB(jpg);
   if (rgb.empty()) {
     return PIK_FAILURE("JPEG decoding error.");
   }

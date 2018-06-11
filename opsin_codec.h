@@ -242,10 +242,10 @@ void ProcessImage3(const Image3<T>& img,
                    Processor* processor,
                    Visitor* visitor) {
   processor->Reset();
-  for (int y = 0; y < img.ysize(); ++y) {
-    auto row = img.Row(y);
-    for (int x = 0; x < img.xsize(); x += processor->block_size()) {
-      for (int c = 0; c < 3; ++c) {
+  for (int c = 0; c < 3; ++c) {
+    for (int y = 0; y < img.ysize(); ++y) {
+      auto row = img.Row(y);
+      for (int x = 0; x < img.xsize(); x += processor->block_size()) {
         processor->ProcessBlock(&row[c][x], x, y, c, visitor);
       }
     }
@@ -478,6 +478,13 @@ std::string EncodeImageData(const Image3S& img,
 void PredictDCTile(const Image3S& coeffs, Image3S* out);
 void UnpredictDCTile(Image3S* coeffs);
 
+Image3I ExtractNumNZeroes(const Image3S& coeffs);
+std::string BuildAndStoreNumNonzeroHistograms(
+    const Image3I& img, const Image3B& block_ctx,
+    std::vector<ANSEncodingData>* codes,
+    std::vector<uint8_t>* context_map,
+    PikImageSizeInfo* info);
+
 void ComputeCoeffOrder(const Image3S& img, const Image3B& block_ctx,
                        int* order);
 
@@ -488,6 +495,8 @@ std::string EncodeImage(const Image3S& img, int stride,
                         PikImageSizeInfo* info);
 
 std::string EncodeAC(const Image3S& coeffs, const Image3B& block_ctx,
+                     const std::vector<ANSEncodingData>& nzero_codes,
+                     const std::vector<uint8_t>& nzero_context_map,
                      const std::vector<ANSEncodingData>& codes,
                      const std::vector<uint8_t>& context_map, const int* order,
                      PikInfo* pik_info);
@@ -503,10 +512,10 @@ std::string BuildAndEncodeHistogramsFast(
     std::vector<ANSEncodingData>* codes,
     PikInfo* pik_info);
 
-std::string EncodeACFast(const Image3S& coeffs, const Image3B& block_ctx,
-                         PikInfo* pik_info);
 std::string EncodeACFast(const Image3S& coeffs,
                          const Image3B& block_ctx,
+                         const std::vector<ANSEncodingData>& nzero_codes,
+                         const std::vector<uint8_t>& nzero_context_map,
                          const std::vector<ANSEncodingData>& codes,
                          const std::vector<uint8_t>& context_map,
                          PikInfo* pik_info);
@@ -520,8 +529,12 @@ bool DecodeHistograms(BitReader* br, const size_t num_contexts,
 
 bool DecodeImage(BitReader* br, int stride, Image3S* coeffs);
 
-bool DecodeAC(const Image3B& block_ctx, const ANSCode& code,
-              const std::vector<uint8_t>& context_map, const int* coeff_order,
+bool DecodeAC(const Image3B& block_ctx,
+              const ANSCode& nzero_code,
+              const std::vector<uint8_t>& nzero_context_map,
+              const ANSCode& code,
+              const std::vector<uint8_t>& context_map,
+              const int* coeff_order,
               BitReader* br, Image3S* coeffs);
 
 struct EncodedIntPlane {

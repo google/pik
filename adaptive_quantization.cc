@@ -35,14 +35,14 @@ ImageF DiffPrecompute(const ImageF& xyb, float cutoff) {
   PIK_ASSERT(xyb.xsize() > 1);
   PIK_ASSERT(xyb.ysize() > 1);
   ImageF result(xyb.xsize(), xyb.ysize());
-  static const double mul0 = 0.94212356307208356;
+  static const double mul0 = 0.94212002218319468;
 
   // PIK's gamma is 3.0 to be able to decode faster with two muls.
   // Butteraugli's gamma is matching the gamma of human eye, around 2.6.
   // The difference is compensated by multiplying with cube root, and
   // match_gamma_offset1 and match_gamma_offset2 are related tuning parameters.
-  static const double match_gamma_offset1 = 0.033624298781580172;
-  static const double match_gamma_offset2 = -0.15934608406618475;
+  static const double match_gamma_offset1 = 0.036692339629739369;
+  static const double match_gamma_offset2 = -0.15909611651471209;
   for (size_t y = 0; y + 1 < xyb.ysize(); ++y) {
     const float* const PIK_RESTRICT row_in = xyb.Row(y);
     const float* const PIK_RESTRICT row_in2 = xyb.Row(y + 1);
@@ -103,11 +103,11 @@ ImageF Expand(const ImageF& img, size_t out_xsize, size_t out_ysize) {
 }
 
 ImageF ComputeMask(const ImageF& diffs) {
-  static const float kBase = 0.39937917285783603;
-  static const float kMul1 = 0.0066894964664284537;
-  static const float kOffset1 = 0.007738949543181094;
+  static const float kBase = 0.39828271374672491;
+  static const float kMul1 = 0.0066930373553173422;
+  static const float kOffset1 = 0.0077354086542922055;
   static const float kMul2 = -9.1421822896833158e-05;
-  static const float kOffset2 = 0.082229004239615142;
+  static const float kOffset2 = 0.086606272588244507;
   ImageF out(diffs.xsize(), diffs.ysize());
   for (int y = 0; y < diffs.ysize(); ++y) {
     const float* const PIK_RESTRICT row_in = diffs.Row(y);
@@ -160,10 +160,10 @@ ImageF AdaptiveQuantizationMap(const ImageF& img, size_t resolution) {
   if (img.ysize() <= 1) {
     return ImageF(out_xsize, 1, 1.0f);
   }
-  static const float kSigma = 5.9183203763195085;
+  static const float kSigma = 5.9171400094749522;
   static const int kRadius = static_cast<int>(2 * kSigma + 0.5f);
   std::vector<float> kernel = GaussianKernel(kRadius, kSigma);
-  static const float kDiffCutoff = 0.153548916857423;
+  static const float kDiffCutoff = 0.153846359269245;
   ImageF out = DiffPrecompute(img, kDiffCutoff);
   out = Expand(out, resolution * out_xsize, resolution * out_ysize);
   out = ConvolveAndSample(out, kernel, kSampleRate);

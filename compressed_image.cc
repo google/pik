@@ -815,6 +815,11 @@ std::string EncodeToBitstream(const QuantizedCoeffs& qcoeffs,
     histo_code = BuildAndEncodeHistograms(qdct, &processor, &codes,
                                           &context_map, ac_info);
   }
+  std::vector<ANSEncodingData> nzero_codes;
+  std::vector<uint8_t> nzero_context_map;
+  std::string num_nzeroes_histo = BuildAndStoreNumNonzeroHistograms(
+      ExtractNumNZeroes(qdct), block_ctx, &nzero_codes, &nzero_context_map,
+      ac_info);
   for (int y = 0; y < y_tilesize; y++) {
     for (int x = 0; x < x_tilesize; x++) {
       ConstWrapper<Image3S> qdct_tile = ConstWindow(
@@ -824,14 +829,16 @@ std::string EncodeToBitstream(const QuantizedCoeffs& qcoeffs,
           ConstWindow(block_ctx, x * kSupertileInBlocks, y * kSupertileInBlocks,
                       kSupertileInBlocks, kSupertileInBlocks);
       ac_code += fast_mode ?
-                 EncodeACFast(qdct_tile.get(), block_ctx_tile.get(), codes,
-                              context_map, info) :
-                 EncodeAC(qdct_tile.get(), block_ctx_tile.get(), codes,
-                          context_map, order, info);
+                 EncodeACFast(qdct_tile.get(), block_ctx_tile.get(),
+                              nzero_codes, nzero_context_map,
+                              codes, context_map, info) :
+                 EncodeAC(qdct_tile.get(), block_ctx_tile.get(),
+                          nzero_codes, nzero_context_map,
+                          codes, context_map, order, info);
     }
   }
   std::string out = ctan_code + noise_code + quant_code + dc_code + order_code +
-                    histo_code + ac_code;
+                    histo_code + num_nzeroes_histo + ac_code;
   if (info) {
     info->layers[kLayerHeader].total_size += noise_code.size();
   }
@@ -908,11 +915,20 @@ bool DecodeFromBitstream(const uint8_t* data, const size_t data_size,
     br.JumpToByteBoundary();
     ANSCode code;
     std::vector<uint8_t> context_map;
+    // Histogram data size is small and does not require parallelization.
     if (!DecodeHistograms(&br, ACBlockProcessor::num_contexts(), 256,
                           kSymbolLut, sizeof(kSymbolLut), &code,
                           &context_map)) {
       return PIK_FAILURE("DecodeHistograms failed");
     }
+    br.JumpToByteBoundary();
+    std::vector<uint8_t> nzero_context_map;
+    ANSCode nzero_ans_code;
+    if (!DecodeHistograms(&br, kOrderContexts * 32, 64, nullptr, 0,
+                          &nzero_ans_code, &nzero_context_map)) {
+      return PIK_FAILURE("DecodeHistograms failed");
+    }
+    br.JumpToByteBoundary();
     for (int y = 0; y < y_stilesize; y++) {
       for (int x = 0; x < x_stilesize; x++) {
         ConstWrapper<Image3B> block_ctx_tile = ConstWindow(
@@ -922,7 +938,8 @@ bool DecodeFromBitstream(const uint8_t* data, const size_t data_size,
             Window(&qcoeffs->dct, x * kSupertileInBlocks * kBlockSize,
                    y * kSupertileInBlocks, kSupertileInBlocks * kBlockSize,
                    kSupertileInBlocks);
-        if (!DecodeAC(block_ctx_tile.get(), code, context_map, coeff_order, &br,
+        if (!DecodeAC(block_ctx_tile.get(), nzero_ans_code, nzero_context_map,
+                      code, context_map, coeff_order, &br,
                       &qdct_tile)) {
           return PIK_FAILURE("DecodeAC failed.");
         }

@@ -25,15 +25,15 @@ static constexpr float kScale = 255.0;
 
 // NOTE: inverse of this cannot be constant because we tune these values.
 static const float kOpsinAbsorbanceMatrix[9] = {
-  static_cast<float>(( 0.3523376466161795 ) / kScale),
-  static_cast<float>(( 0.6067972574251409 ) / kScale),
-  static_cast<float>(( 0.049151209535235267 ) / kScale),
-  static_cast<float>(( 0.26592386506834575 ) / kScale),
-  static_cast<float>(( 0.67140860580051065 ) / kScale),
-  static_cast<float>(( 0.061225872443361362 ) / kScale),
-  static_cast<float>(( 0.22812868140840609 ) / kScale),
-  static_cast<float>(( 0.17338855722136276 ) / kScale),
-  static_cast<float>(( 0.7418055948399257 ) / kScale),
+  static_cast<float>(( 0.35234118750506838 ) / kScale),
+  static_cast<float>(( 0.60679459831402982 ) / kScale),
+  static_cast<float>(( 0.049149439090790822 ) / kScale),
+  static_cast<float>(( 0.26592763785090434 ) / kScale),
+  static_cast<float>(( 0.67145306491162171 ) / kScale),
+  static_cast<float>(( 0.059568235515668762 ) / kScale),
+  static_cast<float>(( 0.22812514051951721 ) / kScale),
+  static_cast<float>(( 0.17339209811025164 ) / kScale),
+  static_cast<float>(( 0.74180913572881457 ) / kScale),
 };
 
 // Returns 3x3 row-major matrix inverse of kOpsinAbsorbanceMatrix.
@@ -41,33 +41,35 @@ static const float kOpsinAbsorbanceMatrix[9] = {
 const float* GetOpsinAbsorbanceInverseMatrix();
 
 static const float kOpsinAbsorbanceBias[3] = {
-  static_cast<float>(( 0.070410956432969879 ) / kScale),
-  static_cast<float>(( 0.050981882587652023 ) / kScale),
-  static_cast<float>(( 0.31617904901529575 ) / kScale),
+  static_cast<float>(( 0.070170335767859776 ) / kScale),
+  static_cast<float>(( 0.050655423476540916 ) / kScale),
+  static_cast<float>(( 0.31820877994104918 ) / kScale),
 };
 SIMD_ALIGN static const float kNegOpsinAbsorbanceBiasRGB[4] = {
     -kOpsinAbsorbanceBias[0], -kOpsinAbsorbanceBias[1],
     -kOpsinAbsorbanceBias[2], 255.0f};
 
-static const float kScaleR = 1.0017364448897901;
+static const float kScaleR = 1.0017389218858195;
 static const float kScaleG = 2.0f - kScaleR;
 static const float kInvScaleR = 1.0f / kScaleR;
 static const float kInvScaleG = 1.0f / kScaleG;
 
 // kXybCenter[3] is used by opsin_inverse.cc.
 static constexpr float kXybCenter[4] = {
-    0.0090238451957702637f, 0.53151017427444458f, 0.57673406600952148f, 257.0f};
+  0.0091904997825622559f, 0.5313260555267334f, 0.5768505334854126f, 257.0f};
 
 // This is the radius of the range, not the diameter.
 static constexpr float kXybRange[3] = {
-    0.023776501417160034f, 0.46970874071121216f, 0.46930274367332458f};
+  0.023611396551132202f, 0.46962425112724304f, 0.46918979287147522f};
+
 static constexpr float kXybMin[3] = {
-    kXybCenter[0] - kXybRange[0], kXybCenter[1] - kXybRange[1],
-    kXybCenter[2] - kXybRange[2],
+  kXybCenter[0] - kXybRange[0], kXybCenter[1] - kXybRange[1],
+  kXybCenter[2] - kXybRange[2],
 };
+
 static constexpr float kXybMax[3] = {
-    kXybCenter[0] + kXybRange[0], kXybCenter[1] + kXybRange[1],
-    kXybCenter[2] + kXybRange[2],
+  kXybCenter[0] + kXybRange[0], kXybCenter[1] + kXybRange[1],
+  kXybCenter[2] + kXybRange[2],
 };
 
 }  // namespace pik

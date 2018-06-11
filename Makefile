@@ -60,7 +60,6 @@ PIK_OBJS := $(addprefix obj/, \
 	histogram_decode.o \
 	histogram_encode.o \
 	image_io.o \
-	jpeg_data_decoder.o \
 	jpeg_quant_tables.o \
 	lehmer_code.o \
 	noise.o \

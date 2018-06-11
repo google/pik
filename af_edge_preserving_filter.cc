@@ -868,9 +868,13 @@ void Filter(const Guide& guide, const Image& in, const WeightFunc& weight_func,
 }
 
 int Sigma(const float weight_mul, const int ac_quant) {
+  // Avoid division by zero and skip smoothing of the block
+  if (ac_quant == 0) return 0;
+
   // ac_quant is larger in blocks with more detail => less smoothing there.
-  const int sigma = weight_mul / ac_quant;
+  const int sigma = ac_quant == 0 ? 0 : weight_mul / ac_quant;
   // const int sigma = weight_mul / sqrtf(ac_quant);
+
   // No need to clamp to kMinSigma, we skip blocks with very low sigma.
   return std::min(sigma, epf::kMaxSigma);
 }

@@ -172,7 +172,7 @@ V MinCostPredict(const V* const PIK_RESTRICT dc, size_t x, size_t y,
                    dc, x, y, xsize, neg_col_stride, neg_row_stride);
 }
 
-static int Quantize(const int dc, const int quant_step) {
+static inline int Quantize(const int dc, const int quant_step) {
   // TODO(janwas): division via table of magic multipliers+fixups
   const int trunc = dc / quant_step;
   const int mod = dc - (trunc * quant_step);
