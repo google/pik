@@ -62,7 +62,7 @@ namespace butteraugli {
 void *CacheAligned::Allocate(const size_t bytes) {
   PROFILER_FUNC;
   char *const allocated = static_cast<char *>(malloc(bytes + kCacheLineSize));
-  if (allocated == nullptr) {
+  if (allocated == nullptr || bytes==0) {
     return nullptr;
   }
   const uintptr_t misalignment =
