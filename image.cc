@@ -51,13 +51,13 @@ ImageB ImageFromPacked(const uint8_t* packed, const size_t xsize,
 Image3B Float255ToByteImage3(const Image3F& from) {
   Image3B to(from.xsize(), from.ysize());
   PROFILER_FUNC;
-  for (size_t y = 0; y < from.ysize(); ++y) {
-    const auto from_rows = from.ConstRow(y);
-    auto to_rows = to.Row(y);
-    for (int c = 0; c < 3; c++) {
+  for (int c = 0; c < 3; c++) {
+    for (size_t y = 0; y < from.ysize(); ++y) {
+      const float* PIK_RESTRICT row_from = from.ConstPlaneRow(c, y);
+      uint8_t* PIK_RESTRICT row_to = to.PlaneRow(c, y);
       for (size_t x = 0; x < from.xsize(); ++x) {
-        float f = std::min(std::max(0.0f, from_rows[c][x]), 255.0f);
-        to_rows[c][x] = static_cast<uint8_t>(f + 0.5);
+        float f = std::min(std::max(0.0f, row_from[x]), 255.0f);
+        row_to[x] = static_cast<uint8_t>(f + 0.5);
       }
     }
   }
@@ -70,7 +70,7 @@ float Average(const ImageF& img) {
   const size_t ysize = img.ysize();
   double sum = 0.0f;
   for (size_t y = 0; y < ysize; ++y) {
-    auto row = img.Row(y);
+    const float* PIK_RESTRICT row = img.ConstRow(y);
     for (size_t x = 0; x < xsize; ++x) {
       sum += row[x];
     }
@@ -81,8 +81,8 @@ float Average(const ImageF& img) {
 float DotProduct(const ImageF& a, const ImageF& b) {
   double sum = 0.0;
   for (int y = 0; y < a.ysize(); ++y) {
-    const float* const PIK_RESTRICT row_a = a.Row(y);
-    const float* const PIK_RESTRICT row_b = b.Row(y);
+    const float* const PIK_RESTRICT row_a = a.ConstRow(y);
+    const float* const PIK_RESTRICT row_b = b.ConstRow(y);
     for (int x = 0; x < a.xsize(); ++x) {
       sum += row_a[x] * row_b[x];
     }

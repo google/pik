@@ -67,11 +67,15 @@ Image3F OpsinDynamicsImage(const Image3B& srgb) {
   const size_t ysize = srgb.ysize();
   Image3F opsin(xsize, ysize);
   for (size_t iy = 0; iy < ysize; iy++) {
-    const auto row_in = srgb.ConstRow(iy);
-    auto row_out = opsin.Row(iy);
+    const uint8_t* PIK_RESTRICT row_srgb0 = srgb.ConstPlaneRow(0, iy);
+    const uint8_t* PIK_RESTRICT row_srgb1 = srgb.ConstPlaneRow(1, iy);
+    const uint8_t* PIK_RESTRICT row_srgb2 = srgb.ConstPlaneRow(2, iy);
+    float* PIK_RESTRICT row_xyb0 = opsin.PlaneRow(0, iy);
+    float* PIK_RESTRICT row_xyb1 = opsin.PlaneRow(1, iy);
+    float* PIK_RESTRICT row_xyb2 = opsin.PlaneRow(2, iy);
     for (size_t ix = 0; ix < xsize; ix++) {
-      RgbToXyb(row_in[0][ix], row_in[1][ix], row_in[2][ix], &row_out[0][ix],
-               &row_out[1][ix], &row_out[2][ix]);
+      RgbToXyb(row_srgb0[ix], row_srgb1[ix], row_srgb2[ix], &row_xyb0[ix],
+               &row_xyb1[ix], &row_xyb2[ix]);
     }
   }
   return opsin;
@@ -85,11 +89,15 @@ Image3F OpsinDynamicsImage(const Image3F& linear) {
   const size_t ysize = linear.ysize();
   Image3F opsin(xsize, ysize);
   for (size_t iy = 0; iy < ysize; iy++) {
-    const auto row_in = linear.ConstRow(iy);
-    auto row_out = opsin.Row(iy);
+    const float* PIK_RESTRICT row_in0 = linear.ConstPlaneRow(0, iy);
+    const float* PIK_RESTRICT row_in1 = linear.ConstPlaneRow(1, iy);
+    const float* PIK_RESTRICT row_in2 = linear.ConstPlaneRow(2, iy);
+    float* PIK_RESTRICT row_xyb0 = opsin.PlaneRow(0, iy);
+    float* PIK_RESTRICT row_xyb1 = opsin.PlaneRow(1, iy);
+    float* PIK_RESTRICT row_xyb2 = opsin.PlaneRow(2, iy);
     for (size_t ix = 0; ix < xsize; ix++) {
-      const float rgb[3] = {row_in[0][ix], row_in[1][ix], row_in[2][ix]};
-      LinearToXyb(rgb, &row_out[0][ix], &row_out[1][ix], &row_out[2][ix]);
+      const float rgb[3] = {row_in0[ix], row_in1[ix], row_in2[ix]};
+      LinearToXyb(rgb, &row_xyb0[ix], &row_xyb1[ix], &row_xyb2[ix]);
     }
   }
   return opsin;

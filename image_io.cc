@@ -244,7 +244,8 @@ class Y4MReader {
     *yuv = Image3B(xsize_, ysize_);
     for (int c = 0; c < 3; ++c) {
       for (int y = 0; y < ysize_; ++y) {
-        const size_t bytes_read = fread(yuv->Row(y)[c], 1, xsize_, f_);
+        uint8_t* PIK_RESTRICT row_yuv = yuv->PlaneRow(c, y);
+        const size_t bytes_read = fread(row_yuv, 1, xsize_, f_);
         if (bytes_read != xsize_) {
           return PIK_FAILURE("Unexpected end of file");
         }
@@ -358,9 +359,9 @@ bool WriteImage(ImageFormatY4M format, const Image3B& image3,
   PIK_CHECK(ret > 0);
 
   for (int c = 0; c < 3; ++c) {
-    for (int y = 0; y < image3.ysize(); ++y) {
-      const size_t bytes_written =
-          fwrite(image3.Row(y)[c], 1, image3.xsize(), f);
+    for (size_t y = 0; y < image3.ysize(); ++y) {
+      const uint8_t* PIK_RESTRICT row = image3.ConstPlaneRow(c, y);
+      const size_t bytes_written = fwrite(row, 1, image3.xsize(), f);
       PIK_CHECK(bytes_written == image3.xsize());
     }
   }
@@ -512,15 +513,15 @@ bool ReadPNGImage(const std::string& pathname, const int bias,
   const size_t stride = bit_depth / 8;
 
   for (size_t y = 0; y < ysize; ++y) {
-    const uint8_t* const PIK_RESTRICT interleaved_row = interleaved_rows[y];
-    auto row = image->Row(y);
+    const uint8_t* const PIK_RESTRICT row_rgb = interleaved_rows[y];
+    T* PIK_RESTRICT row = image->Row(y);
     if (stride == 1) {
       for (size_t x = 0; x < xsize; ++x) {
-        row[x] = ReadFromU8<T>(&interleaved_row[x], bias);
+        row[x] = ReadFromU8<T>(&row_rgb[x], bias);
       }
     } else {
       for (size_t x = 0; x < xsize; ++x) {
-        row[x] = ReadFromU16<T>(&interleaved_row[stride * x], bias);
+        row[x] = ReadFromU16<T>(&row_rgb[stride * x], bias);
       }
     }
   }
@@ -551,115 +552,113 @@ bool ReadPNGMetaImage(const std::string& pathname, const int bias,
   // Expand gray -> RGB
   if (num_planes == 1) {
     for (size_t y = 0; y < ysize; ++y) {
-      const uint8_t* const PIK_RESTRICT interleaved_row = interleaved_rows[y];
-      auto rows = image->GetColor().Row(y);
+      const uint8_t* const PIK_RESTRICT row_rgb = interleaved_rows[y];
+      T* PIK_RESTRICT row0 = image->GetColor().PlaneRow(0, y);
+      T* PIK_RESTRICT row1 = image->GetColor().PlaneRow(1, y);
+      T* PIK_RESTRICT row2 = image->GetColor().PlaneRow(2, y);
       if (stride == 1) {
         for (size_t x = 0; x < xsize; ++x) {
-          rows[0][x] = rows[1][x] = rows[2][x] =
-              ReadFromU8<T>(&interleaved_row[x], bias);
+          row0[x] = row1[x] = row2[x] = ReadFromU8<T>(&row_rgb[x], bias);
         }
       } else {
         for (size_t x = 0; x < xsize; ++x) {
-          rows[0][x] = rows[1][x] = rows[2][x] =
-              ReadFromU16<T>(&interleaved_row[stride * x], bias);
+          row0[x] = row1[x] = row2[x] =
+              ReadFromU16<T>(&row_rgb[stride * x], bias);
         }
       }
     }
   } else if (num_planes == 2) {
     uint16_t alpha_masked = 65535;
     for (size_t y = 0; y < ysize; ++y) {
-      const uint8_t* const PIK_RESTRICT interleaved_row = interleaved_rows[y];
-      auto rows = image->GetColor().Row(y);
+      const uint8_t* PIK_RESTRICT row_rgb = interleaved_rows[y];
+      T* PIK_RESTRICT row0 = image->GetColor().PlaneRow(0, y);
+      T* PIK_RESTRICT row1 = image->GetColor().PlaneRow(1, y);
+      T* PIK_RESTRICT row2 = image->GetColor().PlaneRow(2, y);
       if (stride == 1) {
         for (size_t x = 0; x < xsize; ++x) {
-          rows[0][x] = rows[1][x] = rows[2][x] =
-              ReadFromU8<T>(&interleaved_row[2 * x + 0], bias);
-          alpha_masked &= interleaved_row[2 * x + 1];
+          row0[x] = row1[x] = row2[x] =
+              ReadFromU8<T>(&row_rgb[2 * x + 0], bias);
+          alpha_masked &= row_rgb[2 * x + 1];
         }
       } else {
         for (size_t x = 0; x < xsize; ++x) {
-          rows[0][x] = rows[1][x] = rows[2][x] =
-              ReadFromU16<T>(&interleaved_row[stride * (2 * x + 0)], bias);
-          alpha_masked &= interleaved_row[2 * x + 1];
+          row0[x] = row1[x] = row2[x] =
+              ReadFromU16<T>(&row_rgb[stride * (2 * x + 0)], bias);
+          alpha_masked &= row_rgb[2 * x + 1];
         }
       }
     }
     if (alpha_masked != (stride == 1 ? 255 : 65535)) {
       image->AddAlpha(stride * 8);
       for (size_t y = 0; y < ysize; ++y) {
-        const uint8_t* const PIK_RESTRICT interleaved_row = interleaved_rows[y];
-        uint16_t* const PIK_RESTRICT rows = image->GetAlpha().Row(y);
+        const uint8_t* PIK_RESTRICT row_rgb = interleaved_rows[y];
+        uint16_t* PIK_RESTRICT row = image->GetAlpha().Row(y);
         if (stride == 1) {
           for (size_t x = 0; x < xsize; ++x) {
-            rows[x] = interleaved_row[2 * x + 1];
+            row[x] = row_rgb[2 * x + 1];
           }
         } else {
           for (size_t x = 0; x < xsize; ++x) {
-            rows[x] = ReadFromU16<uint16_t>(
-                &interleaved_row[stride * (2 * x + 1)], 0);
+            row[x] = ReadFromU16<uint16_t>(&row_rgb[stride * (2 * x + 1)], 0);
           }
         }
       }
     }
   } else if (num_planes == 3) {
     for (size_t y = 0; y < ysize; ++y) {
-      const uint8_t* const PIK_RESTRICT interleaved_row = interleaved_rows[y];
-      auto rows = image->GetColor().Row(y);
+      const uint8_t* PIK_RESTRICT row_rgb = interleaved_rows[y];
+      T* PIK_RESTRICT row0 = image->GetColor().PlaneRow(0, y);
+      T* PIK_RESTRICT row1 = image->GetColor().PlaneRow(1, y);
+      T* PIK_RESTRICT row2 = image->GetColor().PlaneRow(2, y);
       if (stride == 1) {
         for (size_t x = 0; x < xsize; ++x) {
-          rows[0][x] = ReadFromU8<T>(&interleaved_row[3 * x + 0], bias);
-          rows[1][x] = ReadFromU8<T>(&interleaved_row[3 * x + 1], bias);
-          rows[2][x] = ReadFromU8<T>(&interleaved_row[3 * x + 2], bias);
+          row0[x] = ReadFromU8<T>(&row_rgb[3 * x + 0], bias);
+          row1[x] = ReadFromU8<T>(&row_rgb[3 * x + 1], bias);
+          row2[x] = ReadFromU8<T>(&row_rgb[3 * x + 2], bias);
         }
       } else {
         for (size_t x = 0; x < xsize; ++x) {
-          rows[0][x] =
-              ReadFromU16<T>(&interleaved_row[stride * (3 * x + 0)], bias);
-          rows[1][x] =
-              ReadFromU16<T>(&interleaved_row[stride * (3 * x + 1)], bias);
-          rows[2][x] =
-              ReadFromU16<T>(&interleaved_row[stride * (3 * x + 2)], bias);
+          row0[x] = ReadFromU16<T>(&row_rgb[stride * (3 * x + 0)], bias);
+          row1[x] = ReadFromU16<T>(&row_rgb[stride * (3 * x + 1)], bias);
+          row2[x] = ReadFromU16<T>(&row_rgb[stride * (3 * x + 2)], bias);
         }
       }
     }
   } else /* if (num_planes == 4) */ {
     uint16_t alpha_masked = 65535;
     for (size_t y = 0; y < ysize; ++y) {
-      const uint8_t* const PIK_RESTRICT interleaved_row = interleaved_rows[y];
-      auto rows = image->GetColor().Row(y);
+      const uint8_t* PIK_RESTRICT row_rgb = interleaved_rows[y];
+      T* PIK_RESTRICT row0 = image->GetColor().PlaneRow(0, y);
+      T* PIK_RESTRICT row1 = image->GetColor().PlaneRow(1, y);
+      T* PIK_RESTRICT row2 = image->GetColor().PlaneRow(2, y);
       if (stride == 1) {
         for (size_t x = 0; x < xsize; ++x) {
-          rows[0][x] = ReadFromU8<T>(&interleaved_row[4 * x + 0], bias);
-          rows[1][x] = ReadFromU8<T>(&interleaved_row[4 * x + 1], bias);
-          rows[2][x] = ReadFromU8<T>(&interleaved_row[4 * x + 2], bias);
-          alpha_masked &= interleaved_row[4 * x + 3];
+          row0[x] = ReadFromU8<T>(&row_rgb[4 * x + 0], bias);
+          row1[x] = ReadFromU8<T>(&row_rgb[4 * x + 1], bias);
+          row2[x] = ReadFromU8<T>(&row_rgb[4 * x + 2], bias);
+          alpha_masked &= row_rgb[4 * x + 3];
         }
       } else {
         for (size_t x = 0; x < xsize; ++x) {
-          rows[0][x] =
-              ReadFromU16<T>(&interleaved_row[stride * (4 * x + 0)], bias);
-          rows[1][x] =
-              ReadFromU16<T>(&interleaved_row[stride * (4 * x + 1)], bias);
-          rows[2][x] =
-              ReadFromU16<T>(&interleaved_row[stride * (4 * x + 2)], bias);
-          alpha_masked &=
-              ReadFromU16<T>(&interleaved_row[stride * (4 * x + 3)], bias);
+          row0[x] = ReadFromU16<T>(&row_rgb[stride * (4 * x + 0)], bias);
+          row1[x] = ReadFromU16<T>(&row_rgb[stride * (4 * x + 1)], bias);
+          row2[x] = ReadFromU16<T>(&row_rgb[stride * (4 * x + 2)], bias);
+          alpha_masked &= ReadFromU16<T>(&row_rgb[stride * (4 * x + 3)], bias);
         }
       }
     }
     if (alpha_masked != (stride == 1 ? 255 : 65535)) {
       image->AddAlpha(stride * 8);
       for (size_t y = 0; y < ysize; ++y) {
-        const uint8_t* const PIK_RESTRICT interleaved_row = interleaved_rows[y];
-        uint16_t* const PIK_RESTRICT rows = image->GetAlpha().Row(y);
+        const uint8_t* PIK_RESTRICT row_rgb = interleaved_rows[y];
+        uint16_t* PIK_RESTRICT row = image->GetAlpha().Row(y);
         if (stride == 1) {
           for (size_t x = 0; x < xsize; ++x) {
-            rows[x] = interleaved_row[4 * x + 3];
+            row[x] = row_rgb[4 * x + 3];
           }
         } else {
           for (size_t x = 0; x < xsize; ++x) {
-            rows[x] = ReadFromU16<uint16_t>(
-                &interleaved_row[stride * (4 * x + 3)], 0);
+            row[x] = ReadFromU16<uint16_t>(&row_rgb[stride * (4 * x + 3)], 0);
           }
         }
       }
@@ -781,41 +780,45 @@ class PngWriter {
 
   PIK_INLINE void WriteRow(const ImageB& image, const size_t y) {
     // PNG is not const-correct and hopefully won't actually modify row.
-    uint8_t* const PIK_RESTRICT row = const_cast<uint8_t*>(image.Row(y));
+    uint8_t* PIK_RESTRICT row = const_cast<uint8_t*>(image.Row(y));
     png_write_row(png_, row);
   }
 
   PIK_INLINE void WriteRow(const Image3B& image, const size_t y) {
-    const auto rows = image.ConstRow(y);
+    const uint8_t* PIK_RESTRICT row0 = image.ConstPlaneRow(0, y);
+    const uint8_t* PIK_RESTRICT row1 = image.ConstPlaneRow(1, y);
+    const uint8_t* PIK_RESTRICT row2 = image.ConstPlaneRow(2, y);
     for (size_t x = 0; x < xsize_; ++x) {
-      row_buffer_[3 * x + 0] = rows[0][x];
-      row_buffer_[3 * x + 1] = rows[1][x];
-      row_buffer_[3 * x + 2] = rows[2][x];
+      row_buffer_[3 * x + 0] = row0[x];
+      row_buffer_[3 * x + 1] = row1[x];
+      row_buffer_[3 * x + 2] = row2[x];
     }
     png_write_row(png_, row_buffer_.data());
   }
 
   PIK_INLINE void WriteRow(const MetaImageB& image, const size_t y) {
-    const auto rows = image.GetColor().ConstRow(y);
+    const uint8_t* PIK_RESTRICT row0 = image.GetColor().ConstPlaneRow(0, y);
+    const uint8_t* PIK_RESTRICT row1 = image.GetColor().ConstPlaneRow(1, y);
+    const uint8_t* PIK_RESTRICT row2 = image.GetColor().ConstPlaneRow(2, y);
     if (color_type_ == PNG_COLOR_TYPE_RGBA) {
       for (size_t x = 0; x < xsize_; ++x) {
-        row_buffer_[4 * x + 0] = rows[0][x];
-        row_buffer_[4 * x + 1] = rows[1][x];
-        row_buffer_[4 * x + 2] = rows[2][x];
+        row_buffer_[4 * x + 0] = row0[x];
+        row_buffer_[4 * x + 1] = row1[x];
+        row_buffer_[4 * x + 2] = row2[x];
         row_buffer_[4 * x + 3] = image.GetAlpha().Row(y)[x] & 255;
       }
     } else {
       for (size_t x = 0; x < xsize_; ++x) {
-        row_buffer_[3 * x + 0] = rows[0][x];
-        row_buffer_[3 * x + 1] = rows[1][x];
-        row_buffer_[3 * x + 2] = rows[2][x];
+        row_buffer_[3 * x + 0] = row0[x];
+        row_buffer_[3 * x + 1] = row1[x];
+        row_buffer_[3 * x + 2] = row2[x];
       }
     }
     png_write_row(png_, row_buffer_.data());
   }
 
   void WriteRow(const ImageS& image, const size_t y) {
-    const auto row = image.ConstRow(y);
+    const int16_t* PIK_RESTRICT row = image.ConstRow(y);
     uint8_t* PIK_RESTRICT bytes = row_buffer_.data();
     for (size_t x = 0; x < xsize_; ++x) {
       StoreUnsignedBigEndian(row[x], bytes + 2 * x);
@@ -824,39 +827,43 @@ class PngWriter {
   }
 
   void WriteRow(const Image3S& image, const size_t y) {
-    const auto row = image.ConstRow(y);
+    const int16_t* PIK_RESTRICT row0 = image.ConstPlaneRow(0, y);
+    const int16_t* PIK_RESTRICT row1 = image.ConstPlaneRow(1, y);
+    const int16_t* PIK_RESTRICT row2 = image.ConstPlaneRow(2, y);
     uint8_t* PIK_RESTRICT bytes = row_buffer_.data();
     for (size_t x = 0; x < xsize_; ++x) {
-      StoreUnsignedBigEndian(row[0][x], bytes + 6 * x + 0);
-      StoreUnsignedBigEndian(row[1][x], bytes + 6 * x + 2);
-      StoreUnsignedBigEndian(row[2][x], bytes + 6 * x + 4);
+      StoreUnsignedBigEndian(row0[x], bytes + 6 * x + 0);
+      StoreUnsignedBigEndian(row1[x], bytes + 6 * x + 2);
+      StoreUnsignedBigEndian(row2[x], bytes + 6 * x + 4);
     }
     png_write_row(png_, row_buffer_.data());
   }
 
   void WriteRow(const MetaImageS& image, const size_t y) {
-    const auto row = image.GetColor().ConstRow(y);
+    const int16_t* PIK_RESTRICT row0 = image.GetColor().ConstPlaneRow(0, y);
+    const int16_t* PIK_RESTRICT row1 = image.GetColor().ConstPlaneRow(1, y);
+    const int16_t* PIK_RESTRICT row2 = image.GetColor().ConstPlaneRow(2, y);
     uint8_t* PIK_RESTRICT bytes = row_buffer_.data();
     if (color_type_ == PNG_COLOR_TYPE_RGBA) {
       for (size_t x = 0; x < xsize_; ++x) {
-        StoreUnsignedBigEndian(row[0][x], bytes + 8 * x + 0);
-        StoreUnsignedBigEndian(row[1][x], bytes + 8 * x + 2);
-        StoreUnsignedBigEndian(row[2][x], bytes + 8 * x + 4);
+        StoreUnsignedBigEndian(row0[x], bytes + 8 * x + 0);
+        StoreUnsignedBigEndian(row1[x], bytes + 8 * x + 2);
+        StoreUnsignedBigEndian(row2[x], bytes + 8 * x + 4);
         StoreUnsignedBigEndian(image.GetAlpha().Row(y)[x],
                                bytes + 8 * x + 6);
       }
     } else {
       for (size_t x = 0; x < xsize_; ++x) {
-        StoreUnsignedBigEndian(row[0][x], bytes + 6 * x + 0);
-        StoreUnsignedBigEndian(row[1][x], bytes + 6 * x + 2);
-        StoreUnsignedBigEndian(row[2][x], bytes + 6 * x + 4);
+        StoreUnsignedBigEndian(row0[x], bytes + 6 * x + 0);
+        StoreUnsignedBigEndian(row1[x], bytes + 6 * x + 2);
+        StoreUnsignedBigEndian(row2[x], bytes + 6 * x + 4);
       }
     }
     png_write_row(png_, row_buffer_.data());
   }
 
   void WriteRow(const ImageU& image, const size_t y) {
-    const auto row = image.ConstRow(y);
+    const uint16_t* PIK_RESTRICT row = image.ConstRow(y);
     uint8_t* PIK_RESTRICT bytes = row_buffer_.data();
     for (size_t x = 0; x < xsize_; ++x) {
       StoreUnsignedBigEndian(row[x], bytes + 2 * x);
@@ -865,24 +872,28 @@ class PngWriter {
   }
 
   void WriteRow(const Image3U& image, const size_t y) {
-    const auto row = image.ConstRow(y);
+    const uint16_t* PIK_RESTRICT row0 = image.ConstPlaneRow(0, y);
+    const uint16_t* PIK_RESTRICT row1 = image.ConstPlaneRow(1, y);
+    const uint16_t* PIK_RESTRICT row2 = image.ConstPlaneRow(2, y);
     uint8_t* PIK_RESTRICT bytes = row_buffer_.data();
     for (size_t x = 0; x < xsize_; ++x) {
-      StoreUnsignedBigEndian(row[0][x], bytes + 6 * x + 0);
-      StoreUnsignedBigEndian(row[1][x], bytes + 6 * x + 2);
-      StoreUnsignedBigEndian(row[2][x], bytes + 6 * x + 4);
+      StoreUnsignedBigEndian(row0[x], bytes + 6 * x + 0);
+      StoreUnsignedBigEndian(row1[x], bytes + 6 * x + 2);
+      StoreUnsignedBigEndian(row2[x], bytes + 6 * x + 4);
     }
     png_write_row(png_, row_buffer_.data());
   }
 
   void WriteRow(const MetaImageU& image, const size_t y) {
-    const auto row = image.GetColor().ConstRow(y);
+    const uint16_t* PIK_RESTRICT row0 = image.GetColor().ConstPlaneRow(0, y);
+    const uint16_t* PIK_RESTRICT row1 = image.GetColor().ConstPlaneRow(1, y);
+    const uint16_t* PIK_RESTRICT row2 = image.GetColor().ConstPlaneRow(2, y);
     const int stride = color_type_ == PNG_COLOR_TYPE_RGBA ? 8 : 6;
     uint8_t* PIK_RESTRICT bytes = row_buffer_.data();
     for (size_t x = 0; x < xsize_; ++x) {
-      StoreUnsignedBigEndian(row[0][x], bytes + stride * x + 0);
-      StoreUnsignedBigEndian(row[1][x], bytes + stride * x + 2);
-      StoreUnsignedBigEndian(row[2][x], bytes + stride * x + 4);
+      StoreUnsignedBigEndian(row0[x], bytes + stride * x + 0);
+      StoreUnsignedBigEndian(row1[x], bytes + stride * x + 2);
+      StoreUnsignedBigEndian(row2[x], bytes + stride * x + 4);
       if (color_type_ == PNG_COLOR_TYPE_RGBA) {
         StoreUnsignedBigEndian(
             image.GetAlpha().Row(y)[x], bytes + stride * x + 6);
@@ -1072,12 +1083,14 @@ bool ReadJpegImage(const JpegInput& input, Image3B* rgb) {
       }
 
       for (int y = 0; y < ysize; ++y) {
-        const uint8_t* const PIK_RESTRICT row = &imagep[y * row_stride];
-        auto rows = rgb->Row(y);
+        const uint8_t* PIK_RESTRICT row = &imagep[y * row_stride];
+        uint8_t* PIK_RESTRICT row0 = rgb->PlaneRow(0, y);
+        uint8_t* PIK_RESTRICT row1 = rgb->PlaneRow(1, y);
+        uint8_t* PIK_RESTRICT row2 = rgb->PlaneRow(2, y);
 
         for (int x = 0; x < xsize; x++) {
           const uint8_t gray = row[x];
-          rows[0][x] = rows[1][x] = rows[2][x] = gray;
+          row0[x] = row1[x] = row2[x] = gray;
         }
       }
       break;
@@ -1088,13 +1101,15 @@ bool ReadJpegImage(const JpegInput& input, Image3B* rgb) {
         output_line += row_stride;
       }
 
-      for (int y = 0; y < ysize; ++y) {
-        const uint8_t* const PIK_RESTRICT row = &imagep[y * row_stride];
-        auto rows = rgb->Row(y);
-        for (int x = 0; x < xsize; x++) {
-          rows[0][x] = row[3 * x + 0];
-          rows[1][x] = row[3 * x + 1];
-          rows[2][x] = row[3 * x + 2];
+      for (size_t y = 0; y < ysize; ++y) {
+        const uint8_t* PIK_RESTRICT row = &imagep[y * row_stride];
+        uint8_t* PIK_RESTRICT row0 = rgb->PlaneRow(0, y);
+        uint8_t* PIK_RESTRICT row1 = rgb->PlaneRow(1, y);
+        uint8_t* PIK_RESTRICT row2 = rgb->PlaneRow(2, y);
+        for (size_t x = 0; x < xsize; x++) {
+          row0[x] = row[3 * x + 0];
+          row1[x] = row[3 * x + 1];
+          row2[x] = row[3 * x + 2];
         }
       }
       break;
@@ -1493,15 +1508,15 @@ class LinearLoader {
   template <class Format>
   void ConvertToLinearRGB(Format, const Image3U& srgb) {
     linear_rgb_->SetColor(Image3F(srgb.xsize(), srgb.ysize()));
-    for (size_t y = 0; y < srgb.ysize(); ++y) {
-      auto row_rgb = srgb.Row(y);
-      auto row_lin = linear_rgb_->GetColor().Row(y);
-      for (size_t x = 0; x < srgb.xsize(); ++x) {
-        for (int c = 0; c < 3; ++c) {
+    for (int c = 0; c < 3; ++c) {
+      for (size_t y = 0; y < srgb.ysize(); ++y) {
+        const uint16_t* PIK_RESTRICT row_rgb = srgb.PlaneRow(c, y);
+        float* PIK_RESTRICT row_lin = linear_rgb_->GetColor().PlaneRow(c, y);
+        for (size_t x = 0; x < srgb.xsize(); ++x) {
           // Dividing the 16 value by 257 scales it to the [0.0, 255.0]
           // interval. If the PNG was 8-bit, this has the same effect as
           // casting the original 8-bit value to a float.
-          row_lin[c][x] = Srgb8ToLinearDirect(row_rgb[c][x] / 257.0f);
+          row_lin[x] = Srgb8ToLinearDirect(row_rgb[x] / 257.0f);
         }
       }
     }
@@ -1518,13 +1533,13 @@ class LinearLoader {
   template <class Format>
   void ConvertToLinearRGB(Format, const Image3S& srgb) {
     linear_rgb_->SetColor(Image3F(srgb.xsize(), srgb.ysize()));
-    for (size_t y = 0; y < srgb.ysize(); ++y) {
-      auto row_rgb = srgb.Row(y);
-      auto row_lin = linear_rgb_->GetColor().Row(y);
-      for (size_t x = 0; x < srgb.xsize(); ++x) {
-        for (int c = 0; c < 3; ++c) {
-          const int unsigned_value = row_rgb[c][x] + 0x8000;  // [0, 0x10000)
-          row_lin[c][x] = Srgb8ToLinearDirect(unsigned_value / 257.0);
+    for (int c = 0; c < 3; ++c) {
+      for (size_t y = 0; y < srgb.ysize(); ++y) {
+        const int16_t* PIK_RESTRICT row_rgb = srgb.PlaneRow(c, y);
+        float* PIK_RESTRICT row_lin = linear_rgb_->GetColor().PlaneRow(c, y);
+        for (size_t x = 0; x < srgb.xsize(); ++x) {
+          const int unsigned_value = row_rgb[x] + 0x8000;  // [0, 0x10000)
+          row_lin[x] = Srgb8ToLinearDirect(unsigned_value / 257.0);
         }
       }
     }

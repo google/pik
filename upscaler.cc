@@ -145,10 +145,12 @@ void SelectiveBlur(Image3F& image, float sigma, float select) {
   float ramp = 0.8f;
   float onePerSelect = ramp / select;
   float onePerSelect2 = ramp / select2;
-  for (int y = 0; y < image.ysize(); ++y) {
-    for (int x = 0; x < image.xsize(); ++x) {
-      for (int c = 0; c < 3; ++c) {
-        float dist = fabs(copy.Row(y)[c][x] - image.Row(y)[c][x]);
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < image.ysize(); ++y) {
+      const float* PIK_RESTRICT row_copy = copy.ConstPlaneRow(c, y);
+      float* PIK_RESTRICT row = image.PlaneRow(c, y);
+      for (size_t x = 0; x < image.xsize(); ++x) {
+        float dist = fabs(row_copy[x] - row[x]);
         float w = 0.0f;
         if ((x & 7) == 0 || (x & 7) == 7 || (y & 7) == 0 || (y & 7) == 7) {
           if (dist < select2) {
@@ -159,8 +161,7 @@ void SelectiveBlur(Image3F& image, float sigma, float select) {
           w = ramp - dist * onePerSelect;
           if (w > 1.0f) w = 1.0f;
         }
-        image.Row(y)[c][x] =
-            w * copy.Row(y)[c][x] + (1.0 - w) * image.Row(y)[c][x];
+        row[x] = w * row_copy[x] + (1.0 - w) * row[x];
       }
     }
   }
@@ -170,9 +171,9 @@ void SelectiveBlur8x8(Image3F& image, Image3F& ac, float sigma,
                       float select_mod) {
   Image3F copy = Blur(image, sigma);
   float ramp = 1.0f;
-  for (int wy = 0; wy < image.ysize(); wy += 8) {
-    for (int wx = 0; wx < image.xsize(); wx += 8) {
-      for (int c = 0; c < 3; ++c) {
+  for (int c = 0; c < 3; ++c) {
+    for (size_t wy = 0; wy < image.ysize(); wy += 8) {
+      for (size_t wx = 0; wx < image.xsize(); wx += 8) {
         // Find maxdiff
         double max = 0;
         for (int dy = 0; dy < 6; ++dy) {
@@ -185,13 +186,15 @@ void SelectiveBlur8x8(Image3F& image, Image3F& ac, float sigma,
             // Look at the criss-cross of diffs between two pixels.
             // Scale the smoothing within the block of the amplitude
             // of such local change.
-            float dist = fabs(ac.Row(y)[c][x] - ac.Row(y)[c][x + 2]);
+            const float* PIK_RESTRICT row_ac0 = ac.PlaneRow(c, y);
+            const float* PIK_RESTRICT row_ac2 = ac.PlaneRow(c, y + 2);
+            float dist = fabs(row_ac0[x] - row_ac0[x + 2]);
             if (max < dist) max = dist;
-            dist = fabs(ac.Row(y)[c][x] - ac.Row(y + 2)[c][x]);
+            dist = fabs(row_ac0[x] - row_ac2[x]);
             if (max < dist) max = dist;
-            dist = fabs(ac.Row(y)[c][x] - ac.Row(y + 2)[c][x + 2]);
+            dist = fabs(row_ac0[x] - row_ac2[x + 2]);
             if (max < dist) max = dist;
-            dist = fabs(ac.Row(y)[c][x + 2] - ac.Row(y + 2)[c][x]);
+            dist = fabs(row_ac0[x + 2] - row_ac2[x]);
             if (max < dist) max = dist;
           }
         }
@@ -208,7 +211,9 @@ void SelectiveBlur8x8(Image3F& image, Image3F& ac, float sigma,
             if (y >= image.ysize() || x >= image.xsize()) {
               break;
             }
-            float dist = fabs(copy.Row(y)[c][x] - image.Row(y)[c][x]);
+            const float* PIK_RESTRICT row_copy = copy.PlaneRow(c, y);
+            float* PIK_RESTRICT row = image.PlaneRow(c, y);
+            float dist = fabs(row_copy[x] - row[x]);
             float w = 0.0f;
             if ((x & 7) == 0 || (x & 7) == 7 || (y & 7) == 0 || (y & 7) == 7) {
               if (dist < select2) {
@@ -219,8 +224,7 @@ void SelectiveBlur8x8(Image3F& image, Image3F& ac, float sigma,
               w = ramp - dist * onePerSelect;
               if (w > 1.0f) w = 1.0f;
             }
-            image.Row(y)[c][x] =
-                w * copy.Row(y)[c][x] + (1.0 - w) * image.Row(y)[c][x];
+            row[x] = w * row_copy[x] + (1.0 - w) * row[x];
           }
         }
       }
@@ -228,32 +232,32 @@ void SelectiveBlur8x8(Image3F& image, Image3F& ac, float sigma,
   }
 }
 Image3F SubSampleSimple8x8(const Image3F& image) {
-  const int nxs = (image.xsize() + 7) >> 3;
-  const int nys = (image.ysize() + 7) >> 3;
+  const size_t nxs = (image.xsize() + 7) >> 3;
+  const size_t nys = (image.ysize() + 7) >> 3;
   Image3F retval(nxs, nys, 0.0f);
   float mul = 1 / 64.0;
-  for (int y = 0; y < image.ysize(); ++y) {
-    for (int x = 0; x < image.xsize(); ++x) {
-      for (int c = 0; c < 3; ++c) {
-        int ny = y >> 3;
-        int nx = x >> 3;
-        retval.Row(ny)[c][nx] += mul * image.Row(y)[c][x];
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < image.ysize(); ++y) {
+      const float* PIK_RESTRICT row_in = image.PlaneRow(c, y);
+      float* PIK_RESTRICT row_out = retval.PlaneRow(c, y >> 3);
+      for (size_t x = 0; x < image.xsize(); ++x) {
+        row_out[x >> 3] += mul * row_in[x];
       }
     }
   }
   if ((image.xsize() & 7) != 0) {
     const float last_column_mul = 8.0 / (image.xsize() & 7);
-    for (int y = 0; y < nys; ++y) {
       for (int c = 0; c < 3; ++c) {
-        retval.Row(y)[c][nxs - 1] *= last_column_mul;
-      }
+        for (size_t y = 0; y < nys; ++y) {
+          retval.PlaneRow(c, y)[nxs - 1] *= last_column_mul;
+        }
     }
   }
   if ((image.ysize() & 7) != 0) {
     const float last_row_mul = 8.0 / (image.ysize() & 7);
-    for (int x = 0; x < nxs; ++x) {
-      for (int c = 0; c < 3; ++c) {
-        retval.Row(nys - 1)[c][x] *= last_row_mul;
+    for (int c = 0; c < 3; ++c) {
+      for (size_t x = 0; x < nxs; ++x) {
+        retval.PlaneRow(c, nys - 1)[x] *= last_row_mul;
       }
     }
   }
@@ -261,32 +265,33 @@ Image3F SubSampleSimple8x8(const Image3F& image) {
 }
 
 Image3F SubSampleSimple4x4(const Image3F& image) {
-  const int nxs = (image.xsize() + 3) >> 2;
-  const int nys = (image.ysize() + 3) >> 2;
+  const size_t nxs = (image.xsize() + 3) >> 2;
+  const size_t nys = (image.ysize() + 3) >> 2;
   Image3F retval(nxs, nys, 0.0f);
   float mul = 1 / 16.0;
-  for (int y = 0; y < image.ysize(); ++y) {
-    for (int x = 0; x < image.xsize(); ++x) {
-      for (int c = 0; c < 3; ++c) {
-        int ny = y >> 2;
-        int nx = x >> 2;
-        retval.Row(ny)[c][nx] += mul * image.Row(y)[c][x];
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < image.ysize(); ++y) {
+      const float* PIK_RESTRICT row_in = image.PlaneRow(c, y);
+      float* PIK_RESTRICT row_out = retval.PlaneRow(c, y >> 2);
+
+      for (size_t x = 0; x < image.xsize(); ++x) {
+        row_out[x >> 2] += mul * row_in[x];
       }
     }
   }
   if ((image.xsize() & 3) != 0) {
     const float last_column_mul = 4.0 / (image.xsize() & 3);
-    for (int y = 0; y < nys; ++y) {
-      for (int c = 0; c < 3; ++c) {
-        retval.Row(y)[c][nxs - 1] *= last_column_mul;
+    for (int c = 0; c < 3; ++c) {
+      for (size_t y = 0; y < nys; ++y) {
+        retval.PlaneRow(c, y)[nxs - 1] *= last_column_mul;
       }
     }
   }
   if ((image.ysize() & 3) != 0) {
     const float last_row_mul = 4.0 / (image.ysize() & 3);
-    for (int x = 0; x < nxs; ++x) {
-      for (int c = 0; c < 3; ++c) {
-        retval.Row(nys - 1)[c][x] *= last_row_mul;
+    for (int c = 0; c < 3; ++c) {
+      for (size_t x = 0; x < nxs; ++x) {
+        retval.PlaneRow(c, nys - 1)[x] *= last_row_mul;
       }
     }
   }
@@ -294,15 +299,16 @@ Image3F SubSampleSimple4x4(const Image3F& image) {
 }
 
 Image3F SuperSample2x2(const Image3F& image) {
-  int nxs = image.xsize() << 1;
-  int nys = image.ysize() << 1;
+  size_t nxs = image.xsize() << 1;
+  size_t nys = image.ysize() << 1;
   Image3F retval(nxs, nys);
-  for (int ny = 0; ny < nys; ++ny) {
-    int y = ny >> 1;
-    for (int nx = 0; nx < nxs; ++nx) {
-      int x = nx >> 1;
-      for (int c = 0; c < 3; ++c) {
-        retval.Row(ny)[c][nx] = image.Row(y)[c][x];
+  for (int c = 0; c < 3; ++c) {
+    for (size_t ny = 0; ny < nys; ++ny) {
+      const float* PIK_RESTRICT row_in = image.PlaneRow(c, ny >> 1);
+      float* PIK_RESTRICT row_out = retval.PlaneRow(c, ny);
+
+      for (size_t nx = 0; nx < nxs; ++nx) {
+        row_out[nx] = row_in[nx >> 1];
       }
     }
   }
@@ -310,30 +316,32 @@ Image3F SuperSample2x2(const Image3F& image) {
 }
 
 Image3F SuperSample4x4(const Image3F& image) {
-  int nxs = image.xsize() << 2;
-  int nys = image.ysize() << 2;
+  size_t nxs = image.xsize() << 2;
+  size_t nys = image.ysize() << 2;
   Image3F retval(nxs, nys);
-  for (int ny = 0; ny < nys; ++ny) {
-    int y = ny >> 2;
-    for (int nx = 0; nx < nxs; ++nx) {
-      int x = nx >> 2;
-      for (int c = 0; c < 3; ++c) {
-        retval.Row(ny)[c][nx] = image.Row(y)[c][x];
+  for (int c = 0; c < 3; ++c) {
+    for (size_t ny = 0; ny < nys; ++ny) {
+      const float* PIK_RESTRICT row_in = image.PlaneRow(c, ny >> 2);
+      float* PIK_RESTRICT row_out = retval.PlaneRow(c, ny);
+
+      for (size_t nx = 0; nx < nxs; ++nx) {
+        row_out[nx] = row_in[nx >> 2];
       }
     }
   }
   return retval;
 }
 Image3F SuperSample8x8(const Image3F& image) {
-  int nxs = image.xsize() << 3;
-  int nys = image.ysize() << 3;
+  size_t nxs = image.xsize() << 3;
+  size_t nys = image.ysize() << 3;
   Image3F retval(nxs, nys);
-  for (int ny = 0; ny < nys; ++ny) {
-    int y = ny >> 3;
-    for (int nx = 0; nx < nxs; ++nx) {
-      int x = nx >> 3;
-      for (int c = 0; c < 3; ++c) {
-        retval.Row(ny)[c][nx] = image.Row(y)[c][x];
+  for (int c = 0; c < 3; ++c) {
+    for (size_t ny = 0; ny < nys; ++ny) {
+      const float* PIK_RESTRICT row_in = image.PlaneRow(c, ny >> 3);
+      float* PIK_RESTRICT row_out = retval.PlaneRow(c, ny);
+
+      for (size_t nx = 0; nx < nxs; ++nx) {
+        row_out[nx] = row_in[nx >> 3];
       }
     }
   }
@@ -347,70 +355,79 @@ void Smooth4x4Corners(Image3F& ima) {
     for (int x = 3; x + 3 < ima.xsize(); x += 4) {
       float ave[3] = {0};
       for (int c = 0; c < 3; ++c) {
-        ave[c] += ima.Row(y)[c][x];
-        ave[c] += ima.Row(y)[c][x + 1];
-        ave[c] += ima.Row(y + 1)[c][x];
-        ave[c] += ima.Row(y + 1)[c][x + 1];
+        ave[c] += ima.PlaneRow(c, y)[x];
+        ave[c] += ima.PlaneRow(c, y)[x + 1];
+        ave[c] += ima.PlaneRow(c, y + 1)[x];
+        ave[c] += ima.PlaneRow(c, y + 1)[x + 1];
       }
       const int off = 2;
       for (int c = 0; c < 3; ++c) {
-        float others = (ave[c] - overshoot * ima.Row(y)[c][x]) * m;
-        ima.Row(y - off)[c][x - off] -= (others - ima.Row(y)[c][x]);
-        ima.Row(y)[c][x] = others;
+        float others = (ave[c] - overshoot * ima.PlaneRow(c, y)[x]) * m;
+        ima.PlaneRow(c, y - off)[x - off] -= (others - ima.PlaneRow(c, y)[x]);
+        ima.PlaneRow(c, y)[x] = others;
       }
       for (int c = 0; c < 3; ++c) {
-        float others = (ave[c] - overshoot * ima.Row(y)[c][x + 1]) * m;
-        ima.Row(y - off)[c][x + off + 1] -= (others - ima.Row(y)[c][x + 1]);
-        ima.Row(y)[c][x + 1] = others;
+        float others = (ave[c] - overshoot * ima.PlaneRow(c, y)[x + 1]) * m;
+        ima.PlaneRow(c, y - off)[x + off + 1] -=
+            (others - ima.PlaneRow(c, y)[x + 1]);
+        ima.PlaneRow(c, y)[x + 1] = others;
       }
       for (int c = 0; c < 3; ++c) {
-        float others = (ave[c] - overshoot * ima.Row(y + 1)[c][x]) * m;
-        ima.Row(y + off + 1)[c][x - off] -= (others - ima.Row(y + 1)[c][x]);
-        ima.Row(y + 1)[c][x] = others;
+        float others = (ave[c] - overshoot * ima.PlaneRow(c, y + 1)[x]) * m;
+        ima.PlaneRow(c, y + off + 1)[x - off] -=
+            (others - ima.PlaneRow(c, y + 1)[x]);
+        ima.PlaneRow(c, y + 1)[x] = others;
       }
       for (int c = 0; c < 3; ++c) {
-        float others = (ave[c] - overshoot * ima.Row(y + 1)[c][x + 1]) * m;
-        ima.Row(y + off + 1)[c][x + off + 1] -=
-            (others - ima.Row(y + 1)[c][x + 1]);
-        ima.Row(y + 1)[c][x + 1] = others;
+        float others = (ave[c] - overshoot * ima.PlaneRow(c, y + 1)[x + 1]) * m;
+        ima.PlaneRow(c, y + off + 1)[x + off + 1] -=
+            (others - ima.PlaneRow(c, y + 1)[x + 1]);
+        ima.PlaneRow(c, y + 1)[x + 1] = others;
       }
     }
   }
 }
 
 void Subtract(Image3F& a, const Image3F& b) {
-  for (int y = 0; y < a.ysize(); ++y) {
-    for (int x = 0; x < a.xsize(); ++x) {
-      for (int c = 0; c < 3; ++c) {
-        a.Row(y)[c][x] -= b.Row(y)[c][x];
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < a.ysize(); ++y) {
+      const float* PIK_RESTRICT row_b = b.PlaneRow(c, y);
+      float* PIK_RESTRICT row_a = a.PlaneRow(c, y);
+      for (size_t x = 0; x < a.xsize(); ++x) {
+        row_a[x] -= row_b[x];
       }
     }
   }
 }
 
 void Add(Image3F& a, const Image3F& b) {
-  for (int y = 0; y < a.ysize(); ++y) {
-    for (int x = 0; x < a.xsize(); ++x) {
-      for (int c = 0; c < 3; ++c) {
-        a.Row(y)[c][x] += b.Row(y)[c][x];
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < a.ysize(); ++y) {
+      const float* PIK_RESTRICT row_b = b.PlaneRow(c, y);
+      float* PIK_RESTRICT row_a = a.PlaneRow(c, y);
+      for (size_t x = 0; x < a.xsize(); ++x) {
+        row_a[x] += row_b[x];
       }
     }
   }
 }
 
+// Clamps pixel values to 0, 255.
 Image3F Crop(const Image3F& image, int newxsize, int newysize) {
   Image3F retval(newxsize, newysize);
-  for (int y = 0; y < newysize; ++y) {
-    for (int x = 0; x < newxsize; ++x) {
-      for (int c = 0; c < 3; ++c) {
-        double v = image.Row(y)[c][x];
+  for (int c = 0; c < 3; ++c) {
+    for (int y = 0; y < newysize; ++y) {
+      const float* PIK_RESTRICT row_in = image.PlaneRow(c, y);
+      float* PIK_RESTRICT row_out = retval.PlaneRow(c, y);
+      for (int x = 0; x < newxsize; ++x) {
+        float v = row_in[x];
         if (v < 0) {
           v = 0;
         }
         if (v > 255) {
           v = 255;
         }
-        retval.Row(y)[c][x] = v;
+        row_out[x] = v;
       }
     }
   }
@@ -419,11 +436,12 @@ Image3F Crop(const Image3F& image, int newxsize, int newysize) {
 
 Image3F ToLinear(const Image3F& image) {
   Image3F out(image.xsize(), image.ysize());
-  for (int y = 0; y < image.ysize(); ++y) {
-    for (int x = 0; x < image.xsize(); ++x) {
-      for (int c = 0; c < 3; ++c) {
-        float val = image.Row(y)[c][x];
-        out.Row(y)[c][x] = Srgb8ToLinearDirect(val);
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < image.ysize(); ++y) {
+      const float* PIK_RESTRICT row_in = image.PlaneRow(c, y);
+      float* PIK_RESTRICT row_out = out.PlaneRow(c, y);
+      for (size_t x = 0; x < image.xsize(); ++x) {
+        row_out[x] = Srgb8ToLinearDirect(row_in[x]);
       }
     }
   }
@@ -438,10 +456,13 @@ Image3F EncodePseudoDC(const Image3F& in) {
     if (ii != 0) {
       Image3F normal = UpscalerReconstruct(image8x8sub);
       // adjust the image by diff of normal and image.
-      for (int y = 0; y < in.ysize(); ++y) {
-        for (int x = 0; x < in.xsize(); ++x) {
-          for (int c = 0; c < 3; ++c) {
-            goal.Row(y)[c][x] -= 0.1 * (normal.Row(y)[c][x] - in.Row(y)[c][x]);
+      for (int c = 0; c < 3; ++c) {
+        for (size_t y = 0; y < in.ysize(); ++y) {
+          const float* PIK_RESTRICT row_normal = normal.PlaneRow(c, y);
+          const float* PIK_RESTRICT row_in = in.PlaneRow(c, y);
+          float* PIK_RESTRICT row_goal = goal.PlaneRow(c, y);
+          for (size_t x = 0; x < in.xsize(); ++x) {
+            row_goal[x] -= 0.1 * (row_normal[x] - row_in[x]);
           }
         }
       }

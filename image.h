@@ -88,8 +88,7 @@ static inline size_t BytesPerRow(const size_t valid_bytes) {
 // operation on multiple adjacent components) without the complexity of a
 // hybrid layout (8 R, 8 G, 8 B, ...). In particular, clients can easily iterate
 // over all components in a row and Image requires no knowledge of the pixel
-// format beyond the component type "T". The downside is that we duplicate the
-// xsize/ysize members for each channel.
+// format beyond the component type "T".
 //
 // This image layout could also be achieved with a vector and a row accessor
 // function, but a class wrapper with support for "deleter" allows wrapping
@@ -144,6 +143,9 @@ class Image {
     }
   }
 
+  // Wraps existing memory. This can avoid copying from other image types, but
+  // usage should be minimized because this risks dangling references
+  // (especially if someone moves a wrapper).
   Image(const size_t xsize, const size_t ysize,
         uint8_t* const PIK_RESTRICT bytes, const size_t bytes_per_row)
       : xsize_(xsize),
@@ -164,6 +166,11 @@ class Image {
     PIK_ASSERT(bytes_per_row >= xsize * sizeof(T));
     PIK_CHECK(reinterpret_cast<uintptr_t>(bytes_.get()) % kImageAlign == 0);
   }
+
+  // Copy construction/assignment is forbidden to avoid inadvertent copies,
+  // which can be very expensive. Use copy = CopyImage(image) instead.
+  Image(const Image& other) = delete;
+  Image& operator=(const Image& other) = delete;
 
   // Move constructor (required for returning Image from function)
   Image(Image&& other)
@@ -343,7 +350,7 @@ class ConstImageView {
  public:
   // Top-left of the entire image; Rows will be aligned.
   template <template <typename> class ImageOrView>
-  void Init(const ImageOrView<T>& image) {
+  PIK_INLINE void Init(const ImageOrView<T>& image) {
     top_left_ = reinterpret_cast<const uint8_t*>(image.ConstRow(0));
     bytes_per_row_ = image.bytes_per_row();
   }
@@ -351,8 +358,9 @@ class ConstImageView {
   // x, y is the pixel pointed to by Row(0) + 0. This is used to allow accessing
   // additional pixels, e.g. during convolution. Rows are generally unaligned.
   template <template <typename> class ImageOrView>
-  void Init(const ImageOrView<T>& image, const uint32_t x, const uint32_t y,
-            const uint32_t bytes_per_pixel = sizeof(T)) {
+  PIK_INLINE void Init(const ImageOrView<T>& image, const uint32_t x,
+                       const uint32_t y,
+                       const uint32_t bytes_per_pixel = sizeof(T)) {
     top_left_ = reinterpret_cast<const uint8_t*>(image.ConstRow(y)) +
                 x * bytes_per_pixel;
     bytes_per_row_ = image.bytes_per_row();
@@ -812,11 +820,12 @@ ImageB ImageFromPacked(const uint8_t* packed, const size_t xsize,
 // transforms even a load_unaligned into an aligned load. Use
 // Const/MutableImageView instead.
 template <typename T>
-Image<T> Window(Image<T>* from, size_t x, size_t y, size_t xsize,
+Image<T> Window(const Image<T>* from, size_t x, size_t y, size_t xsize,
                 size_t ysize) {
   xsize = std::min<size_t>(xsize, from->xsize() - x);
   ysize = std::min<size_t>(ysize, from->ysize() - y);
-  return Image<T>(xsize, ysize, reinterpret_cast<uint8_t*>(from->Row(y) + x),
+  return Image<T>(xsize, ysize,
+                  reinterpret_cast<uint8_t*>(const_cast<T*>(from->Row(y)) + x),
                   from->bytes_per_row());
 }
 
@@ -841,7 +850,15 @@ ConstWrapper<Image<T>> ConstWindow(const Image<T>& from, size_t x, size_t y,
       from.bytes_per_row()));
 }
 
-// A bundle of 3 images of same size.
+// A bundle of 3 same-sized images. Typically constructed by moving from three
+// rvalue references to Image. To overwrite an existing Image3 using
+// single-channel producers, we also need access to Image*. Constructing
+// temporary non-owning Image pointing to one plane of an existing Image3 risks
+// dangling references, especially if the wrapper is moved. Therefore, we
+// store an array of Image (which are compact enough that size is not a concern)
+// and provide a MutablePlane accessor. The producer could theoretically change
+// the size of individual planes and thus break the Image3 invariant. To guard
+// against this, ensure any call to MutablePlane is followed by CheckSizesSame.
 template <typename ComponentType>
 class Image3 {
  public:
@@ -875,7 +892,7 @@ class Image3 {
     planes_[2] = std::move(plane2);
   }
 
-  // Used for reassembling after Deconstruct.
+  // More convenient for call sites that initialize planes in a loop.
   Image3(std::array<Plane, kNumPlanes>& planes)
       : Image3(std::move(planes[0]), std::move(planes[1]),
                std::move(planes[2])) {}
@@ -887,29 +904,7 @@ class Image3 {
     return *this;
   }
 
-  PIK_INLINE std::array<Plane, kNumPlanes> Deconstruct() {
-    return std::array<Plane, kNumPlanes>{
-        std::move(planes_[0]), std::move(planes_[1]), std::move(planes_[2])};
-  }
-
   // (Image<>::Row takes care of bounds checking)
-
-  // Returns array of row pointers; usage: Row(y)[idx_plane][x] = val.
-  PIK_INLINE std::array<T * PIK_RESTRICT, kNumPlanes> Row(const size_t y) {
-    return {{planes_[0].Row(y), planes_[1].Row(y), planes_[2].Row(y)}};
-  }
-
-  // Returns array of const row pointers; usage: val = Row(y)[idx_plane][x].
-  PIK_INLINE std::array<const T * PIK_RESTRICT, kNumPlanes> Row(
-      const size_t y) const {
-    return {{planes_[0].Row(y), planes_[1].Row(y), planes_[2].Row(y)}};
-  }
-
-  // Returns const row pointers, even if called from a non-const Image3.
-  PIK_INLINE std::array<const T * PIK_RESTRICT, kNumPlanes> ConstRow(
-      const size_t y) const {
-    return Row(y);
-  }
 
   // Returns row pointer; usage: PlaneRow(idx_plane, y)[x] = val.
   PIK_INLINE T* PIK_RESTRICT PlaneRow(const int c, const size_t y) {
@@ -927,9 +922,16 @@ class Image3 {
     return PlaneRow(c, y);
   }
 
-  // NOTE: we deliberately avoid non-const plane accessors - callers could use
-  // them to change image size etc., leading to hard-to-find bugs.
+  // Required for overwriting Image3 using an Image* producer - see comment
+  // above. Callers must call CheckSizesSame afterwards.
+  PIK_INLINE Plane* MutablePlane(const size_t idx) { return &planes_[idx]; }
   PIK_INLINE const Plane& plane(const size_t idx) const { return planes_[idx]; }
+
+  void CheckSizesSame() {
+    for (int c = 1; c < 3; ++c) {
+      PIK_CHECK(SameSize(plane(0), plane(c)));
+    }
+  }
 
   void Swap(Image3& other) {
     for (int c = 0; c < 3; ++c) {
@@ -995,7 +997,7 @@ class MetaImage {
     PIK_CHECK(bit_depth == 8 || bit_depth == 16);
     alpha_bit_depth_ = bit_depth;
     alpha_ = std::move(alpha);
-    for (int y = 0; y < alpha_.xsize(); ++y) {
+    for (int y = 0; y < alpha_.ysize(); ++y) {
       for (int x = 0; x < alpha_.xsize(); ++x) {
         PIK_CHECK(alpha_.Row(y)[x] <= (0xffff >> (16 - bit_depth)));
       }
@@ -1057,13 +1059,14 @@ bool SamePixels(const Image3<T>& image1, const Image3<T>& image2) {
   const size_t ysize = image1.ysize();
   PIK_CHECK(xsize == image2.xsize());
   PIK_CHECK(ysize == image2.ysize());
-  for (size_t y = 0; y < ysize; ++y) {
-    auto rows1 = image1.Row(y);
-    auto rows2 = image2.Row(y);
-    for (size_t x = 0; x < xsize; ++x) {
-      if (rows1[0][x] != rows2[0][x] || rows1[1][x] != rows2[1][x] ||
-          rows1[2][x] != rows2[2][x]) {
-        return false;
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < ysize; ++y) {
+      const T* PIK_RESTRICT row1 = image1.PlaneRow(c, y);
+      const T* PIK_RESTRICT row2 = image2.PlaneRow(c, y);
+      for (size_t x = 0; x < xsize; ++x) {
+        if (row1[x] != row2[x]) {
+          return false;
+        }
       }
     }
   }
@@ -1093,27 +1096,23 @@ void SetBorder(const size_t thickness, const T value, Image3<T>* image) {
   const size_t ysize = image->ysize();
   PIK_ASSERT(2 * thickness < xsize && 2 * thickness < ysize);
   // Top
-  for (size_t y = 0; y < thickness; ++y) {
-    auto row = image->Row(y);
-    for (size_t c = 0; c < 3; ++c) {
-      std::fill(row[c], row[c] + xsize, value);
+  for (size_t c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < thickness; ++y) {
+      T* PIK_RESTRICT row = image->PlaneRow(c, y);
+      std::fill(row, row + xsize, value);
     }
-  }
 
-  // Bottom
-  for (size_t y = ysize - thickness; y < ysize; ++y) {
-    auto row = image->Row(y);
-    for (size_t c = 0; c < 3; ++c) {
-      std::fill(row[c], row[c] + xsize, value);
+    // Bottom
+    for (size_t y = ysize - thickness; y < ysize; ++y) {
+      T* PIK_RESTRICT row = image->PlaneRow(c, y);
+      std::fill(row, row + xsize, value);
     }
-  }
 
-  // Left/right
-  for (size_t y = thickness; y < ysize - thickness; ++y) {
-    auto row = image->Row(y);
-    for (size_t c = 0; c < 3; ++c) {
-      std::fill(row[c], row[c] + thickness, value);
-      std::fill(row[c] + xsize - thickness, row[c] + xsize, value);
+    // Left/right
+    for (size_t y = thickness; y < ysize - thickness; ++y) {
+      T* PIK_RESTRICT row = image->PlaneRow(c, y);
+      std::fill(row, row + thickness, value);
+      std::fill(row + xsize - thickness, row + xsize, value);
     }
   }
 }
@@ -1162,13 +1161,13 @@ void Image3Convert(const Image3<FromType>& from, const float to_range,
     scales[c] = to_range / (max_from[c] - min_from[c]);
   }
   float scale = std::min(scales[0], std::min(scales[1], scales[2]));
-  for (size_t y = 0; y < from.ysize(); ++y) {
-    const auto from_rows = from.ConstRow(y);
-    auto to_rows = to->Row(y);
-    for (size_t x = 0; x < from.xsize(); ++x) {
-      for (int c = 0; c < 3; ++c) {
-        const float to = (from_rows[c][x] - min_from[c]) * scale;
-        to_rows[c][x] = static_cast<ToType>(to);
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < from.ysize(); ++y) {
+      const FromType* PIK_RESTRICT row_from = from.ConstPlaneRow(c, y);
+      ToType* PIK_RESTRICT row_to = to->PlaneRow(c, y);
+      for (size_t x = 0; x < from.xsize(); ++x) {
+        const float to = (row_from[x] - min_from[c]) * scale;
+        row_to[x] = static_cast<ToType>(to);
       }
     }
   }
@@ -1179,13 +1178,13 @@ void Image3Convert(const Image3<FromType>& from, const float to_range,
 template <typename FromType, typename ToType>
 Image3<ToType> StaticCastImage3(const Image3<FromType>& from) {
   Image3<ToType> to(from.xsize(), from.ysize());
-  for (size_t y = 0; y < from.ysize(); ++y) {
-    const auto from_rows = from.ConstRow(y);
-    auto to_rows = to.Row(y);
-    for (size_t x = 0; x < from.xsize(); ++x) {
-      to_rows[0][x] = static_cast<ToType>(from_rows[0][x]);
-      to_rows[1][x] = static_cast<ToType>(from_rows[1][x]);
-      to_rows[2][x] = static_cast<ToType>(from_rows[2][x]);
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < from.ysize(); ++y) {
+      const FromType* PIK_RESTRICT row_from = from.ConstPlaneRow(c, y);
+      ToType* PIK_RESTRICT row_to = to.PlaneRow(c, y);
+      for (size_t x = 0; x < from.xsize(); ++x) {
+        row_to[x] = static_cast<ToType>(row_from[x]);
+      }
     }
   }
   return to;
@@ -1243,12 +1242,12 @@ Image3<T> ScaleImage(const T lambda, const Image3<T>& image) {
 // Assigns generator(x, y, c) to each pixel (x, y).
 template <class Generator, typename T>
 void FillImage(const Generator& generator, Image3<T>* image) {
-  for (size_t y = 0; y < image->ysize(); ++y) {
-    auto rows = image->Row(y);
-    for (size_t x = 0; x < image->xsize(); ++x) {
-      rows[0][x] = generator(x, y, 0);
-      rows[1][x] = generator(x, y, 1);
-      rows[2][x] = generator(x, y, 2);
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < image->ysize(); ++y) {
+      T* PIK_RESTRICT row = image->PlaneRow(c, y);
+      for (size_t x = 0; x < image->xsize(); ++x) {
+        row[x] = generator(x, y, c);
+      }
     }
   }
 }
@@ -1259,12 +1258,14 @@ std::vector<T> InterleavedFromImage3(const Image3<T>& image3) {
   const size_t ysize = image3.ysize();
   std::vector<T> interleaved(xsize * ysize * 3);
   for (size_t y = 0; y < ysize; ++y) {
-    auto row = image3.Row(y);
-    T* const PIK_RESTRICT interleaved_row = &interleaved[y * xsize * 3];
+    const T* PIK_RESTRICT row0 = image3.ConstPlaneRow(0, y);
+    const T* PIK_RESTRICT row1 = image3.ConstPlaneRow(1, y);
+    const T* PIK_RESTRICT row2 = image3.ConstPlaneRow(2, y);
+    T* const PIK_RESTRICT row_interleaved = &interleaved[y * xsize * 3];
     for (size_t x = 0; x < xsize; ++x) {
-      interleaved_row[3 * x + 0] = row[0][x];
-      interleaved_row[3 * x + 1] = row[1][x];
-      interleaved_row[3 * x + 2] = row[2][x];
+      row_interleaved[3 * x + 0] = row0[x];
+      row_interleaved[3 * x + 1] = row1[x];
+      row_interleaved[3 * x + 2] = row2[x];
     }
   }
   return interleaved;
@@ -1277,14 +1278,14 @@ Image3<T> Image3FromInterleaved(const T* const interleaved, const size_t xsize,
   PIK_ASSERT(bytes_per_row >= 3 * xsize * sizeof(T));
   Image3<T> image3(xsize, ysize);
   const uint8_t* bytes = reinterpret_cast<const uint8_t*>(interleaved);
-  for (size_t y = 0; y < ysize; ++y) {
-    auto out_row = image3.Row(y);
-    const auto interleaved_row =
-        reinterpret_cast<const T*>(bytes + y * bytes_per_row);
-    for (size_t x = 0; x < xsize; ++x) {
-      out_row[0][x] = interleaved_row[3 * x + 0];
-      out_row[1][x] = interleaved_row[3 * x + 1];
-      out_row[2][x] = interleaved_row[3 * x + 2];
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < ysize; ++y) {
+      T* PIK_RESTRICT row_out = image3.PlaneRow(c, y);
+      const T* row_interleaved =
+          reinterpret_cast<const T*>(bytes + y * bytes_per_row);
+      for (size_t x = 0; x < xsize; ++x) {
+        row_out[x] = row_interleaved[3 * x + c];
+      }
     }
   }
   return image3;
@@ -1294,11 +1295,11 @@ template <typename T>
 std::vector<std::vector<T>> Packed3FromImage3(const Image3<T>& planes) {
   std::vector<std::vector<T>> result(
       3, std::vector<T>(planes.xsize() * planes.ysize()));
-  for (size_t y = 0; y < planes.ysize(); y++) {
-    auto row = planes.Row(y);
-    for (size_t x = 0; x < planes.xsize(); x++) {
-      for (int i = 0; i < 3; i++) {
-        result[i][y * planes.xsize() + x] = row[i][x];
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < planes.ysize(); y++) {
+      T* PIK_RESTRICT row = planes.PlaneRow(c, y);
+      for (size_t x = 0; x < planes.xsize(); x++) {
+        result[c][y * planes.xsize() + x] = row[x];
       }
     }
   }
@@ -1309,10 +1310,10 @@ template <typename T>
 Image3<T> Image3FromPacked3(const std::vector<std::vector<T>>& packed,
                             const size_t xsize, const size_t ysize) {
   Image3<T> out(xsize, ysize);
-  for (size_t y = 0; y < ysize; ++y) {
-    auto row = out.Row(y);
-    for (size_t x = 0; x < xsize; ++x) {
-      for (int c = 0; c < 3; ++c) {
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < ysize; ++y) {
+      T* PIK_RESTRICT row = out.PlaneRow(c, y);
+      for (size_t x = 0; x < xsize; ++x) {
         row[c][x] = packed[c][y * xsize + x];
       }
     }
@@ -1327,16 +1328,17 @@ Image3<T> ExpandAndCopyBorders(const Image3<T>& img, const size_t xres,
   const size_t xsize = xres * ((img.xsize() + xres - 1) / xres);
   const size_t ysize = yres * ((img.ysize() + yres - 1) / yres);
   Image3<T> out(xsize, ysize);
-  for (size_t y = 0; y < ysize; ++y) {
-    auto row_in = img.Row(std::min(img.ysize() - 1, y));
-    auto row_out = out.Row(y);
-    for (int c = 0; c < 3; ++c) {
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < ysize; ++y) {
+      const T* PIK_RESTRICT row_in =
+          img.PlaneRow(c, std::min(img.ysize() - 1, y));
+      T* PIK_RESTRICT row_out = out.PlaneRow(c, y);
       size_t x = 0;
       for (; x < img.xsize(); ++x) {
-        row_out[c][x] = row_in[c][x];
+        row_out[x] = row_in[x];
       }
       for (; x < xsize; ++x) {
-        row_out[c][x] = row_in[c][img.xsize() - 1];
+        row_out[x] = row_in[img.xsize() - 1];
       }
     }
   }
@@ -1346,12 +1348,9 @@ Image3<T> ExpandAndCopyBorders(const Image3<T>& img, const size_t xres,
 template <typename T>
 Image3<T> Window(Image3<T>* from, size_t x, size_t y, size_t xsize,
                  size_t ysize) {
-  std::array<Image<T>, 3> from_unpacked = from->Deconstruct();
-  Image3<T> result = Image3<T>(Window(&from_unpacked[0], x, y, xsize, ysize),
-                               Window(&from_unpacked[1], x, y, xsize, ysize),
-                               Window(&from_unpacked[2], x, y, xsize, ysize));
-  *from = Image3<T>(from_unpacked);
-  return result;
+  return Image3<T>(Window(&from->plane(0), x, y, xsize, ysize),
+                   Window(&from->plane(1), x, y, xsize, ysize),
+                   Window(&from->plane(2), x, y, xsize, ysize));
 }
 
 template <typename T>
@@ -1376,7 +1375,7 @@ void AddScalar(T v, Image<T>* img) {
   const size_t xsize = img->xsize();
   const size_t ysize = img->ysize();
   for (size_t y = 0; y < ysize; ++y) {
-    auto row = img->Row(y);
+    T* PIK_RESTRICT row = img->Row(y);
     for (size_t x = 0; x < xsize; ++x) {
       row[x] += v;
     }
@@ -1388,11 +1387,13 @@ void AddScalar(T v0, T v1, T v2, Image3<T>* img) {
   const size_t xsize = img->xsize();
   const size_t ysize = img->ysize();
   for (size_t y = 0; y < ysize; ++y) {
-    auto row = img->Row(y);
+    T* PIK_RESTRICT row0 = img->PlaneRow(0, y);
+    T* PIK_RESTRICT row1 = img->PlaneRow(1, y);
+    T* PIK_RESTRICT row2 = img->PlaneRow(2, y);
     for (size_t x = 0; x < xsize; ++x) {
-      row[0][x] += v0;
-      row[1][x] += v1;
-      row[2][x] += v2;
+      row0[x] += v0;
+      row1[x] += v1;
+      row2[x] += v2;
     }
   }
 }
@@ -1403,7 +1404,7 @@ void Apply(Fun f, Image<T>* image) {
   const size_t ysize = image->ysize();
 
   for(size_t y = 0; y < ysize; y++) {
-    auto row = image->Row(y);
+    T* PIK_RESTRICT row = image->Row(y);
     for(size_t x = 0; x < xsize; x++) {
       f(&row[x]);
     }
