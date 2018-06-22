@@ -4,16 +4,11 @@
 #include <algorithm>
 #include <memory>
 
-#include "header.h"
-
 namespace pik {
 
 size_t PaddedBytes::PaddedSize(const size_t size) {
   // Allow writing entire 64-bit words.
-  const size_t rounded_up = (size + 7) & ~7;
-  // Avoid bounds checks in LoadHeader.
-  const size_t safe_header = std::max(rounded_up, MaxCompressedHeaderSize());
-  return safe_header;
+  return (size + 7) & ~7;
 }
 
 void PaddedBytes::resize(const size_t size) {

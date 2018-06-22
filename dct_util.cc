@@ -15,24 +15,23 @@ Image3F UndoTransposeAndScale(const Image3F& transposed_scaled) {
   PIK_ASSERT(transposed_scaled.xsize() % 64 == 0);
   Image3F out(transposed_scaled.xsize(), transposed_scaled.ysize());
   SIMD_ALIGN float block[64];
-  for (int y = 0; y < transposed_scaled.ysize(); ++y) {
-    for (int x = 0; x < transposed_scaled.xsize(); x += 64) {
       for (int c = 0; c < 3; ++c) {
-        const auto row_in = transposed_scaled.PlaneRow(c, y);
-        auto row_out = out.PlaneRow(c, y);
+        for (size_t y = 0; y < transposed_scaled.ysize(); ++y) {
+          const float* PIK_RESTRICT row_in = transposed_scaled.PlaneRow(c, y);
+          float* PIK_RESTRICT row_out = out.PlaneRow(c, y);
+          for (size_t x = 0; x < transposed_scaled.xsize(); x += 64) {
+            memcpy(block, row_in + x, sizeof(block));
+            TransposeBlock(block);
 
-        memcpy(block, row_in + x, sizeof(block));
-        TransposeBlock(block);
-
-        for (size_t iy = 0; iy < 8; ++iy) {
-          const float rcp_sy = kRecipIDCTScales[iy];
-          for (size_t ix = 0; ix < 8; ++ix) {
-            block[iy * 8 + ix] *= rcp_sy * kRecipIDCTScales[ix];
+            for (size_t iy = 0; iy < 8; ++iy) {
+              const float rcp_sy = kRecipIDCTScales[iy];
+              for (size_t ix = 0; ix < 8; ++ix) {
+                block[iy * 8 + ix] *= rcp_sy * kRecipIDCTScales[ix];
+              }
+            }
+            memcpy(row_out + x, block, sizeof(block));
           }
         }
-        memcpy(row_out + x, block, sizeof(block));
-      }
-    }
   }
   return out;
 }
@@ -43,18 +42,19 @@ Image3F SlowDCT(const Image3F& img) {
   PIK_ASSERT(img.ysize() % 8 == 0);
   Image3F coeffs(img.xsize() * 8, img.ysize() / 8);
   SIMD_ALIGN float block[64];
-  for (int y = 0; y < coeffs.ysize(); ++y) {
-    const int yoff = y * 8;
-    auto row_out = coeffs.Row(y);
-    for (int x = 0; x < coeffs.xsize(); x += 64) {
-      const int xoff = x / 8;
-      for (int c = 0; c < 3; ++c) {
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < coeffs.ysize(); ++y) {
+      const int yoff = y * 8;
+      float* PIK_RESTRICT row_out = coeffs.PlaneRow(c, y);
+      for (size_t x = 0; x < coeffs.xsize(); x += 64) {
+        const int xoff = x / 8;
         for (int iy = 0; iy < 8; ++iy) {
-          const float* const PIK_RESTRICT row_in = &img.Row(yoff + iy)[c][xoff];
+          const float* const PIK_RESTRICT row_in =
+              &img.PlaneRow(c, yoff + iy)[xoff];
           memcpy(&block[iy * 8], row_in, 8 * sizeof(block[0]));
         }
         ComputeBlockDCTFloat(block);
-        memcpy(&row_out[c][x], block, sizeof(block));
+        memcpy(&row_out[x], block, sizeof(block));
       }
     }
   }
@@ -66,16 +66,16 @@ Image3F SlowIDCT(const Image3F& coeffs) {
   PIK_ASSERT(coeffs.xsize() % 64 == 0);
   Image3F img(coeffs.xsize() / 8, coeffs.ysize() * 8);
   SIMD_ALIGN float block[64];
-  for (int y = 0; y < coeffs.ysize(); ++y) {
-    const int yoff = y * 8;
-    auto row_in = coeffs.Row(y);
-    for (int x = 0; x < coeffs.xsize(); x += 64) {
-      const int xoff = x / 8;
-      for (int c = 0; c < 3; ++c) {
-        memcpy(block, &row_in[c][x], sizeof(block));
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < coeffs.ysize(); ++y) {
+      const int yoff = y * 8;
+      const float* PIK_RESTRICT row_in = coeffs.ConstPlaneRow(c, y);
+      for (size_t x = 0; x < coeffs.xsize(); x += 64) {
+        const int xoff = x / 8;
+        memcpy(block, &row_in[x], sizeof(block));
         ComputeBlockIDCTFloat(block);
         for (int iy = 0; iy < 8; ++iy) {
-          float* const PIK_RESTRICT row_out = &img.Row(yoff + iy)[c][xoff];
+          float* const PIK_RESTRICT row_out = &img.PlaneRow(c, yoff + iy)[xoff];
           memcpy(row_out, &block[iy * 8], 8 * sizeof(block[0]));
         }
       }
@@ -87,10 +87,12 @@ Image3F SlowIDCT(const Image3F& coeffs) {
 Image3F DCImage(const Image3F& coeffs) {
   PIK_ASSERT(coeffs.xsize() % 64 == 0);
   Image3F out(coeffs.xsize() / 64, coeffs.ysize());
-  for (int y = 0; y < out.ysize(); ++y) {
-    for (int x = 0; x < out.xsize(); ++x) {
-      for (int c = 0; c < 3; ++c) {
-        out.Row(y)[c][x] = coeffs.Row(y)[c][x * 64];
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < out.ysize(); ++y) {
+      const float* PIK_RESTRICT row_in = coeffs.ConstPlaneRow(c, y);
+      float* PIK_RESTRICT row_out = out.PlaneRow(c, y);
+      for (size_t x = 0; x < out.xsize(); ++x) {
+        row_out[x] = row_in[x * 64];
       }
     }
   }
@@ -99,23 +101,24 @@ Image3F DCImage(const Image3F& coeffs) {
 
 void ZeroOut2x2(Image3F* coeffs) {
   PIK_ASSERT(coeffs->xsize() % 64 == 0);
-  for (int y = 0; y < coeffs->ysize(); ++y) {
-    auto row = coeffs->Row(y);
-    for (int x = 0; x < coeffs->xsize(); x += 64) {
       for (int c = 0; c < 3; ++c) {
-        row[c][x] = row[c][x + 1] = row[c][x + 8] = row[c][x + 9] = 0.0f;
-      }
-    }
+        for (size_t y = 0; y < coeffs->ysize(); ++y) {
+          float* PIK_RESTRICT row = coeffs->PlaneRow(c, y);
+          for (size_t x = 0; x < coeffs->xsize(); x += 64) {
+            row[x] = row[x + 1] = row[x + 8] = row[x + 9] = 0.0f;
+          }
+        }
   }
 }
 
 Image3F KeepOnly2x2Corners(const Image3F& coeffs) {
   Image3F copy = CopyImage(coeffs);
-  for (int y = 0; y < coeffs.ysize(); ++y) {
-    for (int x = 0; x < coeffs.xsize(); x += 64) {
-      for (int c = 0; c < 3; ++c) {
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < coeffs.ysize(); ++y) {
+      float* PIK_RESTRICT row = copy.PlaneRow(c, y);
+      for (size_t x = 0; x < coeffs.xsize(); x += 64) {
         for (int k = 0; k < 64; ++k) {
-          if (k >= 16 || (k % 8) >= 2) copy.Row(y)[c][x + k] = 0.0f;
+          if (k >= 16 || (k % 8) >= 2) row[x + k] = 0.0f;
         }
       }
     }
@@ -123,8 +126,7 @@ Image3F KeepOnly2x2Corners(const Image3F& coeffs) {
   return copy;
 }
 
-// TODO(janwas): change from 2x2 to 1x4 - better locality
-Image3F GetPixelSpaceImageFrom2x2Corners(const Image3F& coeffs) {
+Image3F GetPixelSpaceImageFrom0189_64(const Image3F& coeffs) {
   PIK_ASSERT(coeffs.xsize() % 64 == 0);
   const size_t block_xsize = coeffs.xsize() / 64;
   const size_t block_ysize = coeffs.ysize();
@@ -157,22 +159,25 @@ void Add2x2CornersFromPixelSpaceImage(const Image3F& img,
   PIK_ASSERT(coeffs->xsize() % 64 == 0);
   PIK_ASSERT(coeffs->xsize() / 32 <= img.xsize());
   PIK_ASSERT(coeffs->ysize() * 2 <= img.ysize());
-  const int block_xsize = coeffs->xsize() / 64;
-  const int block_ysize = coeffs->ysize();
+  const size_t block_xsize = coeffs->xsize() / 64;
+  const size_t block_ysize = coeffs->ysize();
   const float kScale01 = 0.113265930794111f / (kIDCTScales[0] * kIDCTScales[1]);
   const float kScale11 = 0.102633368629251f / (kIDCTScales[1] * kIDCTScales[1]);
-  for (int by = 0; by < block_ysize; ++by) {
-    for (int bx = 0; bx < block_xsize; ++bx) {
-      for (int c = 0; c < 3; ++c) {
-        const float b00 = img.Row(2 * by + 0)[c][2 * bx + 0];
-        const float b01 = img.Row(2 * by + 0)[c][2 * bx + 1];
-        const float b10 = img.Row(2 * by + 1)[c][2 * bx + 0];
-        const float b11 = img.Row(2 * by + 1)[c][2 * bx + 1];
+  for (int c = 0; c < 3; ++c) {
+    for (size_t by = 0; by < block_ysize; ++by) {
+      const float* PIK_RESTRICT row0 = img.PlaneRow(c, 2 * by + 0);
+      const float* PIK_RESTRICT row1 = img.PlaneRow(c, 2 * by + 1);
+      float* row_out = coeffs->PlaneRow(c, by);
+      for (size_t bx = 0; bx < block_xsize; ++bx) {
+        const float b00 = row0[2 * bx + 0];
+        const float b01 = row0[2 * bx + 1];
+        const float b10 = row1[2 * bx + 0];
+        const float b11 = row1[2 * bx + 1];
         const float a00 = 0.25f * (b00 + b01 + b10 + b11);
         const float a01 = 0.25f * (b00 - b01 + b10 - b11);
         const float a10 = 0.25f * (b00 + b01 - b10 - b11);
         const float a11 = 0.25f * (b00 - b01 - b10 + b11);
-        float* block = &coeffs->Row(by)[c][bx * 64];
+        float* PIK_RESTRICT block = &row_out[bx * 64];
         block[0] = a00;
         block[1] = a10 / kScale01;
         block[8] = a01 / kScale01;
@@ -182,103 +187,22 @@ void Add2x2CornersFromPixelSpaceImage(const Image3F& img,
   }
 }
 
-Image3F UpSample8x8BlurDCT(const Image3F& img, const float sigma) {
-  const int xs = img.xsize();
-  const int ys = img.ysize();
-  float w0[8] = { 0.0f };
-  float w1[8] = { 0.0f };
-  float w2[8] = { 0.0f };
-  std::vector<float> kernel = GaussianKernel(8, sigma);
-  float weight = 0.0f;
-  for (int i = 0; i < kernel.size(); ++i) {
-    weight += kernel[i];
-  }
-  float scale = 1.0f / (8.0f * weight);
-  for (int k = 0; k < 8; ++k) {
-    const int split0 = 8 - k;
-    const int split1 = 16 - k;
-    for (int j = 0; j < split0; ++j) {
-      w0[k] += kernel[j];
-    }
-    for (int j = split0; j < split1; ++j) {
-      w1[k] += kernel[j];
-    }
-    for (int j = split1; j < kernel.size(); ++j) {
-      w2[k] += kernel[j];
-    }
-    w0[k] *= scale;
-    w1[k] *= scale;
-    w2[k] *= scale;
-  }
-  Image3F blur_x(xs * 8, ys);
-  for (int y = 0; y < ys; ++y) {
-    auto row = img.Row(y);
-    for (int c = 0; c < 3; ++c) {
-      std::vector<float> row_tmp(xs + 2);
-      memcpy(&row_tmp[1], row[c], xs * sizeof(row[c][0]));
-      row_tmp[0] = row_tmp[1 + std::min(1, xs - 1)];
-      row_tmp[xs + 1] = row_tmp[1 + std::max(0, xs - 2)];
-      float* const PIK_RESTRICT row_out = blur_x.Row(y)[c];
-      for (int x = 0; x < xs; ++x) {
-        const float v0 = row_tmp[x];
-        const float v1 = row_tmp[x + 1];
-        const float v2 = row_tmp[x + 2];
-        const int offset = x * 8;
-        for (int ix = 0; ix < 8; ++ix) {
-          row_out[offset + ix] = v0 * w0[ix] + v1 * w1[ix] + v2 * w2[ix];
-        }
-      }
-    }
-  }
-  Image3F out(xs * 64, ys);
-  for (int by = 0; by < ys; ++by) {
-    int by_u = ys == 1 ? 0 : by == 0 ? 1 : by - 1;
-    int by_d = ys == 1 ? 0 : by + 1 < ys ? by + 1 : by - 1;
-    auto row = out.Row(by);
-    auto row0 = blur_x.ConstRow(by_u);
-    auto row1 = blur_x.ConstRow(by);
-    auto row2 = blur_x.ConstRow(by_d);
-    for (int bx = 0; bx < xs; ++bx) {
-      for (int c = 0; c < 3; ++c) {
-        float* const PIK_RESTRICT block = &row[c][bx * 64];
-        using namespace SIMD_NAMESPACE;
-        const Full<float> d;
-        for (int ix = 0; ix < 8; ix += d.N) {
-          const auto val0 = load(d, &row0[c][bx * 8 + ix]);
-          const auto val1 = load(d, &row1[c][bx * 8 + ix]);
-          const auto val2 = load(d, &row2[c][bx * 8 + ix]);
-          for (int iy = 0; iy < 8; ++iy) {
-            const auto val = (val0 * set1(d, w0[iy]) + val1 * set1(d, w1[iy]) +
-                              val2 * set1(d, w2[iy]));
-            store(val, d, &block[iy * 8 + ix]);
-          }
-        }
-        ComputeTransposedScaledBlockDCTFloat(block);
-        block[0] -= img.PlaneRow(c, by)[bx];
-      }
-    }
-  }
-  return out;
-}
-
 namespace {
 
 // "Adds" (if sign == +0, otherwise subtracts if sign == -0) block to "add_to",
 // except elements 0,1,8,9. May overwrite parts of "block".
 void AddBlockExcept0189To(float* PIK_RESTRICT block, const float sign,
-                          bool add_all, float* PIK_RESTRICT add_to) {
+                          float* PIK_RESTRICT add_to) {
   using namespace SIMD_NAMESPACE;
 
   const Part<float, SIMD_MIN(Full<float>::N, 8)> d;
 
 #if SIMD_TARGET_VALUE == SIMD_NONE
   // Fallback because SIMD version assumes at least two lanes.
-  if (!add_all) {
     block[0] = 0.0f;
     block[1] = 0.0f;
     block[8] = 0.0f;
     block[9] = 0.0f;
-  }
   if (ext::movemask(set1(d, sign))) {
     for (size_t i = 0; i < 64; ++i) {
       add_to[i] -= block[i];
@@ -291,8 +215,7 @@ void AddBlockExcept0189To(float* PIK_RESTRICT block, const float sign,
 #else
   // Negated to enable default zero-initialization of upper lanes.
   SIMD_ALIGN uint32_t mask2[d.N] = {~0u, ~0u};
-  const auto only_01 =
-      add_all ? set1(d, 0.0f) : load(d, reinterpret_cast<float*>(mask2));
+  const auto only_01 = load(d, reinterpret_cast<float*>(mask2));
   const auto vsign = set1(d, sign);
 
   // First block row: don't add block[0, 1].
@@ -333,7 +256,7 @@ void AddBlockExcept0189To(float* PIK_RESTRICT block, const float sign,
 }  // namespace
 
 void UpSample4x4BlurDCT(const Image3F& img, const float sigma, const float sign,
-                        const bool add_all, ThreadPool* pool, Image3F* add_to) {
+                        ThreadPool* pool, Image3F* add_to) {
   // TODO(user): There's no good reason to compute the full DCT here. It's
   // fine if the output is in pixel space, we just need to zero out top 2x2 DCT
   // coefficients. We can do that by computing a "partial DCT" and subtracting
@@ -398,21 +321,21 @@ void UpSample4x4BlurDCT(const Image3F& img, const float sigma, const float sign,
   }
 
   pool->Run(0, bys,
-            [bxs, bys, &vw0, &vw1, &vw2, &blur_x, sign, add_all, add_to](
+            [bxs, bys, &vw0, &vw1, &vw2, &blur_x, sign, add_to](
                 const int by, const int thread) {
               const D d;
               SIMD_ALIGN float block[64];
 
               for (int c = 0; c < 3; ++c) {
-                auto row_out = add_to->PlaneRow(c, by);
+                float* PIK_RESTRICT row_out = add_to->PlaneRow(c, by);
                 const int by0 = by == 0 ? 1 : 2 * by - 1;
                 const int by1 = 2 * by;
                 const int by2 = 2 * by + 1;
                 const int by3 = by + 1 < bys ? 2 * by + 2 : 2 * by;
-                auto row0 = blur_x.ConstPlaneRow(c, by0);
-                auto row1 = blur_x.ConstPlaneRow(c, by1);
-                auto row2 = blur_x.ConstPlaneRow(c, by2);
-                auto row3 = blur_x.ConstPlaneRow(c, by3);
+                const float* PIK_RESTRICT row0 = blur_x.ConstPlaneRow(c, by0);
+                const float* PIK_RESTRICT row1 = blur_x.ConstPlaneRow(c, by1);
+                const float* PIK_RESTRICT row2 = blur_x.ConstPlaneRow(c, by2);
+                const float* PIK_RESTRICT row3 = blur_x.ConstPlaneRow(c, by3);
                 for (int bx = 0; bx < bxs; ++bx) {
                   for (int ix = 0; ix < 8; ix += d.N) {
                     const auto val0 = load(d, &row0[bx * 8 + ix]);
@@ -430,7 +353,7 @@ void UpSample4x4BlurDCT(const Image3F& img, const float sigma, const float sign,
                     }
                   }
                   ComputeTransposedScaledBlockDCTFloat(block);
-                  AddBlockExcept0189To(block, sign, add_all, row_out + 64 * bx);
+                  AddBlockExcept0189To(block, sign, row_out + 64 * bx);
                 }
               }
             });
@@ -438,7 +361,7 @@ void UpSample4x4BlurDCT(const Image3F& img, const float sigma, const float sign,
 
 template <int N>
 Image3F UpSampleBlur(const Image3F& img, const float sigma) {
-  const int xs = img.xsize();
+  const int xs = img.xsize();  // -1 => signed
   const int ys = img.ysize();
   float w0[N] = { 0.0f };
   float w1[N] = { 0.0f };
@@ -466,14 +389,14 @@ Image3F UpSampleBlur(const Image3F& img, const float sigma) {
     w2[k] *= scale;
   }
   Image3F blur_x(xs * N, ys);
-  for (int y = 0; y < ys; ++y) {
-    auto row = img.Row(y);
-    for (int c = 0; c < 3; ++c) {
-      std::vector<float> row_tmp(xs + 2);
-      memcpy(&row_tmp[1], row[c], xs * sizeof(row[c][0]));
+  std::vector<float> row_tmp(xs + 2);
+  for (int c = 0; c < 3; ++c) {
+    for (int y = 0; y < ys; ++y) {
+      const float* PIK_RESTRICT row = img.ConstPlaneRow(c, y);
+      memcpy(&row_tmp[1], row, xs * sizeof(row[0]));
       row_tmp[0] = row_tmp[1 + std::min(1, xs - 1)];
       row_tmp[xs + 1] = row_tmp[1 + std::max(0, xs - 2)];
-      float* const PIK_RESTRICT row_out = blur_x.Row(y)[c];
+      float* PIK_RESTRICT row_out = blur_x.PlaneRow(c, y);
       for (int x = 0; x < xs; ++x) {
         const float v0 = row_tmp[x];
         const float v1 = row_tmp[x + 1];
@@ -486,36 +409,32 @@ Image3F UpSampleBlur(const Image3F& img, const float sigma) {
     }
   }
   Image3F out(xs * N, ys * N);
-  for (int by = 0; by < ys; ++by) {
-    int by_u = ys == 1 ? 0 : by == 0 ? 1 : by - 1;
-    int by_d = ys == 1 ? 0 : by + 1 < ys ? by + 1 : by - 1;
-    auto row0 = blur_x.ConstRow(by_u);
-    auto row1 = blur_x.ConstRow(by);
-    auto row2 = blur_x.ConstRow(by_d);
-    for (int bx = 0; bx < xs; ++bx) {
-      for (int c = 0; c < 3; ++c) {
+  for (int c = 0; c < 3; ++c) {
+    for (int by = 0; by < ys; ++by) {
+      int by_u = ys == 1 ? 0 : by == 0 ? 1 : by - 1;
+      int by_d = ys == 1 ? 0 : by + 1 < ys ? by + 1 : by - 1;
+      const float* PIK_RESTRICT row0 = blur_x.ConstPlaneRow(c, by_u);
+      const float* PIK_RESTRICT row1 = blur_x.ConstPlaneRow(c, by);
+      const float* PIK_RESTRICT row2 = blur_x.ConstPlaneRow(c, by_d);
+      for (int bx = 0; bx < xs; ++bx) {
         using namespace SIMD_NAMESPACE;
         constexpr int kLanes =
             SIMD_MIN(N, SIMD_TARGET::template NumLanes<float>());
         const Part<float, kLanes> d;
         for (int ix = 0; ix < N; ix += d.N) {
-          const auto val0 = load(d, &row0[c][bx * N + ix]);
-          const auto val1 = load(d, &row1[c][bx * N + ix]);
-          const auto val2 = load(d, &row2[c][bx * N + ix]);
+          const auto val0 = load(d, &row0[bx * N + ix]);
+          const auto val1 = load(d, &row1[bx * N + ix]);
+          const auto val2 = load(d, &row2[bx * N + ix]);
           for (int iy = 0; iy < N; ++iy) {
             const auto val = (val0 * set1(d, w0[iy]) + val1 * set1(d, w1[iy]) +
                               val2 * set1(d, w2[iy]));
-            store(val, d, &out.Row(by * N + iy)[c][bx * N + ix]);
+            store(val, d, &out.PlaneRow(c, by * N + iy)[bx * N + ix]);
           }
         }
       }
     }
   }
   return out;
-}
-
-Image3F UpSample8x8Blur(const Image3F& img, const float sigma) {
-  return UpSampleBlur<8>(img, sigma);
 }
 
 Image3F UpSample4x4Blur(const Image3F& img, const float sigma) {

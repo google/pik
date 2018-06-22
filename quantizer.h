@@ -36,6 +36,9 @@ static const int kGlobalScaleDenom = 1 << 16;
 static const int kNumQuantTables = 2;
 static const int kQuantDefault = 0;
 static const int kQuantHQ = 1;
+// zero-biases for quantizing channels X, Y, B
+static const float kZeroBiasHQ[3] = { 0.52f, 0.63f, 0.72f };
+static const float kZeroBiasDefault[3] = { 0.65f, 0.6f, 0.7f };
 
 class Quantizer {
  public:
@@ -48,6 +51,7 @@ class Quantizer {
 
   // Returns integer AC quantization field.
   const ImageI& RawQuantField() const { return quant_img_ac_; }
+  void SetRawQuantField(ImageI&& qf) { quant_img_ac_ = std::move(qf); }
   float RawDC() const { return quant_dc_; }
   // Returns scaling factor such that Scale() * RawDC() or RawQuantField()
   // pixels yields the same float values returned by GetQuantField.
@@ -77,12 +81,24 @@ class Quantizer {
                      const float* PIK_RESTRICT block_in,
                      int16_t* PIK_RESTRICT block_out) const {
     const BlockQuantizer& bq = bq_[c].Get(QuantizerKey(quant_x, quant_y));
+    const float thres = zero_bias_[c];
     for (int k = 0; k < 64; ++k) {
       const float val = block_in[k] * bq.scales[k];
-      static const float kZeroBias[3] = { 0.65f, 0.6f, 0.7f };
-      const float thres = kZeroBias[c];
       block_out[k] = (k > 0 && std::abs(val) < thres) ? 0 : std::round(val);
     }
+  }
+
+  void QuantizeBlock2x2(size_t quant_x, size_t quant_y, int c,
+                        const float* PIK_RESTRICT block_in,
+                        int16_t* PIK_RESTRICT block_out) const {
+    const BlockQuantizer& bq = bq_[c].Get(QuantizerKey(quant_x, quant_y));
+    const float thres = zero_bias_[c];
+    const float val1 = block_in[1] * bq.scales[1];
+    const float val8 = block_in[8] * bq.scales[8];
+    const float val9 = block_in[9] * bq.scales[9];
+    block_out[1] = std::abs(val1) < thres ? 0 : std::round(val1);
+    block_out[8] = std::abs(val8) < thres ? 0 : std::round(val8);
+    block_out[9] = std::abs(val9) < thres ? 0 : std::round(val9);
   }
 
   // Returns only DC.
@@ -170,6 +186,7 @@ class Quantizer {
   float inv_global_scale_;
   float inv_quant_patch_;
   float inv_quant_dc_;
+  float zero_bias_[3];
   bool initialized_ = false;
   BQCache bq_[3];  // one per channel
 };
@@ -177,12 +194,24 @@ class Quantizer {
 const float* DequantMatrix(int id);
 
 Image3S QuantizeCoeffs(const Image3F& in, const Quantizer& quantizer);
+Image3S QuantizeCoeffsDC(const Image3F& in, const Quantizer& quantizer);
 Image3F DequantizeCoeffs(const Image3S& in, const Quantizer& quantizer);
 
-ImageF QuantizeRoundtrip(const Quantizer& quantizer, int c, const ImageF& img);
-Image3F QuantizeRoundtrip(const Quantizer& quantizer, const Image3F& img);
+// Returns 64 coefficients per block.
+ImageF QuantizeRoundtrip(const Quantizer& quantizer, int c,
+                         const ImageF& coeffs);
+Image3F QuantizeRoundtrip(const Quantizer& quantizer, const Image3F& coeffs);
 
-Image3F QuantizeRoundtripDC(const Quantizer& quantizer, const Image3F& img);
+// Returns 1x4 [--, 1, 8, 9] per block.
+Image3F QuantizeRoundtripExtract189(const Quantizer& quantizer,
+                                    const Image3F& coeffs);
+
+// Returns 1 DC per block.
+Image3F QuantizeRoundtripExtractDC(const Quantizer& quantizer,
+                                   const Image3F& coeffs);
+
+// Input is already 1 DC per block!
+Image3F QuantizeRoundtripDC(const Quantizer& quantizer, const Image3F& dc);
 
 // Returns the matrix of the quadratic function
 //
@@ -192,6 +221,7 @@ Image3F QuantizeRoundtripDC(const Quantizer& quantizer, const Image3F& img);
 ImageD ComputeBlockDistanceQForm(const double lambda,
                                  const float* const PIK_RESTRICT scales);
 
+// DC element in DCT block is invalid.
 TFNode* AddDequantize(const TFPorts in_xyb, const TFPorts in_quant_ac,
                       const Quantizer& quantizer, TFBuilder* builder);
 

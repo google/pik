@@ -39,21 +39,8 @@ void ComputeBlockDCTFloat(float block[64]);
 // Requires that block is 32-bytes aligned.
 void ComputeBlockIDCTFloat(float block[64]);
 
-// Returns a 8*N x 8*M image where each 8x8 block is produced with
-// ComputeTransposedScaledBlockIDCTFloat() from the corresponding 64x1 block of
-// the coefficient image.
-// REQUIRES: coeffs.xsize() == 64*N, coeffs.ysize() == M
-Image3F TransposedScaledIDCT(const Image3F& coeffs);
-
 TFNode* AddTransposedScaledIDCT(const TFPorts in_xyb, bool zero_dc,
                                 TFBuilder* builder);
-
-// Returns a 64*N x M image where each 64x1 block is produced with
-// ComputeTransposedScaledBlockDCTFloat() from the corresponding 8x8 block of
-// the image. Note that the whole coefficient image is scaled by 1/64
-// afterwards, so that this is exactly the inverse of TransposedScaledIDCT().
-// REQUIRES: coeffs.xsize() == 8*N, coeffs.ysize() == 8*M
-Image3F TransposedScaledDCT(const Image3F& img);
 
 // Final scaling factors of outputs/inputs in the Arai, Agui, and Nakajima
 // algorithm computing the DCT/IDCT.
@@ -593,6 +580,61 @@ static PIK_INLINE void ComputeTransposedScaledBlockIDCTFloat(
     float block[64], const DC_Op dc_op) {
   ComputeTransposedScaledBlockIDCTFloat(FromBlock(block), ToBlock(block),
                                         dc_op);
+}
+
+// Returns a 8*N x 8*M image where each 8x8 block is produced with
+// ComputeTransposedScaledBlockIDCTFloat() from the corresponding 1x64 block of
+// the coefficient image.
+// REQUIRES: coeffs.xsize() == 64*N, coeffs.ysize() == M
+template <class DC_Op = DC_Unchanged>
+Image3F TransposedScaledIDCT(const Image3F& coeffs, ThreadPool* pool) {
+  const size_t xsize = coeffs.xsize();
+  const size_t ysize = coeffs.ysize();
+  PIK_ASSERT(xsize % 64 == 0);
+  Image3F img(xsize / 8, ysize * 8);
+
+  pool->Run(0, ysize, [xsize, &coeffs, &img](const int task, const int thread) {
+    const size_t y = task;
+    for (int c = 0; c < 3; ++c) {
+      const size_t stride = img.PlaneRow(c, 1) - img.PlaneRow(c, 0);
+      const float* PIK_RESTRICT row_in = coeffs.PlaneRow(c, y);
+      float* PIK_RESTRICT row_out = img.PlaneRow(c, y * 8);
+
+      for (size_t x = 0; x < xsize; x += 64) {
+        ComputeTransposedScaledBlockIDCTFloat(
+            FromBlock(row_in + x), ToLines(row_out + x / 8, stride), DC_Op());
+      }
+    }
+  });
+  return img;
+}
+
+// Returns a 64*N x M image where each 64x1 block is produced with
+// ComputeTransposedScaledBlockDCTFloat() from the corresponding 8x8 block of
+// the image. Note that the whole coefficient image is scaled by 1/64
+// afterwards, so that this is exactly the inverse of TransposedScaledIDCT().
+// REQUIRES: coeffs.xsize() == 8*N, coeffs.ysize() == 8*M
+static inline Image3F TransposedScaledDCT(const Image3F& img,
+                                          ThreadPool* pool) {
+  PIK_ASSERT(img.ysize() % 8 == 0);
+  const size_t xsize = img.xsize() * 8;
+  const size_t ysize = img.ysize() / 8;
+  Image3F coeffs(xsize, ysize);
+
+  pool->Run(0, ysize, [xsize, &img, &coeffs](const int task, const int thread) {
+    const size_t y = task;
+    for (int c = 0; c < 3; ++c) {
+      const size_t stride = img.PlaneRow(c, 1) - img.PlaneRow(c, 0);
+      const float* PIK_RESTRICT row_in = img.PlaneRow(c, y * 8);
+      float* PIK_RESTRICT row_out = coeffs.PlaneRow(c, y);
+
+      for (size_t x = 0; x < coeffs.xsize(); x += 64) {
+        ComputeTransposedScaledBlockDCTFloat(FromLines(row_in + x / 8, stride),
+                                             ScaleToBlock(row_out + x));
+      }
+    }
+  });
+  return coeffs;
 }
 
 }  // namespace pik

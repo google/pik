@@ -33,7 +33,7 @@ Image3F KeepOnly2x2Corners(const Image3F& coeffs);
 //  2) perform TransposedScaledIDCT()
 //  3) subsample the result 4x4 by taking simple averages
 // REQUIRES: coeffs.xsize() == 64*N, coeffs.ysize() == M
-Image3F GetPixelSpaceImageFrom2x2Corners(const Image3F& coeffs);
+Image3F GetPixelSpaceImageFrom0189_64(const Image3F& coeffs);
 
 // Puts back the top 2x2 corner of each 8x8 block of *coeffs from the
 // transformed pixel space image img.
@@ -52,10 +52,10 @@ Image3F UpSample8x8BlurDCT(const Image3F& img, const float sigma);
 //  1) Upsample image 4x4 with nearest-neighbor
 //  2) Blur with a Gaussian kernel of radius 4 and given sigma
 //  3) perform TransposedScaledDCT()
-//  4) Zero out the top 2x2 corner of each DCT block, unless add_all is true
+//  4) Zero out the top 2x2 corner of each DCT block
 //  5) XOR with "sign" (decoder adds predictions, encoder would subtract)
 void UpSample4x4BlurDCT(const Image3F& img, const float sigma, const float sign,
-                        const bool add_all, ThreadPool* pool, Image3F* add_to);
+                        ThreadPool* pool, Image3F* add_to);
 
 // Returns an image that is defined by the following transformations:
 //  1) Upsample image 8x8 with nearest-neighbor

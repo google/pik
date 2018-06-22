@@ -21,47 +21,6 @@
 #include "profiler.h"
 
 namespace pik {
-
-Image3F TransposedScaledDCT(const Image3F& img) {
-  PIK_ASSERT(img.xsize() % 8 == 0);
-  PIK_ASSERT(img.ysize() % 8 == 0);
-  Image3F coeffs(img.xsize() * 8, img.ysize() / 8);
-
-  for (int c = 0; c < 3; ++c) {
-    const size_t stride = img.PlaneRow(c, 1) - img.PlaneRow(c, 0);
-    for (size_t y = 0; y < coeffs.ysize(); ++y) {
-      const float* PIK_RESTRICT row_in = img.PlaneRow(c, y * 8);
-      float* PIK_RESTRICT row_out = coeffs.PlaneRow(c, y);
-
-      for (size_t x = 0; x < coeffs.xsize(); x += 64) {
-        ComputeTransposedScaledBlockDCTFloat(FromLines(row_in + x / 8, stride),
-                                             ScaleToBlock(row_out + x));
-      }
-    }
-  }
-  return coeffs;
-}
-
-Image3F TransposedScaledIDCT(const Image3F& coeffs) {
-  PIK_ASSERT(coeffs.xsize() % 64 == 0);
-  Image3F img(coeffs.xsize() / 8, coeffs.ysize() * 8);
-
-  for (int c = 0; c < 3; ++c) {
-    const size_t stride = img.PlaneRow(c, 1) - img.PlaneRow(c, 0);
-    for (size_t y = 0; y < coeffs.ysize(); ++y) {
-      const float* PIK_RESTRICT row_in = coeffs.PlaneRow(c, y);
-      float* PIK_RESTRICT row_out = img.PlaneRow(c, y * 8);
-
-      for (size_t x = 0; x < coeffs.xsize(); x += 64) {
-        ComputeTransposedScaledBlockIDCTFloat(FromBlock(row_in + x),
-                                              ToLines(row_out + x / 8, stride),
-                                              DC_Unchanged());
-      }
-    }
-  }
-  return img;
-}
-
 namespace {
 
 template <class DC_Op>

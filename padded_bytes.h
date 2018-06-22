@@ -23,8 +23,8 @@
 
 namespace pik {
 
-// Subset of std::vector that appends padding so that PikToPixels can safely
-// read beyond the end of the valid bytes.
+// Subset of std::vector; allows WriteBits to write 64 bits at a time without
+// bounds checking.
 class PaddedBytes {
  public:
   // Required for output params.

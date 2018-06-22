@@ -77,6 +77,7 @@ add_library(pikcommon STATIC
   deconvolve.cc
   deconvolve.h
   fast_log.h
+  fields.h
   gamma_correct.cc
   gamma_correct.h
   gamma_correct_poly.h
@@ -104,8 +105,8 @@ add_library(pikcommon STATIC
   linalg.h
   noise.cc
   noise.h
-  opsin_codec.cc
-  opsin_codec.h
+  entropy_coder.cc
+  entropy_coder.h
   opsin_image.cc
   opsin_image.h
   opsin_inverse.cc
@@ -131,6 +132,8 @@ add_library(pikcommon STATIC
   rational_polynomial.h
   resample.h
   robust_statistics.h
+  sections.cc
+  sections.h
   simd_helpers.h
   status.h
   tile_flow.cc
