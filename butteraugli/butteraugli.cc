@@ -675,8 +675,8 @@ static void L2Diff(const ImageF& i0, const ImageF& i1, const double w,
 }
 
 static void L2DiffAsymmetric(const ImageF& i0, const ImageF& i1,
-                             const double w_0gt1,
-                             const double w_0lt1,
+                             double w_0gt1,
+                             double w_0lt1,
                              ImageF* BUTTERAUGLI_RESTRICT diffmap) {
   if (w_0gt1 == 0 && w_0lt1 == 0) {
     return;
@@ -687,10 +687,10 @@ static void L2DiffAsymmetric(const ImageF& i0, const ImageF& i1,
     float* BUTTERAUGLI_RESTRICT const row_diff = diffmap->Row(y);
     for (size_t x = 0; x < i0.xsize(); ++x) {
       double diff = row0[x] - row1[x];
-      if (fabs(row0[x]) < 2.0 * fabs(row1[x])) {
-        row_diff[x] += w_0lt1 * diff * diff;
-      } else {
-        row_diff[x] += w_0gt1 * diff * diff;
+      row_diff[x] += w_0gt1 * diff * diff;
+      if (fabs(row0[x]) < fabs(row1[x])) {
+        double diff2 = fabs(row0[x]) - fabs(row1[x]);
+        row_diff[x] += w_0lt1 * diff2 * diff2;
       }
     }
   }
@@ -1434,8 +1434,11 @@ static void MaltaDiffMapImpl(const ImageF& lum0, const ImageF& lum1,
                              const double norm1,
                              const double len, const double mulli,
                              ImageF* block_diff_ac) {
-  const double w_pre0gt1 = mulli * sqrt(w_0gt1) / (len * 2 + 1);
-  const double w_pre0lt1 = mulli * sqrt(w_0lt1) / (len * 2 + 1);
+  const float kKludge0 = 0.43;
+  const float kKludge1 = 0.43;
+
+  const double w_pre0gt1 = mulli * sqrt(kKludge0 * w_0gt1) / (len * 2 + 1);
+  const double w_pre0lt1 = mulli * sqrt(kKludge1 * w_0lt1) / (len * 2 + 1);
   const float norm2_0gt1 = w_pre0gt1 * norm1;
   const float norm2_0lt1 = w_pre0lt1 * norm1;
 
@@ -1446,11 +1449,31 @@ static void MaltaDiffMapImpl(const ImageF& lum0, const ImageF& lum1,
     for (size_t x = 0; x < xsize_; ++x, ++ix) {
       const float absval = 0.5f * (std::abs(row0[x]) + std::abs(row1[x]));
       const float diff = row0[x] - row1[x];
-      bool is_0lt1 = fabs(row0[x]) < 2.0 * fabs(row1[x]);
-      const float scaler =
-         (is_0lt1 ? norm2_0lt1 : norm2_0gt1) /
-         (static_cast<float>(norm1) + absval);
+      const float scaler = norm2_0gt1 / (static_cast<float>(norm1) + absval);
       diffs[ix] = scaler * diff;
+
+      const float scaler2 = norm2_0lt1 / (static_cast<float>(norm1) + absval);
+      if (row0[x] < 0) {
+        if (row1[x] > 0) {
+          if (diff < 0) {
+            diffs[ix] -= scaler2 * row1[x];
+          } else {
+            diffs[ix] += scaler2 * row1[x];
+          }
+        } else if (row1[x] < row0[x]) {
+          diffs[ix] += scaler2 * diff;
+        }
+      } else {
+        if (row1[x] < 0) {
+          if (diff < 0) {
+            diffs[ix] += scaler2 * row1[x];
+          } else {
+            diffs[ix] -= scaler2 * row1[x];
+          }
+        } else if (row1[x] > row0[x]) {
+          diffs[ix] += scaler2 * diff;
+        }
+      }
     }
   }
 

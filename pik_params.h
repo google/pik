@@ -34,8 +34,8 @@ struct CompressParams {
   bool fast_mode = false;
   int max_butteraugli_iters = 7;
 
-  bool really_slow_mode = false;
-  int max_butteraugli_iters_really_slow_mode = 100;
+  bool guetzli_mode = false;
+  int max_butteraugli_iters_guetzli_mode = 100;
 
   Override denoise = Override::kDefault;
 

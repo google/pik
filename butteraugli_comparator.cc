@@ -38,12 +38,12 @@ std::vector<butteraugli::ImageF> SrgbToLinearRgb(
   const float* lut = Srgb8ToLinearTable();
   std::vector<butteraugli::ImageF> planes =
       butteraugli::CreatePlanes<float>(xsize, ysize, 3);
-  for (size_t y = 0; y < ysize; ++y) {
-    auto row_in = srgb.Row(y);
-    for (int c = 0; c < 3; ++c) {
-      float* const PIK_RESTRICT row_out = planes[c].Row(y);
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < ysize; ++y) {
+      const uint8_t* PIK_RESTRICT row_in = srgb.PlaneRow(c, y);
+      float* PIK_RESTRICT row_out = planes[c].Row(y);
       for (size_t x = 0; x < xsize; ++x) {
-        row_out[x] = lut[row_in[c][x]];
+        row_out[x] = lut[row_in[x]];
       }
     }
   }
@@ -66,18 +66,21 @@ std::vector<butteraugli::ImageF> OpsinToLinearRgb(
   std::vector<butteraugli::ImageF> planes =
       butteraugli::CreatePlanes<float>(xsize, ysize, 3);
   for (size_t y = 0; y < ysize; ++y) {
-    auto row_in = opsin.Row(y);
-    std::array<float*, 3> row_out{{
-        planes[0].Row(y), planes[1].Row(y), planes[2].Row(y) }};
-    for (int x = 0; x < xsize; x += d.N) {
-      const auto vx = load(d, row_in[0] + x);
-      const auto vy = load(d, row_in[1] + x);
-      const auto vb = load(d, row_in[2] + x);
+    const float* PIK_RESTRICT row_xyb0 = opsin.PlaneRow(0, y);
+    const float* PIK_RESTRICT row_xyb1 = opsin.PlaneRow(1, y);
+    const float* PIK_RESTRICT row_xyb2 = opsin.PlaneRow(2, y);
+    float* PIK_RESTRICT row_rgb0 = planes[0].Row(y);
+    float* PIK_RESTRICT row_rgb1 = planes[1].Row(y);
+    float* PIK_RESTRICT row_rgb2 = planes[2].Row(y);
+    for (size_t x = 0; x < xsize; x += d.N) {
+      const auto vx = load(d, row_xyb0 + x);
+      const auto vy = load(d, row_xyb1 + x);
+      const auto vb = load(d, row_xyb2 + x);
       V r, g, b;
       XybToRgb(d, vx, vy, vb, inverse_matrix, &r, &g, &b);
-      store(r, d, row_out[0] + x);
-      store(g, d, row_out[1] + x);
-      store(b, d, row_out[2] + x);
+      store(r, d, row_rgb0 + x);
+      store(g, d, row_rgb1 + x);
+      store(b, d, row_rgb2 + x);
     }
   }
   return planes;
@@ -86,12 +89,12 @@ std::vector<butteraugli::ImageF> OpsinToLinearRgb(
 Image3F Image3FromButteraugliPlanes(
     const std::vector<butteraugli::ImageF>& planes) {
   Image3F img(planes[0].xsize(), planes[0].ysize());
-  for (size_t y = 0; y < img.ysize(); ++y) {
-    auto row_out = img.Row(y);
-    for (int c = 0; c < 3; ++c) {
-      auto row_in = planes[c].Row(y);
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < img.ysize(); ++y) {
+      const float* PIK_RESTRICT row_in = planes[c].Row(y);
+      float* PIK_RESTRICT row_out = img.PlaneRow(c, y);
       for (size_t x = 0; x < img.xsize(); ++x) {
-        row_out[c][x] = row_in[x];
+        row_out[x] = row_in[x];
       }
     }
   }

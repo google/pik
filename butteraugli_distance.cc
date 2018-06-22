@@ -33,15 +33,17 @@ float ButteraugliDistance(const Image3F& rgb0, const Image3F& rgb1,
                           ImageF* distmap_out) {
   const size_t xsize = rgb0.xsize();
   const size_t ysize = rgb0.ysize();
-  const size_t row_size = xsize * sizeof(rgb0.Row(0)[0][0]);
+  const size_t row_size = xsize * sizeof(*rgb0.PlaneRow(0, 0));
   std::vector<butteraugli::ImageF> rgb0b;
   std::vector<butteraugli::ImageF> rgb1b;
-  for (int i = 0; i < 3; ++i) {
+  for (int c = 0; c < 3; ++c) {
     butteraugli::ImageF plane0(xsize, ysize);
     butteraugli::ImageF plane1(xsize, ysize);
     for (int y = 0; y < ysize; ++y) {
-      memcpy(plane0.Row(y), rgb0.Row(y)[i], row_size);
-      memcpy(plane1.Row(y), rgb1.Row(y)[i], row_size);
+      memcpy(plane0.Row(y), rgb0.PlaneRow(c, y), row_size);
+    }
+    for (int y = 0; y < ysize; ++y) {
+      memcpy(plane1.Row(y), rgb1.PlaneRow(c, y), row_size);
     }
     rgb0b.emplace_back(std::move(plane0));
     rgb1b.emplace_back(std::move(plane1));
