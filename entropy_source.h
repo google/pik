@@ -10,7 +10,6 @@
 #include "ans_encode.h"
 #include "cluster.h"
 #include "context_map_encode.h"
-#include "histogram_encode.h"
 #include "write_bits.h"
 
 namespace pik {
@@ -61,6 +60,36 @@ class EntropySource {
   }
 
  private:
+  template <int kSize>
+  struct Histogram {
+    Histogram() { Clear(); }
+
+    void Clear() {
+      memset(data_, 0, sizeof(data_));
+      total_count_ = 0;
+    }
+
+    void AddHistogram(const Histogram& other) {
+      for (int i = 0; i < kSize; ++i) {
+        data_[i] += other.data_[i];
+      }
+      total_count_ += other.total_count_;
+    }
+
+    void Add(int val) {
+      PIK_ASSERT(val < kSize);
+      ++data_[val];
+      ++total_count_;
+    }
+
+    float PopulationCost() const {
+      return ANSPopulationCost(&data_[0], kSize, total_count_);
+    }
+
+    int data_[kSize];
+    int total_count_;
+  };
+
   static const int kAlphabetSize = 18;
   static const int kMaxNumberOfHistograms = 256;
   int num_bands_;

@@ -71,6 +71,10 @@ struct ANSEncodingData {
   std::vector<ANSEncSymbolInfo> ans_table;
 };
 
+// Returns an estimate of the number of bits required to encode the given
+// histogram (header bits plus data bits).
+float ANSPopulationCost(const int* data, int alphabet_size, int total_count);
+
 class ANSCoder {
  public:
   ANSCoder() : state_(ANS_SIGNATURE << 16) {}

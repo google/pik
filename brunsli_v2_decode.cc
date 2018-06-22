@@ -706,7 +706,7 @@ bool BrunsliV2DecodeJpegData(const uint8_t* data, const size_t len,
 
   for (int i = 0; i < jpg->components.size(); ++i) {
     guetzli::JPEGComponent* c = &jpg->components[i];
-    c->coeffs.resize(c->num_blocks * kDCTBlockSize);
+    c->coeffs.resize(static_cast<size_t>(c->num_blocks) * kDCTBlockSize);
   }
   std::set<int> markers_seen;
   JPEGDecodingState s;

@@ -11,7 +11,6 @@
 #include "ans_params.h"
 #include "bit_reader.h"
 #include "brunsli_v2_input.h"
-#include "histogram_decode.h"
 
 namespace pik {
 
