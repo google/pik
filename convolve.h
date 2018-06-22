@@ -264,8 +264,8 @@ struct General3x3Convolution {
   static void Run(const Image3F& in, const size_t xsize, const size_t ysize,
                   const Kernel& kernel, Image3F* out) {
     for (int c = 0; c < 3; ++c) {
-      Run(in.plane(c), xsize, ysize, kernel,
-          const_cast<ImageF*>(&out->plane(c)));
+      Run(in.plane(c), xsize, ysize, kernel, out->MutablePlane(c));
+      out->CheckSizesSame();
     }
   }
 };

@@ -204,8 +204,8 @@ struct SourcePortTLS {
 
   // Redirects all users' views to point to a window of the sources with
   // top-left coordinates x,y (including borders).
-  void PointUsersAtSource(const uint32_t x, const uint32_t y,
-                          const uint32_t type_size) const {
+  PIK_INLINE void PointUsersAtSource(const uint32_t x, const uint32_t y,
+                                     const uint32_t type_size) const {
     const intptr_t base = reinterpret_cast<intptr_t>(this);
     for (size_t idx_user = 0; idx_user < kMaxSourceUsers; ++idx_user) {
       const User& user = users_[idx_user];
@@ -767,9 +767,7 @@ class SourceTLS {
     bool allow_copy = (x >= 0 && y >= 0);
     allow_copy &= (x + out_xsize_ <= source_size_.xsize);
     allow_copy &= (y + out_ysize_ <= source_size_.ysize);
-    if (allow_copy) {
-      PROFILER_ZONE("|| TFGraph RunSource zerocopy");
-
+    if (PIK_LIKELY(allow_copy)) {
       for (TFPortIndex idx_port = 0; idx_port < num_ports_; ++idx_port) {
         ports_[idx_port].PointUsersAtSource(x, y, source_type_size_);
       }
@@ -968,7 +966,6 @@ class NodeTLS {
   PIK_INLINE const NodeTLS* Next() const { return end_; }
 
   PIK_INLINE void Run(const RunArg& arg) const {
-    PROFILER_ZONE("|| TFGraph RunNode");
     const int32_t x = x_from_ix(arg.tile_ix);
     const int32_t y = y_from_iy(arg.tile_iy);
 
@@ -1051,8 +1048,6 @@ class SinkTLS {
   PIK_INLINE const SinkTLS* Next() const { return end_; }
 
   PIK_INLINE void Run(const RunArg& arg) const {
-    PROFILER_ZONE("|| TFGraph RunSink");
-
     const int32_t x = x_from_ix(arg.tile_ix);
     const int32_t y = y_from_iy(arg.tile_iy);
 
@@ -1419,15 +1414,12 @@ TFGraph::~TFGraph() {
 }
 
 void TFGraph::Run() {
-  PROFILER_ZONE("TFGraph thread join");
-
   const TFGraph* self = this;  // For lambda captures.
   const int mask = num_tiles_x_ - 1;
 
   // Preferred: enough strips to keep threads busy (better locality).
   if (num_tiles_y_ >= pool_->NumThreads() * 2) {
     pool_->Run(0, num_tiles_y_, [self](const int task, const int thread) {
-      PROFILER_ZONE("|| TF task strip");
       const TileIndex tile_iy = task;
       RunArg arg(0, tile_iy, self->num_tiles_x_, self->num_tiles_y_);
       for (TileIndex tile_ix = 0; tile_ix < self->num_tiles_x_ - 1; ++tile_ix) {
@@ -1447,7 +1439,6 @@ void TFGraph::Run() {
     const int shift = FloorLog2Nonzero(num_tiles_x_);
     pool_->Run(0, num_tiles_,
                [mask, shift, self](const int task, const int thread) {
-                 PROFILER_ZONE("|| TF task 2^x");
                  const TileIndex tile_ix = task & mask;
                  const TileIndex tile_iy = task >> shift;
                  const RunArg arg(tile_ix, tile_iy, self->num_tiles_x_,
@@ -1460,7 +1451,6 @@ void TFGraph::Run() {
   // Fallback: expand task into x,y via 'division'.
   const Divider divide(num_tiles_x_);
   pool_->Run(0, num_tiles_, [&divide, self](const int task, const int thread) {
-    PROFILER_ZONE("|| TF task slow");
     const TileIndex tile_iy = divide(task);
     // Remainder - subtracting after mul is faster than modulo.
     const TileIndex tile_ix = task - tile_iy * self->num_tiles_x_;

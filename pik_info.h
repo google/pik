@@ -24,7 +24,7 @@
 namespace pik {
 
 struct PikImageSizeInfo {
-  PikImageSizeInfo() : entropy_per_channel(3) {}
+  PikImageSizeInfo() {}
 
   void Assimilate(const PikImageSizeInfo& victim) {
     num_clustered_histograms += victim.num_clustered_histograms;
@@ -33,9 +33,6 @@ struct PikImageSizeInfo {
     extra_bits += victim.extra_bits;
     total_size += victim.total_size;
     clustered_entropy += victim.clustered_entropy;
-    for (int i = 0; i < 3; ++i) {
-      entropy_per_channel[i] += victim.entropy_per_channel[i];
-    }
   }
   void Print(size_t num_inputs) const {
     printf("%10zd", total_size);
@@ -44,12 +41,6 @@ struct PikImageSizeInfo {
              num_clustered_histograms * 1.0 / num_inputs, histogram_size,
              entropy_coded_bits >> 3, extra_bits >> 3,
              histogram_size + (clustered_entropy + extra_bits) / 8.0f);
-      if (entropy_per_channel[0] > 0 || entropy_per_channel[1] > 0 ||
-          entropy_per_channel[2] > 0) {
-        printf(" %8.0f %8.0f %8.0f",
-               entropy_per_channel[0] / 8.0, entropy_per_channel[1] / 8.0,
-               entropy_per_channel[2] / 8.0);
-      }
       printf("]");
     }
     printf("\n");
@@ -60,20 +51,18 @@ struct PikImageSizeInfo {
   size_t extra_bits = 0;
   size_t total_size = 0;
   double clustered_entropy = 0.0f;
-  std::vector<double> entropy_per_channel;
 };
 
 static const int kNumImageLayers = 7;
 static const int kLayerHeader = 0;
-static const int kLayerOrder = 1;
-static const int kLayerAlpha = 2;
-static const int kLayerCtan = 3;
-static const int kLayerQuant = 4;
+static const int kLayerSections = 1;
+static const int kLayerQuant = 2;
+static const int kLayerOrder = 3;
+static const int kLayerCtan = 4;
 static const int kLayerDC = 5;
 static const int kLayerAC = 6;
-static const char* kImageLayers[] = {
-  "header", "order", "alpha", "ctan", "quant", "DC", "AC",
-};
+static const char* kImageLayers[kNumImageLayers] = {
+    "header", "sections", "quant", "order", "ctan", "DC", "AC"};
 
 // Metadata and statistics gathered during compression or decompression.
 struct PikInfo {

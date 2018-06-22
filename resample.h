@@ -46,8 +46,8 @@ template <class Upsampler, class Executor, class Kernel>
 PIK_INLINE void Upsample(const Executor executor, const Image3F& in,
                          const Kernel& kernel, Image3F* out) {
   for (int c = 0; c < 3; ++c) {
-    Upsample<Upsampler>(executor, in.plane(c), kernel,
-                        const_cast<ImageF*>(&out->plane(c)));
+    Upsample<Upsampler>(executor, in.plane(c), kernel, out->MutablePlane(c));
+    out->CheckSizesSame();
   }
 }
 
@@ -359,10 +359,9 @@ class GeneralUpsamplerFromSeparable {
 };
 
 // Supports any kernel size. Requires known kScale and Kernel::Weights2D.
+template<int64_t kScale>
 class GeneralUpsampler {
  public:
-  static constexpr int64_t kScale = 8;
-
   // TODO(janwas): add ExecutorPool overload
   template <class Executor, class Kernel>
   static void Run(const Executor executor, const ImageF& in,
@@ -447,8 +446,8 @@ class Upsampler8Base {
   static constexpr int64_t kRadius = kRadiusArg;
   static constexpr int64_t kWidth = 2 * kRadius;
 
-  static constexpr int64_t kScale = 8;
   static constexpr int kLogScale = 3;
+  static constexpr int64_t kScale = 1 << kLogScale;
 
   static constexpr int64_t kBorder = kRadius * kScale;
 

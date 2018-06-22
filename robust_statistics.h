@@ -50,6 +50,22 @@ size_t MinRange(const T* const PIK_RESTRICT sorted, const size_t idx_begin,
   return min_idx;
 }
 
+// Round up for integers
+template<class T, typename std::enable_if<
+    std::numeric_limits<T>::is_integer>::type* = nullptr>
+inline T Half(T x)
+{
+  return (x + 1) / 2;
+}
+
+// Mul is faster than div.
+template<class T, typename std::enable_if<
+    !std::numeric_limits<T>::is_integer>::type* = nullptr>
+inline T Half(T x)
+{
+  return x * 0.5;
+}
+
 // Returns an estimate of the mode by calling MinRange on successively
 // halved intervals. "sorted" must be in ascending order. This is the
 // Half Sample Mode estimator proposed by Bickel in "On a fast, robust
@@ -70,7 +86,7 @@ T Mode(const T* const PIK_RESTRICT sorted, const size_t num_values) {
     return x;
   }
   PIK_ASSERT(half_count == 1);
-  const T average = (x + sorted[idx_begin + 1] + 1) / 2;
+  const T average = Half(x + sorted[idx_begin + 1]);
   return average;
 }
 
@@ -105,26 +121,21 @@ void CountingSort(T* begin, T* end) {
   PIK_ASSERT(p == end);
 }
 
-template <typename T>
-static inline T Half(const T x) {
-  return x / 2;
-}
-// Mul is faster than div.
-template <>
-inline float Half<float>(const float x) {
-  return x * 0.5f;
-}
-
-// Returns the median value. Side effect: sorts "samples".
+// Returns the median value. Side effect: values <= median will appear before,
+// values >= median after the middle index.
+// Guarantees average speed O(num_values).
 template <typename T>
 T Median(T* samples, const size_t num_samples) {
   PIK_ASSERT(num_samples != 0);
-  std::sort(samples, samples + num_samples);
-  const size_t half = num_samples / 2;
-  // Odd count: return middle
-  if (num_samples % 2) return samples[half];
-  // Even count: return average of middle two.
-  return Half(samples[half] + samples[half - 1]);
+  std::nth_element(samples, samples + num_samples / 2, samples + num_samples);
+  T result = samples[num_samples / 2];
+  // If even size, find largest element in the partially sorted vector to
+  // use as second element to average with
+  if ((num_samples & 1) == 0) {
+    T biggest = *std::max_element(samples, samples + num_samples / 2);
+    result = Half(result + biggest);
+  }
+  return result;
 }
 
 template <typename T>
