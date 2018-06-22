@@ -358,11 +358,6 @@ void InjectExceptDC(const Image3F& what, Image3F* out) {
   }
 }
 
-static double UpsampleFactor() {
-  static double f = 1.5395200630338877;
-  return f;
-}
-
 template <typename T>
 void ZeroDC(Image3<T>* img) {
   for (int c = 0; c < 3; c++) {

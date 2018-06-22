@@ -832,9 +832,9 @@ TFNode* AddDequantize(const TFPorts in_xyb, const TFPorts in_quant_ac,
 
             for (size_t bx = 0; bx < xsize; bx += 64) {
               using namespace SIMD_NAMESPACE;
-              const Full<float> d;
-              const Part<int16_t, d.N> d16;
-              const Part<int32_t, d.N> d32;
+              constexpr Full<float> d;
+              constexpr Part<int16_t, d.N> d16;
+              constexpr Part<int32_t, d.N> d32;
 
               const auto inv_quant_ac =
                   set1(d, row_quant_ac[bx / 64] == 0
@@ -869,9 +869,9 @@ TFNode* AddDequantizeDC(const TFPorts in_xyb, const Quantizer& quantizer,
                const MutableImageViewF* PIK_RESTRICT out) {
         for (int c = 0; c < 3; ++c) {
           using namespace SIMD_NAMESPACE;
-          const Full<float> d;
-          const Part<int16_t, d.N> d16;
-          const Part<int32_t, d.N> d32;
+          constexpr Full<float> d;
+          constexpr Part<int16_t, d.N> d16;
+          constexpr Part<int32_t, d.N> d32;
           const auto vmul = set1(d, mul_dc[c]);
 
           for (size_t y = 0; y < output_region.ysize; ++y) {

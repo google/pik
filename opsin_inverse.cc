@@ -93,9 +93,7 @@ struct LinearToSRGB_U8 {
                              uint8_t* PIK_RESTRICT out_srgb_g,
                              uint8_t* PIK_RESTRICT out_srgb_b) const {
     using namespace SIMD_NAMESPACE;
-    D d;
-    Full<uint32_t> du;
-    Full<int32_t> di;
+    constexpr D d;
 
     // The convert_to below take care of clamping.
     V srgb_r, srgb_g, srgb_b;
@@ -103,7 +101,7 @@ struct LinearToSRGB_U8 {
                                   &srgb_g, &srgb_b);
 
     // Quarter-vectors.
-    const Part<uint8_t, d.N> d8;
+    constexpr Part<uint8_t, d.N> d8;
     const auto srgb_r8 =
         convert_to(d8, nearest_int(Dither::Eval(srgb_r, dither)));
     const auto srgb_g8 =
@@ -132,7 +130,7 @@ struct LinearToSRGB_U16 {
                              uint16_t* PIK_RESTRICT out_srgb_g,
                              uint16_t* PIK_RESTRICT out_srgb_b) const {
     using namespace SIMD_NAMESPACE;
-    D d;
+    constexpr D d;
 
     // The convert_to below take care of clamping.
     V srgb_r, srgb_g, srgb_b;
@@ -140,7 +138,7 @@ struct LinearToSRGB_U16 {
                                   &srgb_g, &srgb_b);
 
     // Half-vectors.
-    const Part<uint16_t, d.N> d16;
+    constexpr Part<uint16_t, d.N> d16;
     const auto srgb_r16 = convert_to(d16, nearest_int(srgb_r * mul_srgb));
     const auto srgb_g16 = convert_to(d16, nearest_int(srgb_g * mul_srgb));
     const auto srgb_b16 = convert_to(d16, nearest_int(srgb_b * mul_srgb));
@@ -306,7 +304,7 @@ void CenteredOpsinToSrgb(const Image3F& opsin, const bool dither,
 
 Image3B OpsinDynamicsInverse(const Image3F& opsin) {
   using namespace SIMD_NAMESPACE;
-  const Full<float> d;
+  constexpr Full<float> d;
   using V = Full<float>::V;
 
   Image3B srgb(opsin.xsize(), opsin.ysize());
@@ -322,7 +320,7 @@ Image3B OpsinDynamicsInverse(const Image3F& opsin) {
       V r, g, b;
       XybToRgb(d, load(d, row_xyb0 + x), load(d, row_xyb1 + x),
                load(d, row_xyb2 + x), inverse_matrix, &r, &g, &b);
-      const Part<uint8_t, d.N> d8;
+      constexpr Part<uint8_t, d.N> d8;
       const auto u8_r = convert_to(d8, nearest_int(LinearToSrgb8Poly(d, r)));
       const auto u8_g = convert_to(d8, nearest_int(LinearToSrgb8Poly(d, g)));
       const auto u8_b = convert_to(d8, nearest_int(LinearToSrgb8Poly(d, b)));

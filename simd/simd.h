@@ -50,7 +50,7 @@ struct VecT;
 // select overloaded functions; see Full/Part/Scalar aliases below.
 template <typename LaneT, size_t kLanes, class TargetT>
 struct Desc {
-  Desc() {}
+  constexpr Desc() {}
 
   using T = LaneT;
   static constexpr size_t N = kLanes;
