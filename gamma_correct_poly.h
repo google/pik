@@ -85,9 +85,9 @@ V LinearToSrgb8PolyWithoutClamp(const V x) {
       1.5849762703E+0f, 1.5849762703E+0f, 1.5849762703E+0f, 1.5849762703E+0f};
 
   const Full<float> d;
-  const V linear = x * set1(d, 12.92);
+  const V linear = x * set1(d, 12.92f);
   // Range reduction: 2 extra constants, but half the max error vs 5/4.
-  const V x01 = x * set1(d, 1.0 / 255);
+  const V x01 = x * set1(d, 1.0f / 255);
 
   const V poly = EvalRationalPolynomial(x01, p, q) * set1(d, 255.0);
   return select(linear, poly, x01 > set1(d, 0.00313080495356));
@@ -101,17 +101,17 @@ void LinearToSrgb8PolyWithoutClamp(const V x0, const V x1, const V x2,
   using namespace SIMD_NAMESPACE;
   // Computed via af_cheb_rational (k=100); replicated 4x.
   SIMD_ALIGN constexpr float p[(4 + 1) * 4] = {
-      -5.094064307E-06, -5.094064307E-06, -5.094064307E-06, -5.094064307E-06,
-      9.6089389850E-03, 9.6089389850E-03, 9.6089389850E-03, 9.6089389850E-03,
-      4.9360562207E-01, 4.9360562207E-01, 4.9360562207E-01, 4.9360562207E-01,
-      1.9957751314E+00, 1.9957751314E+00, 1.9957751314E+00, 1.9957751314E+00,
-      3.9809614017E-01, 3.9809614017E-01, 3.9809614017E-01, 3.9809614017E-01};
+      -5.094064307E-6f, -5.094064307E-6f, -5.094064307E-6f, -5.094064307E-6f,
+      9.6089389850E-3f, 9.6089389850E-3f, 9.6089389850E-3f, 9.6089389850E-3f,
+      4.9360562207E-1f, 4.9360562207E-1f, 4.9360562207E-1f, 4.9360562207E-1f,
+      1.9957751314E+0f, 1.9957751314E+0f, 1.9957751314E+0f, 1.9957751314E+0f,
+      3.9809614017E-1f, 3.9809614017E-1f, 3.9809614017E-1f, 3.9809614017E-1f};
 
   SIMD_ALIGN constexpr float q[(3 + 1) * 4] = {
-      4.6257541759E-04, 4.6257541759E-04, 4.6257541759E-04, 4.6257541759E-04,
-      8.3720417588E-02, 8.3720417588E-02, 8.3720417588E-02, 8.3720417588E-02,
-      1.2275796918E+00, 1.2275796918E+00, 1.2275796918E+00, 1.2275796918E+00,
-      1.5849762703E+00, 1.5849762703E+00, 1.5849762703E+00, 1.5849762703E+00};
+      4.6257541759E-4f, 4.6257541759E-4f, 4.6257541759E-4f, 4.6257541759E-4f,
+      8.3720417588E-2f, 8.3720417588E-2f, 8.3720417588E-2f, 8.3720417588E-2f,
+      1.2275796918E+0f, 1.2275796918E+0f, 1.2275796918E+0f, 1.2275796918E+0f,
+      1.5849762703E+0f, 1.5849762703E+0f, 1.5849762703E+0f, 1.5849762703E+0f};
 
   const Full<float> d;
 #if SIMD_TARGET_VALUE == SIMD_NONE
@@ -120,8 +120,8 @@ void LinearToSrgb8PolyWithoutClamp(const V x0, const V x1, const V x2,
   const auto expand = set1(d, 255.0f);
   const auto min_poly_x = set1(d, 0.00313080495356f);
 #else
-  SIMD_ALIGN constexpr float lanes[4] = {1.0 / 255, 12.92, 255.0,
-                                         0.00313080495356};
+  SIMD_ALIGN constexpr float lanes[4] = {1.0f / 255, 12.92f, 255.0f,
+                                         0.00313080495356f};
   const auto constants = load_dup128(d, lanes);
   const auto shrink = broadcast<0>(constants);
   const auto linear = broadcast<1>(constants);
