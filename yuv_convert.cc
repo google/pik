@@ -128,12 +128,17 @@ void RGBPixelToYUV(T r, T g, T b, int bits,
 
 template <typename T>
 void YUVRec709ImageToRGB(const Image3U& yuv, int bit_depth, Image3<T>* rgb) {
-  for (int y = 0; y < yuv.ysize(); ++y) {
-    auto row_yuv = yuv.Row(y);
-    auto row_rgb = rgb->Row(y);
-    for (int x = 0; x < yuv.xsize(); ++x) {
-      YUVPixelToRGB(row_yuv[0][x], row_yuv[1][x], row_yuv[2][x], bit_depth,
-                    &row_rgb[0][x], &row_rgb[1][x], &row_rgb[2][x]);
+  for (size_t y = 0; y < yuv.ysize(); ++y) {
+    const uint16_t* PIK_RESTRICT row_yuv0 = yuv.PlaneRow(0, y);
+    const uint16_t* PIK_RESTRICT row_yuv1 = yuv.PlaneRow(1, y);
+    const uint16_t* PIK_RESTRICT row_yuv2 = yuv.PlaneRow(2, y);
+
+    T* PIK_RESTRICT row_rgb0 = rgb->PlaneRow(0, y);
+    T* PIK_RESTRICT row_rgb1 = rgb->PlaneRow(1, y);
+    T* PIK_RESTRICT row_rgb2 = rgb->PlaneRow(2, y);
+    for (size_t x = 0; x < yuv.xsize(); ++x) {
+      YUVPixelToRGB(row_yuv0[x], row_yuv1[x], row_yuv2[x], bit_depth,
+                    &row_rgb0[x], &row_rgb1[x], &row_rgb2[x]);
     }
   }
 }
@@ -153,15 +158,19 @@ Image3U RGB16ImageFromYUVRec709(const Image3U& yuv, int bit_depth) {
 Image3F RGBLinearImageFromYUVRec709(const Image3U& yuv, int bit_depth) {
   Image3F rgb(yuv.xsize(), yuv.ysize());
   for (int y = 0; y < yuv.ysize(); ++y) {
-    const auto row_yuv = yuv.ConstRow(y);
-    auto row_linear = rgb.Row(y);
+    const uint16_t* PIK_RESTRICT row_yuv0 = yuv.ConstPlaneRow(0, y);
+    const uint16_t* PIK_RESTRICT row_yuv1 = yuv.ConstPlaneRow(1, y);
+    const uint16_t* PIK_RESTRICT row_yuv2 = yuv.ConstPlaneRow(2, y);
+    float* PIK_RESTRICT row_linear0 = rgb.PlaneRow(0, y);
+    float* PIK_RESTRICT row_linear1 = rgb.PlaneRow(1, y);
+    float* PIK_RESTRICT row_linear2 = rgb.PlaneRow(2, y);
     for (int x = 0; x < yuv.xsize(); ++x) {
       double rd, gd, bd;
-      YUVPixelToRGB(row_yuv[0][x], row_yuv[1][x], row_yuv[2][x], bit_depth,
-                    &rd, &gd, &bd);
-      row_linear[0][x] = Srgb8ToLinearDirect(rd * 255.0);
-      row_linear[1][x] = Srgb8ToLinearDirect(gd * 255.0);
-      row_linear[2][x] = Srgb8ToLinearDirect(bd * 255.0);
+      YUVPixelToRGB(row_yuv0[x], row_yuv1[x], row_yuv2[x], bit_depth, &rd, &gd,
+                    &bd);
+      row_linear0[x] = Srgb8ToLinearDirect(rd * 255.0);
+      row_linear1[x] = Srgb8ToLinearDirect(gd * 255.0);
+      row_linear2[x] = Srgb8ToLinearDirect(bd * 255.0);
     }
   }
   return rgb;
@@ -170,11 +179,15 @@ Image3F RGBLinearImageFromYUVRec709(const Image3U& yuv, int bit_depth) {
 template <typename T>
 void RGBImageToYUVRec709(const Image3<T>& rgb, int bit_depth, Image3U* yuv) {
   for (int y = 0; y < rgb.ysize(); ++y) {
-    const auto row_rgb = rgb.ConstRow(y);
-    auto row_yuv = yuv->Row(y);
+    const T* PIK_RESTRICT row_rgb0 = rgb.ConstPlaneRow(0, y);
+    const T* PIK_RESTRICT row_rgb1 = rgb.ConstPlaneRow(1, y);
+    const T* PIK_RESTRICT row_rgb2 = rgb.ConstPlaneRow(2, y);
+    uint16_t* PIK_RESTRICT row_yuv0 = yuv->PlaneRow(0, y);
+    uint16_t* PIK_RESTRICT row_yuv1 = yuv->PlaneRow(1, y);
+    uint16_t* PIK_RESTRICT row_yuv2 = yuv->PlaneRow(2, y);
     for (int x = 0; x < rgb.xsize(); ++x) {
-      RGBPixelToYUV(row_rgb[0][x], row_rgb[1][x], row_rgb[2][x], bit_depth,
-                    &row_yuv[0][x], &row_yuv[1][x], &row_yuv[2][x]);
+      RGBPixelToYUV(row_rgb0[x], row_rgb1[x], row_rgb2[x], bit_depth,
+                    &row_yuv0[x], &row_yuv1[x], &row_yuv2[x]);
     }
   }
 }
@@ -195,14 +208,18 @@ Image3U YUVRec709ImageFromRGBLinear(const Image3F& rgb, int out_bit_depth) {
   Image3U yuv(rgb.xsize(), rgb.ysize());
   const double norm = 1. / 255.;
   for (int y = 0; y < yuv.ysize(); ++y) {
-    auto row_yuv = yuv.Row(y);
-    const auto row_linear = rgb.ConstRow(y);
+    const float* PIK_RESTRICT row_linear0 = rgb.ConstPlaneRow(0, y);
+    const float* PIK_RESTRICT row_linear1 = rgb.ConstPlaneRow(1, y);
+    const float* PIK_RESTRICT row_linear2 = rgb.ConstPlaneRow(2, y);
+    uint16_t* PIK_RESTRICT row_yuv0 = yuv.PlaneRow(0, y);
+    uint16_t* PIK_RESTRICT row_yuv1 = yuv.PlaneRow(1, y);
+    uint16_t* PIK_RESTRICT row_yuv2 = yuv.PlaneRow(2, y);
     for (int x = 0; x < yuv.xsize(); ++x) {
-      double rd = LinearToSrgb8Direct(row_linear[0][x]) * norm;
-      double gd = LinearToSrgb8Direct(row_linear[1][x]) * norm;
-      double bd = LinearToSrgb8Direct(row_linear[2][x]) * norm;
-      RGBPixelToYUV(rd, gd, bd, out_bit_depth,
-                    &row_yuv[0][x], &row_yuv[1][x], &row_yuv[2][x]);
+      double rd = LinearToSrgb8Direct(row_linear0[x]) * norm;
+      double gd = LinearToSrgb8Direct(row_linear1[x]) * norm;
+      double bd = LinearToSrgb8Direct(row_linear2[x]) * norm;
+      RGBPixelToYUV(rd, gd, bd, out_bit_depth, &row_yuv0[x], &row_yuv1[x],
+                    &row_yuv2[x]);
     }
   }
   return yuv;
@@ -228,8 +245,8 @@ void SubSampleChroma(const Image3U& yuv,
         for (int ix = 0; ix < 2; ++ix) {
           int yy = std::min(2 * y + iy, ysize - 1);
           int xx = std::min(2 * x + ix, xsize - 1);
-          sum_u += yuv.Row(yy)[1][xx];
-          sum_v += yuv.Row(yy)[2][xx];
+          sum_u += yuv.PlaneRow(1, yy)[xx];
+          sum_v += yuv.PlaneRow(2, yy)[xx];
         }
       }
       uplane->Row(y)[x] = (sum_u + 2) / 4;
