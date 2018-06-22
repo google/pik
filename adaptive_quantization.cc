@@ -30,19 +30,49 @@
 namespace pik {
 namespace {
 
+// Increase precision in 8x8 blocks that have high dynamic range.
+void RangeModulation(const ImageF& xyb, ImageF *out) {
+  PIK_ASSERT((xyb.xsize() + 7) / 8 == out->xsize());
+  PIK_ASSERT((xyb.ysize() + 7) / 8 == out->ysize());
+  for (int y = 0; y < xyb.ysize(); y += 8) {
+    for (int x = 0; x < xyb.xsize(); x += 8) {
+      float minval = 1e30;
+      float maxval = -1e30;
+      float* const PIK_RESTRICT row_out = out->Row(y / 8);
+      for (int dy = 0; dy < 8 && y + dy < xyb.ysize(); ++dy) {
+        const float* const PIK_RESTRICT row_in = xyb.Row(y + dy);
+        for (int dx = 0; dx < 8 && x + dx < xyb.xsize(); ++dx) {
+          float v = row_in[x + dx];
+          if (minval > v) {
+            minval = v;
+          }
+          if (maxval < v) {
+            maxval = v;
+          }
+        }
+      }
+      float range = maxval - minval;
+      static const double mul = 0.040122664180523591;
+      static const double one = 0.99758355332643378;
+      row_out[x / 8] *= one + mul * range;
+    }
+  }
+}
+
 ImageF DiffPrecompute(const ImageF& xyb, float cutoff) {
   PROFILER_ZONE("aq DiffPrecompute");
   PIK_ASSERT(xyb.xsize() > 1);
   PIK_ASSERT(xyb.ysize() > 1);
   ImageF result(xyb.xsize(), xyb.ysize());
-  static const double mul0 = 0.94212002218319468;
+  static const double mul0 = 0.9392459389653951;
 
   // PIK's gamma is 3.0 to be able to decode faster with two muls.
   // Butteraugli's gamma is matching the gamma of human eye, around 2.6.
-  // The difference is compensated by multiplying with cube root, and
-  // match_gamma_offset1 and match_gamma_offset2 are related tuning parameters.
-  static const double match_gamma_offset1 = 0.036692339629739369;
-  static const double match_gamma_offset2 = -0.15909611651471209;
+  // We approximate the gamma difference by adding one cubic root into
+  // the adaptive quantization. This gives us a total gamma of 2.6666
+  // for quantization uses.
+  static const double match_gamma_offset1 = 0.050226938462922706;
+  static const double match_gamma_offset2 = -0.1167664122528226;
   for (size_t y = 0; y + 1 < xyb.ysize(); ++y) {
     const float* const PIK_RESTRICT row_in = xyb.Row(y);
     const float* const PIK_RESTRICT row_in2 = xyb.Row(y + 1);
@@ -103,11 +133,11 @@ ImageF Expand(const ImageF& img, size_t out_xsize, size_t out_ysize) {
 }
 
 ImageF ComputeMask(const ImageF& diffs) {
-  static const float kBase = 0.39828271374672491;
-  static const float kMul1 = 0.0066930373553173422;
-  static const float kOffset1 = 0.0077354086542922055;
-  static const float kMul2 = -9.1421822896833158e-05;
-  static const float kOffset2 = 0.086606272588244507;
+  static const float kBase = 0.38627361795438747;
+  static const float kMul1 = 0.0091688688923859517;
+  static const float kOffset1 = 0.015345498704630292;
+  static const float kMul2 = -0.012913937295721125;
+  static const float kOffset2 = 0.065919403536217766;
   ImageF out(diffs.xsize(), diffs.ysize());
   for (int y = 0; y < diffs.ysize(); ++y) {
     const float* const PIK_RESTRICT row_in = diffs.Row(y);
@@ -160,10 +190,10 @@ ImageF AdaptiveQuantizationMap(const ImageF& img, size_t resolution) {
   if (img.ysize() <= 1) {
     return ImageF(out_xsize, 1, 1.0f);
   }
-  static const float kSigma = 5.9171400094749522;
+  static const float kSigma = 5.9183890169814513;
   static const int kRadius = static_cast<int>(2 * kSigma + 0.5f);
   std::vector<float> kernel = GaussianKernel(kRadius, kSigma);
-  static const float kDiffCutoff = 0.153846359269245;
+  static const float kDiffCutoff = 0.17176867501916163;
   ImageF out = DiffPrecompute(img, kDiffCutoff);
   out = Expand(out, resolution * out_xsize, resolution * out_ysize);
   out = ConvolveAndSample(out, kernel, kSampleRate);
@@ -171,6 +201,7 @@ ImageF AdaptiveQuantizationMap(const ImageF& img, size_t resolution) {
   if (resolution > kSampleRate) {
     out = SubsampleWithMax(out, resolution / kSampleRate);
   }
+  RangeModulation(img, &out);
   return out;
 }
 
