@@ -43,20 +43,20 @@ using DC = int16_t;
 // Predicts "dc" coefficients from their neighbors and stores the resulting
 // "residuals" into a preallocated image. The predictors are optimized for the
 // luminance channel.
-void ShrinkY(const Image<DC>& dc, Image<DC>* const PIK_RESTRICT residuals);
+void ShrinkY(const ImageS& dc, ImageS* PIK_RESTRICT residuals);
 
 // Predicts "dc" coefficients from their neighbors and an already expanded
 // "dc_y" (luminance). Processes pairs of chrominance coefficients (U, V).
-void ShrinkUV(const Image<DC>& dc_y, const Image<DC>& dc,
-              Image<DC>* const PIK_RESTRICT residuals);
+void ShrinkUV(const ImageS& dc_y, const ImageS& dc,
+              ImageS* PIK_RESTRICT residuals);
 
 // Reconstructs "dc" (previously passed to ShrinkY) using "residuals".
-void ExpandY(const Image<DC>& residuals, Image<DC>* const PIK_RESTRICT dc);
+void ExpandY(const ImageS& residuals, ImageS* PIK_RESTRICT dc);
 
 // Reconstructs "dc" (previously passed to ShrinkUV) using "residuals" and
 // "dc_y" (luminance).
-void ExpandUV(const Image<DC>& dc_y, const Image<DC>& residuals,
-              Image<DC>* const PIK_RESTRICT dc);
+void ExpandUV(const ImageS& dc_y, const ImageS& residuals,
+              ImageS* PIK_RESTRICT dc);
 
 }  // namespace pik
 

@@ -18,7 +18,6 @@
 #include <stdint.h>
 #include <string.h>  // memcpy
 #include <cstddef>
-#include <cstdio>
 
 #include "arch_specific.h"
 #include "byte_order.h"
@@ -42,8 +41,9 @@ namespace pik {
 //
 // For n bits, we take the last 5 bits, OR that with high bits in BYTE-0,
 // and locate the rest in BYTE+1, BYTE+2, etc.
-PIK_INLINE void WriteBits(size_t n_bits, uint64_t bits, size_t *__restrict pos,
-                          uint8_t *__restrict array) {
+PIK_INLINE void WriteBits(const size_t n_bits, uint64_t bits,
+                          size_t* PIK_RESTRICT pos,
+                          uint8_t* PIK_RESTRICT array) {
   PIK_ASSERT((bits >> n_bits) == 0);
   PIK_ASSERT(n_bits <= 56);
 #if PIK_BYTE_ORDER_LITTLE
@@ -52,10 +52,10 @@ PIK_INLINE void WriteBits(size_t n_bits, uint64_t bits, size_t *__restrict pos,
   // 1 bit is needed to initialize the bit-stream ahead (i.e. if 7
   // bits are in *p and we write 57 bits, then the next write will
   // access a byte that was never initialized).
-  uint8_t *p = &array[*pos >> 3];
+  uint8_t* p = &array[*pos >> 3];
   uint64_t v = *p;
   v |= bits << (*pos & 7);
-  memcpy(p, &v, sizeof(v));  // Set some bits.
+  memcpy(p, &v, sizeof(v));  // Write bytes: possibly more than n_bits/8
   *pos += n_bits;
 #else
   // implicit & 0xff is assumed for uint8_t arithmetics
@@ -74,8 +74,8 @@ PIK_INLINE void WriteBits(size_t n_bits, uint64_t bits, size_t *__restrict pos,
 #endif
 }
 
-PIK_INLINE void WriteZeroesToByteBoundary(size_t *__restrict pos,
-                                          uint8_t *__restrict array) {
+PIK_INLINE void WriteZeroesToByteBoundary(size_t* PIK_RESTRICT pos,
+                                          uint8_t* PIK_RESTRICT array) {
   const size_t nbits = ((*pos + 7) & ~7) - *pos;
   WriteBits(nbits, 0, pos, array);
   PIK_ASSERT(*pos % 8 == 0);
@@ -86,9 +86,8 @@ PIK_INLINE void WriteBitsPrepareStorage(size_t pos, uint8_t *array) {
   array[pos >> 3] = 0;
 }
 
-PIK_INLINE void RewindStorage(const size_t pos0,
-                              size_t *__restrict pos,
-                              uint8_t *__restrict array) {
+PIK_INLINE void RewindStorage(const size_t pos0, size_t* PIK_RESTRICT pos,
+                              uint8_t* PIK_RESTRICT array) {
   PIK_ASSERT(pos0 <= *pos);
   *pos = pos0;
   static const uint8_t kRewindMasks[8] = { 0x0, 0x1, 0x3, 0x7,
@@ -111,9 +110,8 @@ class BitWriter {
 };
 
 struct BitCounter {
-  BitCounter() : num_bits(0) {}
   void VisitBits(size_t nbits, uint64_t bits) { num_bits += nbits; }
-  size_t num_bits;
+  size_t num_bits = 0;
 };
 
 }  // namespace pik
