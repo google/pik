@@ -45,6 +45,8 @@ struct DecompressArgs {
           if (!ParseUnsigned(argc, argv, &i, &num_threads)) return false;
         } else if (strcmp(argv[i], "--num_reps") == 0) {
           if (!ParseUnsigned(argc, argv, &i, &num_reps)) return false;
+        } else if (strcmp(argv[i], "--print_profile") == 0) {
+          if (!ParseOverride(argc, argv, &i, &print_profile)) return false;
         } else {
           fprintf(stderr, "Unrecognized argument: %s.\n", argv[i]);
           return false;
@@ -69,12 +71,22 @@ struct DecompressArgs {
     return true;
   }
 
+  static const char* HelpFormatString() {
+    return "Usage: %s [--16bit] [--denoise B] [--num_threads N]\n"
+           "  [--num_reps N] [--print_profile B] in.pik [out.png]\n"
+           "  The output is 16 bit if --16bit is set, otherwise 8-bit sRGB.\n"
+           "  B is a boolean (0/1), N an unsigned integer.\n"
+           "  --denoise 1: enable deringing/deblocking postprocessor.\n"
+           "  --print_profile 1: print timing information before exiting.\n";
+  }
+
   const char* file_in = nullptr;
   const char* file_out = nullptr;
   bool sixteen_bit = false;
   DecompressParams params;
   size_t num_threads = 8;
   size_t num_reps = 1;
+  Override print_profile = Override::kDefault;
 };
 
 bool LoadFile(const char* pathname, PaddedBytes* compressed) {
@@ -119,49 +131,49 @@ void InitThreads(ThreadPool* pool) {
 }
 
 template <typename ComponentType>
-int Decompress(const PaddedBytes& compressed, const DecompressParams& params,
-               const size_t num_reps, ThreadPool* pool,
-               const char* pathname_out) {
-  MetaImage<ComponentType> image;
+bool Decompress(const PaddedBytes& compressed, const DecompressParams& params,
+                ThreadPool* pool, MetaImage<ComponentType>* image) {
   PikInfo info;
-  for (size_t i = 0; i < num_reps; ++i) {
-    const uint64_t t0 = Start<uint64_t>();
-    if (!PikToPixels(params, compressed, pool, &image, &info)) {
-      fprintf(stderr, "Failed to decompress.\n");
-      return 1;
-    }
-    const uint64_t t1 = Stop<uint64_t>();
-    const double elapsed = (t1 - t0) / InvariantTicksPerSecond();
-    const size_t xsize = image.xsize();
-    const size_t ysize = image.ysize();
-    const size_t bytes =
-        xsize * ysize * sizeof(ComponentType) * (image.HasAlpha() ? 4 : 3);
-    fprintf(stderr, "Decompressed %zu x %zu pixels (%.2f MB/s, %zu threads).\n",
-            xsize, ysize, bytes * 1E-6 / elapsed, pool->NumThreads());
+  const uint64_t t0 = Start<uint64_t>();
+  if (!PikToPixels(params, compressed, pool, image, &info)) {
+    fprintf(stderr, "Failed to decompress.\n");
+    return false;
+  }
+  const uint64_t t1 = Stop<uint64_t>();
+  const double elapsed = (t1 - t0) / InvariantTicksPerSecond();
+  const size_t xsize = image->xsize();
+  const size_t ysize = image->ysize();
+  const size_t bytes =
+      xsize * ysize * sizeof(ComponentType) * (image->HasAlpha() ? 4 : 3);
+  fprintf(stderr, "Decompressed %zu x %zu pixels (%.2f MB/s, %zu threads).\n",
+          xsize, ysize, bytes * 1E-6 / elapsed, pool->NumThreads());
+
+  return true;
+}
+
+template <typename ComponentType>
+bool DecompressAndWrite(const PaddedBytes& compressed,
+                        const DecompressArgs& args, ThreadPool* pool) {
+  MetaImage<ComponentType> image;
+  for (size_t i = 0; i < args.num_reps; ++i) {
+    if (!Decompress(compressed, args.params, pool, &image)) return false;
   }
 
   // Writing large PNGs is slow, so allow skipping it for benchmarks.
-  if (pathname_out != nullptr) {
-    if (!WriteImage(ImageFormatPNG(), image, pathname_out)) {
-      fprintf(stderr, "Failed to write %s.\n", pathname_out);
-      return 1;
+  if (args.file_out != nullptr) {
+    if (!WriteImage(ImageFormatPNG(), image, args.file_out)) {
+      fprintf(stderr, "Failed to write %s.\n", args.file_out);
+      return false;
     }
   }
 
-  PROFILER_PRINT_RESULTS();
-  return 0;
+  return true;
 }
 
 int Run(int argc, char* argv[]) {
   DecompressArgs args;
   if (!args.Init(argc, argv)) {
-    fprintf(
-        stderr,
-        "Usage: %s [--16bit] [--denoise B] [--num_threads N] in.pik [out.png]\n"
-        "  The output is 16 bit if --16bit is set, otherwise 8-bit sRGB.\n"
-        "  B is a boolean (0/1), N an unsigned integer.\n"
-        "  --denoise 1 enables postprocessing for deringing and deblocking.\n",
-        argv[0]);
+    fprintf(stderr, DecompressArgs::HelpFormatString(), argv[0]);
     return 1;
   }
 
@@ -185,13 +197,15 @@ int Run(int argc, char* argv[]) {
   ThreadPool pool(static_cast<int>(args.num_threads));
   InitThreads(&pool);
 
-  if (args.sixteen_bit) {
-    return pik::Decompress<uint16_t>(compressed, args.params, args.num_reps,
-                                     &pool, args.file_out);
-  } else {
-    return pik::Decompress<uint8_t>(compressed, args.params, args.num_reps,
-                                    &pool, args.file_out);
+  const auto decompressor = args.sixteen_bit ? &DecompressAndWrite<uint16_t>
+                                             : &DecompressAndWrite<uint8_t>;
+  if (!decompressor(compressed, args, &pool)) return 1;
+
+  if (args.print_profile == Override::kOn) {
+    PROFILER_PRINT_RESULTS();
   }
+
+  return 0;
 }
 
 }  // namespace

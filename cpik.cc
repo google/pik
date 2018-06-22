@@ -64,6 +64,8 @@ struct CompressArgs {
           if (!ParseUnsigned(argc, argv, &i, &num_threads)) return false;
         } else if (arg == "-v") {
           params.verbose = true;
+        } else if (arg == "--print_profile") {
+          if (!ParseOverride(argc, argv, &i, &print_profile)) return false;
         } else if (arg == "--distance") {
           if (!ParseFloat(argc, argv, &i, &params.butteraugli_distance)) {
             return false;
@@ -101,10 +103,25 @@ struct CompressArgs {
     return true;
   }
 
+  static const char* HelpFormatString() {
+    return "Usage: %s in.png out.pik [--distance <maxError>] [--fast] "
+           "[--denoise <0,1>] [--noise <0,1>] [--num_threads <0..N>\n"
+           "[--print_profile <0,1>]\n"
+           " --distance: Max. butteraugli distance, lower = higher quality.\n"
+           "             Good default: 1.0. Supported range: 0.5 .. 3.0.\n"
+           " --fast: Use fast encoding, ignores distance.\n"
+           " --denoise: force enable/disable edge-preserving smoothing.\n"
+           " --noise: force enable/disable noise generation.\n"
+           " --num_threads: number of worker threads (zero = none).\n"
+           " --print_profile 1: print timing information before exiting.\n"
+           " --help: Show this help.\n";
+  }
+
   const char* file_in = nullptr;
   const char* file_out = nullptr;
   CompressParams params;
   size_t num_threads = 4;
+  Override print_profile = Override::kDefault;
 };
 
 bool Compress(const CompressArgs& args, ThreadPool* pool,
@@ -122,15 +139,18 @@ bool Compress(const CompressArgs& args, ThreadPool* pool,
     return false;
   }
 
+  const size_t xsize = in.xsize();
+  const size_t ysize = in.ysize();
+  fprintf(stderr, "Compressing %zu x %zu pixels ", xsize, ysize);
   if (args.params.fast_mode) {
-    fprintf(stderr, "Compressing with fast mode\n");
+    fprintf(stderr, "with fast mode");
   } else if (args.params.target_size != 0) {
-    fprintf(stderr, "Compressing to target size %zd\n",
-            args.params.target_size);
+    fprintf(stderr, "to target size %zd", args.params.target_size);
   } else {
-    fprintf(stderr, "Compressing with maximum Butteraugli distance %f\n",
+    fprintf(stderr, "with maximum Butteraugli distance %f",
             args.params.butteraugli_distance);
   }
+  printf(", %zu threads.\n", pool->NumThreads());
 
   PikInfo aux_out;
   const uint64_t t0 = Start<uint64_t>();
@@ -140,15 +160,10 @@ bool Compress(const CompressArgs& args, ThreadPool* pool,
   }
   const uint64_t t1 = Stop<uint64_t>();
   const double elapsed = (t1 - t0) / InvariantTicksPerSecond();
-  const size_t xsize = in.xsize();
-  const size_t ysize = in.ysize();
   // TODO(janwas): account for 8 vs 16-bit input
   const size_t bytes = xsize * ysize * (in.HasAlpha() ? 4 : 3);
-  fprintf(
-      stderr,
-      "Compressed %zu x %zu pixels to %zu bytes (%.2f MB/s, %zu threads).\n",
-      xsize, ysize, compressed->size(), bytes * 1E-6 / elapsed,
-      pool->NumThreads());
+  fprintf(stderr, "Compressed to %zu bytes (%.2f MB/s).\n", compressed->size(),
+          bytes * 1E-6 / elapsed);
 
   if (args.params.verbose) {
     aux_out.Print(1);
@@ -180,18 +195,7 @@ int CompressAndWrite(int argc, char** argv) {
 
   CompressArgs args;
   if (!args.Init(argc, argv)) {
-    fprintf(
-        stderr,
-        "Usage: %s in.png out.pik [--distance <maxError>] [--fast] "
-        "[--denoise <0,1>] [--noise <0,1>] [--num_threads <0..N>\n"
-        " --distance: Maximum butteraugli distance, lower = higher quality.\n"
-        "             Good default: 1.0. Supported range: 0.5 .. 3.0.\n"
-        " --fast: Use fast encoding, ignores distance.\n"
-        " --denoise: force enable/disable edge-preserving smoothing.\n"
-        " --noise: force enable/disable noise generation.\n"
-        " --num_threads: number of threads to use (zero = none).\n"
-        " --help: Show this help.\n",
-        argv[0]);
+    fprintf(stderr, CompressArgs::HelpFormatString(), argv[0]);
     return 1;
   }
 
@@ -203,7 +207,9 @@ int CompressAndWrite(int argc, char** argv) {
 
   if (!WriteFile(compressed, args.file_out)) return 1;
 
-  PROFILER_PRINT_RESULTS();
+  if (args.print_profile == Override::kOn) {
+    PROFILER_PRINT_RESULTS();
+  }
   return 0;
 }
 
