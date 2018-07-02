@@ -38,17 +38,10 @@ namespace pik {
 // To ensure interoperability, there will be no opaque fields nor proprietary
 // section definitions. To introduce a new section and thereby advance the
 // "version number" of this file format, add a unique_ptr member to Sections and
-// append a call to "visitor" in Sections::VisitSections.
+// append a call to "visitor" in VisitSections.
 
 // Alpha channel (lossless compression).
 struct Alpha {
-  template <class Visitor>
-  void VisitFields(Visitor* const PIK_RESTRICT visitor) {
-    (*visitor)(0x04828180, &mode);
-    (*visitor)(0x84828180, &bytes_per_alpha);
-    (*visitor)(&encoded);
-  }
-
   enum { kModeBrotli, kModeTransform, kModeInvalid };
 
   uint32_t mode = kModeBrotli;
@@ -56,18 +49,15 @@ struct Alpha {
   std::vector<uint8_t> encoded;  // interpretation depends on mode
 };
 
+template <class Visitor>
+void VisitFields(Visitor* PIK_RESTRICT visitor, Alpha* PIK_RESTRICT alpha) {
+  (*visitor)(0x04828180, &alpha->mode);
+  (*visitor)(0x84828180, &alpha->bytes_per_alpha);
+  (*visitor)(&alpha->encoded);
+}
+
 // Superset of PNG PLTE+tRNS.
 struct Palette {
-  template <class Visitor>
-  void VisitFields(Visitor* const PIK_RESTRICT visitor) {
-    (*visitor)(0x04828180, &encoding);
-    (*visitor)(0x84828180, &bytes_per_color);
-    (*visitor)(0x0C0A0806, &num_colors_minus_one);
-    (*visitor)(0x0C088180, &num_alpha);
-    (*visitor)(&colors);
-    (*visitor)(&alpha);
-  }
-
   enum { kEncodingRaw = 0 };
 
   // Whether color/alpha are compressed.
@@ -89,47 +79,69 @@ struct Palette {
   std::vector<uint8_t> alpha;
 };
 
-struct ICC {
-  template <class Visitor>
-  void VisitFields(Visitor* const PIK_RESTRICT visitor) {
-    (*visitor)(&profile);
-  }
+template <class Visitor>
+void VisitFields(Visitor* PIK_RESTRICT visitor, Palette* PIK_RESTRICT palette) {
+  (*visitor)(0x04828180, &palette->encoding);
+  (*visitor)(0x84828180, &palette->bytes_per_color);
+  (*visitor)(0x0C0A0806, &palette->num_colors_minus_one);
+  (*visitor)(0x0C088180, &palette->num_alpha);
+  (*visitor)(&palette->colors);
+  (*visitor)(&palette->alpha);
+}
 
+struct ICC {
   std::vector<uint8_t> profile;
 };
 
-struct EXIF {
-  template <class Visitor>
-  void VisitFields(Visitor* const PIK_RESTRICT visitor) {
-    (*visitor)(&metadata);
-  }
+template <class Visitor>
+void VisitFields(Visitor* PIK_RESTRICT visitor, ICC* PIK_RESTRICT icc) {
+  (*visitor)(&icc->profile);
+}
 
+struct EXIF {
   std::vector<uint8_t> metadata;
 };
 
-struct Sections {
-  template <class Visitor>
-  void VisitSections(Visitor* const PIK_RESTRICT visitor) {
-    // Sections are read/written in this order, so do not rearrange.
-    (*visitor)(&alpha);
-    (*visitor)(&palette);
-    (*visitor)(&icc);
-    (*visitor)(&exif);
-    // Add new section visitor before this comment.
-  }
+template <class Visitor>
+void VisitFields(Visitor* PIK_RESTRICT visitor, EXIF* PIK_RESTRICT exif) {
+  (*visitor)(&exif->metadata);
+}
 
+struct XMP {
+  std::vector<uint8_t> metadata;
+};
+
+template <class Visitor>
+void VisitFields(Visitor* PIK_RESTRICT visitor, XMP* PIK_RESTRICT xmp) {
+  (*visitor)(&xmp->metadata);
+}
+
+struct Sections {
   // Number of known sections at the time the bitstream was frozen. No need to
   // encode size if idx_section < kNumKnown because the decoder already knows
   // how to to read them. Do not change this after freezing!
-  static constexpr size_t kNumKnown = 4;
+  static constexpr size_t kNumKnown = 5;
 
   // Valid/present if non-null.
   std::unique_ptr<Alpha> alpha;
   std::unique_ptr<Palette> palette;
   std::unique_ptr<ICC> icc;
   std::unique_ptr<EXIF> exif;
+  std::unique_ptr<XMP> xmp;
   // Add new section member before this comment.
 };
+
+template <class Visitor>
+void VisitSections(Visitor* PIK_RESTRICT visitor,
+                   Sections* PIK_RESTRICT sections) {
+  // Sections are read/written in this order, so do not rearrange.
+  (*visitor)(&sections->alpha);
+  (*visitor)(&sections->palette);
+  (*visitor)(&sections->icc);
+  (*visitor)(&sections->exif);
+  (*visitor)(&sections->xmp);
+  // Add new section visitor before this comment.
+}
 
 #pragma pack(pop)
 

@@ -215,8 +215,8 @@ class BytesCoder {
   static constexpr uint32_t kDistribution = 0x20181008;  // for #bytes
 };
 
-// Visitors for generating encoders/decoders for headers/sections that supply
-// a VisitFields member function:
+// Visitors for generating encoders/decoders for headers/sections with an
+// associated non-member VisitFields function:
 
 class ReadFieldsVisitor {
  public:

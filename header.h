@@ -32,7 +32,7 @@ namespace pik {
 // File header applicable to all image types.
 struct Header {
   // What comes after the header + sections.
-  enum {
+  enum Bitstream {
     kBitstreamDefault = 0,
     kBitstreamLossless = 1,
 
@@ -56,26 +56,6 @@ struct Header {
     kDither = 8
   };
 
-  // For loading/storing fields from/to the compressed stream. Accepts Bytes or
-  // uint32_t preceded by U32Coder's selector_bits.
-  template <class Visitor>
-  void VisitFields(Visitor* const PIK_RESTRICT visitor) {
-    // Almost all camera images are less than 8K * 8K. We also allow the
-    // full 32-bit range for completeness.
-    (*visitor)(0x200D0B09, &xsize);
-    (*visitor)(0x200D0B09, &ysize);
-    // 2-bit encodings for 1 and 3 common cases; a dozen components for
-    // remote-sensing data, or thousands for hyperspectral images.
-    (*visitor)(0x10048381, &num_components);
-    (*visitor)(0x06828180, &bitstream);
-    (*visitor)(0x20181008, &flags);
-    // Direct 2-bit encoding for quant template ids 0, 1, 2, 3.
-    (*visitor)(0x83828180, &quant_template);
-
-    // To extend: add a section, or add fields conditional on a NEW flag:
-    // if (flag) (*visitor)(..).
-  }
-
   uint32_t xsize = 0;
   uint32_t ysize = 0;
   uint32_t num_components = 0;
@@ -83,6 +63,26 @@ struct Header {
   uint32_t flags = 0;
   uint32_t quant_template = 0;
 };
+
+// For loading/storing fields from/to the compressed stream. Accepts Bytes or
+// uint32_t preceded by U32Coder's selector_bits.
+template <class Visitor>
+void VisitFields(Visitor* PIK_RESTRICT visitor, Header* PIK_RESTRICT header) {
+  // Almost all camera images are less than 8K * 8K. We also allow the
+  // full 32-bit range for completeness.
+  (*visitor)(0x200D0B09, &header->xsize);
+  (*visitor)(0x200D0B09, &header->ysize);
+  // 2-bit encodings for 1 and 3 common cases; a dozen components for
+  // remote-sensing data, or thousands for hyperspectral images.
+  (*visitor)(0x10048381, &header->num_components);
+  (*visitor)(0x06828180, &header->bitstream);
+  (*visitor)(0x20181008, &header->flags);
+  // Direct 2-bit encoding for quant template ids 0, 1, 2, 3.
+  (*visitor)(0x83828180, &header->quant_template);
+
+  // To extend: add a section, or add fields conditional on a NEW flag:
+  // if (flag) (*visitor)(..).
+}
 
 #pragma pack(pop)
 

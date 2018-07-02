@@ -15,6 +15,7 @@
 #include "sections.h"
 
 #include <algorithm>
+#include <array>
 
 #include "fields.h"
 
@@ -134,7 +135,7 @@ class CanEncodeSectionVisitor {
     section_bits_.Set(idx_section_);
 
     CanEncodeFieldsVisitor field_visitor;
-    (*ptr)->VisitFields(&field_visitor);
+    VisitFields(&field_visitor, ptr->get());
     ok_ &= field_visitor.OK();
     const size_t encoded_bits = field_visitor.EncodedBits();
     section_sizes_.Set(idx_section_, encoded_bits);
@@ -161,10 +162,10 @@ class CanEncodeSectionVisitor {
 };
 
 // Analogous to VisitFieldsConst.
-template <class T, class Visitor>
-void VisitSectionsConst(const T& t, Visitor* visitor) {
+template <class Visitor, class T>
+void VisitSectionsConst(Visitor* visitor, const T& t) {
   // Note: only called for Visitor that don't actually change T.
-  const_cast<T*>(&t)->VisitSections(visitor);
+  VisitSections(visitor, const_cast<T*>(&t));
 }
 
 // Reads bits, sizes, and fields.
@@ -184,7 +185,7 @@ class ReadSectionVisitor {
 
     ptr->reset(new T);
     ReadFieldsVisitor field_reader(reader_);
-    (*ptr)->VisitFields(&field_reader);
+    VisitFields(&field_reader, ptr->get());
   }
 
   void SkipUnknown() {
@@ -212,7 +213,7 @@ class WriteSectionVisitor {
   void operator()(const std::unique_ptr<T>* PIK_RESTRICT ptr) {
     ++idx_section_;
     if (*ptr != nullptr) {
-      (*ptr)->VisitFields(&writer_);
+      VisitFields(&writer_, ptr->get());
     }
   }
 
@@ -227,13 +228,13 @@ class WriteSectionVisitor {
 
 bool CanEncode(const Sections& sections, size_t* PIK_RESTRICT encoded_bits) {
   CanEncodeSectionVisitor section_visitor;
-  VisitSectionsConst(sections, &section_visitor);
+  VisitSectionsConst(&section_visitor, sections);
   return section_visitor.CanEncode(encoded_bits);
 }
 
 bool LoadSections(BitReader* reader, Sections* PIK_RESTRICT sections) {
   ReadSectionVisitor section_reader(reader);
-  sections->VisitSections(&section_reader);
+  VisitSections(&section_reader, sections);
   section_reader.SkipUnknown();
   return true;
 }
@@ -241,13 +242,13 @@ bool LoadSections(BitReader* reader, Sections* PIK_RESTRICT sections) {
 bool StoreSections(const Sections& sections, size_t* PIK_RESTRICT pos,
                    uint8_t* storage) {
   CanEncodeSectionVisitor can_encode;
-  VisitSectionsConst(sections, &can_encode);
+  VisitSectionsConst(&can_encode, sections);
   const SectionBits& section_bits = can_encode.GetBits();
   if (!section_bits.Store(pos, storage)) return false;
   if (!can_encode.GetSizes().Store(section_bits, pos, storage)) return false;
 
   WriteSectionVisitor section_writer(pos, storage);
-  VisitSectionsConst(sections, &section_writer);
+  VisitSectionsConst(&section_writer, sections);
   return section_writer.OK();
 }
 
@@ -264,7 +265,7 @@ void TestUnsupportedSection() {
 
     // Get normal bits/sizes
     CanEncodeSectionVisitor can_encode;
-    VisitSectionsConst(sections, &can_encode);
+    VisitSectionsConst(&can_encode, sections);
     SectionBits section_bits = can_encode.GetBits();
     SectionSizes section_sizes = can_encode.GetSizes();
 
@@ -279,7 +280,7 @@ void TestUnsupportedSection() {
     PIK_CHECK(section_bits.Store(&pos, storage));
     PIK_CHECK(section_sizes.Store(section_bits, &pos, storage));
     WriteSectionVisitor section_writer(&pos, storage);
-    VisitSectionsConst(sections, &section_writer);
+    VisitSectionsConst(&section_writer, sections);
     PIK_CHECK(section_writer.OK());
     // .. including bogus bits for the imaginary section
     size_t i = 0;

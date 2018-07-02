@@ -27,10 +27,10 @@ namespace {
 // T provides a non-const VisitFields (allows ReadFieldsVisitor to load fields),
 // so we need to cast const T to non-const for visitors that don't actually need
 // non-const (e.g. WriteFieldsVisitor).
-template <class T, class Visitor>
-void VisitFieldsConst(const T& t, Visitor* visitor) {
+template <class Visitor, class T>
+void VisitFieldsConst(Visitor* visitor, const T& t) {
   // Note: only called for Visitor that don't actually change T.
-  const_cast<T*>(&t)->VisitFields(visitor);
+  VisitFields(visitor, const_cast<T*>(&t));
 }
 
 // Stores and verifies the 4-byte file signature.
@@ -76,7 +76,7 @@ bool CanEncode(const Header& header, size_t* PIK_RESTRICT encoded_bits) {
   const size_t magic_bits = Magic::EncodedBits();
 
   CanEncodeFieldsVisitor visitor;
-  VisitFieldsConst(header, &visitor);
+  VisitFieldsConst(&visitor, header);
   const bool ok = visitor.OK();
   *encoded_bits = ok ? magic_bits + visitor.EncodedBits() : 0;
   return ok;
@@ -86,7 +86,7 @@ bool LoadHeader(BitReader* reader, Header* PIK_RESTRICT header) {
   if (!Magic::Verify(reader)) return false;
 
   ReadFieldsVisitor visitor(reader);
-  header->VisitFields(&visitor);
+  VisitFields(&visitor, header);
   return true;
 }
 
@@ -94,7 +94,7 @@ bool StoreHeader(const Header& header, size_t* pos, uint8_t* storage) {
   Magic::Store(pos, storage);
 
   WriteFieldsVisitor visitor(pos, storage);
-  VisitFieldsConst(header, &visitor);
+  VisitFieldsConst(&visitor, header);
   return visitor.OK();
 }
 
