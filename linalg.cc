@@ -10,9 +10,11 @@
 
 namespace pik {
 
+const double kPi = 3.1415926535897932;
+
 void AssertSymmetric(const ImageD& A) {
 #if defined(PIK_ENABLE_ASSERT)
-  PIK_ASSERT(A.xsize()== A.ysize());
+  PIK_ASSERT(A.xsize() == A.ysize());
   for (size_t i = 0; i < A.xsize(); ++i) {
     for (size_t j = i + 1; j < A.xsize(); ++j) {
       PIK_ASSERT(std::abs(A.Row(i)[j] - A.Row(j)[i]) < 1e-15);
@@ -21,15 +23,15 @@ void AssertSymmetric(const ImageD& A) {
 #endif
 }
 
-void Diagonalize2x2(const double a0, const double a1, const double b,
-                    double* c, double* s) {
+void Diagonalize2x2(const double a0, const double a1, const double b, double* c,
+                    double* s) {
   if (std::abs(b) < 1e-15) {
     *c = 1.0;
     *s = 0.0;
     return;
   }
   double phi = std::atan2(2 * b, a1 - a0);
-  double theta = b > 0.0 ? 0.5 * phi : 0.5 * phi + M_PI;
+  double theta = b > 0.0 ? 0.5 * phi : 0.5 * phi + kPi;
   *c = std::cos(theta);
   *s = std::sin(theta);
 }
@@ -46,8 +48,8 @@ void GivensRotation(const double x, const double y, double* c, double* s) {
   }
 }
 
-void RotateMatrixCols(ImageD* const PIK_RESTRICT U,
-                      int i, int j, double c, double s) {
+void RotateMatrixCols(ImageD* const PIK_RESTRICT U, int i, int j, double c,
+                      double s) {
   PIK_ASSERT(U->xsize() == U->ysize());
   const size_t N = U->xsize();
   double* const PIK_RESTRICT u_i = U->Row(i);
@@ -65,8 +67,8 @@ void RotateMatrixCols(ImageD* const PIK_RESTRICT U,
   }
 }
 
-void RotateMatrixRows(ImageD* const PIK_RESTRICT U,
-                      int i, int j, double c, double s) {
+void RotateMatrixRows(ImageD* const PIK_RESTRICT U, int i, int j, double c,
+                      double s) {
   PIK_ASSERT(U->xsize() == U->ysize());
   const size_t N = U->xsize();
   for (size_t k = 0; k < N; ++k) {
@@ -90,8 +92,7 @@ void HouseholderReflector(const size_t N, const double* x, double* u) {
   }
 }
 
-void ConvertToTridiagonal(const ImageD& A,
-                          ImageD* const PIK_RESTRICT T,
+void ConvertToTridiagonal(const ImageD& A, ImageD* const PIK_RESTRICT T,
                           ImageD* const PIK_RESTRICT U) {
   AssertSymmetric(A);
   const size_t N = A.xsize();
@@ -123,14 +124,12 @@ double WilkinsonShift(const double a0, const double a1, const double b) {
   if (d == 0.0) {
     return a1 - std::abs(b);
   }
-  const double sign_d =  d > 0.0 ? 1.0 : -1.0;
+  const double sign_d = d > 0.0 ? 1.0 : -1.0;
   return a1 - b * b / (d + sign_d * std::hypot(d, b));
 }
 
-void ImplicitQRStep(ImageD* const PIK_RESTRICT U,
-                    double* const PIK_RESTRICT a,
-                    double* const PIK_RESTRICT b,
-                    int m0, int m1) {
+void ImplicitQRStep(ImageD* const PIK_RESTRICT U, double* const PIK_RESTRICT a,
+                    double* const PIK_RESTRICT b, int m0, int m1) {
   PIK_ASSERT(m1 - m0 > 2);
   double x = a[m0] - WilkinsonShift(a[m1 - 2], a[m1 - 1], b[m1 - 1]);
   double y = b[m0 + 1];
@@ -156,9 +155,8 @@ void ImplicitQRStep(ImageD* const PIK_RESTRICT U,
 }
 
 void ScanInterval(const double* const PIK_RESTRICT a,
-                  const double* const PIK_RESTRICT b,
-                  int istart, const int iend,
-                  const double eps,
+                  const double* const PIK_RESTRICT b, int istart,
+                  const int iend, const double eps,
                   std::deque<std::pair<int, int> >* intervals) {
   for (int k = istart; k < iend; ++k) {
     if ((k + 1 == iend) ||
@@ -171,8 +169,7 @@ void ScanInterval(const double* const PIK_RESTRICT a,
   }
 }
 
-void ConvertToDiagonal(const ImageD& A,
-                       ImageD* const PIK_RESTRICT diag,
+void ConvertToDiagonal(const ImageD& A, ImageD* const PIK_RESTRICT diag,
                        ImageD* const PIK_RESTRICT U) {
   AssertSymmetric(A);
   const size_t N = A.xsize();
@@ -218,8 +215,7 @@ void ConvertToDiagonal(const ImageD& A,
   }
 }
 
-void ComputeQRFactorization(const ImageD& A,
-                            ImageD* const PIK_RESTRICT Q,
+void ComputeQRFactorization(const ImageD& A, ImageD* const PIK_RESTRICT Q,
                             ImageD* const PIK_RESTRICT R) {
   PIK_ASSERT(A.xsize() == A.ysize());
   const size_t N = A.xsize();
@@ -245,7 +241,7 @@ void ComputeQRFactorization(const ImageD& A,
 
 // Multiplies *A with IGT(i, j, mu) from the right, where
 // IGT(i, j, mu) = I + mu*e_i*Transpose(e_j).
-template<typename T>
+template <typename T>
 void ApplyIGTCol(const size_t i, const size_t j, int mu,
                  Image<T>* const PIK_RESTRICT A) {
   const T* const PIK_RESTRICT a_i = A->ConstRow(i);
@@ -256,7 +252,7 @@ void ApplyIGTCol(const size_t i, const size_t j, int mu,
 }
 
 // Multiplies *A with IGT(i, j, mu) from the left.
-template<typename T>
+template <typename T>
 void ApplyIGTRow(const size_t i, const size_t j, int mu,
                  Image<T>* const PIK_RESTRICT A) {
   for (size_t k = 0; k < A->ysize(); ++k) {
@@ -265,7 +261,7 @@ void ApplyIGTRow(const size_t i, const size_t j, int mu,
   }
 }
 
-template<typename T>
+template <typename T>
 void SwapMatrixCols(const size_t i, const size_t j,
                     Image<T>* const PIK_RESTRICT A) {
   T* const PIK_RESTRICT a_i = A->Row(i);
@@ -275,7 +271,7 @@ void SwapMatrixCols(const size_t i, const size_t j,
   }
 }
 
-template<typename T>
+template <typename T>
 void SwapMatrixRows(const size_t i, const size_t j,
                     Image<T>* const PIK_RESTRICT A) {
   for (size_t k = 0; k < A->ysize(); ++k) {
@@ -284,7 +280,7 @@ void SwapMatrixRows(const size_t i, const size_t j,
   }
 }
 
-template<typename T>
+template <typename T>
 void MirrorMatrixCol(const size_t i, Image<T>* const PIK_RESTRICT A) {
   T* const PIK_RESTRICT a_i = A->Row(i);
   for (size_t k = 0; k < A->xsize(); ++k) {
@@ -292,7 +288,7 @@ void MirrorMatrixCol(const size_t i, Image<T>* const PIK_RESTRICT A) {
   }
 }
 
-template<typename T>
+template <typename T>
 void MirrorMatrixRow(const size_t i, Image<T>* const PIK_RESTRICT A) {
   for (size_t k = 0; k < A->ysize(); ++k) {
     T* const PIK_RESTRICT a_k = A->Row(k);
@@ -300,8 +296,7 @@ void MirrorMatrixRow(const size_t i, Image<T>* const PIK_RESTRICT A) {
   }
 }
 
-void ComputeLLLReduction(const ImageD& A,
-                         ImageD* const PIK_RESTRICT Q,
+void ComputeLLLReduction(const ImageD& A, ImageD* const PIK_RESTRICT Q,
                          ImageD* const PIK_RESTRICT R,
                          ImageI* const PIK_RESTRICT Z,
                          ImageI* const PIK_RESTRICT ZI) {
@@ -346,8 +341,7 @@ void ComputeLLLReduction(const ImageD& A,
   }
 }
 
-void SearchLattice(const ImageD& R,
-                   const ImageD& y,
+void SearchLattice(const ImageD& R, const ImageD& y,
                    const std::vector<double>& Rd,
                    const std::vector<double>& iRd,
                    ImageI* const PIK_RESTRICT z0) {
@@ -401,7 +395,7 @@ void SearchLattice(const ImageD& R,
       // Iterate on the current level of the tree using the Schnorr-Euchner
       // enumeration order.
       z[k] += step[k];
-      step[k] = -step[k] + (step[k] < 0 ? 1 : - 1);
+      step[k] = -step[k] + (step[k] < 0 ? 1 : -1);
     }
   }
 }

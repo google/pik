@@ -16,7 +16,7 @@
 
 #include "guetzli/butteraugli_comparator.h"
 
-#include "guetzli/gamma_correct.h"
+#include "gamma_correct.h"
 #include "guetzli/score.h"
 
 namespace pik {
@@ -30,7 +30,7 @@ using butteraugli::PackedFromPlanes;
 
 std::vector<ImageF> LinearRgb(const size_t xsize, const size_t ysize,
                               const std::vector<uint8_t>& rgb) {
-  const double* lut = Srgb8ToLinearTable();
+  const float* lut = Srgb8ToLinearTable();
   std::vector<ImageF> planes = CreatePlanes<float>(xsize, ysize, 3);
   for (int c = 0; c < 3; ++c) {
     for (size_t y = 0; y < ysize; ++y) {

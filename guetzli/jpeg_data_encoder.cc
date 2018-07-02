@@ -17,6 +17,7 @@
 #include "guetzli/jpeg_data_encoder.h"
 
 #include <string.h>
+#include <algorithm>
 
 #include "guetzli/fdct.h"
 
@@ -37,15 +38,14 @@ void Quantize(coeff_t* v, int iquant) {
 // Single pixel rgb to 16-bit yuv conversion.
 // The returned yuv values are signed integers in the
 // range [-128, 127] inclusive.
-inline static void RGBToYUV16(const uint8_t* const rgb,
-                              coeff_t *out) {
+inline static void RGBToYUV16(const uint8_t* const rgb, coeff_t* out) {
   enum { FRAC = 16, HALF = 1 << (FRAC - 1) };
   const int r = rgb[0];
   const int g = rgb[1];
   const int b = rgb[2];
-  out[0] = (19595 * r  + 38469 * g +  7471 * b - (128 << 16) + HALF) >> FRAC;
+  out[0] = (19595 * r + 38469 * g + 7471 * b - (128 << 16) + HALF) >> FRAC;
   out[64] = (-11059 * r - 21709 * g + 32768 * b + HALF - 1) >> FRAC;
-  out[128] = (32768 * r  - 27439 * g -  5329 * b + HALF - 1) >> FRAC;
+  out[128] = (32768 * r - 27439 * g - 5329 * b + HALF - 1) >> FRAC;
 }
 
 }  // namespace

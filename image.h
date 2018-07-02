@@ -28,6 +28,7 @@
 #include <cmath>
 #include <complex>
 #include <limits>
+#include <random>
 #include <string>
 #include <utility>
 #include <vector>
@@ -105,7 +106,8 @@ class Image {
       : xsize_(0),
         ysize_(0),
         bytes_per_row_(0),
-        bytes_(nullptr, Ignore) {}
+        // MSVC 2015 needs the cast.
+        bytes_(static_cast<uint8_t*>(nullptr), Ignore) {}
 
   Image(const size_t xsize, const size_t ysize)
       : xsize_(xsize),
@@ -1041,7 +1043,6 @@ class MetaImage {
 };
 
 using MetaImageB = MetaImage<uint8_t>;
-// TODO(janwas): rename to MetaImageS (short/signed)
 using MetaImageS = MetaImage<int16_t>;
 using MetaImageU = MetaImage<uint16_t>;
 using MetaImageF = MetaImage<float>;

@@ -33,23 +33,20 @@ static const int kCodeLengthCodes = 18;
 // A node of a Huffman tree.
 struct HuffmanTree {
   HuffmanTree(uint32_t count, int16_t left, int16_t right)
-      : total_count(count),
-        index_left(left),
-        index_right_or_value(right) {
-  }
+      : total_count(count), index_left(left), index_right_or_value(right) {}
   uint32_t total_count;
   int16_t index_left;
   int16_t index_right_or_value;
 };
 
 // Sort the root nodes, least popular first.
-inline bool SortHuffmanTree(const HuffmanTree &v0, const HuffmanTree &v1) {
+inline bool SortHuffmanTree(const HuffmanTree& v0, const HuffmanTree& v1) {
   return v0.total_count < v1.total_count;
 }
 
-void SetDepth(const HuffmanTree &p, HuffmanTree *pool,
-              uint8_t *depth, uint8_t level) {
-    if (p.index_left >= 0) {
+void SetDepth(const HuffmanTree& p, HuffmanTree* pool, uint8_t* depth,
+              uint8_t level) {
+  if (p.index_left >= 0) {
     ++level;
     SetDepth(pool[p.index_left], pool, depth, level);
     SetDepth(pool[p.index_right_or_value], pool, depth, level);
@@ -79,15 +76,13 @@ void SetDepth(const HuffmanTree &p, HuffmanTree *pool,
 // we are not planning to use this with extremely long blocks.
 //
 // See http://en.wikipedia.org/wiki/Huffman_coding
-void CreateHuffmanTree(const uint32_t *data,
-                       const size_t length,
-                       const int tree_limit,
-                       uint8_t *depth) {
+void CreateHuffmanTree(const uint32_t* data, const size_t length,
+                       const int tree_limit, uint8_t* depth) {
   // For block sizes below 64 kB, we never need to do a second iteration
   // of this loop. Probably all of our block sizes will be smaller than
   // that, so this loop is mostly of academic interest. If we actually
   // would need this, we would be better off with the Katajainen algorithm.
-  for (uint32_t count_limit = 1; ; count_limit = 2 * count_limit + 1) {
+  for (uint32_t count_limit = 1;; count_limit = 2 * count_limit + 1) {
     std::vector<HuffmanTree> tree;
     tree.reserve(2 * length + 1);
 
@@ -101,7 +96,7 @@ void CreateHuffmanTree(const uint32_t *data,
 
     const size_t n = tree.size();
     if (n == 1) {
-      depth[tree[0].index_right_or_value] = 1;      // Only one element.
+      depth[tree[0].index_right_or_value] = 1;  // Only one element.
       break;
     }
 
@@ -170,13 +165,10 @@ void Reverse(uint8_t* v, size_t start, size_t end) {
   }
 }
 
-void WriteHuffmanTreeRepetitions(
-    const uint8_t previous_value,
-    const uint8_t value,
-    size_t repetitions,
-    size_t* tree_size,
-    uint8_t* tree,
-    uint8_t* extra_bits_data) {
+void WriteHuffmanTreeRepetitions(const uint8_t previous_value,
+                                 const uint8_t value, size_t repetitions,
+                                 size_t* tree_size, uint8_t* tree,
+                                 uint8_t* extra_bits_data) {
   PIK_ASSERT(repetitions > 0);
   if (previous_value != value) {
     tree[*tree_size] = value;
@@ -214,11 +206,8 @@ void WriteHuffmanTreeRepetitions(
   }
 }
 
-void WriteHuffmanTreeRepetitionsZeros(
-    size_t repetitions,
-    size_t* tree_size,
-    uint8_t* tree,
-    uint8_t* extra_bits_data) {
+void WriteHuffmanTreeRepetitionsZeros(size_t repetitions, size_t* tree_size,
+                                      uint8_t* tree, uint8_t* extra_bits_data) {
   if (repetitions == 11) {
     tree[*tree_size] = 0;
     extra_bits_data[*tree_size] = 0;
@@ -250,8 +239,8 @@ void WriteHuffmanTreeRepetitionsZeros(
 }
 
 static void DecideOverRleUse(const uint8_t* depth, const size_t length,
-                             bool *use_rle_for_non_zero,
-                             bool *use_rle_for_zero) {
+                             bool* use_rle_for_non_zero,
+                             bool* use_rle_for_zero) {
   size_t total_reps_zero = 0;
   size_t total_reps_non_zero = 0;
   size_t count_reps_zero = 1;
@@ -279,11 +268,8 @@ static void DecideOverRleUse(const uint8_t* depth, const size_t length,
 // Write a Huffman tree from bit depths into the bitstream representation
 // of a Huffman tree. The generated Huffman tree is to be compressed once
 // more using a Huffman tree
-void WriteHuffmanTree(const uint8_t* depth,
-                      size_t length,
-                      size_t* tree_size,
-                      uint8_t* tree,
-                      uint8_t* extra_bits_data) {
+void WriteHuffmanTree(const uint8_t* depth, size_t length, size_t* tree_size,
+                      uint8_t* tree, uint8_t* extra_bits_data) {
   uint8_t previous_value = 8;
 
   // Throw away trailing zeros.
@@ -302,8 +288,8 @@ void WriteHuffmanTree(const uint8_t* depth,
   if (length > 50) {
     // Find rle coding for longer codes.
     // Shorter codes seem not to benefit from rle.
-    DecideOverRleUse(depth, new_length,
-                     &use_rle_for_non_zero, &use_rle_for_zero);
+    DecideOverRleUse(depth, new_length, &use_rle_for_non_zero,
+                     &use_rle_for_zero);
   }
 
   // Actual rle coding.
@@ -319,9 +305,8 @@ void WriteHuffmanTree(const uint8_t* depth,
     if (value == 0) {
       WriteHuffmanTreeRepetitionsZeros(reps, tree_size, tree, extra_bits_data);
     } else {
-      WriteHuffmanTreeRepetitions(previous_value,
-                                  value, reps, tree_size,
-                                  tree, extra_bits_data);
+      WriteHuffmanTreeRepetitions(previous_value, value, reps, tree_size, tree,
+                                  extra_bits_data);
       previous_value = value;
     }
     i += reps;
@@ -329,10 +314,9 @@ void WriteHuffmanTree(const uint8_t* depth,
 }
 
 uint16_t ReverseBits(int num_bits, uint16_t bits) {
-  static const size_t kLut[16] = {  // Pre-reversed 4-bit values.
-    0x0, 0x8, 0x4, 0xc, 0x2, 0xa, 0x6, 0xe,
-    0x1, 0x9, 0x5, 0xd, 0x3, 0xb, 0x7, 0xf
-  };
+  static const size_t kLut[16] = {// Pre-reversed 4-bit values.
+                                  0x0, 0x8, 0x4, 0xc, 0x2, 0xa, 0x6, 0xe,
+                                  0x1, 0x9, 0x5, 0xd, 0x3, 0xb, 0x7, 0xf};
   size_t retval = kLut[bits & 0xf];
   for (int i = 4; i < num_bits; i += 4) {
     retval <<= 4;
@@ -344,13 +328,12 @@ uint16_t ReverseBits(int num_bits, uint16_t bits) {
 }
 
 // Get the actual bit values for a tree of bit depths.
-void ConvertBitDepthsToSymbols(const uint8_t *depth,
-                               size_t len,
-                               uint16_t *bits) {
+void ConvertBitDepthsToSymbols(const uint8_t* depth, size_t len,
+                               uint16_t* bits) {
   // In Brotli, all bit depths are [1..15]
   // 0 bit depth means that the symbol does not exist.
   const int kMaxBits = 16;  // 0..15 are values for bits
-  uint16_t bl_count[kMaxBits] = { 0 };
+  uint16_t bl_count[kMaxBits] = {0};
   {
     for (size_t i = 0; i < len; ++i) {
       ++bl_count[depth[i]];
@@ -374,13 +357,11 @@ void ConvertBitDepthsToSymbols(const uint8_t *depth,
 }
 
 template <class BitVisitor>
-void StoreHuffmanTreeOfHuffmanTreeToBitMask(
-    const int num_codes,
-    const uint8_t *code_length_bitdepth,
-    BitVisitor* bit_visitor) {
+void StoreHuffmanTreeOfHuffmanTreeToBitMask(const int num_codes,
+                                            const uint8_t* code_length_bitdepth,
+                                            BitVisitor* bit_visitor) {
   static const uint8_t kStorageOrder[kCodeLengthCodes] = {
-    1, 2, 3, 4, 0, 5, 17, 6, 16, 7, 8, 9, 10, 11, 12, 13, 14, 15
-  };
+      1, 2, 3, 4, 0, 5, 17, 6, 16, 7, 8, 9, 10, 11, 12, 13, 14, 15};
   // The bit lengths of the Huffman code over the code length alphabet
   // are compressed with the following static Huffman code:
   //   Symbol   Code
@@ -391,12 +372,10 @@ void StoreHuffmanTreeOfHuffmanTreeToBitMask(
   //   3          01
   //   4          10
   //   5        1111
-  static const uint8_t kHuffmanBitLengthHuffmanCodeSymbols[6] = {
-     0, 7, 3, 2, 1, 15
-  };
-  static const uint8_t kHuffmanBitLengthHuffmanCodeBitLengths[6] = {
-    2, 4, 3, 2, 2, 4
-  };
+  static const uint8_t kHuffmanBitLengthHuffmanCodeSymbols[6] = {0, 7, 3,
+                                                                 2, 1, 15};
+  static const uint8_t kHuffmanBitLengthHuffmanCodeBitLengths[6] = {2, 4, 3,
+                                                                    2, 2, 4};
 
   // Throw away trailing zeros:
   size_t codes_to_store = kCodeLengthCodes;
@@ -424,13 +403,12 @@ void StoreHuffmanTreeOfHuffmanTreeToBitMask(
 }
 
 template <class BitVisitor>
-void StoreHuffmanTreeToBitMask(
-    const size_t huffman_tree_size,
-    const uint8_t* huffman_tree,
-    const uint8_t* huffman_tree_extra_bits,
-    const uint8_t* code_length_bitdepth,
-    const uint16_t* code_length_bitdepth_symbols,
-    BitVisitor* bit_visitor) {
+void StoreHuffmanTreeToBitMask(const size_t huffman_tree_size,
+                               const uint8_t* huffman_tree,
+                               const uint8_t* huffman_tree_extra_bits,
+                               const uint8_t* code_length_bitdepth,
+                               const uint16_t* code_length_bitdepth_symbols,
+                               BitVisitor* bit_visitor) {
   for (size_t i = 0; i < huffman_tree_size; ++i) {
     size_t ix = huffman_tree[i];
     bit_visitor->VisitBits(code_length_bitdepth[ix],
@@ -455,15 +433,13 @@ void StoreVarLenUint16(size_t n, BitVisitor* visitor) {
     visitor->VisitBits(1, 1);
     size_t nbits = Log2FloorNonZero(n);
     visitor->VisitBits(4, nbits);
-    visitor->VisitBits(nbits, n - (1 << nbits));
+    visitor->VisitBits(nbits, n - (1ULL << nbits));
   }
 }
 
 template <class BitVisitor>
-void StoreSimpleHuffmanTree(const uint8_t* depths,
-                            size_t symbols[4],
-                            size_t num_symbols,
-                            BitVisitor* bit_visitor) {
+void StoreSimpleHuffmanTree(const uint8_t* depths, size_t symbols[4],
+                            size_t num_symbols, BitVisitor* bit_visitor) {
   // value of 1 indicates a simple Huffman code
   bit_visitor->VisitBits(2, 1);
   bit_visitor->VisitBits(2, num_symbols - 1);  // NSYM - 1
@@ -499,7 +475,7 @@ void StoreHuffmanTree(const uint8_t* depths, size_t num,
                    &huffman_tree_extra_bits[0]);
 
   // Calculate the statistics of the Huffman tree in the compact representation.
-  uint32_t huffman_tree_histogram[kCodeLengthCodes] = { 0 };
+  uint32_t huffman_tree_histogram[kCodeLengthCodes] = {0};
   for (size_t i = 0; i < huffman_tree_size; ++i) {
     ++huffman_tree_histogram[huffman_tree[i]];
   }
@@ -520,10 +496,10 @@ void StoreHuffmanTree(const uint8_t* depths, size_t num,
 
   // Calculate another Huffman tree to use for compressing both the
   // earlier Huffman tree with.
-  uint8_t code_length_bitdepth[kCodeLengthCodes] = { 0 };
-  uint16_t code_length_bitdepth_symbols[kCodeLengthCodes] = { 0 };
-  CreateHuffmanTree(&huffman_tree_histogram[0], kCodeLengthCodes,
-                    5, &code_length_bitdepth[0]);
+  uint8_t code_length_bitdepth[kCodeLengthCodes] = {0};
+  uint16_t code_length_bitdepth_symbols[kCodeLengthCodes] = {0};
+  CreateHuffmanTree(&huffman_tree_histogram[0], kCodeLengthCodes, 5,
+                    &code_length_bitdepth[0]);
   ConvertBitDepthsToSymbols(code_length_bitdepth, kCodeLengthCodes,
                             &code_length_bitdepth_symbols[0]);
 
@@ -536,20 +512,17 @@ void StoreHuffmanTree(const uint8_t* depths, size_t num,
   }
 
   // Store the real huffman tree now.
-  StoreHuffmanTreeToBitMask(huffman_tree_size, &huffman_tree[0],
-                            &huffman_tree_extra_bits[0],
-                            &code_length_bitdepth[0],
-                            code_length_bitdepth_symbols, bit_visitor);
+  StoreHuffmanTreeToBitMask(
+      huffman_tree_size, &huffman_tree[0], &huffman_tree_extra_bits[0],
+      &code_length_bitdepth[0], code_length_bitdepth_symbols, bit_visitor);
 }
 
 template <class BitVisitor>
-void BuildAndVisitHuffmanTree(const uint32_t *histogram,
-                              const size_t length,
-                              uint8_t* depth,
-                              uint16_t* bits,
+void BuildAndVisitHuffmanTree(const uint32_t* histogram, const size_t length,
+                              uint8_t* depth, uint16_t* bits,
                               BitVisitor* bit_visitor) {
   size_t count = 0;
-  size_t s4[4] = { 0 };
+  size_t s4[4] = {0};
   for (size_t i = 0; i < length; i++) {
     if (histogram[i]) {
       if (count < 4) {
@@ -581,20 +554,15 @@ void BuildAndVisitHuffmanTree(const uint32_t *histogram,
 
 }  // namespace
 
-
-void BuildAndStoreHuffmanTree(const uint32_t *histogram,
-                              const size_t length,
-                              uint8_t* depth,
-                              uint16_t* bits,
-                              size_t* storage_ix,
-                              uint8_t* storage) {
+void BuildAndStoreHuffmanTree(const uint32_t* histogram, const size_t length,
+                              uint8_t* depth, uint16_t* bits,
+                              size_t* storage_ix, uint8_t* storage) {
   BitWriter bit_writer(storage_ix, storage);
   BuildAndVisitHuffmanTree(histogram, length, depth, bits, &bit_writer);
 }
 
-void BuildHuffmanTreeAndCountBits(const uint32_t *histogram,
-                                  const size_t length,
-                                  size_t* histogram_bits,
+void BuildHuffmanTreeAndCountBits(const uint32_t* histogram,
+                                  const size_t length, size_t* histogram_bits,
                                   size_t* data_bits) {
   BitCounter bit_counter;
   std::vector<uint8_t> depths(length);

@@ -30,8 +30,16 @@
 #include "yuv_convert.h"
 
 
+#ifdef _MSC_VER
+#define ENABLE_JPEG 0
+#else
+#define ENABLE_JPEG 1
+#endif
+
 extern "C" {
+#if ENABLE_JPEG
 #include "jpeglib.h"
+#endif
 #include "png.h"
 }
 
@@ -1013,6 +1021,8 @@ bool WriteImage(ImageFormatPNG, const MetaImageU& image,
   return WritePNGImage(image, pathname);
 }
 
+#if ENABLE_JPEG
+
 static void jpeg_catch_error(j_common_ptr cinfo) {
   (*cinfo->err->output_message)(cinfo);
   jmp_buf* jpeg_jmpbuf = (jmp_buf*)cinfo->client_data;
@@ -1123,21 +1133,31 @@ bool ReadJpegImage(const JpegInput& input, Image3B* rgb) {
   return true;
 }
 
+#endif  // #if ENABLE_JPEG
+
 bool ReadImage(ImageFormatJPG, const std::string& pathname, Image3B* rgb) {
+#if ENABLE_JPEG
   JpegInput input(pathname);
   return ReadJpegImage(input, rgb);
+#else
+  return PIK_FAILURE("Support for reading JPEG is disabled");
+#endif
 }
 
 bool ReadImage(ImageFormatJPG, const uint8_t* buf, size_t size, Image3B* rgb) {
+#if ENABLE_JPEG
   JpegInput input(buf, size);
   return ReadJpegImage(input, rgb);
+#else
+  return PIK_FAILURE("Support for reading JPEG is disabled");
+#endif
 }
 
 bool WriteImage(ImageFormatJPG, const ImageB&, const std::string&) {
-  return PIK_FAILURE("Unsupported");
+  return PIK_FAILURE("Writing JPEG is not supported");
 }
 bool WriteImage(ImageFormatJPG, const Image3B&, const std::string&) {
-  return PIK_FAILURE("Unsupported");
+  return PIK_FAILURE("Writing JPEG is not supported");
 }
 
 // Planes

@@ -21,6 +21,7 @@
 #include <cstring>
 #include <vector>
 
+#include "bits.h"
 #include "compiler_specific.h"
 #include "huffman_encode.h"
 #include "status.h"
@@ -30,16 +31,14 @@ namespace pik {
 
 namespace {
 
-PIK_INLINE int Log2FloorNonZero(uint32_t n) { return 31 ^ __builtin_clz(n); }
-
 void StoreVarLenUint8(size_t n, size_t* storage_ix, uint8_t* storage) {
   if (n == 0) {
     WriteBits(1, 0, storage_ix, storage);
   } else {
     WriteBits(1, 1, storage_ix, storage);
-    size_t nbits = Log2FloorNonZero(n);
+    size_t nbits = FloorLog2Nonzero(n);
     WriteBits(3, nbits, storage_ix, storage);
-    WriteBits(nbits, n - (1 << nbits), storage_ix, storage);
+    WriteBits(nbits, n - (1ULL << nbits), storage_ix, storage);
   }
 }
 
@@ -93,7 +92,7 @@ void RunLengthCodeZeros(const std::vector<uint8_t>& v_in,
     }
     max_reps = std::max(reps, max_reps);
   }
-  uint32_t max_prefix = max_reps > 0 ? Log2FloorNonZero(max_reps) : 0;
+  uint32_t max_prefix = max_reps > 0 ? FloorLog2Nonzero(max_reps) : 0;
   max_prefix = std::min(max_prefix, *max_run_length_prefix);
   *max_run_length_prefix = max_prefix;
   for (size_t i = 0; i < v_in.size();) {
@@ -109,7 +108,7 @@ void RunLengthCodeZeros(const std::vector<uint8_t>& v_in,
       i += reps;
       while (reps != 0) {
         if (reps < (2u << max_prefix)) {
-          uint32_t run_length_prefix = Log2FloorNonZero(reps);
+          uint32_t run_length_prefix = FloorLog2Nonzero(reps);
           v_out->push_back(run_length_prefix);
           extra_bits->push_back(reps - (1u << run_length_prefix));
           break;

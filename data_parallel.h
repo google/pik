@@ -21,14 +21,15 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <algorithm>  // find_if  TODO: remove after PerThread
+#include <algorithm>  // max
 #include <atomic>
 #include <condition_variable>  //NOLINT
 #include <cstdlib>
-#include <memory>
 #include <mutex>   //NOLINT
 #include <thread>  //NOLINT
 #include <vector>
+
+#include "bits.h"
 
 #define DATA_PARALLEL_CHECK(condition)                           \
   while (!(condition)) {                                         \
@@ -311,7 +312,7 @@ struct ExecutorPool {
 class Divider {
  public:
   // "d" is the divisor (what to divide by).
-  Divider(const uint32_t d) : shift_(31 - __builtin_clz(d)) {
+  Divider(const uint32_t d) : shift_(FloorLog2Nonzero(d)) {
     // Power of two divisors (including 1) are not supported because it is more
     // efficient to special-case them at a higher level.
     DATA_PARALLEL_CHECK((d & (d - 1)) != 0);

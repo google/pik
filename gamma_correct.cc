@@ -61,7 +61,7 @@ ImageF LinearFromSrgb(const ImageU& srgb) {
   const size_t xsize = srgb.xsize();
   const size_t ysize = srgb.ysize();
   ImageF linear(xsize, ysize);
-  const float norm = 1.0 / 257.0;
+  const float norm = 1.0f / 257.0f;
   for (size_t y = 0; y < ysize; ++y) {
     const uint16_t* const PIK_RESTRICT row = srgb.Row(y);
     float* const PIK_RESTRICT row_linear = linear.Row(y);
@@ -86,8 +86,8 @@ ImageB Srgb8FromLinear(const ImageF& linear) {
     const float* const PIK_RESTRICT row_linear = linear.Row(y);
     uint8_t* const PIK_RESTRICT row = srgb.Row(y);
     for (size_t x = 0; x < xsize; ++x) {
-      row[x] = static_cast<uint8_t>(
-          std::round(LinearToSrgb8Direct(row_linear[x])));
+      row[x] =
+          static_cast<uint8_t>(std::round(LinearToSrgb8Direct(row_linear[x])));
     }
   }
   return srgb;

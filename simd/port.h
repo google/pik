@@ -119,6 +119,10 @@
 // with other headers. ODR violations are avoided if all their functions (static
 // inline in Clang's library and extern inline in GCC's) are inlined.
 
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
+
 #if SIMD_ENABLE_AVX2
 #include <immintrin.h>
 #define SIMD_TARGET AVX2

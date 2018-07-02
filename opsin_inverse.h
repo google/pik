@@ -101,7 +101,6 @@ PIK_INLINE void XybToRgb(D d, const V opsin_x, const V opsin_y, const V opsin_b,
   *linear_b = Clamp0To255(d, *linear_b);
 }
 
-// Currently uses a single-node TileFlow. TODO(janwas): Add(builder).
 // "dither" enables 2x2 dithering, but only if SIMD_TARGET_VALUE != SIMD_NONE
 // and the output is U8 (first overload).
 void CenteredOpsinToSrgb(const Image3F& opsin, const bool dither,

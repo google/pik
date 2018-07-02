@@ -59,9 +59,9 @@
 namespace pik {
 namespace butteraugli {
 
-void *CacheAligned::Allocate(const size_t bytes) {
+void* CacheAligned::Allocate(const size_t bytes) {
   PROFILER_FUNC;
-  char *const allocated = static_cast<char *>(malloc(bytes + kCacheLineSize));
+  char* const allocated = static_cast<char*>(malloc(bytes + kCacheLineSize));
   if (allocated == nullptr) {
     return nullptr;
   }
@@ -70,19 +70,19 @@ void *CacheAligned::Allocate(const size_t bytes) {
   // malloc is at least kPointerSize aligned, so we can store the "allocated"
   // pointer immediately before the aligned memory.
   assert(misalignment % kPointerSize == 0);
-  char *const aligned = allocated + kCacheLineSize - misalignment;
+  char* const aligned = allocated + kCacheLineSize - misalignment;
   memcpy(aligned - kPointerSize, &allocated, kPointerSize);
   return BUTTERAUGLI_ASSUME_ALIGNED(aligned, 64);
 }
 
-void CacheAligned::Free(void *aligned_pointer) {
+void CacheAligned::Free(void* aligned_pointer) {
   PROFILER_FUNC;
   if (aligned_pointer == nullptr) {
     return;
   }
-  char *const aligned = static_cast<char *>(aligned_pointer);
+  char* const aligned = static_cast<char*>(aligned_pointer);
   assert(reinterpret_cast<uintptr_t>(aligned) % kCacheLineSize == 0);
-  char *allocated;
+  char* allocated;
   memcpy(&allocated, aligned - kPointerSize, kPointerSize);
   assert(allocated <= aligned - kPointerSize);
   assert(allocated >= aligned - kCacheLineSize);
@@ -103,13 +103,13 @@ static inline bool IsNan(const double x) {
          (0xfff0000000000001ULL <= bits && bits <= 0xffffffffffffffffULL);
 }
 
-static inline void CheckImage(const ImageF &image, const char *name) {
+static inline void CheckImage(const ImageF& image, const char* name) {
   PROFILER_FUNC;
   for (size_t y = 0; y < image.ysize(); ++y) {
-    const float * const BUTTERAUGLI_RESTRICT row = image.Row(y);
+    const float* const BUTTERAUGLI_RESTRICT row = image.Row(y);
     for (size_t x = 0; x < image.xsize(); ++x) {
       if (IsNan(row[x])) {
-        printf("Image %s @ %lu,%lu (of %lu,%lu)\n", name, x, y, image.xsize(),
+        printf("Image %s @ %zu,%zu (of %zu,%zu)\n", name, x, y, image.xsize(),
                image.ysize());
         exit(1);
       }
@@ -140,7 +140,7 @@ static inline void CheckImage(const ImageF &image, const char *name) {
 // Purpose of kInternalGoodQualityThreshold:
 // Normalize 'ok' image degradation to 1.0 across different versions of
 // butteraugli.
-static const double kInternalGoodQualityThreshold = 17.541881067400787;
+static const double kInternalGoodQualityThreshold = 20.35;
 static const double kGlobalScale = 1.0 / kInternalGoodQualityThreshold;
 
 inline float DotProduct(const float u[3], const float v[3]) {
@@ -158,13 +158,10 @@ std::vector<float> ComputeKernel(float sigma) {
   return kernel;
 }
 
-void ConvolveBorderColumn(
-    const ImageF& in,
-    const std::vector<float>& kernel,
-    const float weight_no_border,
-    const float border_ratio,
-    const size_t x,
-    float* const BUTTERAUGLI_RESTRICT row_out) {
+void ConvolveBorderColumn(const ImageF& in, const std::vector<float>& kernel,
+                          const float weight_no_border,
+                          const float border_ratio, const size_t x,
+                          float* const BUTTERAUGLI_RESTRICT row_out) {
   const int offset = kernel.size() / 2;
   int minx = x < offset ? 0 : x - offset;
   int maxx = std::min<int>(in.xsize() - 1, x + offset);
@@ -186,8 +183,7 @@ void ConvolveBorderColumn(
 }
 
 // Computes a horizontal convolution and transposes the result.
-ImageF Convolution(const ImageF& in,
-                   const std::vector<float>& kernel,
+ImageF Convolution(const ImageF& in, const std::vector<float>& kernel,
                    const float border_ratio) {
   PROFILER_FUNC;
   ImageF out(in.ysize(), in.xsize());
@@ -234,13 +230,13 @@ ImageF Convolution(const ImageF& in,
 // See: https://en.wikipedia.org/wiki/Gaussian_blur
 ImageF Blur(const ImageF& in, float sigma, float border_ratio) {
   std::vector<float> kernel = ComputeKernel(sigma);
-  return Convolution(Convolution(in, kernel, border_ratio),
-                     kernel, border_ratio);
+  return Convolution(Convolution(in, kernel, border_ratio), kernel,
+                     border_ratio);
 }
 
 // Clamping linear interpolator.
-inline double InterpolateClampNegative(const double *array,
-                                       int size, double ix) {
+inline double InterpolateClampNegative(const double* array, int size,
+                                       double ix) {
   if (ix < 0) {
     ix = 0;
   }
@@ -323,7 +319,7 @@ double SimpleGamma(double v) {
 }
 
 static inline double Gamma(double v) {
-  //return SimpleGamma(v);
+  // return SimpleGamma(v);
   return GammaPolynomial(v);
 }
 
@@ -331,7 +327,7 @@ std::vector<ImageF> OpsinDynamicsImage(const std::vector<ImageF>& rgb) {
   PROFILER_FUNC;
   std::vector<ImageF> xyb(3);
   std::vector<ImageF> blurred(3);
-  const double kSigma = 0.93;
+  const double kSigma = 1.2;
   for (int i = 0; i < 3; ++i) {
     xyb[i] = ImageF(rgb[i].xsize(), rgb[i].ysize());
     blurred[i] = Blur(rgb[i], kSigma, 0.0);
@@ -359,13 +355,13 @@ std::vector<ImageF> OpsinDynamicsImage(const std::vector<ImageF>& rgb) {
         sensitivity[2] = Gamma(pre_mixed2) / pre_mixed2;
       }
       float cur_mixed0, cur_mixed1, cur_mixed2;
-      OpsinAbsorbance(row_r[x], row_g[x], row_b[x],
-                      &cur_mixed0, &cur_mixed1, &cur_mixed2);
+      OpsinAbsorbance(row_r[x], row_g[x], row_b[x], &cur_mixed0, &cur_mixed1,
+                      &cur_mixed2);
       cur_mixed0 *= sensitivity[0];
       cur_mixed1 *= sensitivity[1];
       cur_mixed2 *= sensitivity[2];
-      RgbToXyb(cur_mixed0, cur_mixed1, cur_mixed2,
-               &row_out_x[x], &row_out_y[x], &row_out_b[x]);
+      RgbToXyb(cur_mixed0, cur_mixed1, cur_mixed2, &row_out_x[x], &row_out_y[x],
+               &row_out_b[x]);
     }
   }
   return xyb;
@@ -385,10 +381,10 @@ static BUTTERAUGLI_INLINE float AmplifyRangeAroundZero(float w, float x) {
 // Vals space can be converted to L2-norm space (Euclidean and normalized)
 // through visual masking.
 template <class V>
-BUTTERAUGLI_INLINE void XybLowFreqToVals(const V &x, const V &y, const V &b_arg,
-                                         V *BUTTERAUGLI_RESTRICT valx,
-                                         V *BUTTERAUGLI_RESTRICT valy,
-                                         V *BUTTERAUGLI_RESTRICT valb) {
+BUTTERAUGLI_INLINE void XybLowFreqToVals(const V& x, const V& y, const V& b_arg,
+                                         V* BUTTERAUGLI_RESTRICT valx,
+                                         V* BUTTERAUGLI_RESTRICT valy,
+                                         V* BUTTERAUGLI_RESTRICT valb) {
   static const double xmuli = 5.57547552483;
   static const double ymuli = 1.20828034498;
   static const double bmuli = 6.08319517575;
@@ -404,9 +400,8 @@ BUTTERAUGLI_INLINE void XybLowFreqToVals(const V &x, const V &y, const V &b_arg,
   *valy = y * ymul;
 }
 
-static ImageF SuppressInBrightAreas(size_t xsize, size_t ysize,
-                                    double mul, double mul2, double reg,
-                                    const ImageF& hf,
+static ImageF SuppressInBrightAreas(size_t xsize, size_t ysize, double mul,
+                                    double mul2, double reg, const ImageF& hf,
                                     const ImageF& brightness) {
   PROFILER_FUNC;
   ImageF inew(xsize, ysize);
@@ -423,15 +418,14 @@ static ImageF SuppressInBrightAreas(size_t xsize, size_t ysize,
   return inew;
 }
 
-
-static float SuppressHfInBrightAreas(float hf, float brightness,
-                                     float mul, float reg) {
+static float SuppressHfInBrightAreas(float hf, float brightness, float mul,
+                                     float reg) {
   float scaler = mul * reg / (reg + brightness);
   return scaler * hf;
 }
 
-static float SuppressUhfInBrightAreas(float hf, float brightness,
-                                      float mul, float reg) {
+static float SuppressUhfInBrightAreas(float hf, float brightness, float mul,
+                                      float reg) {
   float scaler = mul * reg / (reg + brightness);
   return scaler * hf;
 }
@@ -474,9 +468,8 @@ static ImageF MaximumClamping(size_t xsize, size_t ysize, const ImageF& ix,
   return inew;
 }
 
-static ImageF SuppressXByY(size_t xsize, size_t ysize,
-                           const ImageF& ix, const ImageF& iy,
-                           const double yw) {
+static ImageF SuppressXByY(size_t xsize, size_t ysize, const ImageF& ix,
+                           const ImageF& iy, const double yw) {
   static const double s = 0.745954517135;
   ImageF inew(xsize, ysize);
   for (size_t y = 0; y < ysize; ++y) {
@@ -493,10 +486,9 @@ static ImageF SuppressXByY(size_t xsize, size_t ysize,
   return inew;
 }
 
-static void SeparateFrequencies(
-    size_t xsize, size_t ysize,
-    const std::vector<ImageF>& xyb,
-    PsychoImage &ps) {
+static void SeparateFrequencies(size_t xsize, size_t ysize,
+                                const std::vector<ImageF>& xyb,
+                                PsychoImage& ps) {
   PROFILER_FUNC;
   ps.lf.resize(3);   // XYB
   ps.mf.resize(3);   // XYB
@@ -605,7 +597,6 @@ static void SeparateFrequencies(
                                                 kMulSuppressUhf, kRegUhf);
           row_hf[x] = SuppressHfInBrightAreas(row_hf[x], row_lf[x],
                                               kMulSuppressHf, kRegHf);
-
         }
       }
     }
@@ -629,8 +620,7 @@ static void SeparateFrequencies(
 }
 
 static void SameNoiseLevels(const ImageF& i0, const ImageF& i1,
-                            const double kSigma,
-                            const double w,
+                            const double kSigma, const double w,
                             const double maxclamp,
                             ImageF* BUTTERAUGLI_RESTRICT diffmap) {
   ImageF blurred(i0.xsize(), i0.ysize());
@@ -645,7 +635,6 @@ static void SameNoiseLevels(const ImageF& i0, const ImageF& i1,
       if (v1 > maxclamp) v1 = maxclamp;
       to[x] = v0 - v1;
     }
-
   }
   blurred = Blur(blurred, kSigma, 0.0);
   for (size_t y = 0; y < i0.ysize(); ++y) {
@@ -674,23 +663,46 @@ static void L2Diff(const ImageF& i0, const ImageF& i1, const double w,
   }
 }
 
-static void L2DiffAsymmetric(const ImageF& i0, const ImageF& i1,
-                             double w_0gt1,
+// i0 is the original image.
+// i1 is the deformed copy.
+static void L2DiffAsymmetric(const ImageF& i0, const ImageF& i1, double w_0gt1,
                              double w_0lt1,
                              ImageF* BUTTERAUGLI_RESTRICT diffmap) {
   if (w_0gt1 == 0 && w_0lt1 == 0) {
     return;
   }
+  w_0gt1 *= 0.8;
+  w_0lt1 *= 0.8;
   for (size_t y = 0; y < i0.ysize(); ++y) {
     const float* BUTTERAUGLI_RESTRICT const row0 = i0.Row(y);
     const float* BUTTERAUGLI_RESTRICT const row1 = i1.Row(y);
     float* BUTTERAUGLI_RESTRICT const row_diff = diffmap->Row(y);
     for (size_t x = 0; x < i0.xsize(); ++x) {
+      // Primary symmetric quadratic objective.
       double diff = row0[x] - row1[x];
       row_diff[x] += w_0gt1 * diff * diff;
-      if (fabs(row0[x]) < fabs(row1[x])) {
-        double diff2 = fabs(row0[x]) - fabs(row1[x]);
-        row_diff[x] += w_0lt1 * diff2 * diff2;
+
+      // Secondary half-open quadratic objectives.
+      const double fabs0 = fabs(row0[x]);
+      const double too_small = 0.4 * fabs0;
+      const double too_big = 1.0 * fabs0;
+
+      if (row0[x] < 0) {
+        if (row1[x] > -too_small) {
+          double v = row1[x] + too_small;
+          row_diff[x] += w_0lt1 * v * v;
+        } else if (row1[x] < -too_big) {
+          double v = -row1[x] - too_big;
+          row_diff[x] += w_0lt1 * v * v;
+        }
+      } else {
+        if (row1[x] < too_small) {
+          double v = too_small - row1[x];
+          row_diff[x] += w_0lt1 * v * v;
+        } else if (row1[x] > too_big) {
+          double v = row1[x] - too_big;
+          row_diff[x] += w_0lt1 * v * v;
+        }
       }
     }
   }
@@ -711,8 +723,8 @@ ImageF CalculateDiffmap(const ImageF& diffmap_in) {
       // TODO(b/29974893): Until that is fixed do not call sqrt on very small
       // numbers.
       row_out[x] = (orig_val < (1.0f / (kInitialSlope * kInitialSlope))
-                    ? kInitialSlope * orig_val
-                    : std::sqrt(orig_val));
+                        ? kInitialSlope * orig_val
+                        : std::sqrt(orig_val));
     }
   }
   return diffmap;
@@ -725,10 +737,10 @@ void MaskPsychoImage(const PsychoImage& pi0, const PsychoImage& pi1,
   std::vector<ImageF> mask_xyb0 = CreatePlanes<float>(xsize, ysize, 3);
   std::vector<ImageF> mask_xyb1 = CreatePlanes<float>(xsize, ysize, 3);
   static const double muls[4] = {
-    0,
-    1.64178305129,
-    0.831081703362,
-    3.23680933546,
+      0,
+      1.64178305129,
+      0.831081703362,
+      3.23680933546,
   };
   for (int i = 0; i < 2; ++i) {
     double a = muls[2 * i];
@@ -760,22 +772,21 @@ ButteraugliComparator::ButteraugliComparator(const std::vector<ImageF>& rgb0,
   SeparateFrequencies(xsize_, ysize_, xyb0, pi0_);
 }
 
-void ButteraugliComparator::Mask(
-    std::vector<ImageF>* BUTTERAUGLI_RESTRICT mask,
-    std::vector<ImageF>* BUTTERAUGLI_RESTRICT mask_dc) const {
+void ButteraugliComparator::Mask(std::vector<ImageF>* BUTTERAUGLI_RESTRICT mask,
+                                 std::vector<ImageF>* BUTTERAUGLI_RESTRICT
+                                     mask_dc) const {
   MaskPsychoImage(pi0_, pi0_, xsize_, ysize_, mask, mask_dc);
 }
 
 void ButteraugliComparator::Diffmap(const std::vector<ImageF>& rgb1,
-                                    ImageF &result) const {
+                                    ImageF& result) const {
   PROFILER_FUNC;
   if (xsize_ < 8 || ysize_ < 8) return;
   DiffmapOpsinDynamicsImage(OpsinDynamicsImage(rgb1), result);
 }
 
 void ButteraugliComparator::DiffmapOpsinDynamicsImage(
-    const std::vector<ImageF>& xyb1,
-    ImageF &result) const {
+    const std::vector<ImageF>& xyb1, ImageF& result) const {
   PROFILER_FUNC;
   if (xsize_ < 8 || ysize_ < 8) return;
   PsychoImage pi1;
@@ -799,35 +810,23 @@ void ButteraugliComparator::DiffmapPsychoImage(const PsychoImage& pi1,
 
   static const double wUhfMalta = 5.1409625726;
   static const double norm1Uhf = 58.5001247061;
-  MaltaDiffMap(pi0_.uhf[1], pi1.uhf[1],
-               wUhfMalta * hf_asymmetry_,
-               wUhfMalta / hf_asymmetry_,
-               norm1Uhf,
-               &block_diff_ac[1]);
+  MaltaDiffMap(pi0_.uhf[1], pi1.uhf[1], wUhfMalta * hf_asymmetry_,
+               wUhfMalta / hf_asymmetry_, norm1Uhf, &block_diff_ac[1]);
 
   static const double wUhfMaltaX = 4.91743441556;
   static const double norm1UhfX = 687196.39002;
-  MaltaDiffMap(pi0_.uhf[0], pi1.uhf[0],
-               wUhfMaltaX * hf_asymmetry_,
-               wUhfMaltaX / hf_asymmetry_,
-               norm1UhfX,
-               &block_diff_ac[0]);
+  MaltaDiffMap(pi0_.uhf[0], pi1.uhf[0], wUhfMaltaX * hf_asymmetry_,
+               wUhfMaltaX / hf_asymmetry_, norm1UhfX, &block_diff_ac[0]);
 
   static const double wHfMalta = 153.671655716;
   static const double norm1Hf = 83150785.9592;
-  MaltaDiffMapLF(pi0_.hf[1], pi1.hf[1],
-                 wHfMalta * sqrt(hf_asymmetry_),
-                 wHfMalta / sqrt(hf_asymmetry_),
-                 norm1Hf,
-                 &block_diff_ac[1]);
+  MaltaDiffMapLF(pi0_.hf[1], pi1.hf[1], wHfMalta * sqrt(hf_asymmetry_),
+                 wHfMalta / sqrt(hf_asymmetry_), norm1Hf, &block_diff_ac[1]);
 
   static const double wHfMaltaX = 668.358918152;
   static const double norm1HfX = 0.882954368025;
-  MaltaDiffMapLF(pi0_.hf[0], pi1.hf[0],
-                 wHfMaltaX * sqrt(hf_asymmetry_),
-                 wHfMaltaX / sqrt(hf_asymmetry_),
-                 norm1HfX,
-                 &block_diff_ac[0]);
+  MaltaDiffMapLF(pi0_.hf[0], pi1.hf[0], wHfMaltaX * sqrt(hf_asymmetry_),
+                 wHfMaltaX / sqrt(hf_asymmetry_), norm1HfX, &block_diff_ac[0]);
 
   static const double wMfMalta = 6841.81248144;
   static const double norm1Mf = 0.0135134962487;
@@ -840,15 +839,7 @@ void ButteraugliComparator::DiffmapPsychoImage(const PsychoImage& pi1,
                  &block_diff_ac[0]);
 
   static const double wmul[9] = {
-    0,
-    32.4449876135,
-    0,
-    0,
-    0,
-    0,
-    1.01370836411,
-    0,
-    1.74566011615,
+      0, 32.4449876135, 0, 0, 0, 0, 1.01370836411, 0, 1.74566011615,
   };
 
   static const double maxclamp = 85.7047444518;
@@ -859,10 +850,8 @@ void ButteraugliComparator::DiffmapPsychoImage(const PsychoImage& pi1,
 
   for (int c = 0; c < 3; ++c) {
     if (c < 2) {
-      L2DiffAsymmetric(pi0_.hf[c], pi1.hf[c],
-                       wmul[c] * hf_asymmetry_,
-                       wmul[c] / hf_asymmetry_,
-                       &block_diff_ac[c]);
+      L2DiffAsymmetric(pi0_.hf[c], pi1.hf[c], wmul[c] * hf_asymmetry_,
+                       wmul[c] / hf_asymmetry_, &block_diff_ac[c]);
     }
     L2Diff(pi0_.mf[c], pi1.mf[c], wmul[3 + c], &block_diff_ac[c]);
     L2Diff(pi0_.lf[c], pi1.lf[c], wmul[6 + c], &block_diff_dc[c]);
@@ -886,82 +875,46 @@ static float MaltaUnit(MaltaTagLF, const float* BUTTERAUGLI_RESTRICT d,
   float retval = 0;
   {
     // x grows, y constant
-    float sum =
-        d[-4] +
-        d[-2] +
-        d[0] +
-        d[2] +
-        d[4];
+    float sum = d[-4] + d[-2] + d[0] + d[2] + d[4];
     retval += sum * sum;
   }
   {
     // y grows, x constant
-    float sum =
-        d[-xs3 - xs] +
-        d[-xs - xs] +
-        d[0] +
-        d[xs + xs] +
-        d[xs3 + xs];
+    float sum = d[-xs3 - xs] + d[-xs - xs] + d[0] + d[xs + xs] + d[xs3 + xs];
     retval += sum * sum;
   }
   {
     // both grow
     float sum =
-        d[-xs3 - 3] +
-        d[-xs - xs - 2] +
-        d[0] +
-        d[xs + xs + 2] +
-        d[xs3 + 3];
+        d[-xs3 - 3] + d[-xs - xs - 2] + d[0] + d[xs + xs + 2] + d[xs3 + 3];
     retval += sum * sum;
   }
   {
     // y grows, x shrinks
     float sum =
-        d[-xs3 + 3] +
-        d[-xs - xs + 2] +
-        d[0] +
-        d[xs + xs - 2] +
-        d[xs3 - 3];
+        d[-xs3 + 3] + d[-xs - xs + 2] + d[0] + d[xs + xs - 2] + d[xs3 - 3];
     retval += sum * sum;
   }
   {
     // y grows -4 to 4, x shrinks 1 -> -1
-    float sum =
-        d[-xs3 - xs + 1] +
-        d[-xs - xs + 1] +
-        d[0] +
-        d[xs + xs - 1] +
-        d[xs3 + xs - 1];
+    float sum = d[-xs3 - xs + 1] + d[-xs - xs + 1] + d[0] + d[xs + xs - 1] +
+                d[xs3 + xs - 1];
     retval += sum * sum;
   }
   {
     //  y grows -4 to 4, x grows -1 -> 1
-    float sum =
-        d[-xs3 - xs - 1] +
-        d[-xs - xs - 1] +
-        d[0] +
-        d[xs + xs + 1] +
-        d[xs3 + xs + 1];
+    float sum = d[-xs3 - xs - 1] + d[-xs - xs - 1] + d[0] + d[xs + xs + 1] +
+                d[xs3 + xs + 1];
     retval += sum * sum;
   }
   {
     // x grows -4 to 4, y grows -1 to 1
-    float sum =
-        d[-4 - xs] +
-        d[-2 - xs] +
-        d[0] +
-        d[2 + xs] +
-        d[4 + xs];
+    float sum = d[-4 - xs] + d[-2 - xs] + d[0] + d[2 + xs] + d[4 + xs];
     retval += sum * sum;
   }
   {
     // x grows -4 to 4, y shrinks 1 to -1
-    float sum =
-        d[-4 + xs] +
-        d[-2 + xs] +
-        d[0] +
-        d[2 - xs] +
-        d[4 - xs];
+    float sum = d[-4 + xs] + d[-2 + xs] + d[0] + d[2 - xs] + d[4 - xs];
     retval += sum * sum;
   }
   {
@@ -975,11 +928,7 @@ static float MaltaUnit(MaltaTagLF, const float* BUTTERAUGLI_RESTRICT d,
        7______*__
        8_________ */
     float sum =
-        d[-xs3 - 2] +
-        d[-xs - xs - 1] +
-        d[0] +
-        d[xs + xs + 1] +
-        d[xs3 + 2];
+        d[-xs3 - 2] + d[-xs - xs - 1] + d[0] + d[xs + xs + 1] + d[xs3 + 2];
     retval += sum * sum;
   }
   {
@@ -993,11 +942,7 @@ static float MaltaUnit(MaltaTagLF, const float* BUTTERAUGLI_RESTRICT d,
        7__*______
        8_________ */
     float sum =
-        d[-xs3 + 2] +
-        d[-xs - xs + 1] +
-        d[0] +
-        d[xs + xs - 1] +
-        d[xs3 - 2];
+        d[-xs3 + 2] + d[-xs - xs + 1] + d[0] + d[xs + xs - 1] + d[xs3 - 2];
     retval += sum * sum;
   }
   {
@@ -1011,11 +956,7 @@ static float MaltaUnit(MaltaTagLF, const float* BUTTERAUGLI_RESTRICT d,
        7_________
        8_________ */
     float sum =
-        d[-xs - xs - 3] +
-        d[-xs - 2] +
-        d[0] +
-        d[xs + 2] +
-        d[xs + xs + 3];
+        d[-xs - xs - 3] + d[-xs - 2] + d[0] + d[xs + 2] + d[xs + xs + 3];
     retval += sum * sum;
   }
   {
@@ -1029,11 +970,7 @@ static float MaltaUnit(MaltaTagLF, const float* BUTTERAUGLI_RESTRICT d,
        7_________
        8_________ */
     float sum =
-        d[-xs - xs + 3] +
-        d[-xs + 2] +
-        d[0] +
-        d[xs - 2] +
-        d[xs + xs - 3];
+        d[-xs - xs + 3] + d[-xs + 2] + d[0] + d[xs - 2] + d[xs + xs - 3];
     retval += sum * sum;
   }
   {
@@ -1048,11 +985,7 @@ static float MaltaUnit(MaltaTagLF, const float* BUTTERAUGLI_RESTRICT d,
        8_________ */
 
     float sum =
-        d[xs + xs - 4] +
-        d[xs - 2] +
-        d[0] +
-        d[-xs + 2] +
-        d[-xs - xs + 4];
+        d[xs + xs - 4] + d[xs - 2] + d[0] + d[-xs + 2] + d[-xs - xs + 4];
     retval += sum * sum;
   }
   {
@@ -1066,11 +999,7 @@ static float MaltaUnit(MaltaTagLF, const float* BUTTERAUGLI_RESTRICT d,
        7_________
        8_________ */
     float sum =
-        d[-xs - xs - 4] +
-        d[-xs - 2] +
-        d[0] +
-        d[xs + 2] +
-        d[xs + xs + 4];
+        d[-xs - xs - 4] + d[-xs - 2] + d[0] + d[xs + 2] + d[xs + xs + 4];
     retval += sum * sum;
   }
   {
@@ -1083,12 +1012,8 @@ static float MaltaUnit(MaltaTagLF, const float* BUTTERAUGLI_RESTRICT d,
        6_____*___
        7_________
        8______*__ */
-    float sum =
-        d[-xs3 - xs - 2] +
-        d[-xs - xs - 1] +
-        d[0] +
-        d[xs + xs + 1] +
-        d[xs3 + xs + 2];
+    float sum = d[-xs3 - xs - 2] + d[-xs - xs - 1] + d[0] + d[xs + xs + 1] +
+                d[xs3 + xs + 2];
     retval += sum * sum;
   }
   {
@@ -1101,12 +1026,8 @@ static float MaltaUnit(MaltaTagLF, const float* BUTTERAUGLI_RESTRICT d,
        6___*_____
        7_________
        8__*______ */
-    float sum =
-        d[-xs3 - xs + 2] +
-        d[-xs - xs + 1] +
-        d[0] +
-        d[xs + xs - 1] +
-        d[xs3 + xs - 2];
+    float sum = d[-xs3 - xs + 2] + d[-xs - xs + 1] + d[0] + d[xs + xs - 1] +
+                d[xs3 + xs - 2];
     retval += sum * sum;
   }
   return retval;
@@ -1119,109 +1040,49 @@ static float MaltaUnit(MaltaTag, const float* BUTTERAUGLI_RESTRICT d,
   {
     // x grows, y constant
     float sum =
-        d[-4] +
-        d[-3] +
-        d[-2] +
-        d[-1] +
-        d[0] +
-        d[1] +
-        d[2] +
-        d[3] +
-        d[4];
+        d[-4] + d[-3] + d[-2] + d[-1] + d[0] + d[1] + d[2] + d[3] + d[4];
     retval += sum * sum;
   }
   {
     // y grows, x constant
-    float sum =
-        d[-xs3 - xs] +
-        d[-xs3] +
-        d[-xs - xs] +
-        d[-xs] +
-        d[0] +
-        d[xs] +
-        d[xs + xs] +
-        d[xs3] +
-        d[xs3 + xs];
+    float sum = d[-xs3 - xs] + d[-xs3] + d[-xs - xs] + d[-xs] + d[0] + d[xs] +
+                d[xs + xs] + d[xs3] + d[xs3 + xs];
     retval += sum * sum;
   }
   {
     // both grow
-    float sum =
-        d[-xs3 - 3] +
-        d[-xs - xs - 2] +
-        d[-xs - 1] +
-        d[0] +
-        d[xs + 1] +
-        d[xs + xs + 2] +
-        d[xs3 + 3];
+    float sum = d[-xs3 - 3] + d[-xs - xs - 2] + d[-xs - 1] + d[0] + d[xs + 1] +
+                d[xs + xs + 2] + d[xs3 + 3];
     retval += sum * sum;
   }
   {
     // y grows, x shrinks
-    float sum =
-        d[-xs3 + 3] +
-        d[-xs - xs + 2] +
-        d[-xs + 1] +
-        d[0] +
-        d[xs - 1] +
-        d[xs + xs - 2] +
-        d[xs3 - 3];
+    float sum = d[-xs3 + 3] + d[-xs - xs + 2] + d[-xs + 1] + d[0] + d[xs - 1] +
+                d[xs + xs - 2] + d[xs3 - 3];
     retval += sum * sum;
   }
   {
     // y grows -4 to 4, x shrinks 1 -> -1
-    float sum =
-        d[-xs3 - xs + 1] +
-        d[-xs3 + 1] +
-        d[-xs - xs + 1] +
-        d[-xs] +
-        d[0] +
-        d[xs] +
-        d[xs + xs - 1] +
-        d[xs3 - 1] +
-        d[xs3 + xs - 1];
+    float sum = d[-xs3 - xs + 1] + d[-xs3 + 1] + d[-xs - xs + 1] + d[-xs] +
+                d[0] + d[xs] + d[xs + xs - 1] + d[xs3 - 1] + d[xs3 + xs - 1];
     retval += sum * sum;
   }
   {
     //  y grows -4 to 4, x grows -1 -> 1
-    float sum =
-        d[-xs3 - xs - 1] +
-        d[-xs3 - 1] +
-        d[-xs - xs - 1] +
-        d[-xs] +
-        d[0] +
-        d[xs] +
-        d[xs + xs + 1] +
-        d[xs3 + 1] +
-        d[xs3 + xs + 1];
+    float sum = d[-xs3 - xs - 1] + d[-xs3 - 1] + d[-xs - xs - 1] + d[-xs] +
+                d[0] + d[xs] + d[xs + xs + 1] + d[xs3 + 1] + d[xs3 + xs + 1];
     retval += sum * sum;
   }
   {
     // x grows -4 to 4, y grows -1 to 1
-    float sum =
-        d[-4 - xs] +
-        d[-3 - xs] +
-        d[-2 - xs] +
-        d[-1] +
-        d[0] +
-        d[1] +
-        d[2 + xs] +
-        d[3 + xs] +
-        d[4 + xs];
+    float sum = d[-4 - xs] + d[-3 - xs] + d[-2 - xs] + d[-1] + d[0] + d[1] +
+                d[2 + xs] + d[3 + xs] + d[4 + xs];
     retval += sum * sum;
   }
   {
     // x grows -4 to 4, y shrinks 1 to -1
-    float sum =
-        d[-4 + xs] +
-        d[-3 + xs] +
-        d[-2 + xs] +
-        d[-1] +
-        d[0] +
-        d[1] +
-        d[2 - xs] +
-        d[3 - xs] +
-        d[4 - xs];
+    float sum = d[-4 + xs] + d[-3 + xs] + d[-2 + xs] + d[-1] + d[0] + d[1] +
+                d[2 - xs] + d[3 - xs] + d[4 - xs];
     retval += sum * sum;
   }
   {
@@ -1234,14 +1095,8 @@ static float MaltaUnit(MaltaTag, const float* BUTTERAUGLI_RESTRICT d,
        6_____*___
        7______*__
        8_________ */
-    float sum =
-        d[-xs3 - 2] +
-        d[-xs - xs - 1] +
-        d[-xs - 1] +
-        d[0] +
-        d[xs + 1] +
-        d[xs + xs + 1] +
-        d[xs3 + 2];
+    float sum = d[-xs3 - 2] + d[-xs - xs - 1] + d[-xs - 1] + d[0] + d[xs + 1] +
+                d[xs + xs + 1] + d[xs3 + 2];
     retval += sum * sum;
   }
   {
@@ -1254,14 +1109,8 @@ static float MaltaUnit(MaltaTag, const float* BUTTERAUGLI_RESTRICT d,
        6___*_____
        7__*______
        8_________ */
-    float sum =
-        d[-xs3 + 2] +
-        d[-xs - xs + 1] +
-        d[-xs + 1] +
-        d[0] +
-        d[xs - 1] +
-        d[xs + xs - 1] +
-        d[xs3 - 2];
+    float sum = d[-xs3 + 2] + d[-xs - xs + 1] + d[-xs + 1] + d[0] + d[xs - 1] +
+                d[xs + xs - 1] + d[xs3 - 2];
     retval += sum * sum;
   }
   {
@@ -1274,14 +1123,8 @@ static float MaltaUnit(MaltaTag, const float* BUTTERAUGLI_RESTRICT d,
        6_______*_
        7_________
        8_________ */
-    float sum =
-        d[-xs - xs - 3] +
-        d[-xs - 2] +
-        d[-xs - 1] +
-        d[0] +
-        d[xs + 1] +
-        d[xs + 2] +
-        d[xs + xs + 3];
+    float sum = d[-xs - xs - 3] + d[-xs - 2] + d[-xs - 1] + d[0] + d[xs + 1] +
+                d[xs + 2] + d[xs + xs + 3];
     retval += sum * sum;
   }
   {
@@ -1294,14 +1137,8 @@ static float MaltaUnit(MaltaTag, const float* BUTTERAUGLI_RESTRICT d,
        6_*_______
        7_________
        8_________ */
-    float sum =
-        d[-xs - xs + 3] +
-        d[-xs + 2] +
-        d[-xs + 1] +
-        d[0] +
-        d[xs - 1] +
-        d[xs - 2] +
-        d[xs + xs - 3];
+    float sum = d[-xs - xs + 3] + d[-xs + 2] + d[-xs + 1] + d[0] + d[xs - 1] +
+                d[xs - 2] + d[xs + xs - 3];
     retval += sum * sum;
   }
   {
@@ -1315,15 +1152,8 @@ static float MaltaUnit(MaltaTag, const float* BUTTERAUGLI_RESTRICT d,
        7_________
        8_________ */
 
-    float sum =
-        d[xs + xs - 4] +
-        d[xs + xs - 3] +
-        d[xs - 2] +
-        d[xs - 1] +
-        d[0] +
-        d[1] +
-        d[-xs + 2] +
-        d[-xs + 3];
+    float sum = d[xs + xs - 4] + d[xs + xs - 3] + d[xs - 2] + d[xs - 1] + d[0] +
+                d[1] + d[-xs + 2] + d[-xs + 3];
     retval += sum * sum;
   }
   {
@@ -1336,15 +1166,8 @@ static float MaltaUnit(MaltaTag, const float* BUTTERAUGLI_RESTRICT d,
        6_________
        7_________
        8_________ */
-    float sum =
-        d[-xs - xs - 4] +
-        d[-xs - xs - 3] +
-        d[-xs - 2] +
-        d[-xs - 1] +
-        d[0] +
-        d[1] +
-        d[xs + 2] +
-        d[xs + 3];
+    float sum = d[-xs - xs - 4] + d[-xs - xs - 3] + d[-xs - 2] + d[-xs - 1] +
+                d[0] + d[1] + d[xs + 2] + d[xs + 3];
     retval += sum * sum;
   }
   {
@@ -1357,15 +1180,8 @@ static float MaltaUnit(MaltaTag, const float* BUTTERAUGLI_RESTRICT d,
        6_____*___
        7_____*___
        8_________ */
-    float sum =
-        d[-xs3 - xs - 2] +
-        d[-xs3 - 2] +
-        d[-xs - xs - 1] +
-        d[-xs - 1] +
-        d[0] +
-        d[xs] +
-        d[xs + xs + 1] +
-        d[xs3 + 1];
+    float sum = d[-xs3 - xs - 2] + d[-xs3 - 2] + d[-xs - xs - 1] + d[-xs - 1] +
+                d[0] + d[xs] + d[xs + xs + 1] + d[xs3 + 1];
     retval += sum * sum;
   }
   {
@@ -1378,15 +1194,8 @@ static float MaltaUnit(MaltaTag, const float* BUTTERAUGLI_RESTRICT d,
        6___*_____
        7___*_____
        8_________ */
-    float sum =
-        d[-xs3 - xs + 2] +
-        d[-xs3 + 2] +
-        d[-xs - xs + 1] +
-        d[-xs + 1] +
-        d[0] +
-        d[xs] +
-        d[xs + xs - 1] +
-        d[xs3 - 1];
+    float sum = d[-xs3 - xs + 2] + d[-xs3 + 2] + d[-xs - xs + 1] + d[-xs + 1] +
+                d[0] + d[xs] + d[xs + xs - 1] + d[xs3 - 1];
     retval += sum * sum;
   }
   return retval;
@@ -1429,16 +1238,14 @@ static BUTTERAUGLI_INLINE float PaddedMaltaUnit(
 template <class Tag>
 static void MaltaDiffMapImpl(const ImageF& lum0, const ImageF& lum1,
                              const size_t xsize_, const size_t ysize_,
-                             const double w_0gt1,
-                             const double w_0lt1,
-                             const double norm1,
-                             const double len, const double mulli,
-                             ImageF* block_diff_ac) {
-  const float kKludge0 = 0.43;
-  const float kKludge1 = 0.43;
+                             const double w_0gt1, const double w_0lt1,
+                             const double norm1, const double len,
+                             const double mulli, ImageF* block_diff_ac) {
+  const float kWeight0 = 0.5;
+  const float kWeight1 = 0.33;
 
-  const double w_pre0gt1 = mulli * sqrt(kKludge0 * w_0gt1) / (len * 2 + 1);
-  const double w_pre0lt1 = mulli * sqrt(kKludge1 * w_0lt1) / (len * 2 + 1);
+  const double w_pre0gt1 = mulli * sqrt(kWeight0 * w_0gt1) / (len * 2 + 1);
+  const double w_pre0lt1 = mulli * sqrt(kWeight1 * w_0lt1) / (len * 2 + 1);
   const float norm2_0gt1 = w_pre0gt1 * norm1;
   const float norm2_0lt1 = w_pre0lt1 * norm1;
 
@@ -1447,31 +1254,51 @@ static void MaltaDiffMapImpl(const ImageF& lum0, const ImageF& lum1,
     const float* BUTTERAUGLI_RESTRICT const row0 = lum0.Row(y);
     const float* BUTTERAUGLI_RESTRICT const row1 = lum1.Row(y);
     for (size_t x = 0; x < xsize_; ++x, ++ix) {
-      const float absval = 0.5f * (std::abs(row0[x]) + std::abs(row1[x]));
+      const float absval = 0.5f * std::abs(row0[x]) + 0.5f * std::abs(row1[x]);
       const float diff = row0[x] - row1[x];
       const float scaler = norm2_0gt1 / (static_cast<float>(norm1) + absval);
+
+      // Primary symmetric quadratic objective.
       diffs[ix] = scaler * diff;
 
       const float scaler2 = norm2_0lt1 / (static_cast<float>(norm1) + absval);
+      const double fabs0 = fabs(row0[x]);
+
+      // Secondary half-open quadratic objectives.
+      const double too_small = 0.55 * fabs0;
+      const double too_big = 1.05 * fabs0;
+
       if (row0[x] < 0) {
-        if (row1[x] > 0) {
+        if (row1[x] > -too_small) {
+          double impact = scaler2 * (row1[x] + too_small);
           if (diff < 0) {
-            diffs[ix] -= scaler2 * row1[x];
+            diffs[ix] -= impact;
           } else {
-            diffs[ix] += scaler2 * row1[x];
+            diffs[ix] += impact;
           }
-        } else if (row1[x] < row0[x]) {
-          diffs[ix] += scaler2 * diff;
+        } else if (row1[x] < -too_big) {
+          double impact = scaler2 * (-row1[x] - too_big);
+          if (diff < 0) {
+            diffs[ix] -= impact;
+          } else {
+            diffs[ix] += impact;
+          }
         }
       } else {
-        if (row1[x] < 0) {
+        if (row1[x] < too_small) {
+          double impact = scaler2 * (too_small - row1[x]);
           if (diff < 0) {
-            diffs[ix] += scaler2 * row1[x];
+            diffs[ix] -= impact;
           } else {
-            diffs[ix] -= scaler2 * row1[x];
+            diffs[ix] += impact;
           }
-        } else if (row1[x] > row0[x]) {
-          diffs[ix] += scaler2 * diff;
+        } else if (row1[x] > too_big) {
+          double impact = scaler2 * (row1[x] - too_big);
+          if (diff < 0) {
+            diffs[ix] -= impact;
+          } else {
+            diffs[ix] += impact;
+          }
         }
       }
     }
@@ -1517,35 +1344,29 @@ static void MaltaDiffMapImpl(const ImageF& lum0, const ImageF& lum1,
 }
 
 void ButteraugliComparator::MaltaDiffMap(
-    const ImageF& lum0, const ImageF& lum1,
-    const double w_0gt1,
-    const double w_0lt1,
-    const double norm1, ImageF* BUTTERAUGLI_RESTRICT block_diff_ac) const {
+    const ImageF& lum0, const ImageF& lum1, const double w_0gt1,
+    const double w_0lt1, const double norm1,
+    ImageF* BUTTERAUGLI_RESTRICT block_diff_ac) const {
   PROFILER_FUNC;
   const double len = 3.75;
   static const double mulli = 0.354191303559;
-  MaltaDiffMapImpl<MaltaTag>(lum0, lum1, xsize_, ysize_, w_0gt1, w_0lt1,
-                             norm1, len,
-                             mulli, block_diff_ac);
+  MaltaDiffMapImpl<MaltaTag>(lum0, lum1, xsize_, ysize_, w_0gt1, w_0lt1, norm1,
+                             len, mulli, block_diff_ac);
 }
 
 void ButteraugliComparator::MaltaDiffMapLF(
-    const ImageF& lum0, const ImageF& lum1,
-    const double w_0gt1,
-    const double w_0lt1,
-    const double norm1, ImageF* BUTTERAUGLI_RESTRICT block_diff_ac) const {
+    const ImageF& lum0, const ImageF& lum1, const double w_0gt1,
+    const double w_0lt1, const double norm1,
+    ImageF* BUTTERAUGLI_RESTRICT block_diff_ac) const {
   PROFILER_FUNC;
   const double len = 3.75;
   static const double mulli = 0.405371989604;
-  MaltaDiffMapImpl<MaltaTagLF>(lum0, lum1, xsize_, ysize_,
-                               w_0gt1, w_0lt1,
-                               norm1, len,
-                               mulli, block_diff_ac);
+  MaltaDiffMapImpl<MaltaTagLF>(lum0, lum1, xsize_, ysize_, w_0gt1, w_0lt1,
+                               norm1, len, mulli, block_diff_ac);
 }
 
 ImageF ButteraugliComparator::CombineChannels(
-    const std::vector<ImageF>& mask_xyb,
-    const std::vector<ImageF>& mask_xyb_dc,
+    const std::vector<ImageF>& mask_xyb, const std::vector<ImageF>& mask_xyb_dc,
     const std::vector<ImageF>& block_diff_dc,
     const std::vector<ImageF>& block_diff_ac) const {
   PROFILER_FUNC;
@@ -1573,7 +1394,7 @@ double ButteraugliScoreFromDiffmap(const ImageF& diffmap) {
   PROFILER_FUNC;
   float retval = 0.0f;
   for (size_t y = 0; y < diffmap.ysize(); ++y) {
-    const float * const BUTTERAUGLI_RESTRICT row = diffmap.Row(y);
+    const float* const BUTTERAUGLI_RESTRICT row = diffmap.Row(y);
     for (size_t x = 0; x < diffmap.xsize(); ++x) {
       retval = std::max(retval, row[x]);
     }
@@ -1584,10 +1405,9 @@ double ButteraugliScoreFromDiffmap(const ImageF& diffmap) {
 #include <stdio.h>
 
 // ===== Functions used by Mask only =====
-static std::array<double, 512> MakeMask(
-    double extmul, double extoff,
-    double mul, double offset,
-    double scaler) {
+static std::array<double, 512> MakeMask(double extmul, double extoff,
+                                        double mul, double offset,
+                                        double scaler) {
   std::array<double, 512> lut;
   for (int i = 0; i < lut.size(); ++i) {
     const double c = mul / ((0.01 * scaler * i) + offset);
@@ -1608,7 +1428,7 @@ double MaskX(double delta) {
   static const double scaler = 16.2770141832;
   static const double mul = 5.62939030582;
   static const std::array<double, 512> lut =
-                MakeMask(extmul, extoff, mul, offset, scaler);
+      MakeMask(extmul, extoff, mul, offset, scaler);
   return InterpolateClampNegative(lut.data(), lut.size(), delta);
 }
 
@@ -1672,10 +1492,10 @@ ImageF DiffPrecompute(const ImageF& xyb0, const ImageF& xyb1) {
       } else {
         x2 = x;
       }
-      double sup0 = (fabs(row0_in[x] - row0_in[x2]) +
-                     fabs(row0_in[x] - row0_in2[x]));
-      double sup1 = (fabs(row1_in[x] - row1_in[x2]) +
-                     fabs(row1_in[x] - row1_in2[x]));
+      double sup0 =
+          (fabs(row0_in[x] - row0_in[x2]) + fabs(row0_in[x] - row0_in2[x]));
+      double sup1 =
+          (fabs(row1_in[x] - row1_in[x2]) + fabs(row1_in[x] - row1_in2[x]));
       static const double mul0 = 0.918416534734;
       row_out[x] = mul0 * std::min(sup0, sup1);
       static const double cutoff = 55.0184555849;
@@ -1687,8 +1507,7 @@ ImageF DiffPrecompute(const ImageF& xyb0, const ImageF& xyb1) {
   return result;
 }
 
-void Mask(const std::vector<ImageF>& xyb0,
-          const std::vector<ImageF>& xyb1,
+void Mask(const std::vector<ImageF>& xyb0, const std::vector<ImageF>& xyb1,
           std::vector<ImageF>* BUTTERAUGLI_RESTRICT mask,
           std::vector<ImageF>* BUTTERAUGLI_RESTRICT mask_dc) {
   PROFILER_FUNC;
@@ -1697,11 +1516,11 @@ void Mask(const std::vector<ImageF>& xyb0,
   mask->resize(3);
   *mask_dc = CreatePlanes<float>(xsize, ysize, 3);
   double muls[2] = {
-    0.207017089891,
-    0.267138152891,
+      0.207017089891,
+      0.267138152891,
   };
   double normalizer = {
-    1.0 / (muls[0] + muls[1]),
+      1.0 / (muls[0] + muls[1]),
   };
   static const double r0 = 2.3770330432;
   static const double r1 = 9.04353323561;
@@ -1727,9 +1546,8 @@ void Mask(const std::vector<ImageF>& xyb0,
     ImageF blurred2 = Blur(diff, r1, border_ratio);
     for (size_t y = 0; y < ysize; ++y) {
       for (size_t x = 0; x < xsize; ++x) {
-        const double val = normalizer * (
-            muls[0] * blurred1.Row(y)[x] +
-            muls[1] * blurred2.Row(y)[x]);
+        const double val = normalizer * (muls[0] * blurred1.Row(y)[x] +
+                                         muls[1] * blurred2.Row(y)[x]);
         (*mask)[1].Row(y)[x] = val;
       }
     }
@@ -1737,14 +1555,12 @@ void Mask(const std::vector<ImageF>& xyb0,
   // B component
   (*mask)[2] = ImageF(xsize, ysize);
   static const double mul[2] = {
-    16.6963293877,
-    2.1364621982,
+      16.6963293877,
+      2.1364621982,
   };
   static const double w00 = 36.4671237619;
   static const double w11 = 2.1887170895;
-  static const double w_ytob_hf = std::max<double>(
-      0.086624184478,
-      0.0);
+  static const double w_ytob_hf = std::max<double>(0.086624184478, 0.0);
   static const double w_ytob_lf = 21.6804277046;
   static const double p1_to_p0 = 0.0513061271723;
 
@@ -1765,10 +1581,9 @@ void Mask(const std::vector<ImageF>& xyb0,
   }
 }
 
-void ButteraugliDiffmap(const std::vector<ImageF> &rgb0_image,
-                        const std::vector<ImageF> &rgb1_image,
-                        double hf_asymmetry,
-                        ImageF &result_image) {
+void ButteraugliDiffmap(const std::vector<ImageF>& rgb0_image,
+                        const std::vector<ImageF>& rgb1_image,
+                        double hf_asymmetry, ImageF& result_image) {
   PROFILER_FUNC;
   const size_t xsize = rgb0_image[0].xsize();
   const size_t ysize = rgb0_image[0].ysize();
@@ -1808,11 +1623,9 @@ void ButteraugliDiffmap(const std::vector<ImageF> &rgb0_image,
   butteraugli.Diffmap(rgb1_image, result_image);
 }
 
-bool ButteraugliInterface(const std::vector<ImageF> &rgb0,
-                          const std::vector<ImageF> &rgb1,
-                          float hf_asymmetry,
-                          ImageF &diffmap,
-                          double &diffvalue) {
+bool ButteraugliInterface(const std::vector<ImageF>& rgb0,
+                          const std::vector<ImageF>& rgb1, float hf_asymmetry,
+                          ImageF& diffmap, double& diffvalue) {
   const size_t xsize = rgb0[0].xsize();
   const size_t ysize = rgb0[0].ysize();
   if (xsize < 1 || ysize < 1) {
@@ -1829,8 +1642,9 @@ bool ButteraugliInterface(const std::vector<ImageF> &rgb0,
   return true;
 }
 
-bool ButteraugliAdaptiveQuantization(size_t xsize, size_t ysize,
-    const std::vector<std::vector<float> > &rgb, std::vector<float> &quant) {
+bool ButteraugliAdaptiveQuantization(
+    size_t xsize, size_t ysize, const std::vector<std::vector<float> >& rgb,
+    std::vector<float>& quant) {
   if (xsize < 16 || ysize < 16) {
     return false;  // Butteraugli is undefined for small images.
   }
@@ -1861,9 +1675,9 @@ double ButteraugliFuzzyClass(double score) {
   if (score < 1.0) {
     // val in [scaler .. 2.0]
     val = m0 / (1.0 + exp((score - 1.0) * fuzzy_width_down));
-    val -= 1.0;  // from [1 .. 2] to [0 .. 1]
+    val -= 1.0;           // from [1 .. 2] to [0 .. 1]
     val *= 2.0 - scaler;  // from [0 .. 1] to [0 .. 2.0 - scaler]
-    val += scaler;  // from [0 .. 2.0 - scaler] to [scaler .. 2.0]
+    val += scaler;        // from [0 .. 2.0 - scaler] to [scaler .. 2.0]
   } else {
     // val in [0 .. scaler]
     val = m0 / (1.0 + exp((score - 1.0) * fuzzy_width_up));
@@ -1901,10 +1715,14 @@ void ScoreToRgb(double score, double good_threshold, double bad_threshold,
       {1.0, 0.5, 0.5},  // Pastel colors for the very bad quality range.
       {1.0, 1.0, 0.5},
       {
-          1, 1, 1,
+          1,
+          1,
+          1,
       },
       {
-          1, 1, 1,
+          1,
+          1,
+          1,
       },
   };
   if (score < good_threshold) {

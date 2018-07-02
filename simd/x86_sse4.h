@@ -116,39 +116,44 @@ using f32x1 = vec_sse4<float, 1>;
 
 // ------------------------------ Cast
 
+SIMD_ATTR_SSE4 SIMD_INLINE __m128i BitCastToInteger(__m128i v) { return v; }
+SIMD_ATTR_SSE4 SIMD_INLINE __m128i BitCastToInteger(__m128 v) {
+  return _mm_castps_si128(v);
+}
+SIMD_ATTR_SSE4 SIMD_INLINE __m128i BitCastToInteger(__m128d v) {
+  return _mm_castpd_si128(v);
+}
+
 // cast_to_u8
 template <typename T, size_t N>
 SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint8_t, N> cast_to_u8(
     Desc<uint8_t, N, SSE4>, vec_sse4<T, N / sizeof(T)> v) {
-  return vec_sse4<uint8_t, N>(v.raw);
+  return vec_sse4<uint8_t, N>(BitCastToInteger(v.raw));
 }
 
-template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint8_t, N> cast_to_u8(
-    Desc<uint8_t, N, SSE4>, vec_sse4<float, N / 4> v) {
-  return vec_sse4<uint8_t, N>(_mm_castps_si128(v.raw));
-}
-template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint8_t, N> cast_to_u8(
-    Desc<uint8_t, N, SSE4>, vec_sse4<double, N / 8> v) {
-  return vec_sse4<uint8_t, N>(_mm_castpd_si128(v.raw));
-}
+// Cannot rely on function overloading because return types differ.
+template <typename T>
+struct BitCastFromIntegerSSE4 {
+  SIMD_ATTR_SSE4 SIMD_INLINE __m128i operator()(__m128i v) { return v; }
+};
+template <>
+struct BitCastFromIntegerSSE4<float> {
+  SIMD_ATTR_SSE4 SIMD_INLINE __m128 operator()(__m128i v) {
+    return _mm_castsi128_ps(v);
+  }
+};
+template <>
+struct BitCastFromIntegerSSE4<double> {
+  SIMD_ATTR_SSE4 SIMD_INLINE __m128d operator()(__m128i v) {
+    return _mm_castsi128_pd(v);
+  }
+};
 
 // cast_u8_to
 template <typename T, size_t N>
 SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, N> cast_u8_to(
     Desc<T, N, SSE4>, vec_sse4<uint8_t, N * sizeof(T)> v) {
-  return vec_sse4<T, N>(v.raw);
-}
-template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> cast_u8_to(
-    Desc<float, N, SSE4>, vec_sse4<uint8_t, N * 4> v) {
-  return vec_sse4<float, N>(_mm_castsi128_ps(v.raw));
-}
-template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, N> cast_u8_to(
-    Desc<double, N, SSE4>, vec_sse4<uint8_t, N * 8> v) {
-  return vec_sse4<double, N>(_mm_castsi128_pd(v.raw));
+  return vec_sse4<T, N>(BitCastFromIntegerSSE4<T>()(v.raw));
 }
 
 // cast_to
@@ -240,7 +245,7 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, N> iota(Desc<T, N, SSE4> d,
 }
 
 SIMD_DIAGNOSTICS(push)
-SIMD_DIAGNOSTICS_OFF(disable : 4701, ignored "-Wuninitialized")
+SIMD_DIAGNOSTICS_OFF(disable : 4700, ignored "-Wuninitialized")
 
 // Returns a vector with uninitialized elements.
 template <typename T, size_t N>
@@ -1349,13 +1354,11 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> load(Full<T, SSE4>,
                                             const T* SIMD_RESTRICT aligned) {
   return vec_sse4<T>(_mm_load_si128(reinterpret_cast<const __m128i*>(aligned)));
 }
-template <>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float> load<float>(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float> load(
     Full<float, SSE4>, const float* SIMD_RESTRICT aligned) {
   return vec_sse4<float>(_mm_load_ps(aligned));
 }
-template <>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double> load<double>(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double> load(
     Full<double, SSE4>, const double* SIMD_RESTRICT aligned) {
   return vec_sse4<double>(_mm_load_pd(aligned));
 }
@@ -1365,13 +1368,11 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> load_unaligned(
     Full<T, SSE4>, const T* SIMD_RESTRICT p) {
   return vec_sse4<T>(_mm_loadu_si128(reinterpret_cast<const __m128i*>(p)));
 }
-template <>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float> load_unaligned<float>(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float> load_unaligned(
     Full<float, SSE4>, const float* SIMD_RESTRICT p) {
   return vec_sse4<float>(_mm_loadu_ps(p));
 }
-template <>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double> load_unaligned<double>(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double> load_unaligned(
     Full<double, SSE4>, const double* SIMD_RESTRICT p) {
   return vec_sse4<double>(_mm_loadu_pd(p));
 }
@@ -1382,15 +1383,13 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, 8 / sizeof(T)> load(
   return vec_sse4<T, 8 / sizeof(T)>(
       _mm_loadl_epi64(reinterpret_cast<const __m128i*>(p)));
 }
-template <>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, 2> load<float>(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, 2> load(
     Desc<float, 2, SSE4>, const float* SIMD_RESTRICT p) {
   const __m128 hi = _mm_setzero_ps();
   return vec_sse4<float, 2>(
       _mm_loadl_pi(hi, reinterpret_cast<const __m64*>(p)));
 }
-template <>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, 1> load<double>(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, 1> load(
     Desc<double, 1, SSE4>, const double* SIMD_RESTRICT p) {
   const __m128d hi = _mm_setzero_pd();
   return vec_sse4<double, 1>(_mm_loadl_pd(hi, p));
@@ -1404,8 +1403,7 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, 4 / sizeof(T)> load(
   CopyBytes<4>(p, &bits);
   return vec_sse4<T, 4 / sizeof(T)>(_mm_cvtsi32_si128(bits));
 }
-template <>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, 1> load<float>(
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, 1> load(
     Desc<float, 1, SSE4>, const float* SIMD_RESTRICT p) {
   return vec_sse4<float, 1>(_mm_load_ss(p));
 }
@@ -1424,16 +1422,14 @@ SIMD_ATTR_SSE4 SIMD_INLINE void store(const vec_sse4<T> v, Full<T, SSE4>,
                                       T* SIMD_RESTRICT aligned) {
   _mm_store_si128(reinterpret_cast<__m128i*>(aligned), v.raw);
 }
-template <>
-SIMD_ATTR_SSE4 SIMD_INLINE void store<float>(const vec_sse4<float> v,
-                                             Full<float, SSE4>,
-                                             float* SIMD_RESTRICT aligned) {
+SIMD_ATTR_SSE4 SIMD_INLINE void store(const vec_sse4<float> v,
+                                      Full<float, SSE4>,
+                                      float* SIMD_RESTRICT aligned) {
   _mm_store_ps(aligned, v.raw);
 }
-template <>
-SIMD_ATTR_SSE4 SIMD_INLINE void store<double>(const vec_sse4<double> v,
-                                              Full<double, SSE4>,
-                                              double* SIMD_RESTRICT aligned) {
+SIMD_ATTR_SSE4 SIMD_INLINE void store(const vec_sse4<double> v,
+                                      Full<double, SSE4>,
+                                      double* SIMD_RESTRICT aligned) {
   _mm_store_pd(aligned, v.raw);
 }
 
@@ -1443,15 +1439,14 @@ SIMD_ATTR_SSE4 SIMD_INLINE void store_unaligned(const vec_sse4<T> v,
                                                 T* SIMD_RESTRICT p) {
   _mm_storeu_si128(reinterpret_cast<__m128i*>(p), v.raw);
 }
-template <>
-SIMD_ATTR_SSE4 SIMD_INLINE void store_unaligned<float>(const vec_sse4<float> v,
-                                                       Full<float, SSE4>,
-                                                       float* SIMD_RESTRICT p) {
+SIMD_ATTR_SSE4 SIMD_INLINE void store_unaligned(const vec_sse4<float> v,
+                                                Full<float, SSE4>,
+                                                float* SIMD_RESTRICT p) {
   _mm_storeu_ps(p, v.raw);
 }
-template <>
-SIMD_ATTR_SSE4 SIMD_INLINE void store_unaligned<double>(
-    const vec_sse4<double> v, Full<double, SSE4>, double* SIMD_RESTRICT p) {
+SIMD_ATTR_SSE4 SIMD_INLINE void store_unaligned(const vec_sse4<double> v,
+                                                Full<double, SSE4>,
+                                                double* SIMD_RESTRICT p) {
   _mm_storeu_pd(p, v.raw);
 }
 
@@ -1461,16 +1456,14 @@ SIMD_ATTR_SSE4 SIMD_INLINE void store(const vec_sse4<T, 8 / sizeof(T)> v,
                                       T* SIMD_RESTRICT p) {
   _mm_storel_epi64(reinterpret_cast<__m128i*>(p), v.raw);
 }
-template <>
-SIMD_ATTR_SSE4 SIMD_INLINE void store<float>(const vec_sse4<float, 2> v,
-                                             Desc<float, 2, SSE4>,
-                                             float* SIMD_RESTRICT p) {
+SIMD_ATTR_SSE4 SIMD_INLINE void store(const vec_sse4<float, 2> v,
+                                      Desc<float, 2, SSE4>,
+                                      float* SIMD_RESTRICT p) {
   _mm_storel_pi(reinterpret_cast<__m64*>(p), v.raw);
 }
-template <>
-SIMD_ATTR_SSE4 SIMD_INLINE void store<double>(const vec_sse4<double, 1> v,
-                                              Desc<double, 1, SSE4>,
-                                              double* SIMD_RESTRICT p) {
+SIMD_ATTR_SSE4 SIMD_INLINE void store(const vec_sse4<double, 1> v,
+                                      Desc<double, 1, SSE4>,
+                                      double* SIMD_RESTRICT p) {
   _mm_storel_pd(p, v.raw);
 }
 
@@ -1483,10 +1476,9 @@ SIMD_ATTR_SSE4 SIMD_INLINE void store(const vec_sse4<T, 4 / sizeof(T)> v,
   _mm_store_ss(reinterpret_cast<float * SIMD_RESTRICT>(p),
                _mm_castsi128_ps(v.raw));
 }
-template <>
-SIMD_ATTR_SSE4 SIMD_INLINE void store<float>(const vec_sse4<float, 1> v,
-                                             Desc<float, 1, SSE4>,
-                                             float* SIMD_RESTRICT p) {
+SIMD_ATTR_SSE4 SIMD_INLINE void store(const vec_sse4<float, 1> v,
+                                      Desc<float, 1, SSE4>,
+                                      float* SIMD_RESTRICT p) {
   _mm_store_ss(p, v.raw);
 }
 
@@ -1499,16 +1491,14 @@ SIMD_ATTR_SSE4 SIMD_INLINE void stream(const vec_sse4<T> v, Full<T, SSE4>,
                                        T* SIMD_RESTRICT aligned) {
   _mm_stream_si128(reinterpret_cast<__m128i*>(aligned), v.raw);
 }
-template <>
-SIMD_ATTR_SSE4 SIMD_INLINE void stream<float>(const vec_sse4<float> v,
-                                              Full<float, SSE4>,
-                                              float* SIMD_RESTRICT aligned) {
+SIMD_ATTR_SSE4 SIMD_INLINE void stream(const vec_sse4<float> v,
+                                       Full<float, SSE4>,
+                                       float* SIMD_RESTRICT aligned) {
   _mm_stream_ps(aligned, v.raw);
 }
-template <>
-SIMD_ATTR_SSE4 SIMD_INLINE void stream<double>(const vec_sse4<double> v,
-                                               Full<double, SSE4>,
-                                               double* SIMD_RESTRICT aligned) {
+SIMD_ATTR_SSE4 SIMD_INLINE void stream(const vec_sse4<double> v,
+                                       Full<double, SSE4>,
+                                       double* SIMD_RESTRICT aligned) {
   _mm_stream_pd(aligned, v.raw);
 }
 

@@ -95,38 +95,44 @@ using f64x4 = vec_avx2<double, 4>;
 
 // ------------------------------ Cast
 
+SIMD_ATTR_AVX2 SIMD_INLINE __m256i BitCastToInteger(__m256i v) { return v; }
+SIMD_ATTR_AVX2 SIMD_INLINE __m256i BitCastToInteger(__m256 v) {
+  return _mm256_castps_si256(v);
+}
+SIMD_ATTR_AVX2 SIMD_INLINE __m256i BitCastToInteger(__m256d v) {
+  return _mm256_castpd_si256(v);
+}
+
 // cast_to_u8
 template <typename T, size_t N>
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint8_t, N> cast_to_u8(
     Desc<uint8_t, N, AVX2>, vec_avx2<T, N / sizeof(T)> v) {
-  return vec_avx2<uint8_t, N>(v.raw);
+  return vec_avx2<uint8_t, N>(BitCastToInteger(v.raw));
 }
-template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint8_t, N> cast_to_u8(
-    Desc<uint8_t, N, AVX2>, vec_avx2<float, N / 4> v) {
-  return vec_avx2<uint8_t, N>(_mm256_castps_si256(v.raw));
-}
-template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<uint8_t, N> cast_to_u8(
-    Desc<uint8_t, N, AVX2>, vec_avx2<double, N / 8> v) {
-  return vec_avx2<uint8_t, N>(_mm256_castpd_si256(v.raw));
-}
+
+// Cannot rely on function overloading because return types differ.
+template <typename T>
+struct BitCastFromIntegerAVX2 {
+  SIMD_ATTR_AVX2 SIMD_INLINE __m256i operator()(__m256i v) { return v; }
+};
+template <>
+struct BitCastFromIntegerAVX2<float> {
+  SIMD_ATTR_AVX2 SIMD_INLINE __m256 operator()(__m256i v) {
+    return _mm256_castsi256_ps(v);
+  }
+};
+template <>
+struct BitCastFromIntegerAVX2<double> {
+  SIMD_ATTR_AVX2 SIMD_INLINE __m256d operator()(__m256i v) {
+    return _mm256_castsi256_pd(v);
+  }
+};
 
 // cast_u8_to
 template <typename T, size_t N>
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> cast_u8_to(
     Desc<T, N, AVX2>, vec_avx2<uint8_t, N * sizeof(T)> v) {
-  return vec_avx2<T, N>(v.raw);
-}
-template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float, N> cast_u8_to(
-    Desc<float, N, AVX2>, vec_avx2<uint8_t, N * 4> v) {
-  return vec_avx2<float, N>(_mm256_castsi256_ps(v.raw));
-}
-template <size_t N>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> cast_u8_to(
-    Desc<double, N, AVX2>, vec_avx2<uint8_t, N * 8> v) {
-  return vec_avx2<double, N>(_mm256_castsi256_pd(v.raw));
+  return vec_avx2<T, N>(BitCastFromIntegerAVX2<T>()(v.raw));
 }
 
 // cast_to
@@ -216,7 +222,7 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> set1(Desc<double, N, AVX2>,
 }
 
 SIMD_DIAGNOSTICS(push)
-SIMD_DIAGNOSTICS_OFF(disable:4701, ignored "-Wuninitialized")
+SIMD_DIAGNOSTICS_OFF(disable : 4700, ignored "-Wuninitialized")
 
 // Returns a vector with uninitialized elements.
 template <typename T, size_t N>
@@ -1260,13 +1266,11 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T> load(Full<T, AVX2>,
   return vec_avx2<T>(
       _mm256_load_si256(reinterpret_cast<const __m256i*>(aligned)));
 }
-template <>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float> load<float>(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float> load(
     Full<float, AVX2>, const float* SIMD_RESTRICT aligned) {
   return vec_avx2<float>(_mm256_load_ps(aligned));
 }
-template <>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> load<double>(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> load(
     Full<double, AVX2>, const double* SIMD_RESTRICT aligned) {
   return vec_avx2<double>(_mm256_load_pd(aligned));
 }
@@ -1276,13 +1280,11 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T> load_unaligned(
     Full<T, AVX2>, const T* SIMD_RESTRICT p) {
   return vec_avx2<T>(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(p)));
 }
-template <>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float> load_unaligned<float>(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float> load_unaligned(
     Full<float, AVX2>, const float* SIMD_RESTRICT p) {
   return vec_avx2<float>(_mm256_loadu_ps(p));
 }
-template <>
-SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> load_unaligned<double>(
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> load_unaligned(
     Full<double, AVX2>, const double* SIMD_RESTRICT p) {
   return vec_avx2<double>(_mm256_loadu_pd(p));
 }
@@ -1303,7 +1305,6 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T> load_dup128(
   return vec_avx2<T>(_mm256_broadcastsi128_si256(load_unaligned(d128, p).raw));
 #endif
 }
-template <>
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float> load_dup128(
     Full<float, AVX2>, const float* const SIMD_RESTRICT p) {
 #if defined(__clang__) && !SIMD_USE_ATTR
@@ -1315,7 +1316,6 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float> load_dup128(
       _mm256_broadcast_ps(reinterpret_cast<const __m128*>(p)));
 #endif
 }
-template <>
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> load_dup128(
     Full<double, AVX2>, const double* const SIMD_RESTRICT p) {
 #if defined(__clang__) && !SIMD_USE_ATTR
@@ -1335,16 +1335,14 @@ SIMD_ATTR_AVX2 SIMD_INLINE void store(const vec_avx2<T> v, Full<T, AVX2>,
                                       T* SIMD_RESTRICT aligned) {
   _mm256_store_si256(reinterpret_cast<__m256i*>(aligned), v.raw);
 }
-template <>
-SIMD_ATTR_AVX2 SIMD_INLINE void store<float>(const vec_avx2<float> v,
-                                             Full<float, AVX2>,
-                                             float* SIMD_RESTRICT aligned) {
+SIMD_ATTR_AVX2 SIMD_INLINE void store(const vec_avx2<float> v,
+                                      Full<float, AVX2>,
+                                      float* SIMD_RESTRICT aligned) {
   _mm256_store_ps(aligned, v.raw);
 }
-template <>
-SIMD_ATTR_AVX2 SIMD_INLINE void store<double>(const vec_avx2<double> v,
-                                              Full<double, AVX2>,
-                                              double* SIMD_RESTRICT aligned) {
+SIMD_ATTR_AVX2 SIMD_INLINE void store(const vec_avx2<double> v,
+                                      Full<double, AVX2>,
+                                      double* SIMD_RESTRICT aligned) {
   _mm256_store_pd(aligned, v.raw);
 }
 
@@ -1354,15 +1352,14 @@ SIMD_ATTR_AVX2 SIMD_INLINE void store_unaligned(const vec_avx2<T> v,
                                                 T* SIMD_RESTRICT p) {
   _mm256_storeu_si256(reinterpret_cast<__m256i*>(p), v.raw);
 }
-template <>
-SIMD_ATTR_AVX2 SIMD_INLINE void store_unaligned<float>(const vec_avx2<float> v,
-                                                       Full<float, AVX2>,
-                                                       float* SIMD_RESTRICT p) {
+SIMD_ATTR_AVX2 SIMD_INLINE void store_unaligned(const vec_avx2<float> v,
+                                                Full<float, AVX2>,
+                                                float* SIMD_RESTRICT p) {
   _mm256_storeu_ps(p, v.raw);
 }
-template <>
-SIMD_ATTR_AVX2 SIMD_INLINE void store_unaligned<double>(
-    const vec_avx2<double> v, Full<double, AVX2>, double* SIMD_RESTRICT p) {
+SIMD_ATTR_AVX2 SIMD_INLINE void store_unaligned(const vec_avx2<double> v,
+                                                Full<double, AVX2>,
+                                                double* SIMD_RESTRICT p) {
   _mm256_storeu_pd(p, v.raw);
 }
 
@@ -1373,16 +1370,14 @@ SIMD_ATTR_AVX2 SIMD_INLINE void stream(const vec_avx2<T, N> v, Full<T, AVX2>,
                                        T* SIMD_RESTRICT aligned) {
   _mm256_stream_si256(reinterpret_cast<__m256i*>(aligned), v.raw);
 }
-template <>
-SIMD_ATTR_AVX2 SIMD_INLINE void stream<float>(const vec_avx2<float> v,
-                                              Full<float, AVX2>,
-                                              float* SIMD_RESTRICT aligned) {
+SIMD_ATTR_AVX2 SIMD_INLINE void stream(const vec_avx2<float> v,
+                                       Full<float, AVX2>,
+                                       float* SIMD_RESTRICT aligned) {
   _mm256_stream_ps(aligned, v.raw);
 }
-template <>
-SIMD_ATTR_AVX2 SIMD_INLINE void stream<double>(const vec_avx2<double> v,
-                                               Full<double, AVX2>,
-                                               double* SIMD_RESTRICT aligned) {
+SIMD_ATTR_AVX2 SIMD_INLINE void stream(const vec_avx2<double> v,
+                                       Full<double, AVX2>,
+                                       double* SIMD_RESTRICT aligned) {
   _mm256_stream_pd(aligned, v.raw);
 }
 

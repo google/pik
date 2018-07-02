@@ -9,12 +9,11 @@
 #include <cmath>
 #include <vector>
 #include "butteraugli_distance.h"
+#include "compiler_specific.h"
 #include "gamma_correct.h"
 #include "image.h"
 #include "image_io.h"
 #include "resample.h"
-
-#define BUTTERAUGLI_RESTRICT __restrict__
 
 namespace pik {
 
@@ -36,7 +35,7 @@ std::vector<float> ComputeKernel(float sigma) {
 void ConvolveBorderColumn(const ImageF& in, const std::vector<float>& kernel,
                           const float weight_no_border,
                           const float border_ratio, const size_t x,
-                          float* const BUTTERAUGLI_RESTRICT row_out) {
+                          float* const PIK_RESTRICT row_out) {
   const int offset = kernel.size() / 2;
   int minx = x < offset ? 0 : x - offset;
   int maxx = std::min<int>(in.xsize() - 1, x + offset);
@@ -48,7 +47,7 @@ void ConvolveBorderColumn(const ImageF& in, const std::vector<float>& kernel,
   weight = (1.0f - border_ratio) * weight + border_ratio * weight_no_border;
   float scale = 1.0f / weight;
   for (size_t y = 0; y < in.ysize(); ++y) {
-    const float* const BUTTERAUGLI_RESTRICT row_in = in.Row(y);
+    const float* const PIK_RESTRICT row_in = in.Row(y);
     float sum = 0.0f;
     for (int j = minx; j <= maxx; ++j) {
       sum += row_in[j] * kernel[j - x + offset];
@@ -78,9 +77,9 @@ ImageF Convolution(const ImageF& in, const std::vector<float>& kernel,
   }
   // middle
   for (; x < border2; ++x) {
-    float* const BUTTERAUGLI_RESTRICT row_out = out.Row(x);
+    float* const PIK_RESTRICT row_out = out.Row(x);
     for (size_t y = 0; y < in.ysize(); ++y) {
-      const float* const BUTTERAUGLI_RESTRICT row_in = &in.Row(y)[x - offset];
+      const float* const PIK_RESTRICT row_in = &in.Row(y)[x - offset];
       float sum = 0.0f;
       for (int j = 0; j < len; ++j) {
         sum += row_in[j] * kernel[j];
@@ -122,9 +121,9 @@ ImageF DoGBlur(const ImageF& in, float sigma, float border_ratio) {
   static const float mix = 0.25;
   ImageF out(in.xsize(), in.ysize());
   for (size_t y = 0; y < in.ysize(); ++y) {
-    const float* const BUTTERAUGLI_RESTRICT row1 = blur1.Row(y);
-    const float* const BUTTERAUGLI_RESTRICT row2 = blur2.Row(y);
-    float* const BUTTERAUGLI_RESTRICT row_out = out.Row(y);
+    const float* const PIK_RESTRICT row1 = blur1.Row(y);
+    const float* const PIK_RESTRICT row2 = blur2.Row(y);
+    float* const PIK_RESTRICT row_out = out.Row(y);
     for (size_t x = 0; x < in.xsize(); ++x) {
       row_out[x] = (1.0f + mix) * row1[x] - mix * row2[x];
     }
@@ -247,10 +246,10 @@ Image3F SubSampleSimple8x8(const Image3F& image) {
   }
   if ((image.xsize() & 7) != 0) {
     const float last_column_mul = 8.0 / (image.xsize() & 7);
-      for (int c = 0; c < 3; ++c) {
-        for (size_t y = 0; y < nys; ++y) {
-          retval.PlaneRow(c, y)[nxs - 1] *= last_column_mul;
-        }
+    for (int c = 0; c < 3; ++c) {
+      for (size_t y = 0; y < nys; ++y) {
+        retval.PlaneRow(c, y)[nxs - 1] *= last_column_mul;
+      }
     }
   }
   if ((image.ysize() & 7) != 0) {

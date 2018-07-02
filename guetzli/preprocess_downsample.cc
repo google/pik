@@ -18,6 +18,7 @@
 
 #include <assert.h>
 #include <string.h>
+#include <algorithm>
 #include <cmath>
 
 using std::size_t;
@@ -33,8 +34,8 @@ std::vector<float> Convolve2D(const std::vector<float>& image, int w, int h,
     int x = i % w;
     int y = i / w;
     // Avoid non-normalized results at boundary by skipping edges.
-    if (x < size2 || x + size - size2 - 1 >= w
-        || y < size2 || y + size - size2 - 1 >= h) {
+    if (x < size2 || x + size - size2 - 1 >= w || y < size2 ||
+        y + size - size2 - 1 >= h) {
       continue;
     }
     float v = 0;
@@ -111,8 +112,8 @@ void Erode(int w, int h, std::vector<bool>* image) {
   for (int y = 1; y + 1 < h; y++) {
     for (int x = 1; x + 1 < w; x++) {
       size_t index = y * w + x;
-      if (!(temp[index] && temp[index - 1] && temp[index + 1]
-          && temp[index - w] && temp[index + w])) {
+      if (!(temp[index] && temp[index - 1] && temp[index + 1] &&
+            temp[index - w] && temp[index + w])) {
         (*image)[index] = 0;
       }
     }
@@ -124,8 +125,8 @@ void Dilate(int w, int h, std::vector<bool>* image) {
   for (int y = 1; y + 1 < h; y++) {
     for (int x = 1; x + 1 < w; x++) {
       size_t index = y * w + x;
-      if (temp[index] || temp[index - 1] || temp[index + 1]
-          || temp[index - w] || temp[index + w]) {
+      if (temp[index] || temp[index - 1] || temp[index + 1] ||
+          temp[index - w] || temp[index + w]) {
         (*image)[index] = 1;
       }
     }
@@ -133,18 +134,18 @@ void Dilate(int w, int h, std::vector<bool>* image) {
 }
 
 std::vector<float> Blur(const std::vector<float>& image, int w, int h) {
-    // This is only made for small sigma, e.g. 1.3.
-    static const double kSigma = 1.3;
-    std::vector<double> kernel(5);
-    for (int i = 0; i < kernel.size(); i++) {
-      kernel[i] = Normal(1.0 * i - kernel.size() / 2, kSigma);
-    }
+  // This is only made for small sigma, e.g. 1.3.
+  static const double kSigma = 1.3;
+  std::vector<double> kernel(5);
+  for (int i = 0; i < kernel.size(); i++) {
+    kernel[i] = Normal(1.0 * i - kernel.size() / 2, kSigma);
+  }
 
-    double sum = 0;
-    for (int i = 0; i < kernel.size(); i++) sum += kernel[i];
-    const double mul = 1.0 / sum;
+  double sum = 0;
+  for (int i = 0; i < kernel.size(); i++) sum += kernel[i];
+  const double mul = 1.0 / sum;
 
-    return Convolve2X(image, w, h, kernel.data(), kernel.size(), mul);
+  return Convolve2X(image, w, h, kernel.data(), kernel.size(), mul);
 }
 
 }  // namespace
@@ -204,8 +205,8 @@ std::vector<std::vector<float>> PreProcessChannel(
       float v = yuv[2][index];
 
       // Parameters tuned to allow only colors on which sharpening is useful.
-      if (channel == 2 && 2.116 * v > -0.34414 * u + 0.2
-          && 1.402 * v > 1.772 * u + 0.2) {
+      if (channel == 2 && 2.116 * v > -0.34414 * u + 0.2 &&
+          1.402 * v > 1.772 * u + 0.2) {
         redmap[index] = true;
       }
       if (channel == 1 && v < 1.263 * u - 0.1 && u > -0.33741 * v) {
@@ -230,11 +231,7 @@ std::vector<std::vector<float>> PreProcessChannel(
   // Threshold for where considered an edge.
   const double threshold = (channel == 2 ? 0.02 : 1.0) * 127.5;
 
-  static const double kEdgeMatrix[9] = {
-    0, -1, 0,
-    -1, 4, -1,
-    0, -1, 0
-  };
+  static const double kEdgeMatrix[9] = {0, -1, 0, -1, 4, -1, 0, -1, 0};
 
   // Map of areas where to allow blurring, only where it is not too sharp
   std::vector<bool> blurmap(image[0].size(), false);
@@ -261,9 +258,9 @@ std::vector<std::vector<float>> PreProcessChannel(
     for (int x = 0; x < w; x++) {
       size_t index = y * w + x;
 
-      if (sharpenmap[index] > 0) {
+      if (sharpenmap[index]) {
         if (sharpen) yuv[channel][index] = sharpened[index];
-      } else if (blurmap[index] > 0) {
+      } else if (blurmap[index]) {
         if (blur) yuv[channel][index] = blurred[index];
       }
     }
@@ -280,9 +277,7 @@ std::vector<std::vector<float>> PreProcessChannel(
 
 namespace {
 
-inline float Clip(float val) {
-  return std::max(0.0f, std::min(255.0f, val));
-}
+inline float Clip(float val) { return std::max(0.0f, std::min(255.0f, val)); }
 
 inline float RGBToY(float r, float g, float b) {
   return 0.299f * r + 0.587f * g + 0.114f * b;
@@ -309,14 +304,10 @@ inline float YUVToB(float y, float u, float v) {
 }
 
 // TODO(user) Use SRGB->linear conversion and a lookup-table.
-inline float GammaToLinear(float x) {
-  return std::pow(x / 255.0, 2.2);
-}
+inline float GammaToLinear(float x) { return std::pow(x / 255.0, 2.2); }
 
 // TODO(user) Use linear->SRGB conversion and a lookup-table.
-inline float LinearToGamma(float x) {
-  return 255.0 * std::pow(x, 1.0 / 2.2);
-}
+inline float LinearToGamma(float x) { return 255.0 * std::pow(x, 1.0 / 2.2); }
 
 std::vector<float> LinearlyAveragedLuma(const std::vector<float>& rgb) {
   assert(rgb.size() % 3 == 0);
@@ -353,8 +344,8 @@ std::vector<float> LinearlyDownsample2x2(const std::vector<float>& rgb_in,
   return rgb_out;
 }
 
-std::vector<std::vector<float> > RGBToYUV(const std::vector<float>& rgb) {
-  std::vector<std::vector<float> > yuv(3, std::vector<float>(rgb.size() / 3));
+std::vector<std::vector<float>> RGBToYUV(const std::vector<float>& rgb) {
+  std::vector<std::vector<float>> yuv(3, std::vector<float>(rgb.size() / 3));
   for (int i = 0, p = 0; p < rgb.size(); ++i, p += 3) {
     const float r = rgb[p + 0];
     const float g = rgb[p + 1];
@@ -366,7 +357,7 @@ std::vector<std::vector<float> > RGBToYUV(const std::vector<float>& rgb) {
   return yuv;
 }
 
-std::vector<float> YUVToRGB(const std::vector<std::vector<float> >& yuv) {
+std::vector<float> YUVToRGB(const std::vector<std::vector<float>>& yuv) {
   std::vector<float> rgb(3 * yuv[0].size());
   for (int i = 0, p = 0; p < rgb.size(); ++i, p += 3) {
     const float y = yuv[0][i];
@@ -402,8 +393,8 @@ std::vector<float> Upsample2x2(const std::vector<float>& img_in,
 }
 
 // Apply the "fancy upsample" filter used by libjpeg.
-std::vector<float> Blur(const std::vector<float>& img,
-                        const int width, const int height) {
+std::vector<float> Blur(const std::vector<float>& img, const int width,
+                        const int height) {
   std::vector<float> img_out(width * height);
   for (int y0 = 0; y0 < height; y0 += 2) {
     for (int x0 = 0; x0 < width; x0 += 2) {
@@ -414,10 +405,9 @@ std::vector<float> Blur(const std::vector<float>& img,
           int x1 = std::min(width - 1, std::max(0, x0 + dx));
           int y1 = std::min(height - 1, std::max(0, y0 + dy));
           img_out[(y0 + iy) * width + x0 + ix] =
-              (9.0 * img[y0 * width + x0] +
-               3.0 * img[y0 * width + x1] +
-               3.0 * img[y1 * width + x0] +
-               1.0 * img[y1 * width + x1]) / 16.0;
+              (9.0 * img[y0 * width + x0] + 3.0 * img[y0 * width + x1] +
+               3.0 * img[y1 * width + x0] + 1.0 * img[y1 * width + x1]) /
+              16.0;
         }
       }
     }
@@ -425,9 +415,9 @@ std::vector<float> Blur(const std::vector<float>& img,
   return img_out;
 }
 
-std::vector<float> YUV420ToRGB(const std::vector<std::vector<float> >& yuv420,
+std::vector<float> YUV420ToRGB(const std::vector<std::vector<float>>& yuv420,
                                const int width, const int height) {
-  std::vector<std::vector<float> > yuv;
+  std::vector<std::vector<float>> yuv;
   yuv.push_back(yuv420[0]);
   std::vector<float> u = Upsample2x2(yuv420[1], width, height);
   std::vector<float> v = Upsample2x2(yuv420[2], width, height);
@@ -449,22 +439,22 @@ void UpdateGuess(const std::vector<float>& target,
 
 }  // namespace
 
-std::vector<std::vector<float> > RGBToYUV420(
-    const std::vector<uint8_t>& rgb_in, const int width, const int height) {
+std::vector<std::vector<float>> RGBToYUV420(const std::vector<uint8_t>& rgb_in,
+                                            const int width, const int height) {
   std::vector<float> rgbf(rgb_in.size());
   for (int i = 0; i < rgb_in.size(); ++i) {
     rgbf[i] = static_cast<float>(rgb_in[i]);
   }
   std::vector<float> y_target = LinearlyAveragedLuma(rgbf);
-  std::vector<std::vector<float> > yuv_target =
+  std::vector<std::vector<float>> yuv_target =
       RGBToYUV(LinearlyDownsample2x2(rgbf, width, height));
-  std::vector<std::vector<float> > yuv_guess = yuv_target;
+  std::vector<std::vector<float>> yuv_guess = yuv_target;
   yuv_guess[0] = Upsample2x2(yuv_guess[0], width, height);
   // TODO(user): Stop early if the error is small enough.
   for (int iter = 0; iter < 20; ++iter) {
     std::vector<float> rgb_rec = YUV420ToRGB(yuv_guess, width, height);
     std::vector<float> y_rec = LinearlyAveragedLuma(rgb_rec);
-    std::vector<std::vector<float> > yuv_rec =
+    std::vector<std::vector<float>> yuv_rec =
         RGBToYUV(LinearlyDownsample2x2(rgb_rec, width, height));
     UpdateGuess(y_target, y_rec, &yuv_guess[0]);
     UpdateGuess(yuv_target[1], yuv_rec[1], &yuv_guess[1]);

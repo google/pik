@@ -167,7 +167,6 @@ std::vector<int> AvailableCPUs() {
   cpus.reserve(64);
   const ThreadAffinity* const affinity = OriginalThreadAffinity();
 #if OS_WIN
-  PIK_CHECK(ok);
   for (int cpu = 0; cpu < 64; ++cpu) {
     if (affinity->mask & (1ULL << cpu)) {
       cpus.push_back(cpu);

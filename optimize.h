@@ -3,8 +3,8 @@
 #ifndef OPTIMIZE_H_
 #define OPTIMIZE_H_
 
-#include <math.h>
 #include <stdio.h>
+#include <cmath>
 #include <vector>
 
 namespace pik {
@@ -59,11 +59,9 @@ T operator*(const std::vector<T>& x, const std::vector<T>& y) {
 //   double Compute(const vector<double>& w, vector<double>* df) const;
 //
 // Returns a vector w, such that |df(w)| < grad_norm_threshold.
-template<typename T, typename Function>
+template <typename T, typename Function>
 std::vector<T> OptimizeWithScaledConjugateGradientMethod(
-    const Function& f,
-    const std::vector<T>& w0,
-    const T grad_norm_threshold,
+    const Function& f, const std::vector<T>& w0, const T grad_norm_threshold,
     int max_iters) {
   const int n = w0.size();
   const T rsq_threshold = grad_norm_threshold * grad_norm_threshold;
@@ -79,7 +77,7 @@ std::vector<T> OptimizeWithScaledConjugateGradientMethod(
   p = r;
   for (int k = 1; rsq > rsq_threshold; ++k) {
     if (max_iters > 0 && k > max_iters) break;
-    T sigma = sigma0 / sqrt(psq);
+    T sigma = sigma0 / std::sqrt(psq);
     std::vector<T> r2(n);
     std::vector<T> w2 = w + (sigma * p);
     f.Compute(w2, &r2);
@@ -114,11 +112,11 @@ std::vector<T> OptimizeWithScaledConjugateGradientMethod(
     T beta = k % n == 0 ? 0.0 : (r1sq - (r1 * r)) / mu;
 
 #if SCG_DEBUG
-    printf("Step %3d fw=%10.2f |dfw|=%7.3f |p|=%6.2f "
-           "delta=%9.6f lambda=%6.4f mu=%8.4f alpha=%8.4f "
-           "beta=%5.3f Delta=%5.3f\n",
-           k, fw, sqrt(rsq), sqrt(psq), delta,
-           lambda, mu, alpha, beta, Delta);
+    printf(
+        "Step %3d fw=%10.2f |dfw|=%7.3f |p|=%6.2f "
+        "delta=%9.6f lambda=%6.4f mu=%8.4f alpha=%8.4f "
+        "beta=%5.3f Delta=%5.3f\n",
+        k, fw, sqrt(rsq), sqrt(psq), delta, lambda, mu, alpha, beta, Delta);
 #endif
 
     if (Delta >= 0.75) {

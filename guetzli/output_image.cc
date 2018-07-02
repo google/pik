@@ -19,11 +19,12 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include <algorithm>
 #include <cmath>
 
+#include "gamma_correct.h"
 #include "guetzli/color_transform.h"
 #include "guetzli/dct_double.h"
-#include "guetzli/gamma_correct.h"
 #include "guetzli/idct.h"
 #include "guetzli/preprocess_downsample.h"
 #include "guetzli/quantize.h"
@@ -155,8 +156,8 @@ void OutputImageComponent::UpdatePixelsForBlock(
       for (int i = 0; i < kSubsampledEdgeSize; ++i) {
         // The order we fill in each row is:
         //   8 pixels within the block, left edge, right edge
-        const int ix = ((j < 9 ? (j + 1) * kSubsampledEdgeSize : 0) +
-                        (i < 9 ? i + 1 : 0));
+        const int ix =
+            ((j < 9 ? (j + 1) * kSubsampledEdgeSize : 0) + (i < 9 ? i + 1 : 0));
         const int x0 = block_x * 16 + (i < 9 ? i * 2 : -2);
         if (x0 < 0) {
           subsampled[ix] = subsampled[ix + 1];
@@ -173,10 +174,11 @@ void OutputImageComponent::UpdatePixelsForBlock(
           // block by computing the inverse of the fancy upsampler.
           const int y1 = std::max(y0 - 1, 0);
           const int x1 = std::max(x0 - 1, 0);
-          subsampled[ix] = (pixels_[y0 * width_ + x0] * 9 +
-                            pixels_[y1 * width_ + x1] +
-                            pixels_[y0 * width_ + x1] * -3 +
-                            pixels_[y1 * width_ + x0] * -3) >> 2;
+          subsampled[ix] =
+              (pixels_[y0 * width_ + x0] * 9 + pixels_[y1 * width_ + x1] +
+               pixels_[y0 * width_ + x1] * -3 +
+               pixels_[y1 * width_ + x0] * -3) >>
+              2;
         }
       }
     }
@@ -197,7 +199,8 @@ void OutputImageComponent::UpdatePixelsForBlock(
         const int dx = (x & 1) * 2 - 1;
         const int ix = x0 + y0;
         rowptr[x] = (subsampled[ix] * 9 + subsampled[ix + dy] * 3 +
-                     subsampled[ix + dx] * 3 + subsampled[ix + dx + dy]) >> 4;
+                     subsampled[ix + dx] * 3 + subsampled[ix + dx + dy]) >>
+                    4;
       }
     }
   } else {
@@ -242,9 +245,7 @@ void OutputImageComponent::ApplyGlobalQuantization(const int q[kDCTBlockSize]) {
 }
 
 OutputImage::OutputImage(int w, int h)
-    : width_(w),
-      height_(h),
-      components_(3, OutputImageComponent(w, h)) {}
+    : width_(w), height_(h), components_(3, OutputImageComponent(w, h)) {}
 
 void OutputImage::CopyFromJpegData(const JPEGData& jpg) {
   for (int i = 0; i < jpg.components.size(); ++i) {
@@ -261,9 +262,8 @@ void OutputImage::CopyFromJpegData(const JPEGData& jpg) {
 
 namespace {
 
-void SetDownsampledCoefficients(const std::vector<float>& pixels,
-                                int factor_x, int factor_y,
-                                OutputImageComponent* comp) {
+void SetDownsampledCoefficients(const std::vector<float>& pixels, int factor_x,
+                                int factor_y, OutputImageComponent* comp) {
   assert(pixels.size() == comp->width() * comp->height());
   comp->Reset(factor_x, factor_y);
   for (int block_y = 0; block_y < comp->height_in_blocks(); ++block_y) {
@@ -305,8 +305,7 @@ void OutputImage::Downsample(const DownsampleConfig& cfg) {
     // If the image is already grayscale, nothing to do.
     return;
   }
-  if (cfg.use_silver_screen &&
-      cfg.u_factor_x == 2 && cfg.u_factor_y == 2 &&
+  if (cfg.use_silver_screen && cfg.u_factor_x == 2 && cfg.u_factor_y == 2 &&
       cfg.v_factor_x == 2 && cfg.v_factor_y == 2) {
     std::vector<uint8_t> rgb = ToSRGB();
     std::vector<std::vector<float> > yuv = RGBToYUV420(rgb, width_, height_);
@@ -322,10 +321,10 @@ void OutputImage::Downsample(const DownsampleConfig& cfg) {
     components_[c].ToFloatPixels(&yuv[c][0], 1);
   }
 
-  yuv = PreProcessChannel(width_, height_, 2, 1.3, 0.5,
-                          cfg.u_sharpen, cfg.u_blur, yuv);
-  yuv = PreProcessChannel(width_, height_, 1, 1.3, 0.5,
-                          cfg.v_sharpen, cfg.v_blur, yuv);
+  yuv = PreProcessChannel(width_, height_, 2, 1.3, 0.5, cfg.u_sharpen,
+                          cfg.u_blur, yuv);
+  yuv = PreProcessChannel(width_, height_, 1, 1.3, 0.5, cfg.v_sharpen,
+                          cfg.v_blur, yuv);
 
   // Do the actual downsampling (averaging) and forward-DCT.
   if (cfg.u_factor_x != 1 || cfg.u_factor_y != 1) {
@@ -355,10 +354,10 @@ void OutputImage::SaveToJpegData(JPEGData* jpg) const {
   jpg->MCU_rows = components_[0].height_in_blocks();
   int ncomp = components_[1].IsAllZero() && components_[2].IsAllZero() ? 1 : 3;
   for (int i = 1; i < ncomp; ++i) {
-    jpg->max_h_samp_factor = std::max(jpg->max_h_samp_factor,
-                                      components_[i].factor_x());
-    jpg->max_v_samp_factor = std::max(jpg->max_h_samp_factor,
-                                      components_[i].factor_y());
+    jpg->max_h_samp_factor =
+        std::max(jpg->max_h_samp_factor, components_[i].factor_x());
+    jpg->max_v_samp_factor =
+        std::max(jpg->max_h_samp_factor, components_[i].factor_y());
     jpg->MCU_cols = std::min(jpg->MCU_cols, components_[i].width_in_blocks());
     jpg->MCU_rows = std::min(jpg->MCU_rows, components_[i].height_in_blocks());
   }
@@ -407,8 +406,8 @@ void OutputImage::SaveToJpegData(JPEGData* jpg) const {
   SaveQuantTables(q, jpg);
 }
 
-std::vector<uint8_t> OutputImage::ToSRGB(int xmin, int ymin,
-                                         int xsize, int ysize) const {
+std::vector<uint8_t> OutputImage::ToSRGB(int xmin, int ymin, int xsize,
+                                         int ysize) const {
   std::vector<uint8_t> rgb(xsize * ysize * 3);
   for (int c = 0; c < 3; ++c) {
     components_[c].ToPixels(xmin, ymin, xsize, ysize, &rgb[c], 3);
@@ -425,7 +424,7 @@ std::vector<uint8_t> OutputImage::ToSRGB() const {
 
 void OutputImage::ToLinearRGB(int xmin, int ymin, int xsize, int ysize,
                               std::vector<std::vector<float> >* rgb) const {
-  const double* lut = Srgb8ToLinearTable();
+  const float* lut = Srgb8ToLinearTable();
   std::vector<uint8_t> rgb_pixels = ToSRGB(xmin, ymin, xsize, ysize);
   for (int p = 0; p < xsize * ysize; ++p) {
     for (int i = 0; i < 3; ++i) {
@@ -440,10 +439,10 @@ void OutputImage::ToLinearRGB(std::vector<std::vector<float> >* rgb) const {
 
 std::string OutputImage::FrameTypeStr() const {
   char buf[128];
-  int len = snprintf(buf, sizeof(buf), "f%d%d%d%d%d%d",
-                     component(0).factor_x(), component(0).factor_y(),
-                     component(1).factor_x(), component(1).factor_y(),
-                     component(2).factor_x(), component(2).factor_y());
+  int len = snprintf(buf, sizeof(buf), "f%d%d%d%d%d%d", component(0).factor_x(),
+                     component(0).factor_y(), component(1).factor_x(),
+                     component(1).factor_y(), component(2).factor_x(),
+                     component(2).factor_y());
   return std::string(buf, len);
 }
 

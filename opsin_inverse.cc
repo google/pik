@@ -66,9 +66,7 @@ struct Dither_2x2 {
     return dither;
   }
 
-  static V Eval(const V srgb, const V dither) {
-    return srgb + dither;
-  }
+  static V Eval(const V srgb, const V dither) { return srgb + dither; }
 
   static V Toggle(const V dither) {
     // Flips lane signs by rotating the vector blocks by one lane.
@@ -270,7 +268,7 @@ void CenteredOpsinToSrgbT(const Image3F& opsin, ThreadPool* pool,
       const auto in_linear_x = load(d, row_linear_x + x) + center_x;
       const auto in_linear_y = load(d, row_linear_y + x) + center_y;
       const auto in_linear_b = load(d, row_linear_b + x) + center_b;
-      decltype(d)::V linear_r, linear_g, linear_b;
+      Full<float>::V linear_r, linear_g, linear_b;
       XybToRgb(d, in_linear_x, in_linear_y, in_linear_b, inverse_matrix,
                &linear_r, &linear_g, &linear_b);
 

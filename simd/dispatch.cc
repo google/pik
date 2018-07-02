@@ -19,7 +19,9 @@
 
 #if SIMD_ARCH == SIMD_ARCH_X86
 #include <xmmintrin.h>
-#ifndef _MSC_VER
+#ifdef _MSC_VER
+#include <intrin.h>
+#else
 #include <cpuid.h>
 #endif
 #endif

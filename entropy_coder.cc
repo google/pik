@@ -101,7 +101,6 @@ void UnpredictDCTile(Image3S* dc) {
     int16_t* PIK_RESTRICT row_out1 = dc->PlaneRow(1, y);
     int16_t* PIK_RESTRICT row_out2 = dc->PlaneRow(2, y);
     for (size_t x = 0; x < xsize; ++x) {
-
       row_out0[x] = row_xz[2 * x + 0];
       row_out1[x] = row_y[x];
       row_out2[x] = row_xz[2 * x + 1];
@@ -110,7 +109,7 @@ void UnpredictDCTile(Image3S* dc) {
 }
 
 void ComputeCoeffOrder(const Image3S& ac, const Image3B& block_ctx,
-                       int* order) {
+                       int* PIK_RESTRICT order) {
   for (int ctx = 0; ctx < kOrderContexts; ++ctx) {
     int num_zeros[64] = { 0 };
     for (int c = 0; c < 3; ++c) {
@@ -140,7 +139,8 @@ void ComputeCoeffOrder(const Image3S& ac, const Image3B& block_ctx,
   }
 }
 
-void EncodeCoeffOrder(const int* order, size_t* storage_ix, uint8_t* storage) {
+void EncodeCoeffOrder(const int* PIK_RESTRICT order,
+                      size_t* PIK_RESTRICT storage_ix, uint8_t* storage) {
   const int kJPEGZigZagOrder[64] = {
     0,   1,  5,  6, 14, 15, 27, 28,
     2,   4,  7, 13, 16, 26, 29, 42,
@@ -152,7 +152,7 @@ void EncodeCoeffOrder(const int* order, size_t* storage_ix, uint8_t* storage) {
     35, 36, 48, 49, 57, 58, 62, 63
   };
   int order_zigzag[64];
-  for (int i = 0; i < 64; ++i) {
+  for (size_t i = 0; i < 64; ++i) {
     order_zigzag[i] = kJPEGZigZagOrder[order[i]];
   }
   int lehmer[64];
@@ -274,8 +274,8 @@ std::vector<uint8_t> StaticContextMap() {
 
 PIK_INLINE int PredictFromTopAndLeft(const int* const PIK_RESTRICT row_top,
                                      const int* const PIK_RESTRICT row,
-                                     int x, int default_val) {
-  if (x % kTileSize == 0) {
+                                     size_t x, int default_val) {
+  if (x % kTileWidth == 0) {
     return row_top == nullptr ? default_val : row_top[x];
   }
   if (row_top == nullptr) {
@@ -309,10 +309,10 @@ std::vector<Token> TokenizeCoefficients(
   std::vector<Token> tokens;
   tokens.reserve(3 * coeffs.xsize() * coeffs.ysize());
   for (size_t y = 0; y < quant_ac.ysize(); ++y) {
-    const int* const PIK_RESTRICT row_quant = quant_ac.ConstRow(y);
-    const int* const PIK_RESTRICT row_quant_top =
-        y % kTileSize == 0 ? nullptr : quant_ac.ConstRow(y - 1);
-    for (int bx = 0; bx < quant_ac.xsize(); ++bx) {
+    const int* PIK_RESTRICT row_quant = quant_ac.ConstRow(y);
+    const int* PIK_RESTRICT row_quant_top =
+        y % kTileHeight == 0 ? nullptr : quant_ac.ConstRow(y - 1);
+    for (size_t bx = 0; bx < quant_ac.xsize(); ++bx) {
       int quant_pred =
           PredictFromTopAndLeft(row_quant_top, row_quant, bx, 32);
       int quant_ctx = (quant_pred - 1) >> 1;
@@ -322,15 +322,15 @@ std::vector<Token> TokenizeCoefficients(
   for (int c = 0; c < 3; ++c) {
     ImageI num_nzeros = ExtractNumNZeroes(coeffs.plane(c));
     for (size_t y = 0; y < coeffs.ysize(); ++y) {
-      const int16_t* const PIK_RESTRICT row = coeffs.ConstPlaneRow(c, y);
-      const uint8_t* const PIK_RESTRICT ctx_row = block_ctx.ConstPlaneRow(c, y);
-      const int* const PIK_RESTRICT row_nzeros = num_nzeros.ConstRow(y);
-      const int* const PIK_RESTRICT row_nzeros_top =
-          y % kTileSize == 0 ? nullptr : num_nzeros.ConstRow(y - 1);
+      const int16_t* PIK_RESTRICT row = coeffs.ConstPlaneRow(c, y);
+      const uint8_t* PIK_RESTRICT ctx_row = block_ctx.ConstPlaneRow(c, y);
+      const int* PIK_RESTRICT row_nzeros = num_nzeros.ConstRow(y);
+      const int* PIK_RESTRICT row_nzeros_top =
+          y % kTileHeight == 0 ? nullptr : num_nzeros.ConstRow(y - 1);
       for (size_t x = 0, bx = 0; x < coeffs.xsize(); x += 64, ++bx) {
         const int bctx = ctx_row[bx];
         const int* order = &orders[bctx * 64];
-        const int16_t* coeffs = &row[x];
+        const int16_t* PIK_RESTRICT coeffs = &row[x];
         int num_nzeros = 0;
         for (int k = 1; k < 64; ++k) {
           if (coeffs[k] != 0) ++num_nzeros;
@@ -367,6 +367,8 @@ std::vector<Token> TokenizeCoefficients(
   }
   return tokens;
 }
+
+namespace {
 
 inline double CrossEntropy(const uint32_t* counts, const size_t counts_len,
                            const uint32_t* codes,  const size_t codes_len) {
@@ -477,6 +479,8 @@ class HistogramBuilder {
   };
   std::vector<Histogram> histograms_;
 };
+
+}  // namespace
 
 std::string BuildAndEncodeHistograms(
     int num_contexts,
@@ -651,22 +655,21 @@ bool DecodeHistograms(BitReader* br, const size_t num_contexts,
   return true;
 }
 
-bool DecodeImageData(BitReader* const PIK_RESTRICT br,
+bool DecodeImageData(BitReader* PIK_RESTRICT br,
                      const std::vector<uint8_t>& context_map,
-                     const int stride,
-                     ANSSymbolReader* const PIK_RESTRICT decoder,
-                     Image3S* const PIK_RESTRICT img) {
+                     ANSSymbolReader* PIK_RESTRICT decoder,
+                     Image3S* PIK_RESTRICT img) {
   for (int c = 0; c < 3; ++c) {
     const int histo_idx = context_map[c];
     for (size_t y = 0; y < img->ysize(); ++y) {
-      int16_t* const PIK_RESTRICT row = img->PlaneRow(c, y);
-      for (size_t x = 0; x < img->xsize(); x += stride) {
+      int16_t* PIK_RESTRICT row = img->PlaneRow(c, y);
+      for (size_t x = 0; x < img->xsize(); ++x) {
         br->FillBitBuffer();
         int s = decoder->ReadSymbol(histo_idx, br);
         if (s > 0) {
           int bits = br->PeekBits(s);
           br->Advance(s);
-          s = bits < (1 << (s - 1)) ? bits + ((~0U) << s ) + 1 : bits;
+          s = bits < (1U << (s - 1)) ? bits + ((~0U) << s) + 1 : bits;
         }
         row[x] = s;
       }
@@ -711,14 +714,14 @@ bool DecodeCoeffOrder(int* order, BitReader* br) {
   return true;
 }
 
-bool DecodeImage(BitReader* br, int stride,  Image3S* coeffs) {
+bool DecodeImage(BitReader* PIK_RESTRICT br, Image3S* PIK_RESTRICT coeffs) {
   std::vector<uint8_t> context_map;
   ANSCode code;
   if (!DecodeHistograms(br, 3, 16, nullptr, 0, &code, &context_map)) {
     return false;
   }
   ANSSymbolReader decoder(&code);
-  if (!DecodeImageData(br, context_map, stride, &decoder, coeffs)) {
+  if (!DecodeImageData(br, context_map, &decoder, coeffs)) {
     return false;
   }
   if (!decoder.CheckANSFinalState()) {
@@ -728,16 +731,17 @@ bool DecodeImage(BitReader* br, int stride,  Image3S* coeffs) {
 }
 
 bool DecodeAC(const Image3B& block_ctx, const ANSCode& code,
-              const std::vector<uint8_t>& context_map, const int* coeff_order,
-              BitReader* br, Image3S* ac, ImageI* quant_ac) {
-  PIK_ASSERT(ac->xsize() % kTileSize == 0);
-  Image3I num_nzeroes(ac->xsize() / kTileSize, ac->ysize());
+              const std::vector<uint8_t>& context_map,
+              const int* PIK_RESTRICT coeff_order, BitReader* PIK_RESTRICT br,
+              Image3S* PIK_RESTRICT ac, ImageI* PIK_RESTRICT quant_ac) {
+  PIK_ASSERT(ac->xsize() % kBlockSize == 0);
+  Image3I num_nzeroes(ac->xsize() / kBlockSize, ac->ysize());
   ANSSymbolReader decoder(&code);
   for (size_t y = 0; y < quant_ac->ysize(); ++y) {
-    int* const PIK_RESTRICT row_quant = quant_ac->Row(y);
-    const int* const PIK_RESTRICT row_quant_top =
-        y % kTileSize == 0 ? nullptr : quant_ac->ConstRow(y - 1);
-    for (int bx = 0; bx < quant_ac->xsize(); ++bx) {
+    int* PIK_RESTRICT row_quant = quant_ac->Row(y);
+    const int* PIK_RESTRICT row_quant_top =
+        y % kTileHeight == 0 ? nullptr : quant_ac->ConstRow(y - 1);
+    for (size_t bx = 0; bx < quant_ac->xsize(); ++bx) {
       br->FillBitBuffer();
       int quant_pred =
           PredictFromTopAndLeft(row_quant_top, row_quant, bx, 32);
@@ -748,14 +752,13 @@ bool DecodeAC(const Image3B& block_ctx, const ANSCode& code,
   }
   for (int c = 0; c < 3; ++c) {
     for (size_t y = 0; y < ac->ysize(); ++y) {
-      int16_t* const PIK_RESTRICT row = ac->PlaneRow(c, y);
-      const uint8_t* const PIK_RESTRICT row_bctx =
-          block_ctx.ConstPlaneRow(c, y);
-      int* const PIK_RESTRICT row_nzeros = num_nzeroes.PlaneRow(c, y);
-      const int* const PIK_RESTRICT row_nzeros_top =
-          y % kTileSize == 0 ? nullptr : num_nzeroes.ConstPlaneRow(c, y - 1);
-      for (size_t x = 0, bx = 0; x < ac->xsize(); x += kTileSize, ++bx) {
-        memset(&row[x + 1], 0, 63 * sizeof(row[0]));
+      int16_t* PIK_RESTRICT row = ac->PlaneRow(c, y);
+      const uint8_t* PIK_RESTRICT row_bctx = block_ctx.ConstPlaneRow(c, y);
+      int* PIK_RESTRICT row_nzeros = num_nzeroes.PlaneRow(c, y);
+      const int* PIK_RESTRICT row_nzeros_top =
+          y % kTileHeight == 0 ? nullptr : num_nzeroes.ConstPlaneRow(c, y - 1);
+      for (size_t x = 0, bx = 0; x < ac->xsize(); x += kBlockSize, ++bx) {
+        memset(&row[x], 0, kBlockSize * sizeof(row[0]));
         const int block_ctx = row_bctx[bx];
         const int nzero_ctx = 128 + ContextFromTopAndLeft(
             row_nzeros_top, row_nzeros, block_ctx, bx);
@@ -771,8 +774,7 @@ bool DecodeAC(const Image3B& block_ctx, const ANSCode& code,
         const int context2 = ZeroDensityContext(num_nzeros - 1, 0, 4);
         int histo_idx = context_map[histo_offset + context2];
         const int order_offset = block_ctx * 64;
-        const int* PIK_RESTRICT const block_order =
-            &coeff_order[order_offset];
+        const int* PIK_RESTRICT block_order = &coeff_order[order_offset];
         for (int k = 1; k < 64 && num_nzeros > 0; ++k) {
           br->FillBitBuffer();
           int s = decoder.ReadSymbol(histo_idx, br);
@@ -789,7 +791,7 @@ bool DecodeAC(const Image3B& block_ctx, const ANSCode& code,
             histo_idx = context_map[histo_offset + context];
             --num_nzeros;
           }
-          // block_order[k] != 0, never modifies DC.
+          // block_order[k] != 0, only writes to AC coefficients.
           row[x + block_order[k]] = s;
         }
         if (num_nzeros != 0) {

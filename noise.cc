@@ -3,14 +3,14 @@
 #include <numeric>
 
 #include "af_stats.h"
-#include "xorshift128plus.h"
 #include "convolve.h"
 #include "noise.h"
 #include "opsin_params.h"
 #include "optimize.h"
 #include "rational_polynomial.h"
-#include "simd/simd.h"
+#include "simd_helpers.h"
 #include "write_bits.h"
+#include "xorshift128plus.h"
 
 namespace pik {
 namespace {
@@ -110,10 +110,7 @@ template <class StrengthEval>
 typename StrengthEval::V NoiseStrength(const StrengthEval& eval,
                                        const typename StrengthEval::V x) {
   const typename StrengthEval::D d;
-  const auto kMinNoiseLevel = set1(d, 0.0f);
-  const auto kMaxNoiseLevel = set1(d, 1.0f);
-  // TODO(janwas): select+min is more efficient than clamp
-  return clamp(eval(x), kMinNoiseLevel, kMaxNoiseLevel);
+  return Clamp0ToMax(d, eval(x), set1(d, 1.0f));
 }
 
 // General case: slow but precise.

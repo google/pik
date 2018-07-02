@@ -92,10 +92,10 @@ inline uint64_t Start<uint64_t>() {
 #elif PIK_ARCH_AARCH64
   asm volatile("mrs %0, cntvct_el0" : "=r"(t));
 #elif PIK_ARCH_X64 && PIK_COMPILER_MSVC
-  load_fence();
+  SIMD_NAMESPACE::load_fence();
   PIK_COMPILER_FENCE;
   t = __rdtsc();
-  load_fence();
+  SIMD_NAMESPACE::load_fence();
   PIK_COMPILER_FENCE;
 #elif PIK_ARCH_X64 && (PIK_COMPILER_CLANG || PIK_COMPILER_GCC)
   asm volatile(
@@ -126,7 +126,7 @@ inline uint64_t Stop<uint64_t>() {
   PIK_COMPILER_FENCE;
   unsigned aux;
   t = __rdtscp(&aux);
-  load_fence();
+  SIMD_NAMESPACE::load_fence();
   PIK_COMPILER_FENCE;
 #elif PIK_ARCH_X64 && (PIK_COMPILER_CLANG || PIK_COMPILER_GCC)
   // Use inline asm because __rdtscp generates code to store TSC_AUX (ecx).
@@ -153,10 +153,10 @@ template <>
 inline uint32_t Start<uint32_t>() {
   uint32_t t;
 #if PIK_ARCH_X64 && PIK_COMPILER_MSVC
-  load_fence();
+  SIMD_NAMESPACE::load_fence();
   PIK_COMPILER_FENCE;
   t = static_cast<uint32_t>(__rdtsc());
-  load_fence();
+  SIMD_NAMESPACE::load_fence();
   PIK_COMPILER_FENCE;
 #elif PIK_ARCH_X64 && (PIK_COMPILER_CLANG || PIK_COMPILER_GCC)
   asm volatile(
@@ -180,7 +180,7 @@ inline uint32_t Stop<uint32_t>() {
   PIK_COMPILER_FENCE;
   unsigned aux;
   t = static_cast<uint32_t>(__rdtscp(&aux));
-  load_fence();
+  SIMD_NAMESPACE::load_fence();
   PIK_COMPILER_FENCE;
 #elif PIK_ARCH_X64 && (PIK_COMPILER_CLANG || PIK_COMPILER_GCC)
   // Use inline asm because __rdtscp generates code to store TSC_AUX (ecx).

@@ -106,16 +106,16 @@ void DecodeFrameType(uint32_t frame_code, guetzli::JPEGData* jpg) {
 }
 
 bool DecodeCoeffOrder(int* order, BrunsliV2Input* in) {
-  int lehmer[kDCTBlockSize] = { 0 };
+  int lehmer[kDCTBlockSize] = {0};
   static const int kSpan = 16;
   for (int i = 0; i < kDCTBlockSize; i += kSpan) {
-    if (!in->ReadBits(1)) continue;   // span is all-zero
+    if (!in->ReadBits(1)) continue;  // span is all-zero
     const int start = (i > 0) ? i : 1;
     const int end = i + kSpan;
     for (int j = start; j < end; ++j) {
       int v = 0;
       while (v <= kDCTBlockSize) {
-        const int bits =  in->ReadBits(3);
+        const int bits = in->ReadBits(3);
         v += bits;
         if (bits < 7) break;
       }
@@ -149,16 +149,13 @@ int DecodeNumNonzeros(Prob* const p, BinaryArithmeticDecoder* ac,
   return val - (1 << kMaxBits);
 }
 
-bool DecodeDC(int mcu_cols,
-              int mcu_rows,
-              int num_components,
+bool DecodeDC(int mcu_cols, int mcu_rows, int num_components,
               const int h_samp[guetzli::kMaxComponents],
               const int v_samp[guetzli::kMaxComponents],
               const std::vector<uint8_t>& context_map,
               const std::vector<ANSDecodingData>& entropy_codes,
               coeff_t* all_coeffs[guetzli::kMaxComponents],
-              std::vector<bool>* const block_state,
-              BrunsliV2Input* in) {
+              std::vector<bool>* const block_state, BrunsliV2Input* in) {
   std::vector<ComponentStateDC> comps(num_components);
   int total_num_blocks = 0;
   for (int i = 0; i < num_components; ++i) {
@@ -247,9 +244,7 @@ bool DecodeDC(int mcu_cols,
   return true;
 }
 
-bool DecodeAC(const int mcu_cols,
-              const int mcu_rows,
-              const int num_components,
+bool DecodeAC(const int mcu_cols, const int mcu_rows, const int num_components,
               const int h_samp[guetzli::kMaxComponents],
               const int v_samp[guetzli::kMaxComponents],
               const int all_quant[guetzli::kMaxComponents][kDCTBlockSize],
@@ -265,8 +260,7 @@ bool DecodeAC(const int mcu_cols,
     comps[i].SetWidth(mcu_cols * h_samp[i]);
     comps[i].context_offset = num_contexts * kNumAvrgContexts;
     num_contexts += kNumNonzeroContextSkip[context_bits[i]];
-    ComputeACPredictMultipliers(&all_quant[i][0],
-                                &comps[i].mult_row[0],
+    ComputeACPredictMultipliers(&all_quant[i][0], &comps[i].mult_row[0],
                                 &comps[i].mult_col[0]);
   }
 
@@ -296,8 +290,7 @@ bool DecodeAC(const int mcu_cols,
           &all_coeffs[i][(block_ix - width) * kDCTBlockSize];
       const coeff_t* prev_col_coeffs =
           &all_coeffs[i][(block_ix - 1) * kDCTBlockSize];
-      int prev_row_delta =
-          (1 - 2 * (y & 1)) * (width + 3) * kDCTBlockSize;
+      int prev_row_delta = (1 - 2 * (y & 1)) * (width + 3) * kDCTBlockSize;
       for (int iy = 0; iy < v_samp[i]; ++iy, ++y) {
         int* prev_sgn = &c->prev_sign[kDCTBlockSize];
         int* prev_abs =
@@ -334,23 +327,22 @@ bool DecodeAC(const int mcu_cols,
               int sign_ctx = kMaxAverageContext;
               if (k_nat < 8) {
                 if (y > 0) {
-                  const int ctx = ACPredictContextRow(prev_row_coeffs + k_nat,
-                                                      coeffs + k_nat,
-                                                      &c->mult_col[k_nat]);
+                  const int ctx =
+                      ACPredictContextRow(prev_row_coeffs + k_nat,
+                                          coeffs + k_nat, &c->mult_col[k_nat]);
                   avrg_ctx = std::abs(ctx);
                   sign_ctx += ctx;
                 }
               } else if ((k_nat & 7) == 0) {
                 if (x > 0) {
-                  const int ctx = ACPredictContextCol(prev_col_coeffs + k_nat,
-                                                      coeffs + k_nat,
-                                                      &c->mult_row[k_nat]);
+                  const int ctx =
+                      ACPredictContextCol(prev_col_coeffs + k_nat,
+                                          coeffs + k_nat, &c->mult_row[k_nat]);
                   avrg_ctx = std::abs(ctx);
                   sign_ctx += ctx;
                 }
               } else {
-                avrg_ctx = WeightedAverageContext(prev_abs + k,
-                                                  prev_row_delta);
+                avrg_ctx = WeightedAverageContext(prev_abs + k, prev_row_delta);
                 sign_ctx = prev_sgn[k] * 3 + prev_sgn[k - kDCTBlockSize];
               }
               sign_ctx = sign_ctx * kDCTBlockSize + k;
@@ -410,8 +402,8 @@ struct JPEGDecodingState {
   std::vector<bool> block_state;
 };
 
-bool DecodeBase128(const uint8_t* data, const size_t len,
-                   size_t* pos, size_t* val) {
+bool DecodeBase128(const uint8_t* data, const size_t len, size_t* pos,
+                   size_t* val) {
   int shift = 0;
   uint64_t b;
   *val = 0;
@@ -426,8 +418,8 @@ bool DecodeBase128(const uint8_t* data, const size_t len,
   return true;
 }
 
-bool DecodeDataLength(const uint8_t* data, const size_t len,
-                      size_t* pos, size_t* data_len) {
+bool DecodeDataLength(const uint8_t* data, const size_t len, size_t* pos,
+                      size_t* data_len) {
   if (!DecodeBase128(data, len, pos, data_len)) {
     return false;
   }
@@ -467,17 +459,15 @@ bool DecodeHeader(const uint8_t* data, const size_t len, size_t* pos,
       case 0x20:
         ok = (frame_code == 0xff) && DecodeBase128(data, len, pos, &frame_code);
         break;
-      default:
-        {
-          // Skip the unknown marker.
-          size_t val = 0;
-          ok = DecodeBase128(data, len, pos, &val);
-          if ((marker & 0x7) == 2) {
-            ok = ok && val <= len && *pos <= len - val;
-            *pos += val;
-          }
+      default: {
+        // Skip the unknown marker.
+        size_t val = 0;
+        ok = DecodeBase128(data, len, pos, &val);
+        if ((marker & 0x7) == 2) {
+          ok = ok && val <= len && *pos <= len - val;
+          *pos += val;
         }
-        break;
+      } break;
     }
     if (!ok) {
       return PIK_FAILURE("Invalid brunsli v2 header.");
@@ -485,8 +475,8 @@ bool DecodeHeader(const uint8_t* data, const size_t len, size_t* pos,
   }
   const int version = (comp_code >> 2);
   const int ncomp = (comp_code & 3) + 1;
-  if ((version != 1 && (width == 0 || height == 0)) ||
-      version > 1 || frame_code == 0xff) {
+  if ((version != 1 && (width == 0 || height == 0)) || version > 1 ||
+      frame_code == 0xff) {
     return PIK_FAILURE("Invalid brunsli v2 header.");
   }
   if (*pos != marker_end) {
@@ -516,8 +506,7 @@ bool DecodeQuantDataSection(const uint8_t* data, const size_t len,
 }
 
 bool DecodeHistogramDataSection(const uint8_t* data, const size_t len,
-                                JPEGDecodingState* s,
-                                guetzli::JPEGData* jpg) {
+                                JPEGDecodingState* s, guetzli::JPEGData* jpg) {
   if (jpg->components.empty()) {
     // Histogram data can not be decoded without knowing the number of
     // components from the header.
@@ -547,6 +536,8 @@ bool DecodeHistogramDataSection(const uint8_t* data, const size_t len,
   return ((input.Position() + 3) & ~3) <= len;
 }
 
+size_t Neg(size_t x) { return -static_cast<int64_t>(x); }
+
 void UnpredictDC(coeff_t* const PIK_RESTRICT coeffs, const size_t xsize,
                  const size_t ysize) {
   for (int y = 0; y < ysize; y++) {
@@ -554,7 +545,7 @@ void UnpredictDC(coeff_t* const PIK_RESTRICT coeffs, const size_t xsize,
     for (int x = 0; x < xsize; x++) {
       const coeff_t prediction = MinCostPredict<coeff_t>(
           row + x * kDCTBlockSize, x, y, xsize, -kDCTBlockSize,
-          -xsize * kDCTBlockSize, false, 0);
+          Neg(xsize * kDCTBlockSize), false, 0);
       row[x * kDCTBlockSize] += prediction;
     }
   }
@@ -564,15 +555,16 @@ static void UnpredictDCWithYPixel(const coeff_t* const PIK_RESTRICT row_y,
                                   coeff_t* const PIK_RESTRICT row_u,
                                   coeff_t* const PIK_RESTRICT row_v, size_t x,
                                   size_t y, size_t xsize, size_t ysize) {
-  const int predictor = GetUVPredictor(row_y + x * kDCTBlockSize, x, y, xsize,
-                                       -kDCTBlockSize, -xsize * kDCTBlockSize);
+  const int predictor =
+      GetUVPredictor(row_y + x * kDCTBlockSize, x, y, xsize, -kDCTBlockSize,
+                     Neg(xsize * kDCTBlockSize));
   const coeff_t prediction_u =
       MinCostPredict(row_u + x * kDCTBlockSize, x, y, xsize, -kDCTBlockSize,
-                     -xsize * kDCTBlockSize, true, predictor);
+                     Neg(xsize * kDCTBlockSize), true, predictor);
   row_u[x * kDCTBlockSize] += prediction_u;
   const coeff_t prediction_v =
       MinCostPredict(row_v + x * kDCTBlockSize, x, y, xsize, -kDCTBlockSize,
-                     -xsize * kDCTBlockSize, true, predictor);
+                     Neg(xsize * kDCTBlockSize), true, predictor);
   row_v[x * kDCTBlockSize] += prediction_v;
 }
 
@@ -602,14 +594,9 @@ void UnpredictDCWithY(const coeff_t* const PIK_RESTRICT coeffs_y,
 }
 
 bool DecodeDCDataSection(const uint8_t* data, const size_t len,
-                         JPEGDecodingState* s,
-                         guetzli::JPEGData* jpg) {
-  if (jpg->width == 0 ||
-      jpg->height == 0 ||
-      jpg->MCU_rows == 0 ||
-      jpg->MCU_cols == 0 ||
-      jpg->components.empty() ||
-      jpg->quant.empty() ||
+                         JPEGDecodingState* s, guetzli::JPEGData* jpg) {
+  if (jpg->width == 0 || jpg->height == 0 || jpg->MCU_rows == 0 ||
+      jpg->MCU_cols == 0 || jpg->components.empty() || jpg->quant.empty() ||
       s->context_map.empty()) {
     // DC data can not be decoded without knowing the width and the height
     // and the number of components from the header, the quantization tables
@@ -617,9 +604,9 @@ bool DecodeDCDataSection(const uint8_t* data, const size_t len,
     // section.
     return false;
   }
-  coeff_t* coeffs[guetzli::kMaxComponents] = { nullptr };
-  int h_samp[guetzli::kMaxComponents] = { 0 };
-  int v_samp[guetzli::kMaxComponents] = { 0 };
+  coeff_t* coeffs[guetzli::kMaxComponents] = {nullptr};
+  int h_samp[guetzli::kMaxComponents] = {0};
+  int v_samp[guetzli::kMaxComponents] = {0};
   for (int i = 0; i < jpg->components.size(); ++i) {
     guetzli::JPEGComponent* c = &jpg->components[i];
     coeffs[i] = &c->coeffs[0];
@@ -627,22 +614,21 @@ bool DecodeDCDataSection(const uint8_t* data, const size_t len,
     v_samp[i] = c->v_samp_factor;
   }
   BrunsliV2Input in(data, len);
-  if (!DecodeDC(jpg->MCU_cols, jpg->MCU_rows, jpg->components.size(),
-                h_samp, v_samp, s->context_map, s->entropy_codes, coeffs,
+  if (!DecodeDC(jpg->MCU_cols, jpg->MCU_rows, jpg->components.size(), h_samp,
+                v_samp, s->context_map, s->entropy_codes, coeffs,
                 &s->block_state, &in)) {
     return false;
   }
   // Unpredict
-  const bool use_uv_prediction =
-      jpg->components.size() == 3 && jpg->max_h_samp_factor == 1 &&
-      jpg->max_v_samp_factor == 1;
+  const bool use_uv_prediction = jpg->components.size() == 3 &&
+                                 jpg->max_h_samp_factor == 1 &&
+                                 jpg->max_v_samp_factor == 1;
   guetzli::JPEGComponent* c0 = &jpg->components[0];
   UnpredictDC(&c0->coeffs[0], c0->width_in_blocks, c0->height_in_blocks);
   if (use_uv_prediction) {
-    UnpredictDCWithY(&c0->coeffs[0],
-                     &jpg->components[1].coeffs[0],
-                     &jpg->components[2].coeffs[0],
-                     c0->width_in_blocks, c0->height_in_blocks);
+    UnpredictDCWithY(&c0->coeffs[0], &jpg->components[1].coeffs[0],
+                     &jpg->components[2].coeffs[0], c0->width_in_blocks,
+                     c0->height_in_blocks);
   } else {
     for (int i = 1; i < jpg->components.size(); ++i) {
       guetzli::JPEGComponent* c = &jpg->components[i];
@@ -653,26 +639,20 @@ bool DecodeDCDataSection(const uint8_t* data, const size_t len,
 }
 
 bool DecodeACDataSection(const uint8_t* data, const size_t len,
-                         JPEGDecodingState* s,
-                         guetzli::JPEGData* jpg) {
-  if (jpg->width == 0 ||
-      jpg->height == 0 ||
-      jpg->MCU_rows == 0 ||
-      jpg->MCU_cols == 0 ||
-      jpg->components.empty() ||
-      jpg->quant.empty() ||
-      s->block_state.empty() ||
-      s->context_map.empty()) {
+                         JPEGDecodingState* s, guetzli::JPEGData* jpg) {
+  if (jpg->width == 0 || jpg->height == 0 || jpg->MCU_rows == 0 ||
+      jpg->MCU_cols == 0 || jpg->components.empty() || jpg->quant.empty() ||
+      s->block_state.empty() || s->context_map.empty()) {
     // AC data can not be decoded without knowing the width and the height
     // and the number of components from the header, the quantization tables
     // from the quant data section, the context map from the histogram data
     // section and the block states from the DC data section.
     return false;
   }
-  coeff_t* coeffs[guetzli::kMaxComponents] = { nullptr };
+  coeff_t* coeffs[guetzli::kMaxComponents] = {nullptr};
   int quant[guetzli::kMaxComponents][kDCTBlockSize];
-  int h_samp[guetzli::kMaxComponents] = { 0 };
-  int v_samp[guetzli::kMaxComponents] = { 0 };
+  int h_samp[guetzli::kMaxComponents] = {0};
+  int v_samp[guetzli::kMaxComponents] = {0};
   for (int i = 0; i < jpg->components.size(); ++i) {
     guetzli::JPEGComponent* c = &jpg->components[i];
     if (c->quant_idx >= jpg->quant.size()) {
@@ -690,8 +670,8 @@ bool DecodeACDataSection(const uint8_t* data, const size_t len,
     v_samp[i] = c->v_samp_factor;
   }
   BrunsliV2Input in(data, len);
-  if (!DecodeAC(jpg->MCU_cols, jpg->MCU_rows, jpg->components.size(),
-                h_samp, v_samp, quant, s->context_bits, s->context_map,
+  if (!DecodeAC(jpg->MCU_cols, jpg->MCU_rows, jpg->components.size(), h_samp,
+                v_samp, quant, s->context_bits, s->context_map,
                 s->entropy_codes, s->block_state, coeffs, &in)) {
     return false;
   }

@@ -15,6 +15,7 @@
 #include "ans_encode.h"
 
 #include <stdint.h>
+#include <algorithm>
 #include <vector>
 
 #include "ans_common.h"
@@ -196,7 +197,7 @@ void StoreVarLenUint16(size_t n, size_t* storage_ix, uint8_t* storage) {
     WriteBits(1, 1, storage_ix, storage);
     size_t nbits = Log2FloorNonZero(n);
     WriteBits(4, nbits, storage_ix, storage);
-    WriteBits(nbits, n - (1 << nbits), storage_ix, storage);
+    WriteBits(nbits, n - (1ULL << nbits), storage_ix, storage);
   }
 }
 

@@ -15,25 +15,57 @@
 #ifndef BITS_H_
 #define BITS_H_
 
+#ifdef _MSC_VER
+#include <intrin.h>
+#endif
+
 #include <stdint.h>
 #include "compiler_specific.h"
 
 static PIK_INLINE int PopCount(const uint32_t x) {
+#ifdef _MSC_VER
+  return _mm_popcnt_u32(x);
+#else
   return __builtin_popcount(x);
+#endif
 }
 
 // Undefined results for x == 0.
 static PIK_INLINE int NumZeroBitsAboveMSBNonzero(const uint32_t x) {
+#ifdef _MSC_VER
+  unsigned long index;
+  _BitScanReverse(&index, x);
+  return index;
+#else
   return __builtin_clz(x);
+#endif
 }
 static PIK_INLINE int NumZeroBitsAboveMSBNonzero(const uint64_t x) {
+#ifdef _MSC_VER
+  unsigned long index;
+  _BitScanReverse64(&index, x);
+  return index;
+#else
   return __builtin_clzl(x);
+#endif
 }
 static PIK_INLINE int NumZeroBitsBelowLSBNonzero(const uint32_t x) {
+#ifdef _MSC_VER
+  unsigned long index;
+  _BitScanForward(&index, x);
+  return index;
+#else
   return __builtin_ctz(x);
+#endif
 }
 static PIK_INLINE int NumZeroBitsBelowLSBNonzero(const uint64_t x) {
+#ifdef _MSC_VER
+  unsigned long index;
+  _BitScanForward64(&index, x);
+  return index;
+#else
   return __builtin_ctzl(x);
+#endif
 }
 
 // Returns bit width for x == 0.

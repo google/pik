@@ -17,6 +17,7 @@
 #include "guetzli/jpeg_data_writer.h"
 
 #include <assert.h>
+#include <algorithm>
 #include <cstdlib>
 
 #include "guetzli/entropy_encode.h"
@@ -54,22 +55,22 @@ inline bool JPEGWrite(JPEGOutput out, const std::string& s) {
 bool EncodeMetadata(const JPEGData& jpg, bool strip_metadata, JPEGOutput out) {
   if (strip_metadata) {
     const uint8_t kApp0Data[] = {
-      0xff, 0xe0, 0x00, 0x10,        // APP0
-      0x4a, 0x46, 0x49, 0x46, 0x00,  // 'JFIF'
-      0x01, 0x01,                    // v1.01
-      0x00, 0x00, 0x01, 0x00, 0x01,  // aspect ratio = 1:1
-      0x00, 0x00                     // thumbnail width/height
+        0xff, 0xe0, 0x00, 0x10,        // APP0
+        0x4a, 0x46, 0x49, 0x46, 0x00,  // 'JFIF'
+        0x01, 0x01,                    // v1.01
+        0x00, 0x00, 0x01, 0x00, 0x01,  // aspect ratio = 1:1
+        0x00, 0x00                     // thumbnail width/height
     };
     return JPEGWrite(out, kApp0Data, sizeof(kApp0Data));
   }
   bool ok = true;
   for (int i = 0; i < jpg.app_data.size(); ++i) {
-    uint8_t data[1] = { 0xff };
+    uint8_t data[1] = {0xff};
     ok = ok && JPEGWrite(out, data, sizeof(data));
     ok = ok && JPEGWrite(out, jpg.app_data[i]);
   }
   for (int i = 0; i < jpg.com_data.size(); ++i) {
-    uint8_t data[2] = { 0xff, 0xfe };
+    uint8_t data[2] = {0xff, 0xfe};
     ok = ok && JPEGWrite(out, data, sizeof(data));
     ok = ok && JPEGWrite(out, jpg.com_data[i]);
   }
@@ -119,7 +120,7 @@ bool EncodeSOF(const JPEGData& jpg, JPEGOutput out) {
   for (size_t i = 0; i < ncomps; ++i) {
     data[pos++] = jpg.components[i].id;
     data[pos++] = ((jpg.components[i].h_samp_factor << 4) |
-                      (jpg.components[i].v_samp_factor));
+                   (jpg.components[i].v_samp_factor));
     const int quant_idx = jpg.components[i].quant_idx;
     if (quant_idx >= jpg.quant.size()) {
       return false;
@@ -138,7 +139,7 @@ void BuildHuffmanCode(const uint8_t* depth, int* counts, int* values) {
       ++counts[depth[i]];
     }
   }
-  int offset[kJpegHuffmanMaxBitLength + 1] = { 0 };
+  int offset[kJpegHuffmanMaxBitLength + 1] = {0};
   for (int i = 1; i <= kJpegHuffmanMaxBitLength; ++i) {
     offset[i] = offset[i - 1] + counts[i - 1];
   }
@@ -161,8 +162,7 @@ void BuildHuffmanCodeTable(const int* counts, const int* values,
     while (i--) huffsize[p++] = l;
   }
 
-  if (p == 0)
-    return;
+  if (p == 0) return;
 
   huffsize[p - 1] = 0;
   int lastp = p - 1;
@@ -291,13 +291,13 @@ size_t JpegHeaderSize(const JPEGData& jpg, bool strip_metadata) {
   num_bytes += 10 + 3 * jpg.components.size();  // SOF
   num_bytes += 4;  // DHT (w/o actual Huffman code data)
   num_bytes += 8 + 2 * jpg.components.size();  // SOS
-  num_bytes += 2;  // EOI
+  num_bytes += 2;                              // EOI
   num_bytes += jpg.tail_data.size();
   return num_bytes;
 }
 
-size_t ClusterHistograms(JpegHistogram* histo, size_t* num,
-                         int* histo_indexes, uint8_t* depth) {
+size_t ClusterHistograms(JpegHistogram* histo, size_t* num, int* histo_indexes,
+                         uint8_t* depth) {
   memset(depth, 0, *num * JpegHistogram::kSize);
   size_t costs[kMaxComponents];
   for (size_t i = 0; i < *num; ++i) {
@@ -306,9 +306,9 @@ size_t ClusterHistograms(JpegHistogram* histo, size_t* num,
     CreateHuffmanTree(histo[i].counts, JpegHistogram::kSize,
                       kJpegHuffmanMaxBitLength, &tree[0],
                       &depth[i * JpegHistogram::kSize]);
-    costs[i] = (HistogramHeaderCost(histo[i]) +
-                HistogramEntropyCost(histo[i],
-                                     &depth[i * JpegHistogram::kSize]));
+    costs[i] =
+        (HistogramHeaderCost(histo[i]) +
+         HistogramEntropyCost(histo[i], &depth[i * JpegHistogram::kSize]));
   }
   const size_t orig_num = *num;
   while (*num > 1) {
@@ -317,7 +317,7 @@ size_t ClusterHistograms(JpegHistogram* histo, size_t* num,
     JpegHistogram combined(histo[last]);
     combined.AddHistogram(histo[second_last]);
     std::vector<HuffmanTree> tree(2 * JpegHistogram::kSize + 1);
-    uint8_t depth_combined[JpegHistogram::kSize] = { 0 };
+    uint8_t depth_combined[JpegHistogram::kSize] = {0};
     CreateHuffmanTree(combined.counts, JpegHistogram::kSize,
                       kJpegHuffmanMaxBitLength, &tree[0], depth_combined);
     size_t cost_combined = (HistogramHeaderCost(combined) +
@@ -353,15 +353,14 @@ size_t EstimateJpegDataSize(const int num_components,
   size_t num_ac = num_components;
   int indexes[kMaxComponents];
   uint8_t depth[kMaxComponents * JpegHistogram::kSize];
-  return (ClusterHistograms(&clustered[0], &num_dc, indexes, depth) +
-          ClusterHistograms(&clustered[num_components], &num_ac, indexes,
-                            depth));
+  return (
+      ClusterHistograms(&clustered[0], &num_dc, indexes, depth) +
+      ClusterHistograms(&clustered[num_components], &num_ac, indexes, depth));
 }
 
 bool EncodeDHTAndSOS(const std::vector<JpegHistogram>& histograms,
                      const std::vector<int>& histo_indexes,
-                     const std::vector<int>& component_ids,
-                     JPEGOutput out,
+                     const std::vector<int>& component_ids, JPEGOutput out,
                      std::vector<HuffmanCodeTable>* dc_huff_tables,
                      std::vector<HuffmanCodeTable>* ac_huff_tables) {
   int total_count = 0;
@@ -388,13 +387,12 @@ bool EncodeDHTAndSOS(const std::vector<JpegHistogram>& histograms,
   for (size_t i = 0; i < histograms.size(); ++i) {
     const bool is_dc = i < num_dc_histo;
     const int idx = is_dc ? i : i - num_dc_histo;
-    int counts[kJpegHuffmanMaxBitLength + 1] = { 0 };
-    int values[JpegHistogram::kSize] = { 0 };
-    uint8_t depths[JpegHistogram::kSize] = { 0 };
+    int counts[kJpegHuffmanMaxBitLength + 1] = {0};
+    int values[JpegHistogram::kSize] = {0};
+    uint8_t depths[JpegHistogram::kSize] = {0};
     std::vector<HuffmanTree> tree(2 * JpegHistogram::kSize + 1);
     CreateHuffmanTree(histograms[i].counts, JpegHistogram::kSize,
-                      kJpegHuffmanMaxBitLength, &tree[0],
-                      depths);
+                      kJpegHuffmanMaxBitLength, &tree[0], depths);
     BuildHuffmanCode(depths, counts, values);
     HuffmanCodeTable table;
     for (int j = 0; j < 256; ++j) table.depth[j] = 255;
@@ -432,8 +430,8 @@ bool EncodeDHTAndSOS(const std::vector<JpegHistogram>& histograms,
   data[pos++] = component_ids.size();
   for (int i = 0; i < component_ids.size(); ++i) {
     data[pos++] = component_ids[i];
-    data[pos++] = ((histo_indexes[i] << 4) |
-                   histo_indexes[component_ids.size() + i]);
+    data[pos++] =
+        ((histo_indexes[i] << 4) | histo_indexes[component_ids.size() + i]);
   }
   data[pos++] = 0;
   data[pos++] = 63;
@@ -487,15 +485,14 @@ bool BuildAndEncodeHuffmanCodes(const JPEGData& jpg, JPEGOutput out,
   std::vector<JpegHistogram> histograms;
   std::vector<int> histo_indexes;
   BuildJpegHistograms(jpg, &histograms, &histo_indexes);
-  return EncodeDHTAndSOS(histograms, histo_indexes, component_ids,
-                         out, dc_huff_tables, ac_huff_tables);
+  return EncodeDHTAndSOS(histograms, histo_indexes, component_ids, out,
+                         dc_huff_tables, ac_huff_tables);
 }
 
 void EncodeDCTBlockSequential(const coeff_t* coeffs,
                               const HuffmanCodeTable& dc_huff,
                               const HuffmanCodeTable& ac_huff,
-                              coeff_t* last_dc_coeff,
-                              BitWriter* bw) {
+                              coeff_t* last_dc_coeff, BitWriter* bw) {
   coeff_t temp2;
   coeff_t temp;
   temp2 = coeffs[0];
@@ -544,7 +541,7 @@ bool EncodeScan(const JPEGData& jpg,
                 const std::vector<HuffmanCodeTable>& dc_huff_table,
                 const std::vector<HuffmanCodeTable>& ac_huff_table,
                 JPEGOutput out) {
-  coeff_t last_dc_coeff[kMaxComponents] = { 0 };
+  coeff_t last_dc_coeff[kMaxComponents] = {0};
   BitWriter bw(1 << 17);
   for (int mcu_y = 0; mcu_y < jpg.MCU_rows; ++mcu_y) {
     for (int mcu_x = 0; mcu_x < jpg.MCU_cols; ++mcu_x) {
@@ -577,27 +574,23 @@ bool EncodeScan(const JPEGData& jpg,
 }
 
 bool WriteJpeg(const JPEGData& jpg, bool strip_metadata, JPEGOutput out) {
-  static const uint8_t kSOIMarker[2] = { 0xff, 0xd8 };
-  static const uint8_t kEOIMarker[2] = { 0xff, 0xd9 };
+  static const uint8_t kSOIMarker[2] = {0xff, 0xd8};
+  static const uint8_t kEOIMarker[2] = {0xff, 0xd9};
   std::vector<HuffmanCodeTable> dc_codes;
   std::vector<HuffmanCodeTable> ac_codes;
   return (JPEGWrite(out, kSOIMarker, sizeof(kSOIMarker)) &&
           EncodeMetadata(jpg, strip_metadata, out) &&
-          EncodeDQT(jpg.quant, out) &&
-          EncodeSOF(jpg, out) &&
+          EncodeDQT(jpg.quant, out) && EncodeSOF(jpg, out) &&
           BuildAndEncodeHuffmanCodes(jpg, out, &dc_codes, &ac_codes) &&
           EncodeScan(jpg, dc_codes, ac_codes, out) &&
           JPEGWrite(out, kEOIMarker, sizeof(kEOIMarker)) &&
           (strip_metadata || JPEGWrite(out, jpg.tail_data)));
 }
 
-int NullOut(void* data, const uint8_t* buf, size_t count) {
-  return count;
-}
+int NullOut(void* data, const uint8_t* buf, size_t count) { return count; }
 
 void BuildSequentialHuffmanCodes(
-    const JPEGData& jpg,
-    std::vector<HuffmanCodeTable>* dc_huffman_code_tables,
+    const JPEGData& jpg, std::vector<HuffmanCodeTable>* dc_huffman_code_tables,
     std::vector<HuffmanCodeTable>* ac_huffman_code_tables) {
   JPEGOutput out(NullOut, nullptr);
   BuildAndEncodeHuffmanCodes(jpg, out, dc_huffman_code_tables,
