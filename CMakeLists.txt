@@ -44,7 +44,6 @@ add_library(pikcommon STATIC
   arch_specific.cc
   arch_specific.h
   args.h
-  bit_buffer.h
   bit_reader.h
   bits.h
   butteraugli/butteraugli.cc
@@ -85,12 +84,6 @@ add_library(pikcommon STATIC
   gauss_blur.h
   header.cc
   header.h
-  histogram.cc
-  histogram_decode.cc
-  histogram_decode.h
-  histogram_encode.cc
-  histogram_encode.h
-  histogram.h
   huffman_decode.cc
   huffman_decode.h
   huffman_encode.cc
@@ -145,8 +138,6 @@ add_library(pikcommon STATIC
   xorshift128plus.h
   yuv_convert.cc
   yuv_convert.h
-  yuv_opsin_convert.cc
-  yuv_opsin_convert.h
 )
 
 target_compile_definitions(pikcommon PRIVATE -DSIMD_ENABLE=4)
