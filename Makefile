@@ -12,7 +12,6 @@ PIK_OBJS := $(addprefix obj/, \
 	guetzli/debug_print.o \
 	guetzli/entropy_encode.o \
 	guetzli/fdct.o \
-	guetzli/gamma_correct.o \
 	guetzli/idct.o \
 	guetzli/jpeg_data.o \
 	guetzli/jpeg_data_decoder.o \

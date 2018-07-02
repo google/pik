@@ -45,10 +45,10 @@ namespace pik {
 
 namespace {
 
-static const int kBlockEdge = 8;
-static const int kBlockSize = kBlockEdge * kBlockEdge;
-
-constexpr ImageSize kDctTileSize{512, 8};
+/* DCT coefficients (kBlockSize real numbers) are unrolled in x-direction
+   to improve locality. */
+constexpr ImageSize kDctTileSize{
+    kTileWidthInBlocks * kBlockSize, kTileHeightInBlocks};
 
 const double kDCBlurSigma = 5.5;
 
@@ -115,13 +115,15 @@ void ApplyColorTransform(const ColorTransform& ctan, const float factor,
     const float* PIK_RESTRICT row_y = y_plane.Row(y);
     float* PIK_RESTRICT row_x = coeffs->PlaneRow(0, y);
     float* PIK_RESTRICT row_b = coeffs->PlaneRow(2, y);
-    const int* PIK_RESTRICT row_ytob = ctan.ytob_map.Row(y / kTileInBlocks);
-    const int* PIK_RESTRICT row_ytox = ctan.ytox_map.Row(y / kTileInBlocks);
+    const int* PIK_RESTRICT row_ytob =
+        ctan.ytob_map.Row(y / kTileHeightInBlocks);
+    const int* PIK_RESTRICT row_ytox =
+        ctan.ytox_map.Row(y / kTileHeightInBlocks);
 
     for (int x = 0; x < bxsize; ++x) {
       const int xoff = x * kBlockSize;
-      const float ytob_ac = factor_b * row_ytob[x / kTileInBlocks];
-      const float ytox_ac = factor_x * (row_ytox[x / kTileInBlocks] - 128);
+      const float ytob_ac = factor_b * row_ytob[x / kTileWidthInBlocks];
+      const float ytox_ac = factor_x * (row_ytox[x / kTileWidthInBlocks] - 128);
       row_b[xoff] += factor_b * ctan.ytob_dc * row_y[xoff];
       row_x[xoff] += factor_x * (ctan.ytox_dc - 128) * row_y[xoff];
       for (int k = 1; k < kBlockSize; ++k) {
@@ -150,10 +152,8 @@ TFNode* AddColorTransform(const ColorTransform& ctan, TFNode* dq_xyb,
         using namespace SIMD_NAMESPACE;
         const Full<float> d;
 
-        // TileFlow tiles are 512 x 8 and blocks are 64 x 1 and yto* maps are
-        // downsampled 8x, so we have only one yto* value for the entire tile.
-        static_assert(kDctTileSize.xsize == 512, "Use row_ytox[x/512]");
-        static_assert(kDctTileSize.ysize == 8, "Use ytox.ConstRow(y/8)");
+        // yto* maps are downsampled 8x (kTile(Width|Height)InBlocks),
+        // so we have only one yto* value for the entire tile.
         const int* PIK_RESTRICT row_ytox_ac =
             reinterpret_cast<const int*>(in[3].ConstRow(0));
         const int* PIK_RESTRICT row_ytob_ac =
@@ -171,8 +171,6 @@ TFNode* AddColorTransform(const ColorTransform& ctan, TFNode* dq_xyb,
 
           for (uint32_t x = 0; x < output_region.xsize; x += kBlockSize) {
             // Single loop is faster than separate x/b loops (inner or outer).
-            // TODO(janwas): avoid copying y via mixed sink node or inplace
-            // buffer.
             for (size_t k = 0; k < kBlockSize; k += d.N) {
               const auto in_x = load(d, row_in_x + x + k);
               const auto in_y = load(d, row_in_y + x + k);
@@ -234,13 +232,13 @@ struct Gaborish3 {
   PIK_INLINE const Weights3x3& Weights() const {
     // Unnormalized.
     constexpr float wu0 = 1.0f;
-    constexpr float wu1 = static_cast<float>(0.11000238179658321);
-    constexpr float wu2 = static_cast<float>(0.089979079587015454);
-    constexpr float mul = 1.0 / (wu0 + 4 * (wu1 + wu2));
-    constexpr float w0 = wu0 * mul;
-    constexpr float w1 = wu1 * mul;
-    constexpr float w2 = wu2 * mul;
-    static constexpr Weights3x3 weights = {
+    const float wu1 = static_cast<float>(0.11001538179658321);
+    const float wu2 = static_cast<float>(0.089979079587015454);
+    const float mul = 1.0 / (wu0 + 4 * (wu1 + wu2));
+    const float w0 = wu0 * mul;
+    const float w1 = wu1 * mul;
+    const float w2 = wu2 * mul;
+    static const Weights3x3 weights = {
         {PIK_REP4(w2)}, {PIK_REP4(w1)}, {PIK_REP4(w2)},
         {PIK_REP4(w1)}, {PIK_REP4(w0)}, {PIK_REP4(w1)},
         {PIK_REP4(w2)}, {PIK_REP4(w1)}, {PIK_REP4(w2)}};
@@ -253,10 +251,10 @@ struct Gaborish3 {
 void GaborishInverse(Image3F &opsin) {
   PROFILER_FUNC;
   static const double kGaborish[5] = {
-    -0.095336974121859999,
+    -0.095346974121859995,
     -0.049147719433952346,
     0.00917293007962648,
-    0.0031287055481802016,
+    0.0031177055481802014,
     0.0063673837572018844,
   };
   const float smooth_weights5[9] = {
@@ -342,15 +340,15 @@ template <class Operator>  // Plus/Minus
 void InjectExceptDC(const Image3F& what, Image3F* out) {
   const size_t xsize = what.xsize();
   const size_t ysize = what.ysize();
-  PIK_CHECK(xsize % 64 == 0);
+  PIK_CHECK(xsize % kBlockSize == 0);
   const Operator op;
 
   for (int c = 0; c < 3; ++c) {
     for (size_t y = 0; y < ysize; ++y) {
       const float* PIK_RESTRICT row_what = what.ConstPlaneRow(c, y);
       float* PIK_RESTRICT row_out = out->PlaneRow(c, y);
-      for (size_t bx = 0; bx < xsize; bx += 64) {
-        for (size_t x = 1; x < 64; ++x) {
+      for (size_t bx = 0; bx < xsize; bx += kBlockSize) {
+        for (size_t x = 1; x < kBlockSize; ++x) {
           row_out[bx + x] = op(row_out[bx + x], row_what[bx + x]);
         }
       }
@@ -363,25 +361,8 @@ void ZeroDC(Image3<T>* img) {
   for (int c = 0; c < 3; c++) {
     for (size_t y = 0; y < img->ysize(); y++) {
       T* PIK_RESTRICT row = img->PlaneRow(c, y);
-      for (size_t x = 0; x < img->xsize(); x += 64) {
+      for (size_t x = 0; x < img->xsize(); x += kBlockSize) {
         row[x] = T(0);
-      }
-    }
-  }
-}
-
-// Scatters dc into "coeffs" at offset 0 within 1x64 blocks.
-template <typename T>
-void FillDC(const Image3<T>& dc, Image3<T>* coeffs) {
-  const size_t xsize = dc.xsize();
-  const size_t ysize = dc.ysize();
-
-  for (int c = 0; c < 3; c++) {
-    for (size_t y = 0; y < ysize; y++) {
-      const T* PIK_RESTRICT row_dc = dc.PlaneRow(c, y);
-      T* PIK_RESTRICT row_out = coeffs->PlaneRow(c, y);
-      for (size_t x = 0; x < xsize; ++x) {
-        row_out[64 * x] = row_dc[x];
       }
     }
   }
@@ -436,8 +417,8 @@ Image3F BlurUpsampleDCAndDCT(const Image3F& original_dc, ThreadPool* pool) {
       float* PIK_RESTRICT dct_row = dct.PlaneRow(c, y);
       const float* PIK_RESTRICT original_dc_row =
           original_dc.ConstPlaneRow(c, y);
-      for (size_t x = 0; x < dct.xsize() / 64; x++) {
-        dct_row[64 * x] -= original_dc_row[x];
+      for (size_t dct_x = 0, x = 0; dct_x < dct.xsize(); dct_x += kBlockSize) {
+        dct_row[dct_x] -= original_dc_row[x++];
       }
     }
   }
@@ -570,7 +551,7 @@ void Adjust189_64FromDC(const Image3F& dc, Image3F* coeffs) {
   Image3F ac10(xsize, ysize);
   Image3F ac11(xsize, ysize);
   // Must avoid ConvolveT for tiny images (PIK_CHECK fails)
-  if (xsize <= 8) {
+  if (xsize < kConvolveMinWidth) {
     using Convolution = slow::General3x3Convolution<1, WrapMirror>;
     Convolution::Run(dc, xsize, ysize, kernel::AC01(), &ac01);
     Convolution::Run(dc, xsize, ysize, kernel::AC10(), &ac10);
@@ -606,7 +587,7 @@ Image3F PredictSpatial2x2_AC4(const Image3F& dc, const Image3F& ac) {
   Image3F ac10(xsize, ysize);
   Image3F ac11(xsize, ysize);
   // Must avoid ConvolveT for tiny images (PIK_CHECK fails)
-  if (xsize <= 8) {
+  if (xsize < kConvolveMinWidth) {
     using Convolution = slow::General3x3Convolution<1, WrapMirror>;
     Convolution::Run(dc, xsize, ysize, kernel::AC01(), &ac01);
     Convolution::Run(dc, xsize, ysize, kernel::AC10(), &ac10);
@@ -656,7 +637,7 @@ Image3F PredictSpatial2x2_AC64(const Image3F& dc, Image3F* ac64) {
   Image3F ac10(xsize, ysize);
   Image3F ac11(xsize, ysize);
   // Must avoid ConvolveT for tiny images (PIK_CHECK fails)
-  if (xsize <= 8) {
+  if (xsize < kConvolveMinWidth) {
     using Convolution = slow::General3x3Convolution<1, WrapMirror>;
     Convolution::Run(dc, xsize, ysize, kernel::AC01(), &ac01);
     Convolution::Run(dc, xsize, ysize, kernel::AC10(), &ac10);
@@ -745,25 +726,24 @@ QuantizedCoeffs ComputeCoefficients(const CompressParams& params,
 
 void ComputeBlockContextFromDC(const Image3S& dc, const Quantizer& quantizer,
                                Image3B* out) {
+  PROFILER_FUNC;
   // One DC per block.
   const int bxsize = dc.xsize();
   const int bysize = dc.ysize();
   const float iquant_base = quantizer.inv_quant_dc();
   for (int c = 0; c < 3; ++c) {
-    const float iquant = iquant_base * quantizer.DequantMatrix()[c * 64];
+    const float iquant =
+        iquant_base * quantizer.DequantMatrix()[c * kBlockSize];
     const float range = kXybRange[c] / iquant;
     const int64_t kR2Thresh = std::min(10.24f * range * range + 1.0f, 1E18f);
-    for (int x = 0; x < bxsize; ++x) {
-      out->PlaneRow(c, 0)[x] = c;
-      out->PlaneRow(c, bysize - 1)[x] = c;
-    }
+    memset(out->PlaneRow(c, 0), c, bxsize);
+    memset(out->PlaneRow(c, bysize - 1), c, bxsize);
     for (int y = 1; y + 1 < bysize; ++y) {
       const int16_t* PIK_RESTRICT row_t = dc.ConstPlaneRow(c, y - 1);
       const int16_t* PIK_RESTRICT row_m = dc.ConstPlaneRow(c, y);
       const int16_t* PIK_RESTRICT row_b = dc.ConstPlaneRow(c, y + 1);
       uint8_t* PIK_RESTRICT row_out = out->PlaneRow(c, y);
       row_out[0] = row_out[bxsize - 1] = c;
-      // TODO(janwas): SIMD?
       for (int bx = 1; bx + 1 < bxsize; ++bx) {
         const int16_t val_tl = row_t[bx - 1];
         const int16_t val_tm = row_t[bx];
@@ -838,31 +818,32 @@ namespace {
 
 template <typename ImageT>
 ImageT DcTile(ImageT* from, size_t tile_x, size_t tile_y) {
-  return Window(from, tile_x * kSupertileInBlocks, tile_y * kSupertileInBlocks,
-                kSupertileInBlocks, kSupertileInBlocks);
+  return Window(from,
+      tile_x * kGroupWidthInBlocks, tile_y * kGroupHeightInBlocks,
+      kGroupWidthInBlocks, kGroupHeightInBlocks);
 }
 
 template <typename ImageT>
 ImageT Tile(ImageT* from, size_t tile_x, size_t tile_y) {
-  return Window(from, tile_x * kSupertileInBlocks * kBlockSize,
-                tile_y * kSupertileInBlocks,
-                kSupertileInBlocks * kBlockSize, kSupertileInBlocks);
+  return Window(from, tile_x * kGroupWidthInBlocks * kBlockSize,
+                tile_y * kGroupHeightInBlocks,
+                kGroupWidthInBlocks * kBlockSize, kGroupHeightInBlocks);
 }
 
 template <typename ImageT>
 ConstWrapper<ImageT> ConstDcTile(const ImageT& from,
                                  size_t tile_x, size_t tile_y) {
-  return ConstWindow(from, tile_x * kSupertileInBlocks,
-                     tile_y * kSupertileInBlocks,
-                     kSupertileInBlocks, kSupertileInBlocks);
+  return ConstWindow(from, tile_x * kGroupWidthInBlocks,
+                     tile_y * kGroupHeightInBlocks,
+                     kGroupWidthInBlocks, kGroupHeightInBlocks);
 }
 
 template <typename ImageT>
 ConstWrapper<ImageT > ConstTile(const ImageT& from,
                                 size_t tile_x, size_t tile_y) {
-  return ConstWindow(from, tile_x * kSupertileInBlocks * kBlockSize,
-                     tile_y * kSupertileInBlocks,
-                     kSupertileInBlocks * kBlockSize, kSupertileInBlocks);
+  return ConstWindow(from, tile_x * kGroupWidthInBlocks * kBlockSize,
+                     tile_y * kGroupHeightInBlocks,
+                     kGroupWidthInBlocks * kBlockSize, kGroupHeightInBlocks);
 }
 
 template <uint32_t kDistribution>
@@ -904,9 +885,9 @@ PaddedBytes EncodeToBitstream(const QuantizedCoeffs& qcoeffs,
   PROFILER_FUNC;
   const size_t xsize_blocks = qcoeffs.dc.xsize();
   const size_t ysize_blocks = qcoeffs.dc.ysize();
-  const size_t xsize_super = DivCeil(xsize_blocks, kSupertileInBlocks);
-  const size_t ysize_super = DivCeil(ysize_blocks, kSupertileInBlocks);
-  const size_t num_super = xsize_super * ysize_super;
+  const size_t xsize_group = DivCeil(xsize_blocks, kGroupWidthInBlocks);
+  const size_t ysize_group = DivCeil(ysize_blocks, kGroupHeightInBlocks);
+  const size_t num_group = xsize_group * ysize_group;
   PikImageSizeInfo* ctan_info = info ? &info->layers[kLayerCtan] : nullptr;
   std::string ctan_code =
       EncodeColorMap(ctan.ytob_map, ctan.ytob_dc, ctan_info) +
@@ -918,15 +899,15 @@ PaddedBytes EncodeToBitstream(const QuantizedCoeffs& qcoeffs,
   std::string quant_code = quantizer.Encode(quant_info);
 
   std::string dc_code = "";
-  std::string dc_toc(DcTileSizeCoder::MaxSize(num_super), '\0');
+  std::string dc_toc(DcTileSizeCoder::MaxSize(num_group), '\0');
   size_t dc_toc_pos = 0;
   uint8_t* dc_toc_storage =
       reinterpret_cast<uint8_t*>(const_cast<char*>(dc_toc.data()));
 
   Image3S predicted_dc(xsize_blocks, ysize_blocks);
   Image3B block_ctx(xsize_blocks, ysize_blocks);
-  for (size_t y = 0; y < ysize_super; y++) {
-    for (size_t x = 0; x < xsize_super; x++) {
+  for (size_t y = 0; y < ysize_group; y++) {
+    for (size_t x = 0; x < xsize_group; x++) {
       Image3S predicted_dc_tile = DcTile(&predicted_dc, x, y);
       Image3B block_ctx_tile = DcTile(&block_ctx, x, y);
       ConstWrapper<Image3S> dc_tile = ConstDcTile(qcoeffs.dc, x, y);
@@ -944,13 +925,14 @@ PaddedBytes EncodeToBitstream(const QuantizedCoeffs& qcoeffs,
   std::string ac_code = "";
   std::string order_code = "";
   std::string histo_code = "";
-  int order[kOrderContexts * 64];
+  int order[kOrderContexts * kBlockSize];
   std::vector<ANSEncodingData> codes;
   std::vector<uint8_t> context_map;
   std::vector<std::vector<Token> > all_tokens;
   if (fast_mode) {
     for (int i = 0; i < kOrderContexts; ++i) {
-      memcpy(&order[i * 64], kNaturalCoeffOrder, 64 * sizeof(order[0]));
+      memcpy(&order[i * kBlockSize], kNaturalCoeffOrder,
+          kBlockSize * sizeof(order[0]));
     }
   } else {
     ComputeCoeffOrder(qcoeffs.ac, block_ctx, order);
@@ -958,8 +940,8 @@ PaddedBytes EncodeToBitstream(const QuantizedCoeffs& qcoeffs,
 
   order_code = EncodeCoeffOrders(order, info);
   const ImageI& quant_ac = quantizer.RawQuantField();
-  for (size_t y = 0; y < ysize_super; y++) {
-    for (size_t x = 0; x < xsize_super; x++) {
+  for (size_t y = 0; y < ysize_group; y++) {
+    for (size_t x = 0; x < xsize_group; x++) {
       ConstWrapper<ImageI> q_tile = ConstDcTile(quant_ac, x, y);
       ConstWrapper<Image3S> qac_tile = ConstTile(qcoeffs.ac, x, y);
       ConstWrapper<Image3B> block_ctx_tile = ConstDcTile(block_ctx, x, y);
@@ -1013,7 +995,8 @@ PaddedBytes EncodeToBitstream(const QuantizedCoeffs& qcoeffs,
   return out;
 }
 
-bool DecodeColorMap(BitReader* br, ImageI* ac_map, int* dc_val) {
+bool DecodeColorMap(BitReader* PIK_RESTRICT br, ImageI* PIK_RESTRICT ac_map,
+                    int* PIK_RESTRICT dc_val) {
   HuffmanDecodingData entropy;
   if (!entropy.ReadFromBitStream(br)) {
     return PIK_FAILURE("Invalid histogram data.");
@@ -1021,9 +1004,9 @@ bool DecodeColorMap(BitReader* br, ImageI* ac_map, int* dc_val) {
   HuffmanDecoder decoder;
   br->FillBitBuffer();
   *dc_val = decoder.ReadSymbol(entropy, br);
-  for (int y = 0; y < ac_map->ysize(); ++y) {
+  for (size_t y = 0; y < ac_map->ysize(); ++y) {
     int* PIK_RESTRICT row = ac_map->Row(y);
-    for (int x = 0; x < ac_map->xsize(); ++x) {
+    for (size_t x = 0; x < ac_map->xsize(); ++x) {
       br->FillBitBuffer();
       row[x] = decoder.ReadSymbol(entropy, br);
     }
@@ -1033,13 +1016,13 @@ bool DecodeColorMap(BitReader* br, ImageI* ac_map, int* dc_val) {
 }
 
 template <class Coder>
-std::vector<uint64_t> OffsetsFromSizes(const size_t num_super,
-                                       BitReader* reader) {
+std::vector<uint64_t> OffsetsFromSizes(const size_t num_group,
+                                       BitReader* PIK_RESTRICT reader) {
   // = prefix sum of sizes.
   std::vector<uint64_t> offsets;
-  offsets.reserve(1 + num_super);
+  offsets.reserve(1 + num_group);
   offsets.push_back(0);
-  for (size_t i = 0; i < num_super; ++i) {
+  for (size_t i = 0; i < num_group; ++i) {
     const uint32_t size = Coder::Decode(reader);
     offsets.push_back(offsets.back() + size);
   }
@@ -1059,26 +1042,79 @@ bool IsSizeWithinBounds(const uint8_t* tiles_begin, const uint8_t* data_end,
   return true;
 }
 
+void InitEagerDequantDC(ColorTransform* PIK_RESTRICT ctan,
+                        Quantizer* PIK_RESTRICT quantizer,
+                        DecCache* PIK_RESTRICT cache) {
+  const float* PIK_RESTRICT dequant_matrix = quantizer->DequantMatrix();
+  for (int c = 0; c < 3; ++c) {
+    cache->mul_dc[c] =
+        dequant_matrix[c * kBlockSize] * quantizer->inv_quant_dc();
+  }
+
+  cache->ytox = (ctan->ytox_dc - 128) * kColorFactorX;
+  cache->ytob = ctan->ytob_dc * kColorFactorB;
+}
+
+void EagerDequantDC(const Image3S& dc_tile, DecCache* PIK_RESTRICT cache,
+                    Image3F* PIK_RESTRICT dc_out) {
+  using namespace SIMD_NAMESPACE;
+  using D = Full<float>;
+  constexpr D d;
+  constexpr Part<int16_t, D::N> d16;
+  constexpr Part<int32_t, D::N> d32;
+
+  const auto dequant_y = set1(d, cache->mul_dc[1]);
+  for (size_t y = 0; y < dc_tile.ysize(); ++y) {
+    const int16_t* PIK_RESTRICT row_q1 = dc_tile.ConstPlaneRow(1, y);
+    float* PIK_RESTRICT row_out1 = dc_out->PlaneRow(1, y);
+    for (size_t x = 0; x < dc_tile.xsize(); x += d.N) {
+      const auto y16 = load(d16, row_q1 + x);
+      const auto yf = convert_to(d, convert_to(d32, y16));
+
+      const auto out_y = yf * dequant_y;
+      store(out_y, d, row_out1 + x);
+    }
+  }
+
+  for (int c = 0; c < 3; c += 2) {  // === for c in {0, 2}
+    const auto y_mul = set1(d, (c == 0) ? cache->ytox : cache->ytob);
+    const auto xb_mul = set1(d, cache->mul_dc[c]);
+    for (size_t y = 0; y < dc_tile.ysize(); ++y) {
+      const int16_t* PIK_RESTRICT row_q = dc_tile.ConstPlaneRow(c, y);
+      const float* PIK_RESTRICT row_out1 = dc_out->ConstPlaneRow(1, y);
+      float* PIK_RESTRICT row_out = dc_out->PlaneRow(c, y);
+      for (size_t x = 0; x < dc_tile.xsize(); x += d.N) {
+        const auto xb16 = load(d16, row_q + x);
+        const auto xb = convert_to(d, convert_to(d32, xb16));
+        const auto y_dq = load(d, row_out1 + x);
+
+        const auto out_xb = mul_add(y_mul, y_dq, xb * xb_mul);
+        store(out_xb, d, row_out + x);
+      }
+    }
+  }
+}
+
 bool DecodeAC(const size_t xsize_blocks, const size_t ysize_blocks,
-              const size_t xsize_super, const size_t ysize_super,
+              const size_t xsize_group, const size_t ysize_group,
               const PaddedBytes& compressed, BitReader* reader,
-              ThreadPool* pool, Quantizer* quantizer,
-              QuantizedCoeffs* qcoeffs) {
+              ColorTransform* ctan, ThreadPool* pool, DecCache* cache,
+              Quantizer* quantizer) {
   PROFILER_FUNC;
 
-  const size_t num_super = xsize_super * ysize_super;
+  const size_t num_group = xsize_group * ysize_group;
 
   const uint8_t* const data_end = compressed.data() + compressed.size();
 
   const std::vector<uint64_t>& dc_tile_offsets =
-      OffsetsFromSizes<DcTileSizeCoder>(num_super, reader);
+      OffsetsFromSizes<DcTileSizeCoder>(num_group, reader);
   const uint8_t* dc_tiles_begin = compressed.data() + reader->Position();
   // Skip past what the independent BitReaders will consume.
-  reader->SkipBits(dc_tile_offsets[num_super] * 8);
+  reader->SkipBits(dc_tile_offsets[num_group] * 8);
 
-  int coeff_order[kOrderContexts * 64];
+  int coeff_order[kOrderContexts * kBlockSize];
   for (int c = 0; c < kOrderContexts; ++c) {
-    DecodeCoeffOrder(&coeff_order[c * 64], reader);
+    DecodeCoeffOrder(&coeff_order[c * kBlockSize], reader);
   }
   reader->JumpToByteBoundary();
 
@@ -1092,23 +1128,27 @@ bool DecodeAC(const size_t xsize_blocks, const size_t ysize_blocks,
   reader->JumpToByteBoundary();
 
   const std::vector<uint64_t>& ac_tile_offsets =
-      OffsetsFromSizes<AcTileSizeCoder>(num_super, reader);
+      OffsetsFromSizes<AcTileSizeCoder>(num_group, reader);
 
   const uint8_t* ac_tiles_begin = compressed.data() + reader->Position();
   // Skip past what the independent BitReaders will consume.
-  reader->SkipBits(ac_tile_offsets[num_super] * 8);
+  reader->SkipBits(ac_tile_offsets[num_group] * 8);
 
   Image3B block_ctx(xsize_blocks, ysize_blocks);
   ImageI quant_ac(xsize_blocks, ysize_blocks);
 
-  qcoeffs->dc = Image3S(xsize_blocks, ysize_blocks);
-  qcoeffs->ac = Image3S(xsize_blocks * kBlockSize, ysize_blocks);
+  cache->dc_quant = Image3S(xsize_blocks, ysize_blocks);
+  cache->ac_quant = Image3S(xsize_blocks * kBlockSize, ysize_blocks);
+  if (cache->eager_dc_dequant) {
+    cache->dc = Image3F(xsize_blocks, ysize_blocks);
+    InitEagerDequantDC(ctan, quantizer, cache);
+  }
 
   std::atomic<int> num_errors{0};
-  pool->Run(0, num_super, [&](const int task, const int thread) {
-    const size_t x = task % xsize_super;
-    const size_t y = task / xsize_super;
-    Image3S dc_tile = DcTile(&qcoeffs->dc, x, y);
+  pool->Run(0, num_group, [&](const int task, const int thread) {
+    const size_t x = task % xsize_group;
+    const size_t y = task / xsize_group;
+    Image3S dc_tile = DcTile(&cache->dc_quant, x, y);
 
     size_t dc_size;
     if (!IsSizeWithinBounds(dc_tiles_begin, data_end, dc_tile_offsets[task],
@@ -1117,17 +1157,22 @@ bool DecodeAC(const size_t xsize_blocks, const size_t ysize_blocks,
       return;
     }
     BitReader dc_reader(dc_tiles_begin + dc_tile_offsets[task], dc_size);
-    if (!DecodeImage(&dc_reader, 1, &dc_tile)) {
+    if (!DecodeImage(&dc_reader, &dc_tile)) {
       num_errors.fetch_add(1);
       return;
     }
 
     UnpredictDCTile(&dc_tile);
 
+    if (cache->eager_dc_dequant) {
+      Image3F dc_out = DcTile(&cache->dc, x, y);
+      EagerDequantDC(dc_tile, cache, &dc_out);
+    }
+
     Image3B block_ctx_tile = DcTile(&block_ctx, x, y);
     ComputeBlockContextFromDC(dc_tile, *quantizer, &block_ctx_tile);
 
-    Image3S ac_tile = Tile(&qcoeffs->ac, x, y);
+    Image3S ac_tile = Tile(&cache->ac_quant, x, y);
     ImageI q_tile = DcTile(&quant_ac, x, y);
 
     size_t ac_size;
@@ -1144,7 +1189,6 @@ bool DecodeAC(const size_t xsize_blocks, const size_t ysize_blocks,
   });
 
   quantizer->SetRawQuantField(std::move(quant_ac));
-
   return num_errors.load(std::memory_order_relaxed) == 0;
 }
 
@@ -1152,11 +1196,11 @@ bool DecodeFromBitstream(const PaddedBytes& compressed, BitReader* reader,
                          const size_t xsize, const size_t ysize,
                          ThreadPool* pool, ColorTransform* ctan,
                          NoiseParams* noise_params, Quantizer* quantizer,
-                         QuantizedCoeffs* qcoeffs) {
-  const size_t xsize_blocks = DivCeil(xsize, kBlockEdge);
-  const size_t ysize_blocks = DivCeil(ysize, kBlockEdge);
-  const size_t xsize_super = DivCeil(xsize_blocks, kSupertileInBlocks);
-  const size_t ysize_super = DivCeil(ysize_blocks, kSupertileInBlocks);
+                         DecCache* cache) {
+  const size_t xsize_blocks = DivCeil(xsize, kBlockWidth);
+  const size_t ysize_blocks = DivCeil(ysize, kBlockHeight);
+  const size_t xsize_group = DivCeil(xsize_blocks, kGroupWidthInBlocks);
+  const size_t ysize_group = DivCeil(ysize_blocks, kGroupHeightInBlocks);
 
   DecodeColorMap(reader, &ctan->ytob_map, &ctan->ytob_dc);
   DecodeColorMap(reader, &ctan->ytox_map, &ctan->ytox_dc);
@@ -1164,20 +1208,20 @@ bool DecodeFromBitstream(const PaddedBytes& compressed, BitReader* reader,
   if (!DecodeNoise(reader, noise_params)) return false;
   if (!quantizer->Decode(reader)) return false;
 
-  return DecodeAC(xsize_blocks, ysize_blocks, xsize_super, ysize_super,
-                  compressed, reader, pool, quantizer, qcoeffs);
+  return DecodeAC(xsize_blocks, ysize_blocks, xsize_group, ysize_group,
+                  compressed, reader, ctan, pool, cache, quantizer);
 }
 
-TFGraphPtr MakeTileFlow(const QuantizedCoeffs& qcoeffs,
-                        const Quantizer& quantizer, const ColorTransform& ctan,
-                        Image3F* dcoeffs, ThreadPool* pool) {
+TFGraphPtr MakeTileFlow(const Image3S& ac_quant, const Quantizer& quantizer,
+                        const ColorTransform& ctan, Image3F* dcoeffs,
+                        ThreadPool* pool) {
   PROFILER_FUNC;
-  PIK_CHECK(qcoeffs.ac.xsize() % 64 == 0);
+  PIK_CHECK(ac_quant.xsize() % kBlockSize == 0);
   PIK_CHECK(dcoeffs->xsize() != 0);  // output must already be allocated.
 
   TFBuilder builder;
   TFNode* ac = builder.AddSource("src_ac", 3, TFType::kI16);
-  builder.SetSource(ac, &qcoeffs.ac);
+  builder.SetSource(ac, &ac_quant);
 
   TFNode* quant_ac =
       builder.AddSource("src_ac", 1, TFType::kI32, TFWrap::kZero, Scale(-6, 0));
@@ -1196,13 +1240,11 @@ TFGraphPtr MakeTileFlow(const QuantizedCoeffs& qcoeffs,
   TFNode* ctan_xyb = AddColorTransform(ctan, dq_xyb, ytox, ytob, &builder);
   builder.SetSink(ctan_xyb, dcoeffs);
 
-  return builder.Finalize(
-      ImageSize::Make(qcoeffs.ac.xsize(), qcoeffs.ac.ysize()), kDctTileSize,
-      pool);
+  return builder.Finalize(ImageSize::Make(ac_quant.xsize(), ac_quant.ysize()),
+                          kDctTileSize, pool);
 }
 
-TFGraphPtr MakeTileFlowDC(const QuantizedCoeffs& qcoeffs,
-                          const Quantizer& quantizer,
+TFGraphPtr MakeTileFlowDC(const Image3S& dc_quant, const Quantizer& quantizer,
                           const ColorTransform& ctan, Image3F* dcoeffs,
                           ThreadPool* pool) {
   PROFILER_FUNC;
@@ -1210,16 +1252,15 @@ TFGraphPtr MakeTileFlowDC(const QuantizedCoeffs& qcoeffs,
 
   TFBuilder builder;
   TFNode* dc = builder.AddSource("src_dct_dc", 3, TFType::kI16);
-  builder.SetSource(dc, &qcoeffs.dc);
+  builder.SetSource(dc, &dc_quant);
 
   TFNode* dq_xyb = AddDequantizeDC(dc, quantizer, &builder);
 
   TFNode* ctan_xyb = AddColorTransformDC(ctan, dq_xyb, &builder);
   builder.SetSink(ctan_xyb, dcoeffs);
 
-  return builder.Finalize(
-      ImageSize::Make(qcoeffs.dc.xsize(), qcoeffs.dc.ysize()),
-      ImageSize{64, 64}, pool);
+  return builder.Finalize(ImageSize::Make(dc_quant.xsize(), dc_quant.ysize()),
+                          ImageSize{64, 64}, pool);
 }
 
 void AddPredictions_Smooth(const Image3F& dc, ThreadPool* pool,
@@ -1229,10 +1270,8 @@ void AddPredictions_Smooth(const Image3F& dc, ThreadPool* pool,
 
   const Image3F upsampled_dc = BlurUpsampleDC(dc, pool);
 
-  // Treats dcoeffs.DC as 0; we add upsampled_dc below.
-  *idct = TransposedScaledIDCT<DC_Zero>(*dcoeffs, pool);
-
-  AddTo(upsampled_dc, idct);
+  // Treats dcoeffs.DC as 0, then adds upsampled_dc after IDCT.
+  *idct = TransposedScaledIDCTAndAdd<DC_Zero>(*dcoeffs, upsampled_dc, pool);
 }
 
 void AddPredictions(const Image3F& dc, ThreadPool* pool,
@@ -1247,33 +1286,36 @@ void AddPredictions(const Image3F& dc, ThreadPool* pool,
   *idct = TransposedScaledIDCT(*dcoeffs, pool);
 }
 
-Image3F ReconOpsinImage(const Header& header,
-                        const QuantizedCoeffs& qcoeffs,
-                        const Quantizer& quantizer, const ColorTransform& ctan,
-                        ThreadPool* pool, PikInfo* pik_info) {
+Image3F ReconOpsinImage(const Header& header, const Quantizer& quantizer,
+                        const ColorTransform& ctan, ThreadPool* pool,
+                        DecCache* cache, PikInfo* pik_info) {
   PROFILER_ZONE("recon");
-  const size_t dct_xsize = qcoeffs.ac.xsize();
-  const size_t dct_ysize = qcoeffs.ac.ysize();
+  const size_t dct_xsize = cache->ac_quant.xsize();
+  const size_t dct_ysize = cache->ac_quant.ysize();
 
-  Image3F dc(dct_xsize / 64, dct_ysize);
-  auto tile_flow_dc = MakeTileFlowDC(qcoeffs, quantizer, ctan, &dc, pool);
-  tile_flow_dc->Run();
+  if (!cache->eager_dc_dequant) {
+    cache->dc = Image3F(dct_xsize / kBlockSize, dct_ysize);
+    auto tile_flow_dc =
+        MakeTileFlowDC(cache->dc_quant, quantizer, ctan, &cache->dc, pool);
+    tile_flow_dc->Run();
+  }
 
   Image3F dcoeffs(dct_xsize, dct_ysize);
-  auto tile_flow = MakeTileFlow(qcoeffs, quantizer, ctan, &dcoeffs, pool);
+  auto tile_flow =
+      MakeTileFlow(cache->ac_quant, quantizer, ctan, &dcoeffs, pool);
   tile_flow->Run();
 
   // AddPredictions* do not use the (invalid) DC component of dcoeffs.
 
-  const size_t out_xsize = dct_xsize / 8;
-  const size_t out_ysize = dct_ysize * 8;
+  const size_t out_xsize = (dct_xsize / kBlockSize) * kBlockWidth;
+  const size_t out_ysize = dct_ysize * kBlockHeight;
   Image3F idct(out_xsize, out_ysize);
 
   // Does IDCT already internally to save work.
   if (header.flags & Header::kSmoothDCPred) {
-    AddPredictions_Smooth(dc, pool, &dcoeffs, &idct);
+    AddPredictions_Smooth(cache->dc, pool, &dcoeffs, &idct);
   } else {
-    AddPredictions(dc, pool, &dcoeffs, &idct);
+    AddPredictions(cache->dc, pool, &dcoeffs, &idct);
   }
 
   if (header.flags & Header::kGaborishTransform) {

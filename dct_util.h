@@ -23,6 +23,23 @@ Image3F SlowDCT(const Image3F& img);
 // REQUIRES: coeffs.xsize() == 64*N, coeffs.ysize() == M
 Image3F DCImage(const Image3F& coeffs);
 
+// Scatters dc into "coeffs" at offset 0 within 1x64 blocks.
+template <typename T>
+void FillDC(const Image3<T>& dc, Image3<T>* coeffs) {
+  const size_t xsize = dc.xsize();
+  const size_t ysize = dc.ysize();
+
+  for (int c = 0; c < 3; c++) {
+    for (size_t y = 0; y < ysize; y++) {
+      const T* PIK_RESTRICT row_dc = dc.PlaneRow(c, y);
+      T* PIK_RESTRICT row_out = coeffs->PlaneRow(c, y);
+      for (size_t x = 0; x < xsize; ++x) {
+        row_out[64 * x] = row_dc[x];
+      }
+    }
+  }
+}
+
 // Zeroes out the top-left 2x2 corner of each DCT block.
 // REQUIRES: coeffs.xsize() == 64*N, coeffs.ysize() == M
 void ZeroOut2x2(Image3F* coeffs);

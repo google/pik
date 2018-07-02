@@ -51,9 +51,9 @@ static const float kIDCTScales[8] = {
     0.3535533906f, 0.2777851165f, 0.1913417162f, 0.0975451610f};
 
 static const float kRecipIDCTScales[8] = {
-    1.0 / 0.3535533906f, 1.0 / 0.4903926402f, 1.0 / 0.4619397663f,
-    1.0 / 0.4157348062f, 1.0 / 0.3535533906f, 1.0 / 0.2777851165f,
-    1.0 / 0.1913417162f, 1.0 / 0.0975451610f};
+    1.0f / 0.3535533906f, 1.0f / 0.4903926402f, 1.0f / 0.4619397663f,
+    1.0f / 0.4157348062f, 1.0f / 0.3535533906f, 1.0f / 0.2777851165f,
+    1.0f / 0.1913417162f, 1.0f / 0.0975451610f};
 
 // See "Steerable Discrete Cosine Transform", Fracastoro G., Fosson S., Magli
 // E., https://arxiv.org/pdf/1610.09152.pdf
@@ -606,6 +606,51 @@ Image3F TransposedScaledIDCT(const Image3F& coeffs, ThreadPool* pool) {
       }
     }
   });
+  return img;
+}
+
+template <class DC_Op = DC_Unchanged>
+Image3F TransposedScaledIDCTAndAdd(const Image3F& coeffs,
+                                   const Image3F& add_spatial,
+                                   ThreadPool* pool) {
+  PIK_ASSERT(coeffs.xsize() % 64 == 0);
+  const size_t pixel_xsize = coeffs.xsize() / 8;
+  const size_t block_ysize = coeffs.ysize();
+  Image3F img(pixel_xsize, block_ysize * 8);
+  PIK_ASSERT(SameSize(img, add_spatial));
+
+  pool->Run(0, block_ysize,
+            [pixel_xsize, &coeffs, &img, &add_spatial](const int task,
+                                                       const int thread) {
+              const size_t y = task;
+              for (int c = 0; c < 3; ++c) {
+                const size_t stride = img.PlaneRow(c, 1) - img.PlaneRow(c, 0);
+                const float* PIK_RESTRICT row_in = coeffs.ConstPlaneRow(c, y);
+                const float* PIK_RESTRICT row_add =
+                    add_spatial.ConstPlaneRow(c, y * 8);
+                float* PIK_RESTRICT row_out = img.PlaneRow(c, y * 8);
+
+                for (size_t x = 0; x < pixel_xsize; x += 8) {
+                  ComputeTransposedScaledBlockIDCTFloat(
+                      FromBlock(row_in + x * 8), ToLines(row_out + x, stride),
+                      DC_Op());
+
+                  // Add 8x8 block from "add_spatial" to "img".
+                  using namespace SIMD_NAMESPACE;
+                  const Full<float> d;
+                  for (size_t iy = 0; iy < 8; ++iy) {
+                    const float* PIK_RESTRICT pos_add =
+                        row_add + stride * iy + x;
+                    float* PIK_RESTRICT pos_out = row_out + stride * iy + x;
+                    for (size_t ix = 0; ix < 8; ix += d.N) {
+                      const auto pixels = load(d, pos_out + ix);
+                      const auto add = load(d, pos_add + ix);
+                      store(pixels + add, d, pos_out + ix);
+                    }
+                  }
+                }
+              }
+            });
   return img;
 }
 

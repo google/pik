@@ -40,8 +40,8 @@ struct ColorTransform {
   ColorTransform(size_t xsize, size_t ysize)
       : ytob_dc(120),
         ytox_dc(128),
-        ytob_map(DivCeil(xsize, kTileSize), DivCeil(ysize, kTileSize), 120),
-        ytox_map(DivCeil(xsize, kTileSize), DivCeil(ysize, kTileSize), 128) {}
+        ytob_map(DivCeil(xsize, kTileWidth), DivCeil(ysize, kTileHeight), 120),
+        ytox_map(DivCeil(xsize, kTileWidth), DivCeil(ysize, kTileHeight), 128) {}
   int ytob_dc;
   int ytox_dc;
   Image<int> ytob_map;
@@ -93,17 +93,29 @@ PaddedBytes EncodeToBitstream(const QuantizedCoeffs& qcoeffs,
                               const ColorTransform& ctan, bool fast_mode,
                               PikInfo* info = nullptr);
 
+struct DecCache {
+  Image3S dc_quant;
+  Image3F dc;
+
+  bool eager_dc_dequant = false;
+  float mul_dc[3];
+  float ytox;
+  float ytob;
+
+  Image3S ac_quant;
+};
+
 // "compressed" is the same range from which reader was constructed, and allows
 // seeking to tiles and constructing per-thread BitReader.
 bool DecodeFromBitstream(const PaddedBytes& compressed, BitReader* reader,
                          const size_t xsize, const size_t ysize,
                          ThreadPool* pool, ColorTransform* ctan,
                          NoiseParams* noise_params, Quantizer* quantizer,
-                         QuantizedCoeffs* qcoeffs);
+                         DecCache* cache);
 
-Image3F ReconOpsinImage(const Header& header, const QuantizedCoeffs& qcoeffs,
-                        const Quantizer& quantizer, const ColorTransform& ctan,
-                        ThreadPool* pool, PikInfo* pik_info = nullptr);
+Image3F ReconOpsinImage(const Header& header, const Quantizer& quantizer,
+                        const ColorTransform& ctan, ThreadPool* pool,
+                        DecCache* cache, PikInfo* pik_info = nullptr);
 
 void GaborishInverse(Image3F& opsin);
 Image3F ConvolveGaborish(const Image3F& in, ThreadPool* pool);

@@ -15,6 +15,7 @@
 #ifndef PIK_ALPHA_H_
 #define PIK_ALPHA_H_
 
+#include <memory>
 #include "image.h"
 #include "pik_params.h"
 #include "sections.h"
@@ -22,10 +23,10 @@
 namespace pik {
 
 bool AlphaToPik(const CompressParams& params, const ImageU& plane,
-                int bit_depth, Sections* sections);
+                int bit_depth, std::unique_ptr<Alpha>* alpha);
 
 // "plane" must be pre-allocated (Header knows the size).
-bool PikToAlpha(const DecompressParams& params, const Sections& sections,
+bool PikToAlpha(const DecompressParams& params, const Alpha& alpha,
                 ImageU* plane);
 
 }  // namespace pik

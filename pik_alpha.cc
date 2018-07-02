@@ -450,9 +450,8 @@ bool DecodeTransformedAlpha(const std::vector<uint8_t>& data, int bit_depth,
 }  // namespace
 
 bool AlphaToPik(const CompressParams& params, const ImageU& plane,
-                int bit_depth, Sections* sections) {
-  sections->alpha.reset(new Alpha);
-  Alpha* alpha = sections->alpha.get();
+                int bit_depth, std::unique_ptr<Alpha>* out_alpha) {
+  std::unique_ptr<Alpha> alpha(new Alpha);
 
   alpha->mode = Alpha::kModeBrotli;
   if (!FilterAndBrotliEncode(params, plane, bit_depth, &alpha->encoded)) {
@@ -471,12 +470,12 @@ bool AlphaToPik(const CompressParams& params, const ImageU& plane,
     }
   }
 
+  out_alpha->swap(alpha);
   return true;
 }
 
-bool PikToAlpha(const DecompressParams& params, const Sections& sections,
+bool PikToAlpha(const DecompressParams& params, const Alpha& alpha,
                 ImageU* plane) {
-  const Alpha& alpha = *sections.alpha.get();
   if (alpha.mode >= Alpha::kModeInvalid) {
     return PIK_FAILURE("Invalid alpha mode");
   }
