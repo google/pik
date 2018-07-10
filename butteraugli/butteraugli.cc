@@ -40,6 +40,7 @@
 #include <algorithm>
 #include <array>
 
+#include <atomic>
 
 // Restricted pointers speed up Convolution(); MSVC uses a different keyword.
 #ifdef _MSC_VER
@@ -50,6 +51,7 @@
 #define PROFILER_ENABLED 0
 #endif
 #if PROFILER_ENABLED
+#include "profiler.h"
 #else
 #define PROFILER_FUNC
 #define PROFILER_ZONE(name)
@@ -765,7 +767,6 @@ ButteraugliComparator::ButteraugliComparator(const std::vector<ImageF>& rgb0,
                                              double hf_asymmetry)
     : xsize_(rgb0[0].xsize()),
       ysize_(rgb0[0].ysize()),
-      num_pixels_(xsize_ * ysize_),
       hf_asymmetry_(hf_asymmetry) {
   if (xsize_ < 8 || ysize_ < 8) return;
   std::vector<ImageF> xyb0 = OpsinDynamicsImage(rgb0);

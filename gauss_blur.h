@@ -38,7 +38,6 @@ std::vector<T> GaussianKernel(int radius, T sigma) {
   }
   return kernel;
 }
-
 // All convolution functions below apply mirroring of the input on the borders
 // in the following way:
 //

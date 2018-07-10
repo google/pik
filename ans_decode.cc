@@ -132,9 +132,9 @@ bool DecodeANSCodes(const size_t num_histograms, const size_t max_alphabet_size,
                     const uint8_t* symbol_lut, size_t symbol_lut_size,
                     BitReader* in, ANSCode* result) {
   PIK_ASSERT(max_alphabet_size <= ANS_TAB_SIZE);
-  result->map.resize(num_histograms << ANS_LOG_TAB_SIZE);
+  result->map.resize((num_histograms << ANS_LOG_TAB_SIZE) + 1);
   result->info.resize(num_histograms << ANS_LOG_TAB_SIZE);
-  for (int c = 0; c < num_histograms; ++c) {
+  for (size_t c = 0; c < num_histograms; ++c) {
     std::vector<int> counts;
     if (!ReadHistogram(ANS_LOG_TAB_SIZE, &counts, in)) {
       return PIK_FAILURE("Invalid histogram bitstream.");
@@ -142,21 +142,27 @@ bool DecodeANSCodes(const size_t num_histograms, const size_t max_alphabet_size,
     if (counts.size() > max_alphabet_size) {
       return PIK_FAILURE("Alphabet size is too long.");
     }
-    const int histo_offset = c << ANS_LOG_TAB_SIZE;
-    int offset = 0;
-    for (int i = 0, pos = 0; i < counts.size(); ++i) {
-      int symbol = i;
+    const size_t histo_offset = c << ANS_LOG_TAB_SIZE;
+    uint32_t offset = 0;
+    for (size_t i = 0, pos = 0; i < counts.size(); ++i) {
+      size_t symbol = i;
       if (symbol_lut != nullptr && symbol < symbol_lut_size) {
         symbol = symbol_lut[symbol];
       }
-      const int symbol_idx = histo_offset + symbol;
-      result->info[symbol_idx].offset = offset;
-      result->info[symbol_idx].freq = counts[i];
+      const size_t symbol_idx = histo_offset + symbol;
+      const uint32_t freq = counts[i];
+#if PIK_BYTE_ORDER_LITTLE
+      const uint32_t s32 = offset + (freq << 16);
+      memcpy(&result->info[symbol_idx], &s32, sizeof(s32));
+#else
+      result->info[symbol_idx].offset = static_cast<uint16_t>(offset);
+      result->info[symbol_idx].freq = static_cast<uint16_t>(freq);
+#endif
       offset += counts[i];
       if (offset > ANS_TAB_SIZE) {
         return PIK_FAILURE("Invalid ANS histogram data.");
       }
-      for (int j = 0; j < counts[i]; ++j, ++pos) {
+      for (size_t j = 0; j < counts[i]; ++j, ++pos) {
         result->map[histo_offset + pos] = symbol;
       }
     }

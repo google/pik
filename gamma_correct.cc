@@ -52,8 +52,8 @@ ImageF LinearFromSrgb(const ImageB& srgb) {
 }
 
 Image3F LinearFromSrgb(const Image3B& srgb) {
-  return Image3F(LinearFromSrgb(srgb.plane(0)), LinearFromSrgb(srgb.plane(1)),
-                 LinearFromSrgb(srgb.plane(2)));
+  return Image3F(LinearFromSrgb(srgb.Plane(0)), LinearFromSrgb(srgb.Plane(1)),
+                 LinearFromSrgb(srgb.Plane(2)));
 }
 
 ImageF LinearFromSrgb(const ImageU& srgb) {
@@ -73,8 +73,8 @@ ImageF LinearFromSrgb(const ImageU& srgb) {
 }
 
 Image3F LinearFromSrgb(const Image3U& srgb) {
-  return Image3F(LinearFromSrgb(srgb.plane(0)), LinearFromSrgb(srgb.plane(1)),
-                 LinearFromSrgb(srgb.plane(2)));
+  return Image3F(LinearFromSrgb(srgb.Plane(0)), LinearFromSrgb(srgb.Plane(1)),
+                 LinearFromSrgb(srgb.Plane(2)));
 }
 
 ImageB Srgb8FromLinear(const ImageF& linear) {
@@ -94,9 +94,9 @@ ImageB Srgb8FromLinear(const ImageF& linear) {
 }
 
 Image3B Srgb8FromLinear(const Image3F& linear) {
-  return Image3B(Srgb8FromLinear(linear.plane(0)),
-                 Srgb8FromLinear(linear.plane(1)),
-                 Srgb8FromLinear(linear.plane(2)));
+  return Image3B(Srgb8FromLinear(linear.Plane(0)),
+                 Srgb8FromLinear(linear.Plane(1)),
+                 Srgb8FromLinear(linear.Plane(2)));
 }
 
 ImageF SrgbFFromLinear(const ImageF& linear) {
@@ -115,9 +115,9 @@ ImageF SrgbFFromLinear(const ImageF& linear) {
 }
 
 Image3F SrgbFFromLinear(const Image3F& linear) {
-  return Image3F(SrgbFFromLinear(linear.plane(0)),
-                 SrgbFFromLinear(linear.plane(1)),
-                 SrgbFFromLinear(linear.plane(2)));
+  return Image3F(SrgbFFromLinear(linear.Plane(0)),
+                 SrgbFFromLinear(linear.Plane(1)),
+                 SrgbFFromLinear(linear.Plane(2)));
 }
 
 }  // namespace pik

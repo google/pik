@@ -527,11 +527,11 @@ struct Args1 {
 // Factory functions enable deduction of Arg* from the image type.
 Args3 MakeArgs(const Image3B& guide, const Image3F& in) {
   Args3 args;
-  args.guide_stride = guide.plane(0).bytes_per_row();
-  args.in_stride = in.plane(0).bytes_per_row();
+  args.guide_stride = guide.Plane(0).bytes_per_row();
+  args.in_stride = in.Plane(0).bytes_per_row();
   for (size_t c = 0; c < 3; ++c) {
-    PIK_CHECK(args.guide_stride == guide.plane(c).bytes_per_row());
-    PIK_CHECK(args.in_stride == in.plane(c).bytes_per_row());
+    PIK_CHECK(args.guide_stride == guide.Plane(c).bytes_per_row());
+    PIK_CHECK(args.in_stride == in.Plane(c).bytes_per_row());
   }
   return args;
 }
@@ -955,20 +955,22 @@ class Padding {
 
   template <typename T>
   static Image3<T> PadImage(const Image3<T>& in) {
-    return Image3<T>(PadImage(in.plane(0)), PadImage(in.plane(1)),
-                     PadImage(in.plane(2)));
+    return Image3<T>(PadImage(in.Plane(0)), PadImage(in.Plane(1)),
+                     PadImage(in.Plane(2)));
   }
 
   static void Test() {
     for (size_t ysize = 8; ysize < 16; ++ysize) {
       for (size_t xsize = 8; xsize < 16; ++xsize) {
-        ImageF in(xsize, ysize, 0.0f);
+        ImageF in(xsize, ysize);
+        FillImage(0.0f, &in);
         ImageF padded = PadImage(in);
-        Image3F in3(xsize, ysize, 0.0f);
+        Image3F in3(xsize, ysize);
+        FillImage(0.0f, &in3);
         Image3F padded3 = PadImage(in3);
         EnsureInitialized(padded);
         for (int c = 0; c < 3; ++c) {
-          EnsureInitialized(padded3.plane(c));
+          EnsureInitialized(padded3.Plane(c));
         }
       }
     }

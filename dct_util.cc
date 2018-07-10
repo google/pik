@@ -84,21 +84,6 @@ Image3F SlowIDCT(const Image3F& coeffs) {
   return img;
 }
 
-Image3F DCImage(const Image3F& coeffs) {
-  PIK_ASSERT(coeffs.xsize() % 64 == 0);
-  Image3F out(coeffs.xsize() / 64, coeffs.ysize());
-  for (int c = 0; c < 3; ++c) {
-    for (size_t y = 0; y < out.ysize(); ++y) {
-      const float* PIK_RESTRICT row_in = coeffs.ConstPlaneRow(c, y);
-      float* PIK_RESTRICT row_out = out.PlaneRow(c, y);
-      for (size_t x = 0; x < out.xsize(); ++x) {
-        row_out[x] = row_in[x * 64];
-      }
-    }
-  }
-  return out;
-}
-
 void ZeroOut2x2(Image3F* coeffs) {
   PIK_ASSERT(coeffs->xsize() % 64 == 0);
       for (int c = 0; c < 3; ++c) {
@@ -449,7 +434,8 @@ ImageF Subsample(const ImageF& image, int f) {
   PIK_CHECK(f == (1 << shift));
   const size_t nxs = image.xsize() >> shift;
   const size_t nys = image.ysize() >> shift;
-  ImageF retval(nxs, nys, 0.0f);
+  ImageF retval(nxs, nys);
+  FillImage(0.0f, &retval);
   const float mul = 1.0f / (f * f);
   for (size_t y = 0; y < image.ysize(); ++y) {
     const float* PIK_RESTRICT row_in = image.Row(y);
@@ -497,9 +483,9 @@ ImageF Subsample8(const ImageF& image) {
 }
 
 Image3F Subsample(const Image3F& in, int f) {
-  return Image3F(Subsample(in.plane(0), f),
-                 Subsample(in.plane(1), f),
-                 Subsample(in.plane(2), f));
+  return Image3F(Subsample(in.Plane(0), f),
+                 Subsample(in.Plane(1), f),
+                 Subsample(in.Plane(2), f));
 }
 
 ImageF Upsample(const ImageF& image, int f) {
@@ -519,9 +505,9 @@ ImageF Upsample(const ImageF& image, int f) {
 }
 
 Image3F Upsample(const Image3F& in, int f) {
-  return Image3F(Upsample(in.plane(0), f),
-                 Upsample(in.plane(1), f),
-                 Upsample(in.plane(2), f));
+  return Image3F(Upsample(in.Plane(0), f),
+                 Upsample(in.Plane(1), f),
+                 Upsample(in.Plane(2), f));
 }
 
 ImageF Dilate(const ImageF& in) {
@@ -545,7 +531,7 @@ ImageF Dilate(const ImageF& in) {
 }
 
 Image3F Dilate(const Image3F& in) {
-  return Image3F(Dilate(in.plane(0)), Dilate(in.plane(1)), Dilate(in.plane(2)));
+  return Image3F(Dilate(in.Plane(0)), Dilate(in.Plane(1)), Dilate(in.Plane(2)));
 }
 
 ImageF Erode(const ImageF& in) {
@@ -569,7 +555,7 @@ ImageF Erode(const ImageF& in) {
 }
 
 Image3F Erode(const Image3F& in) {
-  return Image3F(Erode(in.plane(0)), Erode(in.plane(1)), Erode(in.plane(2)));
+  return Image3F(Erode(in.Plane(0)), Erode(in.Plane(1)), Erode(in.Plane(2)));
 }
 
 ImageF Min(const ImageF& a, const ImageF& b) {
@@ -593,15 +579,15 @@ ImageF Max(const ImageF& a, const ImageF& b) {
 }
 
 Image3F Min(const Image3F& a, const Image3F& b) {
-  return Image3F(Min(a.plane(0), b.plane(0)),
-                 Min(a.plane(1), b.plane(1)),
-                 Min(a.plane(2), b.plane(2)));
+  return Image3F(Min(a.Plane(0), b.Plane(0)),
+                 Min(a.Plane(1), b.Plane(1)),
+                 Min(a.Plane(2), b.Plane(2)));
 }
 
 Image3F Max(const Image3F& a, const Image3F& b) {
-  return Image3F(Max(a.plane(0), b.plane(0)),
-                 Max(a.plane(1), b.plane(1)),
-                 Max(a.plane(2), b.plane(2)));
+  return Image3F(Max(a.Plane(0), b.Plane(0)),
+                 Max(a.Plane(1), b.Plane(1)),
+                 Max(a.Plane(2), b.Plane(2)));
 }
 
 }  // namespace pik

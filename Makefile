@@ -1,9 +1,6 @@
-PNG_FLAGS := $(shell pkg-config --cflags libpng)
-PNG_LIBS := $(shell pkg-config --libs libpng)
-
 SIMD_FLAGS := -DSIMD_ENABLE=4 -msse4.2 -maes
 override CXXFLAGS += -std=c++11 -Wall -O3 -fPIC -I. -I../ -Ithird_party/brotli/c/include/ -Wno-sign-compare
-override LDFLAGS += $(PNG_LIBS) -ljpeg -lpthread
+override LDFLAGS += -lpthread
 
 PIK_OBJS := $(addprefix obj/, \
 	simd/dispatch.o \
@@ -24,6 +21,7 @@ PIK_OBJS := $(addprefix obj/, \
 	guetzli/preprocess_downsample.o \
 	guetzli/quantize.o \
 	guetzli/score.o \
+	third_party/lodepng/lodepng.o \
 	adaptive_quantization.o \
 	af_edge_preserving_filter.o \
 	af_edge_preserving_filter_none.o \
@@ -94,7 +92,7 @@ bin/butteraugli_main: $(PIK_OBJS) obj/butteraugli_main.o third_party/brotli/libb
 
 obj/%.o: %.cc
 	@mkdir -p -- $(dir $@)
-	$(CXX) -c $(CPPFLAGS) $(CXXFLAGS) $(SIMD_FLAGS) $(PNG_FLAGS) $< -o $@
+	$(CXX) -c $(CPPFLAGS) $(CXXFLAGS) $(SIMD_FLAGS) $< -o $@
 
 bin/%: obj/%.o
 	@mkdir -p -- $(dir $@)

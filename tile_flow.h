@@ -366,7 +366,7 @@ class TFBuilder {
       const TFPortIndex port = NumZeroBitsBelowLSBNonzero(bits);
       bits &= bits - 1;
       BindSource(ports.node, port,
-                 reinterpret_cast<const ImageF*>(&source->plane(c)),
+                 reinterpret_cast<const ImageF*>(&source->Plane(c)),
                  TFTypeUtils::FromImage(source));
     }
     PIK_CHECK(bits == 0);
@@ -380,7 +380,7 @@ class TFBuilder {
   //
   // "sink" can have any type; TFFunc is responsible for casting row pointers to
   // the actual underlying type. The pointer-to-const allows binding to
-  // &Image3::plane(), and emphasizes that the image class will not be changed
+  // &Image3::Plane(), and emphasizes that the image class will not be changed
   // (e.g. resized). However, the image *pixels* are of course modified.
   template <typename T>
   void SetSink(const TFPorts& ports, const Image<T>* sink) {
@@ -401,7 +401,7 @@ class TFBuilder {
       const TFPortIndex port = NumZeroBitsBelowLSBNonzero(bits);
       bits &= bits - 1;
       BindSink(ports.node, port,
-               reinterpret_cast<const ImageF*>(&sink->plane(c)), type);
+               reinterpret_cast<const ImageF*>(&sink->Plane(c)), type);
     }
     PIK_CHECK(bits == 0);
   }

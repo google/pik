@@ -21,7 +21,21 @@ Image3F SlowDCT(const Image3F& img);
 
 // Returns an N x M image by taking the DC coefficient from each 64x1 block.
 // REQUIRES: coeffs.xsize() == 64*N, coeffs.ysize() == M
-Image3F DCImage(const Image3F& coeffs);
+template <typename T>
+Image3<T> DCImage(const Image3<T>& coeffs) {
+  PIK_ASSERT(coeffs.xsize() % 64 == 0);
+  Image3<T> out(coeffs.xsize() / 64, coeffs.ysize());
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < out.ysize(); ++y) {
+      const T* PIK_RESTRICT row_in = coeffs.ConstPlaneRow(c, y);
+      T* PIK_RESTRICT row_out = out.PlaneRow(c, y);
+      for (size_t x = 0; x < out.xsize(); ++x) {
+        row_out[x] = row_in[x * 64];
+      }
+    }
+  }
+  return out;
+}
 
 // Scatters dc into "coeffs" at offset 0 within 1x64 blocks.
 template <typename T>

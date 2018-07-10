@@ -45,10 +45,7 @@ PIK_INLINE void Upsample(const Executor executor, const ImageF& in,
 template <class Upsampler, class Executor, class Kernel>
 PIK_INLINE void Upsample(const Executor executor, const Image3F& in,
                          const Kernel& kernel, Image3F* out) {
-  for (int c = 0; c < 3; ++c) {
-    Upsample<Upsampler>(executor, in.plane(c), kernel, out->MutablePlane(c));
-    out->CheckSizesSame();
-  }
+  Upsampler::Run(executor, in, kernel, out);
 }
 
 // Single-thread, single channel.
@@ -62,10 +59,7 @@ PIK_INLINE void Upsample(const ImageF& in, const Kernel& kernel,
 template <class Upsampler, class Kernel>
 PIK_INLINE void Upsample(const Image3F& in, const Kernel& kernel,
                          Image3F* PIK_RESTRICT out) {
-  for (int c = 0; c < 3; ++c) {
-    Upsample<Upsampler>(in.plane(c), kernel,
-                        const_cast<ImageF*>(&out->plane(c)));
-  }
+  Upsample<Upsampler>(ExecutorLoop(), in, kernel, out);
 }
 
 namespace kernel {
@@ -281,6 +275,16 @@ class Upsampler {
     }
   }
 
+  template <class Executor, class Kernel>
+  static void Run(const Executor executor, const Image3F& in,
+                  const Kernel& kernel, Image3F* PIK_RESTRICT out) {
+    // Unoptimized: separate planes (additional fork/join)
+    for (int c = 0; c < 3; ++c) {
+      Run(executor, in.Plane(c), kernel, out->MutablePlane(c));
+      out->CheckSizesSame();
+    }
+  }
+
  private:
   template <class Kernel>
   static void Upsample1D(const float* PIK_RESTRICT in, const size_t in_size,
@@ -356,6 +360,16 @@ class GeneralUpsamplerFromSeparable {
       }
     }
   }
+
+  template <class Executor, class Kernel>
+  static void Run(const Executor executor, const Image3F& in,
+                  const Kernel& kernel, Image3F* PIK_RESTRICT out) {
+    // Unoptimized: separate planes (additional fork/join)
+    for (int c = 0; c < 3; ++c) {
+      Run(executor, in.Plane(c), kernel, out->MutablePlane(c));
+      out->CheckSizesSame();
+    }
+  }
 };
 
 // Supports any kernel size. Requires known kScale and Kernel::Weights2D.
@@ -413,6 +427,16 @@ class GeneralUpsampler {
       }
     }
   }
+
+  template <class Executor, class Kernel>
+  static void Run(const Executor executor, const Image3F& in,
+                  const Kernel& kernel, Image3F* PIK_RESTRICT out) {
+    // Unoptimized: separate planes (additional fork/join)
+    for (int c = 0; c < 3; ++c) {
+      Run(executor, in.Plane(c), kernel, out->MutablePlane(c));
+      out->CheckSizesSame();
+    }
+  }
 };
 
 }  // namespace slow
@@ -422,10 +446,10 @@ class GeneralUpsampler {
 template <int64_t kRadiusArg, class Derived>
 class Upsampler8Base {
  public:
-  // Called by Upsample function template.
-  template <class Executor, class Kernel>
-  static PIK_INLINE void Run(const Executor executor, const ImageF& in,
-                             const Kernel& kernel, ImageF* out) {
+  // Called by Upsample function templates. Image = Image[3]F.
+  template <class Executor, class Image, class Kernel>
+  static PIK_INLINE void Run(const Executor executor, const Image& in,
+                             const Kernel& kernel, Image* out) {
     PROFILER_ZONE("Upsampler8");
     PIK_CHECK(in.xsize() * kScale == out->xsize());
     PIK_CHECK(in.ysize() * kScale == out->ysize());
@@ -558,6 +582,46 @@ class Upsampler8Base {
                  });
     for (size_t out_y = out_ysize - kBorder; out_y < out_ysize; ++out_y) {
       ProduceRow(horz, out_y, in, WrapMirror(), weights, out);
+    }
+  }
+
+  template <class Horz, class Executor>
+  static void RunImpl(const Horz horz, const Executor executor,
+                      const Image3F& in, const float* PIK_RESTRICT weights,
+                      Image3F* PIK_RESTRICT out) {
+    const size_t out_ysize = out->ysize();
+
+    // Short: single loop (ignore pool - not worthwhile).
+    if (out_ysize < kBorder) {
+      for (int c = 0; c < 3; ++c) {
+        for (size_t out_y = 0; out_y < out_ysize; ++out_y) {
+          ProduceRow(horz, out_y, in.Plane(c), WrapMirror(), weights,
+                     out->MutablePlane(c));
+        }
+      }
+      return;
+    }
+
+    // Tall: skip bounds checks for middle rows.
+    for (int c = 0; c < 3; ++c) {
+      for (size_t out_y = 0; out_y < kBorder; ++out_y) {
+        ProduceRow(horz, out_y, in.Plane(c), WrapMirror(), weights,
+                   out->MutablePlane(c));
+      }
+    }
+    executor.Run(kBorder, out_ysize - kBorder,
+                 [horz, &in, weights, out](const int task, const int thread) {
+                   const int64_t out_y = task;
+                   for (int c = 0; c < 3; ++c) {
+                     ProduceRow(horz, out_y, in.Plane(c), WrapUnchanged(),
+                                weights, out->MutablePlane(c));
+                   }
+                 });
+    for (int c = 0; c < 3; ++c) {
+      for (size_t out_y = out_ysize - kBorder; out_y < out_ysize; ++out_y) {
+        ProduceRow(horz, out_y, in.Plane(c), WrapMirror(), weights,
+                   out->MutablePlane(c));
+      }
     }
   }
 };

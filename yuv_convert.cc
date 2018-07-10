@@ -234,7 +234,7 @@ void SubSampleChroma(const Image3U& yuv,
   const int ysize = yuv.ysize();
   const int c_xsize = (xsize + 1) / 2;
   const int c_ysize = (ysize + 1) / 2;
-  *yplane = CopyImage(yuv.plane(0));
+  *yplane = CopyImage(yuv.Plane(0));
   *uplane = ImageU(c_xsize, c_ysize);
   *vplane = ImageU(c_xsize, c_ysize);
   for (int y = 0; y < c_ysize; ++y) {

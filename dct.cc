@@ -36,13 +36,14 @@ void TransposedScaledIDCT_Func(const void*, const ConstImageViewF* in,
   for (int c = 0; c < 3; ++c) {
     // x,y = top-left corner of 8x8 output block; 0,0 is the top-left of
     // the current output tile.
-    for (size_t y = 0; y < ysize; y += 8) {
-      const float* PIK_RESTRICT row_in = in[c].ConstRow(y / 8);
+    for (size_t y = 0; y < ysize; y += kBlockHeight) {
+      const float* PIK_RESTRICT row_in = in[c].ConstRow(y / kBlockHeight);
       float* PIK_RESTRICT row_out = out[c].Row(y);
 
-      for (size_t x = 0; x < xsize; x += 8) {
+      for (size_t x = 0; x < xsize; x += kBlockWidth) {
         ComputeTransposedScaledBlockIDCTFloat(
-            FromBlock(row_in + x * 8), ToLines(row_out + x, stride), DC_Op());
+            FromBlock(row_in + x * kBlockWidth), ToLines(row_out + x, stride),
+            DC_Op());
       }
     }
   }
@@ -58,38 +59,39 @@ TFNode* AddTransposedScaledIDCT(const TFPorts in_xyb, bool zero_dc,
                               : &TransposedScaledIDCT_Func<DC_Unchanged>);
 }
 
-void ComputeBlockDCTFloat(float block[64]) {
+void ComputeBlockDCTFloat(float block[kBlockSize]) {
   ComputeTransposedScaledBlockDCTFloat(block);
   TransposeBlock(block);
-  for (int y = 0; y < 8; ++y) {
-    for (int x = 0; x < 8; ++x) {
-      block[8 * y + x] /= 64.0f * kIDCTScales[y] * kIDCTScales[x];
+  for (size_t y = 0; y < kBlockHeight; ++y) {
+    const float scale_y = static_cast<int>(kBlockSize) * kIDCTScales[y];
+    for (size_t x = 0; x < kBlockWidth; ++x) {
+      block[kBlockWidth * y + x] /= scale_y * kIDCTScales[x];
     }
   }
 }
 
-void ComputeBlockIDCTFloat(float block[64]) {
-  for (int y = 0; y < 8; ++y) {
-    for (int x = 0; x < 8; ++x) {
-      block[8 * y + x] *= kIDCTScales[y] * kIDCTScales[x];
+void ComputeBlockIDCTFloat(float block[kBlockSize]) {
+  for (int y = 0; y < kBlockHeight; ++y) {
+    for (int x = 0; x < kBlockWidth; ++x) {
+      block[kBlockWidth * y + x] *= kIDCTScales[y] * kIDCTScales[x];
     }
   }
   TransposeBlock(block);
   ComputeTransposedScaledBlockIDCTFloat(block, DC_Unchanged());
 }
 
-void RotateDCT(float angle, float block[64]) {
+void RotateDCT(float angle, float block[kBlockSize]) {
   float a2a = std::cos(angle);
   float a2b = -std::sin(angle);
   float b2a = std::sin(angle);
   float b2b = std::cos(angle);
-  for (int y = 0; y < 8; y++) {
+  for (int y = 0; y < kBlockHeight; y++) {
     for (int x = 0; x < y; x++) {
       if (x >= 2 || y >= 2) continue;
-      float a = block[8 * y + x];
-      float b = block[8 * x + y];
-      block[8 * y + x] = a2a * a + b2a * b;
-      block[8 * x + y] = a2b * a + b2b * b;
+      float a = block[kBlockWidth * y + x];
+      float b = block[kBlockWidth * x + y];
+      block[kBlockWidth * y + x] = a2a * a + b2a * b;
+      block[kBlockWidth * x + y] = a2b * a + b2b * b;
     }
   }
 }

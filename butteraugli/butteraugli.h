@@ -467,7 +467,6 @@ class ButteraugliComparator {
 
   const size_t xsize_;
   const size_t ysize_;
-  const size_t num_pixels_;
   float hf_asymmetry_;
   PsychoImage pi0_;
 };

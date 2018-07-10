@@ -53,7 +53,10 @@ struct Header {
 
     // Dither opsin values before rounding to 8-bit SRGB. Generally beneficial
     // except for high-quality bitstreams (<= distance 1).
-    kDither = 8
+    kDither = 8,
+
+    // Gradient map used to predict smooth areas.
+    kGradientMap = 16,
   };
 
   uint32_t xsize = 0;

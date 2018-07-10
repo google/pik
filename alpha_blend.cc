@@ -51,7 +51,7 @@ Image3F AlphaBlend(const MetaImageF& img, uint8_t background) {
   }
   std::array<ImageF, 3> planes;
   for (int c = 0; c < 3; ++c) {
-    planes[c] = AlphaBlend(img.GetColor().plane(c), img.GetAlpha(),
+    planes[c] = AlphaBlend(img.GetColor().Plane(c), img.GetAlpha(),
                            img.AlphaBitDepth(), background);
   }
   return Image3F(planes);

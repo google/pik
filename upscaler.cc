@@ -105,9 +105,9 @@ ImageF Blur(const ImageF& in, float sigma, float border_ratio) {
 
 Image3F Blur(const Image3F& image, float sigma) {
   float border = 0.0;
-  return Image3F(Blur(image.plane(0), sigma, border),
-                 Blur(image.plane(1), sigma, border),
-                 Blur(image.plane(2), sigma, border));
+  return Image3F(Blur(image.Plane(0), sigma, border),
+                 Blur(image.Plane(1), sigma, border),
+                 Blur(image.Plane(2), sigma, border));
 }
 
 // DoGBlur is an approximate of difference of Gaussians. We use it to
@@ -133,9 +133,9 @@ ImageF DoGBlur(const ImageF& in, float sigma, float border_ratio) {
 
 Image3F DoGBlur(const Image3F& image, float sigma) {
   float border = 0.0;
-  return Image3F(DoGBlur(image.plane(0), sigma, border),
-                 DoGBlur(image.plane(1), sigma, border),
-                 DoGBlur(image.plane(2), sigma, border));
+  return Image3F(DoGBlur(image.Plane(0), sigma, border),
+                 DoGBlur(image.Plane(1), sigma, border),
+                 DoGBlur(image.Plane(2), sigma, border));
 }
 
 void SelectiveBlur(Image3F& image, float sigma, float select) {
@@ -233,7 +233,8 @@ void SelectiveBlur8x8(Image3F& image, Image3F& ac, float sigma,
 Image3F SubSampleSimple8x8(const Image3F& image) {
   const size_t nxs = (image.xsize() + 7) >> 3;
   const size_t nys = (image.ysize() + 7) >> 3;
-  Image3F retval(nxs, nys, 0.0f);
+  Image3F retval(nxs, nys);
+  FillImage(0.0f, &retval);
   float mul = 1 / 64.0;
   for (int c = 0; c < 3; ++c) {
     for (size_t y = 0; y < image.ysize(); ++y) {
@@ -266,7 +267,8 @@ Image3F SubSampleSimple8x8(const Image3F& image) {
 Image3F SubSampleSimple4x4(const Image3F& image) {
   const size_t nxs = (image.xsize() + 3) >> 2;
   const size_t nys = (image.ysize() + 3) >> 2;
-  Image3F retval(nxs, nys, 0.0f);
+  Image3F retval(nxs, nys);
+  FillImage(0.0f, &retval);
   float mul = 1 / 16.0;
   for (int c = 0; c < 3; ++c) {
     for (size_t y = 0; y < image.ysize(); ++y) {

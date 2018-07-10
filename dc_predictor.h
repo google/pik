@@ -36,27 +36,34 @@
 
 namespace pik {
 
-// Prefer to avoid floating-point arithmetic because results may (slightly)
-// differ depending on the compiler and platform.
+// The predictors operate on DCT coefficients or perhaps original pixels.
+// Must be 16-bit because we have 128 bit vectors and 8 predictors.
 using DC = int16_t;
 
-// Predicts "dc" coefficients from their neighbors and stores the resulting
-// "residuals" into a preallocated image. The predictors are optimized for the
-// luminance channel.
-void ShrinkY(const ImageS& dc, ImageS* PIK_RESTRICT residuals);
+// Predicts "in_y" coefficients within "rect_in" based on their neighbors and
+// stores the residuals into "residuals" within "rect_res". The predictors
+// are tuned for luminance.
+void ShrinkY(const Rect& rect_in, const ImageS& in_y, const Rect& rect_res,
+             ImageS* PIK_RESTRICT residuals);
 
-// Predicts "dc" coefficients from their neighbors and an already expanded
-// "dc_y" (luminance). Processes pairs of chrominance coefficients (U, V).
-void ShrinkUV(const ImageS& dc_y, const ImageS& dc,
-              ImageS* PIK_RESTRICT residuals);
+// All tmp_* images are thread-specific group-sized subsets:
 
-// Reconstructs "dc" (previously passed to ShrinkY) using "residuals".
-void ExpandY(const ImageS& residuals, ImageS* PIK_RESTRICT dc);
+// Expands "residuals" within "rect" (same as a prior call to ShrinkY) into
+// preallocated "tmp_expanded", using predictions from prior pixels.
+void ExpandY(const Rect& rect, const ImageS& residuals,
+             ImageS* PIK_RESTRICT tmp_expanded);
 
-// Reconstructs "dc" (previously passed to ShrinkUV) using "residuals" and
-// "dc_y" (luminance).
-void ExpandUV(const ImageS& dc_y, const ImageS& residuals,
-              ImageS* PIK_RESTRICT dc);
+// Stores residuals of predicting XB pairs in "tmp_xb" from their neighbors
+// and the window "rect" [blocks] within already expanded "y" (luminance).
+void ShrinkXB(const Rect& rect, const ImageS& in_y, const ImageS& tmp_xb,
+              ImageS* PIK_RESTRICT tmp_xb_residuals);
+
+// Expands "tmp_xb_residuals" (a subset of the result of ShrinkXB) into
+// "tmp_xb_expanded", using predictions from prior pixels and "tmp_y". All
+// images are at least xsize * ysize (2*xsize for xz).
+void ExpandXB(const size_t xsize, const size_t ysize, const ImageS& tmp_y,
+              const ImageS& tmp_xb_residuals,
+              ImageS* PIK_RESTRICT tmp_xb_expanded);
 
 }  // namespace pik
 

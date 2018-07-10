@@ -60,11 +60,12 @@ void DctModulation(const ImageF& xyb, ImageF *out) {
       entropy *= entropy;
       entropy3 = sqrt(entropy3);
       entropy4 = sqrt(sqrt(entropy4));
-      static const double mul = 6.077492901729896e-08;
-      static const double mul2 = 6.8539491064715505e-05;
-      static const double mul3 = 0.0017804716470785605;
-      static const double mul4 = -0.0050967847228656788;
-      static const double one = 0.97235535811376061;
+      static const double a = 0.0073648861692995685;
+      static const double mul = 6.0781668013465264e-08 + 1e-4 * a;
+      static const double mul2 = 0.00019672427932933333;
+      static const double mul3 = 0.0061580073570665743;
+      static const double mul4 = -0.0051396021184796966;
+      static const double one = 1.0000000441587729;
       row_out[x / 8] *=
           one + mul * entropy + mul2 * entropy2 +
           mul3 * entropy3 * mul4 * entropy4;
@@ -94,8 +95,8 @@ void RangeModulation(const ImageF& xyb, ImageF *out) {
         }
       }
       float range = maxval - minval;
-      static const double mul = 0.010807926298999983;
-      static const double one = 0.9623663423809774;
+      static const double mul = 0.010791134974796609;
+      static const double one = 0.96569671586747452;
       row_out[x / 8] *= one + mul * range;
     }
   }
@@ -130,8 +131,8 @@ void HfModulation(const ImageF& xyb, ImageF *out) {
       if (n != 0) {
         sum /= n;
       }
-      static double kMul = -0.020094379655430972;
-      static double kOne = 1.0209243846350082;
+      static double kMul = -0.013471978196971823;
+      static double kOne = 1.0209732649446996;
       row_out[x / 8] *= kOne + kMul * sum;
     }
   }
@@ -142,15 +143,15 @@ ImageF DiffPrecompute(const ImageF& xyb, float cutoff) {
   PIK_ASSERT(xyb.xsize() > 1);
   PIK_ASSERT(xyb.ysize() > 1);
   ImageF result(xyb.xsize(), xyb.ysize());
-  static const double mul0 = 0.93812446597253496;
+  static const double mul0 = 1.0013730957919436;
 
   // PIK's gamma is 3.0 to be able to decode faster with two muls.
   // Butteraugli's gamma is matching the gamma of human eye, around 2.6.
   // We approximate the gamma difference by adding one cubic root into
   // the adaptive quantization. This gives us a total gamma of 2.6666
   // for quantization uses.
-  static const double match_gamma_offset1 = 0.05319655762487914;
-  static const double match_gamma_offset2 = -0.11742503584154976;
+  static const double match_gamma_offset1 = 0.0531787811316944;
+  static const double match_gamma_offset2 = -0.14085575842765535;
   for (size_t y = 0; y + 1 < xyb.ysize(); ++y) {
     const float* const PIK_RESTRICT row_in = xyb.Row(y);
     const float* const PIK_RESTRICT row_in2 = xyb.Row(y + 1);
@@ -211,11 +212,11 @@ ImageF Expand(const ImageF& img, size_t out_xsize, size_t out_ysize) {
 }
 
 ImageF ComputeMask(const ImageF& diffs) {
-  static const float kBase = 0.38598797695415865;
-  static const float kMul1 = 0.008941409748253951;
-  static const float kOffset1 = 0.014588293991611092;
-  static const float kMul2 = -0.012683880806014305;
-  static const float kOffset2 = 0.079129531234478717;
+  static const float kBase = 0.39251950450684969;
+  static const float kMul1 = 0.011097832692603558;
+  static const float kOffset1 = 0.015001421280093607;
+  static const float kMul2 = -0.019938660050574836;
+  static const float kOffset2 = 0.12031987572197222;
   ImageF out(diffs.xsize(), diffs.ysize());
   for (int y = 0; y < diffs.ysize(); ++y) {
     const float* const PIK_RESTRICT row_in = diffs.Row(y);
@@ -263,15 +264,19 @@ ImageF AdaptiveQuantizationMap(const ImageF& img, size_t resolution) {
   const size_t out_xsize = (img.xsize() + resolution - 1) / resolution;
   const size_t out_ysize = (img.ysize() + resolution - 1) / resolution;
   if (img.xsize() <= 1) {
-    return ImageF(1, out_ysize, 1.0f);
+    ImageF out(1, out_ysize);
+    FillImage(1.0f, &out);
+    return out;
   }
   if (img.ysize() <= 1) {
-    return ImageF(out_xsize, 1, 1.0f);
+    ImageF out(out_xsize, 1);
+    FillImage(1.0f, &out);
+    return out;
   }
-  static const float kSigma = 5.9370635166009036;
+  static const float kSigma = 5.9272739209092995;
   static const int kRadius = static_cast<int>(2 * kSigma + 0.5f);
   std::vector<float> kernel = GaussianKernel(kRadius, kSigma);
-  static const float kDiffCutoff = 0.17322473232503538;
+  static const float kDiffCutoff = 0.14523279356051019;
   ImageF out = DiffPrecompute(img, kDiffCutoff);
   out = Expand(out, resolution * out_xsize, resolution * out_ysize);
   out = ConvolveAndSample(out, kernel, kSampleRate);

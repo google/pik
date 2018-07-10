@@ -264,7 +264,7 @@ struct General3x3Convolution {
   static void Run(const Image3F& in, const size_t xsize, const size_t ysize,
                   const Kernel& kernel, Image3F* out) {
     for (int c = 0; c < 3; ++c) {
-      Run(in.plane(c), xsize, ysize, kernel, out->MutablePlane(c));
+      Run(in.Plane(c), xsize, ysize, kernel, out->MutablePlane(c));
       out->CheckSizesSame();
     }
   }
@@ -311,8 +311,7 @@ class SymmetricConvolution {
                   const float (&weights)[(kRadius + 1) * (kRadius + 1)],
                   Image3F* out) {
     for (int c = 0; c < 3; ++c) {
-      Run(in.plane(c), xsize, ysize, weights,
-          const_cast<ImageF*>(&out->plane(c)));
+      Run(in.Plane(c), xsize, ysize, weights, out->MutablePlane(c));
     }
   }
 
@@ -1391,7 +1390,9 @@ struct BorderNeverUsed {};
 // Slow: Convolve calls PadImage and requires bounds checks.
 struct BorderNeedsInit {};
 
-static constexpr size_t kConvolveMinWidth = SIMD_NAMESPACE::Full<float>::N;
+// 3x3 kernels require inputs at least this wide - for the first vector, they
+// load right neighbors (N lanes starting from x + 1).
+static constexpr size_t kConvolveMinWidth = SIMD_NAMESPACE::Full<float>::N + 1;
 
 // Single entry point for convolution.
 // "Strategy" (Direct*/Separable*) decides kernel size and how to evaluate it.
@@ -1421,7 +1422,7 @@ class ConvolveT {
     PIK_CHECK(SameSize(in, *out));
     const size_t xsize = in.xsize();
     const size_t ysize = in.ysize();
-    PIK_CHECK(xsize >= SIMD_NAMESPACE::Full<float>::N);  // For BorderNeverUsed.
+    PIK_CHECK(xsize >= kConvolveMinWidth);  // For BorderNeverUsed.
 
     RunImpl(border, executor, in, xsize, ysize, kernel, out);
   }
@@ -1432,11 +1433,11 @@ class ConvolveT {
     PIK_CHECK(SameSize(in, *out));
     const size_t xsize = in.xsize();
     const size_t ysize = in.ysize();
-    PIK_CHECK(xsize >= SIMD_NAMESPACE::Full<float>::N);  // For BorderNeverUsed.
+    PIK_CHECK(xsize >= kConvolveMinWidth);  // For BorderNeverUsed.
 
     for (int c = 0; c < 3; ++c) {
-      RunImpl(border, executor, in.plane(c), xsize, ysize, kernel,
-              &out->plane(c));
+      RunImpl(border, executor, in.Plane(c), xsize, ysize, kernel,
+              &out->Plane(c));
     }
   }
 

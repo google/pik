@@ -34,23 +34,23 @@ namespace pik {
 class CacheAligned {
  public:
   static constexpr size_t kPointerSize = sizeof(void*);
-  // Actually need alignment to PAIRS of cache lines but we can't increase this
-  // due to use of Window() with insufficient alignment.
   static constexpr size_t kCacheLineSize = 64;
+  // To avoid RFOs, match L2 fill size (pairs of lines).
+  static constexpr size_t kAlignment = 2 * kCacheLineSize;
 
   // "offset" is added to the allocation size and allocated pointer in an
   // attempt to avoid 2K aliasing of consecutive allocations (e.g. Image).
   static void* Allocate(const size_t payload_size, const size_t offset = 0) {
     PIK_ASSERT(payload_size < (1ULL << 63));
-    // Layout: |<alignment>   Avoid2K|<allocated>  left_padding  | <payload>
-    // Sizes : |kCacheLineSize offset|kPointerSize kMaxVectorSize| payload_size
-    //         ^allocated............^stash...............payload^
+    // Layout: |<alignment> Avoid2K|<allocated>  left_padding  | <payload>
+    // Sizes : |kAlignment   offset|kPointerSize kMaxVectorSize| payload_size
+    //         ^allocated..........^stash...............payload^
     const size_t header_size =
-        kCacheLineSize + offset + kPointerSize + kMaxVectorSize;
+        kAlignment + offset + kPointerSize + kMaxVectorSize;
     void* allocated = malloc(header_size + payload_size);
     if (allocated == nullptr) return nullptr;
     uintptr_t payload = reinterpret_cast<uintptr_t>(allocated) + header_size;
-    payload &= ~(kCacheLineSize - 1);  // round down
+    payload &= ~(kAlignment - 1);  // round down
     const uintptr_t stash = payload - kMaxVectorSize - kPointerSize;
     memcpy(reinterpret_cast<void*>(stash), &allocated, kPointerSize);
     return reinterpret_cast<void*>(payload);
@@ -63,7 +63,7 @@ class CacheAligned {
       return;
     }
     const uintptr_t payload = reinterpret_cast<uintptr_t>(aligned_pointer);
-    PIK_ASSERT(payload % kCacheLineSize == 0);
+    PIK_ASSERT(payload % kAlignment == 0);
     const uintptr_t stash = payload - kMaxVectorSize - kPointerSize;
     void* allocated;
     memcpy(&allocated, reinterpret_cast<const void*>(stash), kPointerSize);
@@ -83,6 +83,7 @@ class CacheAligned {
     const auto v1 = load(d, from + 1 * kLanes);
     const auto v2 = load(d, from + 2 * kLanes);
     const auto v3 = load(d, from + 3 * kLanes);
+    static_assert(sizeof(v0) * 4 == kCacheLineSize, "Wrong #vectors");
     // Fences prevent the compiler from reordering loads/stores, which may
     // interfere with write-combining.
     PIK_COMPILER_FENCE;
@@ -97,31 +98,22 @@ class CacheAligned {
   }
 };
 
-template <typename T>
-using CacheAlignedUniquePtrT = std::unique_ptr<T, void (*)(T*)>;
+// Avoids the need for a function pointer (deleter) in CacheAlignedUniquePtr.
+struct CacheAlignedDeleter {
+  void operator()(uint8_t* aligned_pointer) const {
+    return CacheAligned::Free(aligned_pointer);
+  }
+};
 
-using CacheAlignedUniquePtr = CacheAlignedUniquePtrT<uint8_t>;
-
-template <typename T>
-inline void DestroyAndAlignedFree(T* t) {
-  t->~T();
-  CacheAligned::Free(t);
-}
-
-template <typename T, typename... Args>
-inline CacheAlignedUniquePtrT<T> Allocate(Args&&... args) {
-  void* mem = CacheAligned::Allocate(sizeof(T));
-  T* t = new (mem) T(std::forward<Args>(args)...);
-  return CacheAlignedUniquePtrT<T>(t, &DestroyAndAlignedFree<T>);
-}
+using CacheAlignedUniquePtr = std::unique_ptr<uint8_t[], CacheAlignedDeleter>;
 
 // Does not invoke constructors.
-template <typename T = uint8_t>
-inline CacheAlignedUniquePtrT<T> AllocateArray(const size_t entries,
-                                               const size_t offset = 0) {
-  return CacheAlignedUniquePtrT<T>(
-      static_cast<T*>(CacheAligned::Allocate(entries * sizeof(T), offset)),
-      CacheAligned::Free);
+inline CacheAlignedUniquePtr AllocateArray(const size_t entries,
+                                           const size_t offset = 0) {
+  const size_t size = entries * sizeof(uint8_t);
+  return CacheAlignedUniquePtr(
+      static_cast<uint8_t*>(CacheAligned::Allocate(size, offset)),
+      CacheAlignedDeleter());
 }
 
 }  // namespace pik

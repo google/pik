@@ -74,9 +74,9 @@ ImageF ConvolveXSampleAndTranspose(const ImageF& in,
 Image3F ConvolveXSampleAndTranspose(const Image3F& in,
                                     const std::vector<float>& kernel,
                                     const size_t res) {
-  return Image3F(ConvolveXSampleAndTranspose(in.plane(0), kernel, res),
-                 ConvolveXSampleAndTranspose(in.plane(1), kernel, res),
-                 ConvolveXSampleAndTranspose(in.plane(2), kernel, res));
+  return Image3F(ConvolveXSampleAndTranspose(in.Plane(0), kernel, res),
+                 ConvolveXSampleAndTranspose(in.Plane(1), kernel, res),
+                 ConvolveXSampleAndTranspose(in.Plane(2), kernel, res));
 }
 
 ImageF ConvolveAndSample(const ImageF& in,
@@ -96,9 +96,9 @@ ImageF Convolve(const ImageF& in,
 Image3F Convolve(const Image3F& in,
                  const std::vector<float>& kernel_x,
                  const std::vector<float>& kernel_y) {
-  return Image3F(Convolve(in.plane(0), kernel_x, kernel_y),
-                 Convolve(in.plane(1), kernel_x, kernel_y),
-                 Convolve(in.plane(2), kernel_x, kernel_y));
+  return Image3F(Convolve(in.Plane(0), kernel_x, kernel_y),
+                 Convolve(in.Plane(1), kernel_x, kernel_y),
+                 Convolve(in.Plane(2), kernel_x, kernel_y));
 }
 
 ImageF ConvolveAndSample(const ImageF& in,

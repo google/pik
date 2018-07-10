@@ -71,28 +71,26 @@ ImageI MatMulI(const Image<T1>& A, const Image<T2>& B) {
 
 template<typename T>
 inline Image<T> Identity(const size_t N) {
-  Image<T> out(N, N, T());
-  for (int i = 0; i < N; ++i) {
-    out.Row(i)[i] = static_cast<T>(1.0);
+  Image<T> out(N, N);
+  for (size_t i = 0; i < N; ++i) {
+    T* PIK_RESTRICT row = out.Row(i);
+    std::fill(row, row + N, 0);
+    row[i] = static_cast<T>(1.0);
   }
   return out;
 }
 
 inline ImageD Diagonal(const ImageD& d) {
   PIK_ASSERT(d.ysize() == 1);
-  ImageD out(d.xsize(), d.xsize(), 0.0);
+  ImageD out(d.xsize(), d.xsize());
+  const double* PIK_RESTRICT row_diag = d.Row(0);
   for (size_t k = 0; k < d.xsize(); ++k) {
-    out.Row(k)[k] = d.Row(0)[k];
+    double* PIK_RESTRICT row_out = out.Row(k);
+    std::fill(row_out, row_out + d.xsize(), 0.0);
+    row_out[k] = row_diag[k];
   }
   return out;
 }
-
-// Computes c, s such that c^2 + s^2 = 1 and
-//   [c -s] [a0  b] [c  s]
-//   [s  c] [b  a1] [-s c]
-// is diagonal.
-void Diagonalize2x2(const double a0, const double a1, const double b,
-                    double* c, double* s);
 
 // Computes c, s such that c^2 + s^2 = 1 and
 //   [c -s] [x] = [ * ]
@@ -101,10 +99,6 @@ void GivensRotation(const double x, const double y, double* c, double* s);
 
 // U = U * Givens(i, j, c, s)
 void RotateMatrixCols(ImageD* const PIK_RESTRICT U,
-                      int i, int j, double c, double s);
-
-// U = Transpose(Givens(i, j, c, s)) * U
-void RotateMatrixRows(ImageD* const PIK_RESTRICT U,
                       int i, int j, double c, double s);
 
 // A is symmetric, U is orthogonal, T is tri-diagonal and
@@ -122,47 +116,6 @@ void ConvertToDiagonal(const ImageD& A,
 void ComputeQRFactorization(const ImageD& A,
                             ImageD* const PIK_RESTRICT Q,
                             ImageD* const PIK_RESTRICT R);
-
-// Computes the Lenstra-Lenstra-Lovász lattice basis reduction of matrix A.
-//   Lenstra, A. K.; Lenstra, H. W., Jr.; Lovász, L. "Factoring polynomials with
-//   rational coefficients". Mathematische Annalen. 261 (4): 515–534
-//
-// A is square matrix, Q is orthogonal, R is reduced upper triangular,
-// Z * ZI = I and Transpose(Q) * A * Z = R.
-//
-// The running time of the algorithm is O(N^4), where N=A.xsize().
-void ComputeLLLReduction(const ImageD& A,
-                         ImageD* const PIK_RESTRICT Q,
-                         ImageD* const PIK_RESTRICT R,
-                         ImageI* const PIK_RESTRICT Z,
-                         ImageI* const PIK_RESTRICT ZI);
-
-class LatticeOptimizer {
- public:
-  void InitFromLatticeBasis(const ImageD& A);
-
-  void InitFromQuadraticForm(const ImageD& A);
-
-  void Search(const ImageD& y, ImageI* const PIK_RESTRICT z0) const;
-
- private:
-  ImageD R_;
-  ImageD Qt_;
-  ImageI Z_;
-  std::vector<double> Rd_;
-  std::vector<double> iRd_;
-};
-
-// Given a square matrix A and target vector y, finds integer vector z0 that
-// minimizes D(z) = ||y - A*z||^2 over all integer vectors.
-void FindClosestLatticeVector(const ImageD& A, const ImageD& y,
-                              ImageI* const PIK_RESTRICT z0);
-
-// Given a positive definite symmetric matrix A and a target vector y, finds
-// integer vector z0 that minimizes D(z) = Transpose(z-y)*A*(z-y) over all
-// integer vectors.
-void OptimizeIntegerQuadraticForm(const ImageD& A, const ImageD& y,
-                                  Image<int>* const PIK_RESTRICT z0);
 
 // Inverts a 3x3 matrix in place
 template <typename T>

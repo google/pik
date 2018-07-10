@@ -11,14 +11,15 @@
 #include "ans_params.h"
 #include "bit_reader.h"
 #include "brunsli_v2_input.h"
+#include "byte_order.h"
 
 namespace pik {
 
-typedef struct {
+struct ANSSymbolInfo {
   uint16_t offset_;
   uint16_t freq_;
   uint8_t symbol_;
-} ANSSymbolInfo;
+};
 
 struct ANSDecodingData {
   ANSDecodingData() {}
@@ -71,8 +72,8 @@ class ANSSymbolReader {
  public:
   ANSSymbolReader(const ANSCode* code) : code_(code) {}
 
-  int ReadSymbol(const int histo_idx, BitReader* const PIK_RESTRICT br) {
-    if (symbols_left_ == 0) {
+  PIK_INLINE int ReadSymbol(const int histo_idx, BitReader* PIK_RESTRICT br) {
+    if (PIK_UNLIKELY(symbols_left_ == 0)) {
       state_ = br->ReadBits(16);
       state_ = (state_ << 16) | br->ReadBits(16);
       br->FillBitBuffer();
@@ -80,11 +81,23 @@ class ANSSymbolReader {
     }
     const uint32_t res = state_ & (ANS_TAB_SIZE - 1);
     const int histo_offset = histo_idx << ANS_LOG_TAB_SIZE;
+
+#if PIK_BYTE_ORDER_LITTLE
+    uint32_t s32;
+    memcpy(&s32, &code_->map[histo_offset + res], sizeof(s32));
+    const size_t symbol = s32 & 0xFFFF;
+
+    memcpy(&s32, &code_->info[histo_offset + symbol], sizeof(s32));
+    const uint32_t offset = s32 & 0xFFFF;
+    const uint32_t freq = s32 >> 16;
+    state_ = freq * (state_ >> ANS_LOG_TAB_SIZE) + res - offset;
+#else
     const uint16_t symbol = code_->map[histo_offset + res];
     const ANSCode::ANSSymbolInfo s = code_->info[histo_offset + symbol];
     state_ = s.freq * (state_ >> ANS_LOG_TAB_SIZE) + res - s.offset;
+#endif
     --symbols_left_;
-    if (state_ < (1u << 16)) {
+    if (PIK_UNLIKELY(state_ < (1u << 16))) {
       state_ = (state_ << 16) | br->PeekFixedBits<16>();
       br->Advance(16);
     }

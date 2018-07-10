@@ -28,7 +28,7 @@ namespace pik {
 class PaddedBytes {
  public:
   // Required for output params.
-  PaddedBytes() : size_(0), padded_size_(0), data_(nullptr, DummyDeleter) {}
+  PaddedBytes() : size_(0), padded_size_(0), data_() {}
 
   PaddedBytes(size_t size)
       : size_(size),
@@ -48,7 +48,6 @@ class PaddedBytes {
   size_t padded_size() const { return padded_size_; }
 
  private:
-  static void DummyDeleter(uint8_t*) {}
   static size_t PaddedSize(size_t size);
 
   size_t size_;

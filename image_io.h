@@ -27,20 +27,16 @@
 #include "image.h"
 #include "status.h"
 
-#define PIK_PORTABLE_IO 1
-
 namespace pik {
 
 // Formats
 // IsExtension() = true if the filename appears to be an image of this format.
-// kPortableOnly = false if the format supports internal file APIs.
 // NativeImage3 is what to load from file before converting to linear RGB.
 
 // PGM for 1 plane, PPM for 3 planes.
 struct ImageFormatPNM {
   static const char* Name() { return "PNM"; }
   static bool IsExtension(const char* filename);
-  static constexpr bool kPortableOnly = true;
   using NativeImage3 = Image3B;
 };
 
@@ -48,7 +44,6 @@ struct ImageFormatPNM {
 struct ImageFormatPNG {
   static const char* Name() { return "PNG"; }
   static bool IsExtension(const char* filename);
-  static constexpr bool kPortableOnly = false;
   using NativeImage3 = MetaImageU;
 };
 
@@ -58,7 +53,6 @@ struct ImageFormatY4M {
       : bit_depth(bits), chroma_subsample(subsample) {}
   static const char* Name() { return "Y4M"; }
   static bool IsExtension(const char* filename);
-  static constexpr bool kPortableOnly = true;
   using NativeImage3 = Image3B;
   const int bit_depth = 8;
   const bool chroma_subsample = false;
@@ -68,15 +62,7 @@ struct ImageFormatY4M {
 struct ImageFormatJPG {
   static const char* Name() { return "JPG"; }
   static bool IsExtension(const char* filename);
-  static constexpr bool kPortableOnly = true;
   using NativeImage3 = Image3B;
-};
-
-struct ImageFormatPlanes {
-  static const char* Name() { return "Planes"; }
-  static bool IsExtension(const char* filename);
-  static constexpr bool kPortableOnly = true;
-  using NativeImage3 = Image3F;
 };
 
 // Wrappers
@@ -159,18 +145,6 @@ bool ReadImage(ImageFormatJPG, const uint8_t* buf, size_t size, Image3B*);
 // Unsupported (will return false) but required by WriteLinear.
 bool WriteImage(ImageFormatJPG, const ImageB&, const std::string&);
 bool WriteImage(ImageFormatJPG, const Image3B&, const std::string&);
-
-// Planes - text header, raw (linear) 2D array[s] with padding
-
-template <typename T>
-bool ReadImage(ImageFormatPlanes, const std::string&, Image<T>*);
-template <typename T>
-bool ReadImage(ImageFormatPlanes, const std::string&, Image3<T>*);
-
-template <typename T>
-bool WriteImage(ImageFormatPlanes, const Image<T>&, const std::string&);
-template <typename T>
-bool WriteImage(ImageFormatPlanes, const Image3<T>&, const std::string&);
 
 }  // namespace pik
 

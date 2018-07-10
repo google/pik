@@ -15,6 +15,7 @@
 #ifndef DCT_H_
 #define DCT_H_
 
+#include "common.h"
 #include "image.h"
 #include "simd/simd.h"
 #include "tile_flow.h"
@@ -33,11 +34,11 @@ namespace pik {
 // where alpha(u) is 1/sqrt(2) if u = 0 and 1 otherwise, g_{x,y} is the pixel
 // value at coordiantes (x,y) and G(u,v) is the DCT coefficient at spatial
 // frequency (u,v).
-void ComputeBlockDCTFloat(float block[64]);
+void ComputeBlockDCTFloat(float block[kBlockSize]);
 
 // Computes the in-place 8x8 inverse DCT of block.
 // Requires that block is 32-bytes aligned.
-void ComputeBlockIDCTFloat(float block[64]);
+void ComputeBlockIDCTFloat(float block[kBlockSize]);
 
 TFNode* AddTransposedScaledIDCT(const TFPorts in_xyb, bool zero_dc,
                                 TFBuilder* builder);
@@ -46,21 +47,22 @@ TFNode* AddTransposedScaledIDCT(const TFPorts in_xyb, bool zero_dc,
 // algorithm computing the DCT/IDCT.
 // The algorithm is described in the book JPEG: Still Image Data Compression
 // Standard, section 4.3.5.
-static const float kIDCTScales[8] = {
+static const float kIDCTScales[kBlockWidth] = {
     0.3535533906f, 0.4903926402f, 0.4619397663f, 0.4157348062f,
     0.3535533906f, 0.2777851165f, 0.1913417162f, 0.0975451610f};
 
-static const float kRecipIDCTScales[8] = {
+static const float kRecipIDCTScales[kBlockWidth] = {
     1.0f / 0.3535533906f, 1.0f / 0.4903926402f, 1.0f / 0.4619397663f,
     1.0f / 0.4157348062f, 1.0f / 0.3535533906f, 1.0f / 0.2777851165f,
     1.0f / 0.1913417162f, 1.0f / 0.0975451610f};
 
 // See "Steerable Discrete Cosine Transform", Fracastoro G., Fosson S., Magli
 // E., https://arxiv.org/pdf/1610.09152.pdf
-void RotateDCT(float angle, float block[64]);
+void RotateDCT(float angle, float block[kBlockSize]);
 
 using DCTDesc =
-    SIMD_NAMESPACE::Part<float, SIMD_MIN(8, SIMD_NAMESPACE::Full<float>::N)>;
+    SIMD_NAMESPACE::Part<float,
+                         SIMD_MIN(kBlockWidth, SIMD_NAMESPACE::Full<float>::N)>;
 
 #if SIMD_TARGET_VALUE == SIMD_AVX2
 
@@ -103,7 +105,8 @@ PIK_INLINE void TransposeBlock_AVX2(V& i0, V& i1, V& i2, V& i3, V& i4, V& i5,
 PIK_INLINE void TransposeBlock(float* PIK_RESTRICT block) {
 #if SIMD_TARGET_VALUE == SIMD_AVX2
   const DCTDesc d;
-  static_assert(d.N == 8, "Wrong vector size, must match block width");
+  static_assert(d.N == kBlockWidth,
+                "Wrong vector size, must match block width");
   auto i0 = load(d, block + 0 * d.N);
   auto i1 = load(d, block + 1 * d.N);
   auto i2 = load(d, block + 2 * d.N);
@@ -123,12 +126,12 @@ PIK_INLINE void TransposeBlock(float* PIK_RESTRICT block) {
   store(i7, d, block + 7 * d.N);
 #elif SIMD_TARGET_VALUE == SIMD_NONE
   // https://en.wikipedia.org/wiki/In-place_matrix_transposition#Square_matrices
-  for (int n = 0; n < 8 - 1; ++n) {
-    for (int m = n + 1; m < 8; ++m) {
+  for (size_t n = 0; n < kBlockWidth - 1; ++n) {
+    for (size_t m = n + 1; m < kBlockWidth; ++m) {
       // Swap
-      const float tmp = block[m * 8 + n];
-      block[m * 8 + n] = block[n * 8 + m];
-      block[n * 8 + m] = tmp;
+      const float tmp = block[m * kBlockWidth + n];
+      block[m * kBlockWidth + n] = block[n * kBlockWidth + m];
+      block[n * kBlockWidth + m] = tmp;
     }
   }
 #else  // generic 128-bit
@@ -211,7 +214,7 @@ class FromBlock {
   explicit FromBlock(const float* block) : block_(block) {}
 
   PIK_INLINE DCTDesc::V Load(const size_t row, size_t i) const {
-    return load(DCTDesc(), block_ + row * 8 + i);
+    return load(DCTDesc(), block_ + row * kBlockWidth + i);
   }
 
  private:
@@ -223,7 +226,7 @@ class ToBlock {
 
   PIK_INLINE void Store(const DCTDesc::V& v, const size_t row,
                         const size_t i) const {
-    store(v, DCTDesc(), block_ + row * 8 + i);
+    store(v, DCTDesc(), block_ + row * kBlockWidth + i);
   }
 
  private:
@@ -232,11 +235,11 @@ class ToBlock {
 class ScaleToBlock {
  public:
   explicit ScaleToBlock(float* block)
-      : block_(block), mul_(set1(DCTDesc(), 1.0f / 64)) {}
+      : block_(block), mul_(set1(DCTDesc(), 1.0f / kBlockSize)) {}
 
   PIK_INLINE void Store(const DCTDesc::V& v, const size_t row,
                         const size_t i) const {
-    store(v * mul_, DCTDesc(), block_ + row * 8 + i);
+    store(v * mul_, DCTDesc(), block_ + row * kBlockWidth + i);
   }
 
  private:
@@ -375,7 +378,7 @@ PIK_INLINE void ColumnDCT(const From& from, const To& to) {
   const auto c3 = set1(d, 1.30656296487638f);
   const auto c4 = set1(d, 0.541196100146197f);
 
-  for (size_t i = 0; i < 8; i += d.N) {
+  for (size_t i = 0; i < kBlockWidth; i += d.N) {
     const auto i0 = from.Load(0, i);
     const auto i1 = from.Load(1, i);
     const auto i2 = from.Load(2, i);
@@ -429,7 +432,7 @@ PIK_INLINE void ColumnIDCT(const From& from, const To& to, const DC_Op dc_op) {
   const auto c3 = set1(d, 2.61312592975275f);
   const auto c4 = set1(d, 1.08239220029239f);
 
-  for (size_t i = 0; i < 8; i += d.N) {
+  for (size_t i = 0; i < kBlockWidth; i += d.N) {
     // Apply dc_op to the first value (= DC)
     const auto i0 = (i == 0) ? dc_op(from.Load(0, i)) : from.Load(0, i);
     const auto i1 = from.Load(1, i);
@@ -504,7 +507,7 @@ static PIK_INLINE void ComputeTransposedScaledBlockDCTFloat(const From& from,
   to.Store(i6, 6, 0);
   to.Store(i7, 7, 0);
 #else
-  SIMD_ALIGN float block[64];
+  SIMD_ALIGN float block[kBlockSize];
   ColumnDCT(from, ToBlock(block));
   TransposeBlock(block);
   ColumnDCT(FromBlock(block), to);
@@ -562,7 +565,7 @@ static PIK_INLINE void ComputeTransposedScaledBlockIDCTFloat(
   to.Store(i6, 6, 0);
   to.Store(i7, 7, 0);
 #else
-  SIMD_ALIGN float block[64];
+  SIMD_ALIGN float block[kBlockSize];
   ColumnIDCT(from, ToBlock(block), dc_op);
   TransposeBlock(block);
   ColumnIDCT(FromBlock(block), to, DC_Unchanged());
@@ -570,14 +573,15 @@ static PIK_INLINE void ComputeTransposedScaledBlockIDCTFloat(
 }
 
 // Requires that block is 32-bytes aligned.
-static PIK_INLINE void ComputeTransposedScaledBlockDCTFloat(float block[64]) {
+static PIK_INLINE void ComputeTransposedScaledBlockDCTFloat(
+    float block[kBlockSize]) {
   ComputeTransposedScaledBlockDCTFloat(FromBlock(block), ToBlock(block));
 }
 
 // Requires that block is 32-bytes aligned.
 template <class DC_Op>
 static PIK_INLINE void ComputeTransposedScaledBlockIDCTFloat(
-    float block[64], const DC_Op dc_op) {
+    float block[kBlockSize], const DC_Op dc_op) {
   ComputeTransposedScaledBlockIDCTFloat(FromBlock(block), ToBlock(block),
                                         dc_op);
 }
@@ -590,19 +594,20 @@ template <class DC_Op = DC_Unchanged>
 Image3F TransposedScaledIDCT(const Image3F& coeffs, ThreadPool* pool) {
   const size_t xsize = coeffs.xsize();
   const size_t ysize = coeffs.ysize();
-  PIK_ASSERT(xsize % 64 == 0);
-  Image3F img(xsize / 8, ysize * 8);
+  PIK_ASSERT(xsize % kBlockSize == 0);
+  Image3F img(xsize / kBlockWidth, ysize * kBlockWidth);
 
   pool->Run(0, ysize, [xsize, &coeffs, &img](const int task, const int thread) {
     const size_t y = task;
     for (int c = 0; c < 3; ++c) {
       const size_t stride = img.PlaneRow(c, 1) - img.PlaneRow(c, 0);
       const float* PIK_RESTRICT row_in = coeffs.PlaneRow(c, y);
-      float* PIK_RESTRICT row_out = img.PlaneRow(c, y * 8);
+      float* PIK_RESTRICT row_out = img.PlaneRow(c, y * kBlockHeight);
 
-      for (size_t x = 0; x < xsize; x += 64) {
+      for (size_t x = 0; x < xsize; x += kBlockSize) {
         ComputeTransposedScaledBlockIDCTFloat(
-            FromBlock(row_in + x), ToLines(row_out + x / 8, stride), DC_Op());
+            FromBlock(row_in + x), ToLines(row_out + x / kBlockWidth, stride),
+            DC_Op());
       }
     }
   });
@@ -613,10 +618,10 @@ template <class DC_Op = DC_Unchanged>
 Image3F TransposedScaledIDCTAndAdd(const Image3F& coeffs,
                                    const Image3F& add_spatial,
                                    ThreadPool* pool) {
-  PIK_ASSERT(coeffs.xsize() % 64 == 0);
-  const size_t pixel_xsize = coeffs.xsize() / 8;
+  PIK_ASSERT(coeffs.xsize() % kBlockSize == 0);
+  const size_t pixel_xsize = coeffs.xsize() / kBlockWidth;
   const size_t block_ysize = coeffs.ysize();
-  Image3F img(pixel_xsize, block_ysize * 8);
+  Image3F img(pixel_xsize, block_ysize * kBlockHeight);
   PIK_ASSERT(SameSize(img, add_spatial));
 
   pool->Run(0, block_ysize,
@@ -627,22 +632,22 @@ Image3F TransposedScaledIDCTAndAdd(const Image3F& coeffs,
                 const size_t stride = img.PlaneRow(c, 1) - img.PlaneRow(c, 0);
                 const float* PIK_RESTRICT row_in = coeffs.ConstPlaneRow(c, y);
                 const float* PIK_RESTRICT row_add =
-                    add_spatial.ConstPlaneRow(c, y * 8);
-                float* PIK_RESTRICT row_out = img.PlaneRow(c, y * 8);
+                    add_spatial.ConstPlaneRow(c, y * kBlockHeight);
+                float* PIK_RESTRICT row_out = img.PlaneRow(c, y * kBlockHeight);
 
-                for (size_t x = 0; x < pixel_xsize; x += 8) {
+                for (size_t x = 0; x < pixel_xsize; x += kBlockWidth) {
                   ComputeTransposedScaledBlockIDCTFloat(
-                      FromBlock(row_in + x * 8), ToLines(row_out + x, stride),
-                      DC_Op());
+                      FromBlock(row_in + x * kBlockWidth),
+                      ToLines(row_out + x, stride), DC_Op());
 
                   // Add 8x8 block from "add_spatial" to "img".
                   using namespace SIMD_NAMESPACE;
                   const Full<float> d;
-                  for (size_t iy = 0; iy < 8; ++iy) {
+                  for (size_t iy = 0; iy < kBlockHeight; ++iy) {
                     const float* PIK_RESTRICT pos_add =
                         row_add + stride * iy + x;
                     float* PIK_RESTRICT pos_out = row_out + stride * iy + x;
-                    for (size_t ix = 0; ix < 8; ix += d.N) {
+                    for (size_t ix = 0; ix < kBlockWidth; ix += d.N) {
                       const auto pixels = load(d, pos_out + ix);
                       const auto add = load(d, pos_add + ix);
                       store(pixels + add, d, pos_out + ix);
@@ -661,21 +666,22 @@ Image3F TransposedScaledIDCTAndAdd(const Image3F& coeffs,
 // REQUIRES: coeffs.xsize() == 8*N, coeffs.ysize() == 8*M
 static inline Image3F TransposedScaledDCT(const Image3F& img,
                                           ThreadPool* pool) {
-  PIK_ASSERT(img.ysize() % 8 == 0);
-  const size_t xsize = img.xsize() * 8;
-  const size_t ysize = img.ysize() / 8;
+  PIK_ASSERT(img.ysize() % kBlockHeight == 0);
+  const size_t xsize = img.xsize() * kBlockWidth;
+  const size_t ysize = img.ysize() / kBlockWidth;
   Image3F coeffs(xsize, ysize);
 
-  pool->Run(0, ysize, [xsize, &img, &coeffs](const int task, const int thread) {
+  pool->Run(0, ysize, [&img, &coeffs](const int task, const int thread) {
     const size_t y = task;
     for (int c = 0; c < 3; ++c) {
       const size_t stride = img.PlaneRow(c, 1) - img.PlaneRow(c, 0);
-      const float* PIK_RESTRICT row_in = img.PlaneRow(c, y * 8);
+      const float* PIK_RESTRICT row_in = img.PlaneRow(c, y * kBlockHeight);
       float* PIK_RESTRICT row_out = coeffs.PlaneRow(c, y);
 
-      for (size_t x = 0; x < coeffs.xsize(); x += 64) {
-        ComputeTransposedScaledBlockDCTFloat(FromLines(row_in + x / 8, stride),
-                                             ScaleToBlock(row_out + x));
+      for (size_t x = 0; x < coeffs.xsize(); x += kBlockSize) {
+        ComputeTransposedScaledBlockDCTFloat(
+            FromLines(row_in + x / kBlockWidth, stride),
+            ScaleToBlock(row_out + x));
       }
     }
   });
