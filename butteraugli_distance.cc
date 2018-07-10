@@ -50,7 +50,7 @@ float ButteraugliDistance(const Image3F& rgb0, const Image3F& rgb1,
   }
   butteraugli::ImageF distmap;
   butteraugli::ButteraugliDiffmap(rgb0b, rgb1b, hf_asymmetry, distmap);
-  if (distmap_out) {
+  if (distmap_out != nullptr) {
     *distmap_out = ImageF(rgb0.xsize(), rgb0.ysize());
     for (int y = 0; y < rgb0.ysize(); ++y) {
       const float* const PIK_RESTRICT row = distmap.Row(y);

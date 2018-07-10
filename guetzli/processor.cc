@@ -181,12 +181,11 @@ double QuantMatrixHeuristicScore(const int q[3][kDCTBlockSize]) {
 
 class QuantMatrixGenerator {
  public:
-  QuantMatrixGenerator(bool downsample, ProcessStats* stats)
+  QuantMatrixGenerator(bool downsample)
       : downsample_(downsample),
         hscore_a_(-1.0),
         hscore_b_(-1.0),
-        total_csf_(0.0),
-        stats_(stats) {
+        total_csf_(0.0) {
     for (int k = 0; k < kDCTBlockSize; ++k) {
       total_csf_ += 3.0 * ContrastSensitivity(k);
     }
@@ -278,8 +277,6 @@ class QuantMatrixGenerator {
   // quant matrix elements.
   double total_csf_;
   std::vector<QuantData> quants_;
-
-  ProcessStats* stats_;
 };
 
 QuantData Processor::TryQuantMatrix(const JPEGData& jpg_in,
@@ -315,7 +312,7 @@ QuantData Processor::TryQuantMatrix(const JPEGData& jpg_in,
 bool Processor::SelectQuantMatrix(const JPEGData& jpg_in, const bool downsample,
                                   int best_q[3][kDCTBlockSize],
                                   GuetzliOutput* quantized_out) {
-  QuantMatrixGenerator qgen(downsample, stats_);
+  QuantMatrixGenerator qgen(downsample);
   // Don't try to go up to exactly the target distance when selecting a
   // quantization matrix, since we will need some slack to do the frequency
   // masking later.

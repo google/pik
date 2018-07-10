@@ -32,8 +32,6 @@
 namespace pik {
 
 static const int kNumDirectCodes = 8;
-static const int kBrotliQuality = 6;
-static const int kBrotliWindowBits = 18;
 
 size_t Base128Size(size_t val) {
   size_t size = 1;

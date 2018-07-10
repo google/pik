@@ -47,6 +47,7 @@
 #include <algorithm>  // min/max
 #include <atomic>
 #include <cassert>
+#include <cinttypes>  // PRIu64
 #include <cstddef>  // ptrdiff_t
 #include <cstdint>
 #include <cstdio>
@@ -268,15 +269,15 @@ class Results {
       const char* name = string_origin + r.BiasedOffset();
       if (name[0] != '@') {
         total_visible_duration += r.total_duration;
-        printf("%-40s: %10zu x %15zu = %15zu\n", name, num_calls,
-               r.total_duration / num_calls, r.total_duration);
+        printf("%-40s: %10" PRIu64 " x %15" PRIu64 "= %15" PRIu64 "\n", name,
+               num_calls, r.total_duration / num_calls, r.total_duration);
       }
     }
 
     const uint64_t t1 = Stop<uint64_t>();
     analyze_elapsed_ += t1 - t0;
-    printf("Total clocks during analysis: %zu\n", analyze_elapsed_);
-    printf("Total clocks measured: %zu\n", total_visible_duration);
+    printf("Total clocks during analysis: %" PRIu64 "\n", analyze_elapsed_);
+    printf("Total clocks measured: %" PRIu64 "\n", total_visible_duration);
   }
 
   // Single-threaded. Clears all results as if no zones had been recorded.

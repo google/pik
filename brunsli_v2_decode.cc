@@ -29,7 +29,6 @@
 namespace pik {
 
 static const int kNumDirectCodes = 8;
-static const int kCoeffAlphabetSize = kNumDirectCodes + 10;
 
 int DecodeVarint(BrunsliV2Input* input, int max_bits) {
   int n = 0;

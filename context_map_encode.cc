@@ -36,7 +36,7 @@ void StoreVarLenUint8(size_t n, size_t* storage_ix, uint8_t* storage) {
     WriteBits(1, 0, storage_ix, storage);
   } else {
     WriteBits(1, 1, storage_ix, storage);
-    size_t nbits = FloorLog2Nonzero(n);
+    size_t nbits = FloorLog2Nonzero(static_cast<uint64_t>(n));
     WriteBits(3, nbits, storage_ix, storage);
     WriteBits(nbits, n - (1ULL << nbits), storage_ix, storage);
   }

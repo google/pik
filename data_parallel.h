@@ -76,6 +76,13 @@ class ThreadPool {
     DATA_PARALLEL_CHECK(num_threads >= 0);
     DATA_PARALLEL_CHECK(num_threads <= kMaxThreads);
     threads_.reserve(num_threads);
+
+    // Suppress "unused-private-field" warning.
+    (void)padding;
+
+    // Safely handle spurious worker wakeups.
+    worker_start_command_ = kWorkerWait;
+
     for (int i = 0; i < num_threads; ++i) {
       threads_.emplace_back(ThreadFunc, this, i);
     }
@@ -176,9 +183,13 @@ class ThreadPool {
 
   void WorkersReadyBarrier() {
     std::unique_lock<std::mutex> lock(mutex_);
-    workers_ready_cv_.wait(
-        lock, [this]() { return workers_ready_ == threads_.size(); });
+    while (workers_ready_ != threads_.size()) {
+      workers_ready_cv_.wait(lock);
+    }
     workers_ready_ = 0;
+
+    // Safely handle spurious worker wakeups.
+    worker_start_command_ = kWorkerWait;
   }
 
   // Precondition: all workers are ready.
