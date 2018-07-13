@@ -4,23 +4,14 @@ override LDFLAGS += -lpthread
 
 PIK_OBJS := $(addprefix obj/, \
 	simd/dispatch.o \
-	guetzli/butteraugli_comparator.o \
 	guetzli/dct_double.o \
-	guetzli/debug_print.o \
-	guetzli/entropy_encode.o \
-	guetzli/fdct.o \
 	guetzli/idct.o \
 	guetzli/jpeg_data.o \
 	guetzli/jpeg_data_decoder.o \
-	guetzli/jpeg_data_encoder.o \
 	guetzli/jpeg_data_reader.o \
-	guetzli/jpeg_data_writer.o \
 	guetzli/jpeg_huffman_decode.o \
 	guetzli/output_image.o \
-	guetzli/processor.o \
-	guetzli/preprocess_downsample.o \
 	guetzli/quantize.o \
-	guetzli/score.o \
 	third_party/lodepng/lodepng.o \
 	adaptive_quantization.o \
 	af_edge_preserving_filter.o \
@@ -37,6 +28,7 @@ PIK_OBJS := $(addprefix obj/, \
 	butteraugli_comparator.o \
 	butteraugli_distance.o \
 	compressed_image.o \
+	container.o \
 	context.o \
 	context_map_encode.o \
 	context_map_decode.o \
@@ -64,7 +56,6 @@ PIK_OBJS := $(addprefix obj/, \
 	os_specific.o \
 	padded_bytes.o \
 	quantizer.o \
-	sections.o \
 	tile_flow.o \
 	upscaler.o \
 	yuv_convert.o \

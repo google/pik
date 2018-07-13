@@ -26,6 +26,24 @@ add_library(af_edge_preserving_filter_none STATIC af_edge_preserving_filter.cc)
 add_library(pikcommon STATIC
   simd/dispatch.cc
   simd/dispatch.h
+  guetzli/dct_double.cc
+  guetzli/dct_double.h
+  guetzli/idct.cc
+  guetzli/idct.h
+  guetzli/jpeg_data.cc
+  guetzli/jpeg_data.h
+  guetzli/jpeg_data_decoder.cc
+  guetzli/jpeg_data_decoder.h
+  guetzli/jpeg_data_reader.cc
+  guetzli/jpeg_data_reader.h
+  guetzli/jpeg_huffman_decode.cc
+  guetzli/jpeg_huffman_decode.h
+  guetzli/output_image.cc
+  guetzli/output_image.h
+  guetzli/quantize.cc
+  guetzli/quantize.h
+  third_party/lodepng/lodepng.cc
+  third_party/lodepng/lodepng.h
   adaptive_quantization.cc
   adaptive_quantization.h
   af_edge_preserving_filter.cc
@@ -35,6 +53,8 @@ add_library(pikcommon STATIC
   af_stats.h
   alpha_blend.cc
   alpha_blend.h
+  ans_common.cc
+  ans_common.h
   ans_decode.cc
   ans_decode.h
   ans_encode.cc
@@ -46,6 +66,10 @@ add_library(pikcommon STATIC
   args.h
   bit_reader.h
   bits.h
+  brunsli_v2_decode.cc
+  brunsli_v2_decode.h
+  brunsli_v2_encode.cc
+  brunsli_v2_encode.h
   butteraugli/butteraugli.cc
   butteraugli/butteraugli.h
   butteraugli_comparator.cc
@@ -59,6 +83,9 @@ add_library(pikcommon STATIC
   compiler_specific.h
   compressed_image.cc
   compressed_image.h
+  container.cc
+  container.h
+  context.cc
   context.h
   context_map_decode.cc
   context_map_decode.h
@@ -92,6 +119,8 @@ add_library(pikcommon STATIC
   image.h
   image_io.cc
   image_io.h
+  jpeg_quant_tables.cc
+  jpeg_quant_tables.h
   lehmer_code.cc
   lehmer_code.h
   linalg.cc
@@ -125,8 +154,6 @@ add_library(pikcommon STATIC
   rational_polynomial.h
   resample.h
   robust_statistics.h
-  sections.cc
-  sections.h
   simd_helpers.h
   status.h
   tile_flow.cc
@@ -155,7 +182,7 @@ target_link_libraries(pikcommon PRIVATE
   Threads::Threads
 )
 
-set(BINARIES cpik dpik butteraugli_main png2y4m y4m2png)
+set(BINARIES cpik dpik butteraugli_main)
 foreach (BINARY IN LISTS BINARIES)
   add_executable("${BINARY}" "${BINARY}.cc")
   target_link_libraries("${BINARY}" pikcommon)

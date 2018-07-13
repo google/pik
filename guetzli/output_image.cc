@@ -26,7 +26,6 @@
 #include "guetzli/color_transform.h"
 #include "guetzli/dct_double.h"
 #include "guetzli/idct.h"
-#include "guetzli/preprocess_downsample.h"
 #include "guetzli/quantize.h"
 
 namespace pik {
@@ -231,19 +230,6 @@ void OutputImageComponent::CopyFromJpegComponent(const JPEGComponent& comp,
   memcpy(quant_, quant, sizeof(quant_));
 }
 
-void OutputImageComponent::ApplyGlobalQuantization(const int q[kDCTBlockSize]) {
-  for (int block_y = 0; block_y < height_in_blocks_; ++block_y) {
-    for (int block_x = 0; block_x < width_in_blocks_; ++block_x) {
-      coeff_t block[kDCTBlockSize];
-      GetCoeffBlock(block_x, block_y, block);
-      if (QuantizeBlock(block, q)) {
-        SetCoeffBlock(block_x, block_y, block);
-      }
-    }
-  }
-  memcpy(quant_, q, sizeof(quant_));
-}
-
 OutputImage::OutputImage(int w, int h)
     : width_(w), height_(h), components_(3, OutputImageComponent(w, h)) {}
 
@@ -260,181 +246,15 @@ void OutputImage::CopyFromJpegData(const JPEGData& jpg) {
   }
 }
 
-namespace {
-
-void SetDownsampledCoefficients(const std::vector<float>& pixels, int factor_x,
-                                int factor_y, OutputImageComponent* comp) {
-  assert(pixels.size() == comp->width() * comp->height());
-  comp->Reset(factor_x, factor_y);
-  for (int block_y = 0; block_y < comp->height_in_blocks(); ++block_y) {
-    for (int block_x = 0; block_x < comp->width_in_blocks(); ++block_x) {
-      double blockd[kDCTBlockSize];
-      int x0 = 8 * block_x * factor_x;
-      int y0 = 8 * block_y * factor_y;
-      assert(x0 < comp->width());
-      assert(y0 < comp->height());
-      for (int iy = 0; iy < 8; ++iy) {
-        for (int ix = 0; ix < 8; ++ix) {
-          float avg = 0.0;
-          for (int j = 0; j < factor_y; ++j) {
-            for (int i = 0; i < factor_x; ++i) {
-              int x = std::min(x0 + ix * factor_x + i, comp->width() - 1);
-              int y = std::min(y0 + iy * factor_y + j, comp->height() - 1);
-              avg += pixels[y * comp->width() + x];
-            }
-          }
-          avg /= factor_x * factor_y;
-          blockd[iy * 8 + ix] = avg;
-        }
-      }
-      ComputeBlockDCTDouble(blockd);
-      blockd[0] -= 1024.0;
-      coeff_t block[kDCTBlockSize];
-      for (int k = 0; k < kDCTBlockSize; ++k) {
-        block[k] = static_cast<coeff_t>(std::round(blockd[k]));
-      }
-      comp->SetCoeffBlock(block_x, block_y, block);
-    }
-  }
-}
-
-}  // namespace
-
-void OutputImage::Downsample(const DownsampleConfig& cfg) {
-  if (components_[1].IsAllZero() && components_[2].IsAllZero()) {
-    // If the image is already grayscale, nothing to do.
-    return;
-  }
-  if (cfg.use_silver_screen && cfg.u_factor_x == 2 && cfg.u_factor_y == 2 &&
-      cfg.v_factor_x == 2 && cfg.v_factor_y == 2) {
-    std::vector<uint8_t> rgb = ToSRGB();
-    std::vector<std::vector<float> > yuv = RGBToYUV420(rgb, width_, height_);
-    SetDownsampledCoefficients(yuv[0], 1, 1, &components_[0]);
-    SetDownsampledCoefficients(yuv[1], 2, 2, &components_[1]);
-    SetDownsampledCoefficients(yuv[2], 2, 2, &components_[2]);
-    return;
-  }
-  // Get the floating-point precision YUV array represented by the set of
-  // DCT coefficients.
-  std::vector<std::vector<float> > yuv(3, std::vector<float>(width_ * height_));
+std::vector<uint8_t> OutputImage::ToSRGB() const {
+  std::vector<uint8_t> rgb(width_ * height_ * 3);
   for (int c = 0; c < 3; ++c) {
-    components_[c].ToFloatPixels(&yuv[c][0], 1);
-  }
-
-  yuv = PreProcessChannel(width_, height_, 2, 1.3, 0.5, cfg.u_sharpen,
-                          cfg.u_blur, yuv);
-  yuv = PreProcessChannel(width_, height_, 1, 1.3, 0.5, cfg.v_sharpen,
-                          cfg.v_blur, yuv);
-
-  // Do the actual downsampling (averaging) and forward-DCT.
-  if (cfg.u_factor_x != 1 || cfg.u_factor_y != 1) {
-    SetDownsampledCoefficients(yuv[1], cfg.u_factor_x, cfg.u_factor_y,
-                               &components_[1]);
-  }
-  if (cfg.v_factor_x != 1 || cfg.v_factor_y != 1) {
-    SetDownsampledCoefficients(yuv[2], cfg.v_factor_x, cfg.v_factor_y,
-                               &components_[2]);
-  }
-}
-
-void OutputImage::ApplyGlobalQuantization(const int q[3][kDCTBlockSize]) {
-  for (int c = 0; c < 3; ++c) {
-    components_[c].ApplyGlobalQuantization(&q[c][0]);
-  }
-}
-
-void OutputImage::SaveToJpegData(JPEGData* jpg) const {
-  assert(components_[0].factor_x() == 1);
-  assert(components_[0].factor_y() == 1);
-  jpg->width = width_;
-  jpg->height = height_;
-  jpg->max_h_samp_factor = 1;
-  jpg->max_v_samp_factor = 1;
-  jpg->MCU_cols = components_[0].width_in_blocks();
-  jpg->MCU_rows = components_[0].height_in_blocks();
-  int ncomp = components_[1].IsAllZero() && components_[2].IsAllZero() ? 1 : 3;
-  for (int i = 1; i < ncomp; ++i) {
-    jpg->max_h_samp_factor =
-        std::max(jpg->max_h_samp_factor, components_[i].factor_x());
-    jpg->max_v_samp_factor =
-        std::max(jpg->max_h_samp_factor, components_[i].factor_y());
-    jpg->MCU_cols = std::min(jpg->MCU_cols, components_[i].width_in_blocks());
-    jpg->MCU_rows = std::min(jpg->MCU_rows, components_[i].height_in_blocks());
-  }
-  jpg->components.resize(ncomp);
-  int q[3][kDCTBlockSize];
-  for (int c = 0; c < 3; ++c) {
-    memcpy(&q[c][0], components_[c].quant(), kDCTBlockSize * sizeof(q[0][0]));
-  }
-  for (int c = 0; c < ncomp; ++c) {
-    JPEGComponent* comp = &jpg->components[c];
-    assert(jpg->max_h_samp_factor % components_[c].factor_x() == 0);
-    assert(jpg->max_v_samp_factor % components_[c].factor_y() == 0);
-    comp->id = c;
-    comp->h_samp_factor = jpg->max_h_samp_factor / components_[c].factor_x();
-    comp->v_samp_factor = jpg->max_v_samp_factor / components_[c].factor_y();
-    comp->width_in_blocks = jpg->MCU_cols * comp->h_samp_factor;
-    comp->height_in_blocks = jpg->MCU_rows * comp->v_samp_factor;
-    comp->num_blocks = comp->width_in_blocks * comp->height_in_blocks;
-    comp->coeffs.resize(kDCTBlockSize * comp->num_blocks);
-
-    int last_dc = 0;
-    const coeff_t* src_coeffs = components_[c].coeffs();
-    coeff_t* dest_coeffs = &comp->coeffs[0];
-    for (int block_y = 0; block_y < comp->height_in_blocks; ++block_y) {
-      for (int block_x = 0; block_x < comp->width_in_blocks; ++block_x) {
-        if (block_y >= components_[c].height_in_blocks() ||
-            block_x >= components_[c].width_in_blocks()) {
-          dest_coeffs[0] = last_dc;
-          for (int k = 1; k < kDCTBlockSize; ++k) {
-            dest_coeffs[k] = 0;
-          }
-        } else {
-          for (int k = 0; k < kDCTBlockSize; ++k) {
-            const int quant = q[c][k];
-            int coeff = src_coeffs[k];
-            assert(coeff % quant == 0);
-            dest_coeffs[k] = coeff / quant;
-          }
-          src_coeffs += kDCTBlockSize;
-        }
-        last_dc = dest_coeffs[0];
-        dest_coeffs += kDCTBlockSize;
-      }
-    }
-  }
-  SaveQuantTables(q, jpg);
-}
-
-std::vector<uint8_t> OutputImage::ToSRGB(int xmin, int ymin, int xsize,
-                                         int ysize) const {
-  std::vector<uint8_t> rgb(xsize * ysize * 3);
-  for (int c = 0; c < 3; ++c) {
-    components_[c].ToPixels(xmin, ymin, xsize, ysize, &rgb[c], 3);
+    components_[c].ToPixels(0, 0, width_, height_, &rgb[c], 3);
   }
   for (int p = 0; p < rgb.size(); p += 3) {
     ColorTransformYCbCrToRGB(&rgb[p]);
   }
   return rgb;
-}
-
-std::vector<uint8_t> OutputImage::ToSRGB() const {
-  return ToSRGB(0, 0, width_, height_);
-}
-
-void OutputImage::ToLinearRGB(int xmin, int ymin, int xsize, int ysize,
-                              std::vector<std::vector<float> >* rgb) const {
-  const float* lut = Srgb8ToLinearTable();
-  std::vector<uint8_t> rgb_pixels = ToSRGB(xmin, ymin, xsize, ysize);
-  for (int p = 0; p < xsize * ysize; ++p) {
-    for (int i = 0; i < 3; ++i) {
-      (*rgb)[i][p] = lut[rgb_pixels[3 * p + i]];
-    }
-  }
-}
-
-void OutputImage::ToLinearRGB(std::vector<std::vector<float> >* rgb) const {
-  ToLinearRGB(0, 0, width_, height_, rgb);
 }
 
 std::string OutputImage::FrameTypeStr() const {
