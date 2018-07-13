@@ -30,18 +30,15 @@ namespace SIMD_NAMESPACE {
 namespace {
 
 // REQUIRES: xsize <= srgb.xsize(), ysize <= srgb.ysize()
-std::vector<butteraugli::ImageF> SrgbToLinearRgb(
-    const int xsize, const int ysize,
-    const Image3B& srgb) {
+Image3F SrgbToLinearRgb(const int xsize, const int ysize, const Image3B& srgb) {
   PIK_ASSERT(xsize <= srgb.xsize());
   PIK_ASSERT(ysize <= srgb.ysize());
   const float* lut = Srgb8ToLinearTable();
-  std::vector<butteraugli::ImageF> planes =
-      butteraugli::CreatePlanes<float>(xsize, ysize, 3);
+  Image3F planes(xsize, ysize);
   for (int c = 0; c < 3; ++c) {
     for (size_t y = 0; y < ysize; ++y) {
       const uint8_t* PIK_RESTRICT row_in = srgb.PlaneRow(c, y);
-      float* PIK_RESTRICT row_out = planes[c].Row(y);
+      float* PIK_RESTRICT row_out = planes.PlaneRow(c, y);
       for (size_t x = 0; x < xsize; ++x) {
         row_out[x] = lut[row_in[x]];
       }
@@ -51,9 +48,8 @@ std::vector<butteraugli::ImageF> SrgbToLinearRgb(
 }
 
 // REQUIRES: xsize <= srgb.xsize(), ysize <= srgb.ysize()
-std::vector<butteraugli::ImageF> OpsinToLinearRgb(
-    const int xsize, const int ysize,
-    const Image3F& opsin) {
+Image3F OpsinToLinearRgb(const int xsize, const int ysize,
+                         const Image3F& opsin) {
   const Full<float> d;
   using V = Full<float>::V;
   V inverse_matrix[9];
@@ -63,15 +59,14 @@ std::vector<butteraugli::ImageF> OpsinToLinearRgb(
 
   PIK_ASSERT(xsize <= opsin.xsize());
   PIK_ASSERT(ysize <= opsin.ysize());
-  std::vector<butteraugli::ImageF> planes =
-      butteraugli::CreatePlanes<float>(xsize, ysize, 3);
+  Image3F planes(xsize, ysize);
   for (size_t y = 0; y < ysize; ++y) {
     const float* PIK_RESTRICT row_xyb0 = opsin.PlaneRow(0, y);
     const float* PIK_RESTRICT row_xyb1 = opsin.PlaneRow(1, y);
     const float* PIK_RESTRICT row_xyb2 = opsin.PlaneRow(2, y);
-    float* PIK_RESTRICT row_rgb0 = planes[0].Row(y);
-    float* PIK_RESTRICT row_rgb1 = planes[1].Row(y);
-    float* PIK_RESTRICT row_rgb2 = planes[2].Row(y);
+    float* PIK_RESTRICT row_rgb0 = planes.PlaneRow(0, y);
+    float* PIK_RESTRICT row_rgb1 = planes.PlaneRow(1, y);
+    float* PIK_RESTRICT row_rgb2 = planes.PlaneRow(2, y);
     for (size_t x = 0; x < xsize; x += d.N) {
       const auto vx = load(d, row_xyb0 + x);
       const auto vy = load(d, row_xyb1 + x);
@@ -86,21 +81,6 @@ std::vector<butteraugli::ImageF> OpsinToLinearRgb(
   return planes;
 }
 
-Image3F Image3FromButteraugliPlanes(
-    const std::vector<butteraugli::ImageF>& planes) {
-  Image3F img(planes[0].xsize(), planes[0].ysize());
-  for (int c = 0; c < 3; ++c) {
-    for (size_t y = 0; y < img.ysize(); ++y) {
-      const float* PIK_RESTRICT row_in = planes[c].Row(y);
-      float* PIK_RESTRICT row_out = img.PlaneRow(c, y);
-      for (size_t x = 0; x < img.xsize(); ++x) {
-        row_out[x] = row_in[x];
-      }
-    }
-  }
-  return img;
-}
-
 }  // namespace
 }  // namespace
 
@@ -111,7 +91,9 @@ ButteraugliComparator::ButteraugliComparator(const Image3B& srgb,
       comparator_(SIMD_NAMESPACE::SrgbToLinearRgb(xsize_, ysize_, srgb),
                   hf_asymmetry),
       distance_(0.0),
-      distmap_(xsize_, ysize_, 0) {}
+      distmap_(xsize_, ysize_) {
+  FillImage(0.0f, &distmap_);
+}
 
 ButteraugliComparator::ButteraugliComparator(const Image3F& opsin,
                                              float hf_asymmetry)
@@ -120,7 +102,9 @@ ButteraugliComparator::ButteraugliComparator(const Image3F& opsin,
       comparator_(SIMD_NAMESPACE::OpsinToLinearRgb(xsize_, ysize_, opsin),
                   hf_asymmetry),
       distance_(0.0),
-      distmap_(xsize_, ysize_, 0) {}
+      distmap_(xsize_, ysize_) {
+  FillImage(0.0f, &distmap_);
+}
 
 void ButteraugliComparator::Compare(const Image3B& srgb) {
   comparator_.Diffmap(SIMD_NAMESPACE::SrgbToLinearRgb(xsize_, ysize_, srgb),
@@ -129,10 +113,7 @@ void ButteraugliComparator::Compare(const Image3B& srgb) {
 }
 
 void ButteraugliComparator::Mask(Image3F* mask, Image3F* mask_dc) {
-  std::vector<butteraugli::ImageF> ba_mask, ba_mask_dc;
-  comparator_.Mask(&ba_mask, &ba_mask_dc);
-  *mask = SIMD_NAMESPACE::Image3FromButteraugliPlanes(ba_mask);
-  *mask_dc = SIMD_NAMESPACE::Image3FromButteraugliPlanes(ba_mask_dc);
+  comparator_.Mask(mask, mask_dc);
 }
 
 }  // namespace pik

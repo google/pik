@@ -15,8 +15,6 @@
 #ifndef BUTTERAUGLI_COMPARATOR_H_
 #define BUTTERAUGLI_COMPARATOR_H_
 
-#include <vector>
-
 #include "butteraugli/butteraugli.h"
 #include "image.h"
 
@@ -29,7 +27,7 @@ class ButteraugliComparator {
 
   void Compare(const Image3B& srgb);
 
-  const butteraugli::ImageF& distmap() const { return distmap_; }
+  const ImageF& distmap() const { return distmap_; }
   float distance() const { return distance_; }
 
   void Mask(Image3F* mask, Image3F* mask_dc);
@@ -39,7 +37,7 @@ class ButteraugliComparator {
   const int ysize_;
   butteraugli::ButteraugliComparator comparator_;
   float distance_;
-  butteraugli::ImageF distmap_;
+  ImageF distmap_;
 };
 
 }  // namespace pik

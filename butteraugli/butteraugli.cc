@@ -42,11 +42,6 @@
 
 #include <atomic>
 
-// Restricted pointers speed up Convolution(); MSVC uses a different keyword.
-#ifdef _MSC_VER
-#define __restrict__ __restrict
-#endif
-
 #ifndef PROFILER_ENABLED
 #define PROFILER_ENABLED 0
 #endif
@@ -60,36 +55,6 @@
 
 namespace pik {
 namespace butteraugli {
-
-void* CacheAligned::Allocate(const size_t bytes) {
-  PROFILER_FUNC;
-  char* const allocated = static_cast<char*>(malloc(bytes + kCacheLineSize));
-  if (allocated == nullptr) {
-    return nullptr;
-  }
-  const uintptr_t misalignment =
-      reinterpret_cast<uintptr_t>(allocated) & (kCacheLineSize - 1);
-  // malloc is at least kPointerSize aligned, so we can store the "allocated"
-  // pointer immediately before the aligned memory.
-  assert(misalignment % kPointerSize == 0);
-  char* const aligned = allocated + kCacheLineSize - misalignment;
-  memcpy(aligned - kPointerSize, &allocated, kPointerSize);
-  return BUTTERAUGLI_ASSUME_ALIGNED(aligned, 64);
-}
-
-void CacheAligned::Free(void* aligned_pointer) {
-  PROFILER_FUNC;
-  if (aligned_pointer == nullptr) {
-    return;
-  }
-  char* const aligned = static_cast<char*>(aligned_pointer);
-  assert(reinterpret_cast<uintptr_t>(aligned) % kCacheLineSize == 0);
-  char* allocated;
-  memcpy(&allocated, aligned - kPointerSize, kPointerSize);
-  assert(allocated <= aligned - kPointerSize);
-  assert(allocated >= aligned - kCacheLineSize);
-  free(allocated);
-}
 
 static inline bool IsNan(const float x) {
   uint32_t bits;
@@ -108,11 +73,11 @@ static inline bool IsNan(const double x) {
 static inline void CheckImage(const ImageF& image, const char* name) {
   PROFILER_FUNC;
   for (size_t y = 0; y < image.ysize(); ++y) {
-    const float* const BUTTERAUGLI_RESTRICT row = image.Row(y);
+    const float* PIK_RESTRICT row = image.Row(y);
     for (size_t x = 0; x < image.xsize(); ++x) {
       if (IsNan(row[x])) {
-        printf("Image %s @ %zu,%zu (of %zu,%zu)\n", name, x, y, image.xsize(),
-               image.ysize());
+        printf("NAN: Image %s @ %zu,%zu (of %zu,%zu)\n", name, x, y,
+               image.xsize(), image.ysize());
         exit(1);
       }
     }
@@ -163,7 +128,7 @@ std::vector<float> ComputeKernel(float sigma) {
 void ConvolveBorderColumn(const ImageF& in, const std::vector<float>& kernel,
                           const float weight_no_border,
                           const float border_ratio, const size_t x,
-                          float* const BUTTERAUGLI_RESTRICT row_out) {
+                          float* PIK_RESTRICT row_out) {
   const int offset = kernel.size() / 2;
   int minx = x < offset ? 0 : x - offset;
   int maxx = std::min<int>(in.xsize() - 1, x + offset);
@@ -175,7 +140,7 @@ void ConvolveBorderColumn(const ImageF& in, const std::vector<float>& kernel,
   weight = (1.0f - border_ratio) * weight + border_ratio * weight_no_border;
   float scale = 1.0f / weight;
   for (size_t y = 0; y < in.ysize(); ++y) {
-    const float* const BUTTERAUGLI_RESTRICT row_in = in.Row(y);
+    const float* PIK_RESTRICT row_in = in.Row(y);
     float sum = 0.0f;
     for (int j = minx; j <= maxx; ++j) {
       sum += row_in[j] * kernel[j - x + offset];
@@ -209,10 +174,10 @@ ImageF Convolution(const ImageF& in, const std::vector<float>& kernel,
   }
   // middle
   for (size_t y = 0; y < in.ysize(); ++y) {
-    const float* const BUTTERAUGLI_RESTRICT row_in = in.Row(y);
+    const float* PIK_RESTRICT row_in = in.Row(y);
     for (int x = border1; x < border2; ++x) {
       const int d = x - offset;
-      float* const BUTTERAUGLI_RESTRICT row_out = out.Row(x);
+      float* PIK_RESTRICT row_out = out.Row(x);
       float sum = 0.0f;
       for (int j = 0; j < len; ++j) {
         sum += row_in[d + j] * scaled_kernel[j];
@@ -325,26 +290,24 @@ static inline double Gamma(double v) {
   return GammaPolynomial(v);
 }
 
-std::vector<ImageF> OpsinDynamicsImage(const std::vector<ImageF>& rgb) {
+Image3F OpsinDynamicsImage(const Image3F& rgb) {
   PROFILER_FUNC;
-  std::vector<ImageF> xyb(3);
-  std::vector<ImageF> blurred(3);
+  Image3F xyb(rgb.xsize(), rgb.ysize());
   const double kSigma = 1.2;
-  for (int i = 0; i < 3; ++i) {
-    xyb[i] = ImageF(rgb[i].xsize(), rgb[i].ysize());
-    blurred[i] = Blur(rgb[i], kSigma, 0.0);
-  }
-  for (size_t y = 0; y < rgb[0].ysize(); ++y) {
-    const float* const BUTTERAUGLI_RESTRICT row_r = rgb[0].Row(y);
-    const float* const BUTTERAUGLI_RESTRICT row_g = rgb[1].Row(y);
-    const float* const BUTTERAUGLI_RESTRICT row_b = rgb[2].Row(y);
-    const float* const BUTTERAUGLI_RESTRICT row_blurred_r = blurred[0].Row(y);
-    const float* const BUTTERAUGLI_RESTRICT row_blurred_g = blurred[1].Row(y);
-    const float* const BUTTERAUGLI_RESTRICT row_blurred_b = blurred[2].Row(y);
-    float* const BUTTERAUGLI_RESTRICT row_out_x = xyb[0].Row(y);
-    float* const BUTTERAUGLI_RESTRICT row_out_y = xyb[1].Row(y);
-    float* const BUTTERAUGLI_RESTRICT row_out_b = xyb[2].Row(y);
-    for (size_t x = 0; x < rgb[0].xsize(); ++x) {
+  Image3F blurred(Blur(rgb.Plane(0), kSigma, 0.0),
+                  Blur(rgb.Plane(1), kSigma, 0.0),
+                  Blur(rgb.Plane(2), kSigma, 0.0));
+  for (size_t y = 0; y < rgb.ysize(); ++y) {
+    const float* PIK_RESTRICT row_r = rgb.ConstPlaneRow(0, y);
+    const float* PIK_RESTRICT row_g = rgb.ConstPlaneRow(1, y);
+    const float* PIK_RESTRICT row_b = rgb.ConstPlaneRow(2, y);
+    const float* PIK_RESTRICT row_blurred_r = blurred.ConstPlaneRow(0, y);
+    const float* PIK_RESTRICT row_blurred_g = blurred.ConstPlaneRow(1, y);
+    const float* PIK_RESTRICT row_blurred_b = blurred.ConstPlaneRow(2, y);
+    float* PIK_RESTRICT row_out_x = xyb.PlaneRow(0, y);
+    float* PIK_RESTRICT row_out_y = xyb.PlaneRow(1, y);
+    float* PIK_RESTRICT row_out_b = xyb.PlaneRow(2, y);
+    for (size_t x = 0; x < rgb.xsize(); ++x) {
       float sensitivity[3];
       {
         // Calculate sensitivity based on the smoothed image gamma derivative.
@@ -384,9 +347,9 @@ static BUTTERAUGLI_INLINE float AmplifyRangeAroundZero(float w, float x) {
 // through visual masking.
 template <class V>
 BUTTERAUGLI_INLINE void XybLowFreqToVals(const V& x, const V& y, const V& b_arg,
-                                         V* BUTTERAUGLI_RESTRICT valx,
-                                         V* BUTTERAUGLI_RESTRICT valy,
-                                         V* BUTTERAUGLI_RESTRICT valb) {
+                                         V* PIK_RESTRICT valx,
+                                         V* PIK_RESTRICT valy,
+                                         V* PIK_RESTRICT valb) {
   static const double xmuli = 5.57547552483;
   static const double ymuli = 1.20828034498;
   static const double bmuli = 6.08319517575;
@@ -488,14 +451,9 @@ static ImageF SuppressXByY(size_t xsize, size_t ysize, const ImageF& ix,
   return inew;
 }
 
-static void SeparateFrequencies(size_t xsize, size_t ysize,
-                                const std::vector<ImageF>& xyb,
+static void SeparateFrequencies(size_t xsize, size_t ysize, const Image3F& xyb,
                                 PsychoImage& ps) {
   PROFILER_FUNC;
-  ps.lf.resize(3);   // XYB
-  ps.mf.resize(3);   // XYB
-  ps.hf.resize(2);   // XY
-  ps.uhf.resize(2);  // XY
   // Extract lf ...
   static const double kSigmaLf = 7.46953768697;
   static const double kSigmaHf = 3.734768843485;
@@ -507,35 +465,41 @@ static void SeparateFrequencies(size_t xsize, size_t ysize,
   static double border_lf = -0.00457628248637;
   static double border_mf = -0.271277366628;
   static double border_hf = 0.147068973249;
+  ps.mf = Image3F(xsize, ysize);
+  ps.hf[0] = ImageF(xsize, ysize);
+  ps.hf[1] = ImageF(xsize, ysize);
   for (int i = 0; i < 3; ++i) {
-    ps.lf[i] = Blur(xyb[i], kSigmaLf, border_lf);
+    *ps.lf.MutablePlane(i) = Blur(xyb.Plane(i), kSigmaLf, border_lf);
+    // (Cannot CheckSizesSame - not all planes are initialized.)
+
     // ... and keep everything else in mf.
-    ps.mf[i] = ImageF(xsize, ysize);
     for (size_t y = 0; y < ysize; ++y) {
       for (size_t x = 0; x < xsize; ++x) {
-        ps.mf[i].Row(y)[x] = xyb[i].Row(y)[x] - ps.lf[i].Row(y)[x];
+        ps.mf.PlaneRow(i, y)[x] =
+            xyb.PlaneRow(i, y)[x] - ps.lf.ConstPlaneRow(i, y)[x];
       }
     }
     if (i == 2) {
-      ps.mf[i] = Blur(ps.mf[i], kSigmaHf, border_mf);
+      *ps.mf.MutablePlane(i) = Blur(ps.mf.Plane(i), kSigmaHf, border_mf);
+      ps.mf.CheckSizesSame();
       break;
     }
     // Divide mf into mf and hf.
-    ps.hf[i] = ImageF(xsize, ysize);
     for (size_t y = 0; y < ysize; ++y) {
-      float* BUTTERAUGLI_RESTRICT const row_mf = ps.mf[i].Row(y);
-      float* BUTTERAUGLI_RESTRICT const row_hf = ps.hf[i].Row(y);
+      float* PIK_RESTRICT row_mf = ps.mf.PlaneRow(i, y);
+      float* PIK_RESTRICT row_hf = ps.hf[i].Row(y);
       for (size_t x = 0; x < xsize; ++x) {
         row_hf[x] = row_mf[x];
       }
     }
-    ps.mf[i] = Blur(ps.mf[i], kSigmaHf, border_mf);
+    *ps.mf.MutablePlane(i) = Blur(ps.mf.Plane(i), kSigmaHf, border_mf);
+    ps.mf.CheckSizesSame();
     static const double w0 = 0.120079806822;
     static const double w1 = 0.03430529365;
     if (i == 0) {
       for (size_t y = 0; y < ysize; ++y) {
-        float* BUTTERAUGLI_RESTRICT const row_mf = ps.mf[0].Row(y);
-        float* BUTTERAUGLI_RESTRICT const row_hf = ps.hf[0].Row(y);
+        float* PIK_RESTRICT row_mf = ps.mf.PlaneRow(0, y);
+        float* PIK_RESTRICT row_hf = ps.hf[0].Row(y);
         for (size_t x = 0; x < xsize; ++x) {
           row_hf[x] -= row_mf[x];
           row_mf[x] = RemoveRangeAroundZero(w0, row_mf[x]);
@@ -543,8 +507,8 @@ static void SeparateFrequencies(size_t xsize, size_t ysize,
       }
     } else {
       for (size_t y = 0; y < ysize; ++y) {
-        float* BUTTERAUGLI_RESTRICT const row_mf = ps.mf[1].Row(y);
-        float* BUTTERAUGLI_RESTRICT const row_hf = ps.hf[1].Row(y);
+        float* PIK_RESTRICT row_mf = ps.mf.PlaneRow(1, y);
+        float* PIK_RESTRICT row_hf = ps.hf[1].Row(y);
         for (size_t x = 0; x < xsize; ++x) {
           row_hf[x] -= row_mf[x];
           row_mf[x] = AmplifyRangeAroundZero(w1, row_mf[x]);
@@ -556,12 +520,13 @@ static void SeparateFrequencies(size_t xsize, size_t ysize,
   static const double suppress = 2.96534974403;
   ps.hf[0] = SuppressXByY(xsize, ysize, ps.hf[0], ps.hf[1], suppress);
 
+  ps.uhf[0] = ImageF(xsize, ysize);
+  ps.uhf[1] = ImageF(xsize, ysize);
   for (int i = 0; i < 2; ++i) {
     // Divide hf into hf and uhf.
-    ps.uhf[i] = ImageF(xsize, ysize);
     for (size_t y = 0; y < ysize; ++y) {
-      float* BUTTERAUGLI_RESTRICT const row_uhf = ps.uhf[i].Row(y);
-      float* BUTTERAUGLI_RESTRICT const row_hf = ps.hf[i].Row(y);
+      float* PIK_RESTRICT row_uhf = ps.uhf[i].Row(y);
+      float* PIK_RESTRICT row_hf = ps.hf[i].Row(y);
       for (size_t x = 0; x < xsize; ++x) {
         row_uhf[x] = row_hf[x];
       }
@@ -579,8 +544,8 @@ static void SeparateFrequencies(size_t xsize, size_t ysize,
 
     if (i == 0) {
       for (size_t y = 0; y < ysize; ++y) {
-        float* BUTTERAUGLI_RESTRICT const row_uhf = ps.uhf[0].Row(y);
-        float* BUTTERAUGLI_RESTRICT const row_hf = ps.hf[0].Row(y);
+        float* PIK_RESTRICT row_uhf = ps.uhf[0].Row(y);
+        float* PIK_RESTRICT row_hf = ps.hf[0].Row(y);
         for (size_t x = 0; x < xsize; ++x) {
           row_uhf[x] -= row_hf[x];
           row_hf[x] = RemoveRangeAroundZero(kRemoveHfRange, row_hf[x]);
@@ -588,9 +553,9 @@ static void SeparateFrequencies(size_t xsize, size_t ysize,
       }
     } else {
       for (size_t y = 0; y < ysize; ++y) {
-        float* BUTTERAUGLI_RESTRICT const row_uhf = ps.uhf[1].Row(y);
-        float* BUTTERAUGLI_RESTRICT const row_hf = ps.hf[1].Row(y);
-        float* BUTTERAUGLI_RESTRICT const row_lf = ps.lf[1].Row(y);
+        float* PIK_RESTRICT row_uhf = ps.uhf[1].Row(y);
+        float* PIK_RESTRICT row_hf = ps.hf[1].Row(y);
+        const float* PIK_RESTRICT row_lf = ps.lf.ConstPlaneRow(1, y);
         for (size_t x = 0; x < xsize; ++x) {
           row_uhf[x] -= row_hf[x];
           row_hf[x] = MaximumClamp(row_hf[x], kMaxclampHf);
@@ -608,9 +573,9 @@ static void SeparateFrequencies(size_t xsize, size_t ysize,
   // Convert low freq xyb to vals space so that we can do a simple squared sum
   // diff on the low frequencies later.
   for (size_t y = 0; y < ysize; ++y) {
-    float* BUTTERAUGLI_RESTRICT const row_x = ps.lf[0].Row(y);
-    float* BUTTERAUGLI_RESTRICT const row_y = ps.lf[1].Row(y);
-    float* BUTTERAUGLI_RESTRICT const row_b = ps.lf[2].Row(y);
+    float* PIK_RESTRICT row_x = ps.lf.PlaneRow(0, y);
+    float* PIK_RESTRICT row_y = ps.lf.PlaneRow(1, y);
+    float* PIK_RESTRICT row_b = ps.lf.PlaneRow(2, y);
     for (size_t x = 0; x < xsize; ++x) {
       float valx, valy, valb;
       XybLowFreqToVals(row_x[x], row_y[x], row_b[x], &valx, &valy, &valb);
@@ -624,12 +589,12 @@ static void SeparateFrequencies(size_t xsize, size_t ysize,
 static void SameNoiseLevels(const ImageF& i0, const ImageF& i1,
                             const double kSigma, const double w,
                             const double maxclamp,
-                            ImageF* BUTTERAUGLI_RESTRICT diffmap) {
+                            ImageF* PIK_RESTRICT diffmap) {
   ImageF blurred(i0.xsize(), i0.ysize());
   for (size_t y = 0; y < i0.ysize(); ++y) {
-    const float* BUTTERAUGLI_RESTRICT const row0 = i0.Row(y);
-    const float* BUTTERAUGLI_RESTRICT const row1 = i1.Row(y);
-    float* BUTTERAUGLI_RESTRICT const to = blurred.Row(y);
+    const float* PIK_RESTRICT row0 = i0.Row(y);
+    const float* PIK_RESTRICT row1 = i1.Row(y);
+    float* PIK_RESTRICT to = blurred.Row(y);
     for (size_t x = 0; x < i0.xsize(); ++x) {
       double v0 = fabs(row0[x]);
       double v1 = fabs(row1[x]);
@@ -640,8 +605,8 @@ static void SameNoiseLevels(const ImageF& i0, const ImageF& i1,
   }
   blurred = Blur(blurred, kSigma, 0.0);
   for (size_t y = 0; y < i0.ysize(); ++y) {
-    const float* BUTTERAUGLI_RESTRICT const row = blurred.Row(y);
-    float* BUTTERAUGLI_RESTRICT const row_diff = diffmap->Row(y);
+    const float* PIK_RESTRICT row = blurred.Row(y);
+    float* PIK_RESTRICT row_diff = diffmap->Row(y);
     for (size_t x = 0; x < i0.xsize(); ++x) {
       double diff = row[x];
       row_diff[x] += w * diff * diff;
@@ -649,17 +614,17 @@ static void SameNoiseLevels(const ImageF& i0, const ImageF& i1,
   }
 }
 
-static void L2Diff(const ImageF& i0, const ImageF& i1, const double w,
-                   ImageF* BUTTERAUGLI_RESTRICT diffmap) {
-  if (w == 0) {
+static void L2Diff(const ImageF& i0, const ImageF& i1, const float w,
+                   ImageF* PIK_RESTRICT diffmap) {
+  if (w == 0.0f) {
     return;
   }
   for (size_t y = 0; y < i0.ysize(); ++y) {
-    const float* BUTTERAUGLI_RESTRICT const row0 = i0.Row(y);
-    const float* BUTTERAUGLI_RESTRICT const row1 = i1.Row(y);
-    float* BUTTERAUGLI_RESTRICT const row_diff = diffmap->Row(y);
+    const float* PIK_RESTRICT row0 = i0.ConstRow(y);
+    const float* PIK_RESTRICT row1 = i1.ConstRow(y);
+    float* PIK_RESTRICT row_diff = diffmap->Row(y);
     for (size_t x = 0; x < i0.xsize(); ++x) {
-      double diff = row0[x] - row1[x];
+      const float diff = row0[x] - row1[x];
       row_diff[x] += w * diff * diff;
     }
   }
@@ -668,17 +633,16 @@ static void L2Diff(const ImageF& i0, const ImageF& i1, const double w,
 // i0 is the original image.
 // i1 is the deformed copy.
 static void L2DiffAsymmetric(const ImageF& i0, const ImageF& i1, double w_0gt1,
-                             double w_0lt1,
-                             ImageF* BUTTERAUGLI_RESTRICT diffmap) {
+                             double w_0lt1, ImageF* PIK_RESTRICT diffmap) {
   if (w_0gt1 == 0 && w_0lt1 == 0) {
     return;
   }
   w_0gt1 *= 0.8;
   w_0lt1 *= 0.8;
   for (size_t y = 0; y < i0.ysize(); ++y) {
-    const float* BUTTERAUGLI_RESTRICT const row0 = i0.Row(y);
-    const float* BUTTERAUGLI_RESTRICT const row1 = i1.Row(y);
-    float* BUTTERAUGLI_RESTRICT const row_diff = diffmap->Row(y);
+    const float* PIK_RESTRICT row0 = i0.Row(y);
+    const float* PIK_RESTRICT row1 = i1.Row(y);
+    float* PIK_RESTRICT row_diff = diffmap->Row(y);
     for (size_t x = 0; x < i0.xsize(); ++x) {
       // Primary symmetric quadratic objective.
       double diff = row0[x] - row1[x];
@@ -710,16 +674,14 @@ static void L2DiffAsymmetric(const ImageF& i0, const ImageF& i1, double w_0gt1,
   }
 }
 
-// Making a cluster of local errors to be more impactful than
-// just a single error.
+// Result := pixel-wise square root.
 ImageF CalculateDiffmap(const ImageF& diffmap_in) {
   PROFILER_FUNC;
-  // Take square root.
   ImageF diffmap(diffmap_in.xsize(), diffmap_in.ysize());
   static const float kInitialSlope = 100.0f;
   for (size_t y = 0; y < diffmap.ysize(); ++y) {
-    const float* const BUTTERAUGLI_RESTRICT row_in = diffmap_in.Row(y);
-    float* const BUTTERAUGLI_RESTRICT row_out = diffmap.Row(y);
+    const float* PIK_RESTRICT row_in = diffmap_in.Row(y);
+    float* PIK_RESTRICT row_out = diffmap.Row(y);
     for (size_t x = 0; x < diffmap.xsize(); ++x) {
       const float orig_val = row_in[x];
       // TODO(b/29974893): Until that is fixed do not call sqrt on very small
@@ -734,10 +696,10 @@ ImageF CalculateDiffmap(const ImageF& diffmap_in) {
 
 void MaskPsychoImage(const PsychoImage& pi0, const PsychoImage& pi1,
                      const size_t xsize, const size_t ysize,
-                     std::vector<ImageF>* BUTTERAUGLI_RESTRICT mask,
-                     std::vector<ImageF>* BUTTERAUGLI_RESTRICT mask_dc) {
-  std::vector<ImageF> mask_xyb0 = CreatePlanes<float>(xsize, ysize, 3);
-  std::vector<ImageF> mask_xyb1 = CreatePlanes<float>(xsize, ysize, 3);
+                     Image3F* PIK_RESTRICT mask,
+                     Image3F* PIK_RESTRICT mask_dc) {
+  Image3F mask_xyb0(xsize, ysize);
+  Image3F mask_xyb1(xsize, ysize);
   static const double muls[4] = {
       0,
       1.64178305129,
@@ -748,12 +710,12 @@ void MaskPsychoImage(const PsychoImage& pi0, const PsychoImage& pi1,
     double a = muls[2 * i];
     double b = muls[2 * i + 1];
     for (size_t y = 0; y < ysize; ++y) {
-      const float* const BUTTERAUGLI_RESTRICT row_hf0 = pi0.hf[i].Row(y);
-      const float* const BUTTERAUGLI_RESTRICT row_hf1 = pi1.hf[i].Row(y);
-      const float* const BUTTERAUGLI_RESTRICT row_uhf0 = pi0.uhf[i].Row(y);
-      const float* const BUTTERAUGLI_RESTRICT row_uhf1 = pi1.uhf[i].Row(y);
-      float* const BUTTERAUGLI_RESTRICT row0 = mask_xyb0[i].Row(y);
-      float* const BUTTERAUGLI_RESTRICT row1 = mask_xyb1[i].Row(y);
+      const float* PIK_RESTRICT row_hf0 = pi0.hf[i].Row(y);
+      const float* PIK_RESTRICT row_hf1 = pi1.hf[i].Row(y);
+      const float* PIK_RESTRICT row_uhf0 = pi0.uhf[i].Row(y);
+      const float* PIK_RESTRICT row_uhf1 = pi1.uhf[i].Row(y);
+      float* PIK_RESTRICT row0 = mask_xyb0.PlaneRow(i, y);
+      float* PIK_RESTRICT row1 = mask_xyb1.PlaneRow(i, y);
       for (size_t x = 0; x < xsize; ++x) {
         row0[x] = a * row_uhf0[x] + b * row_hf0[x];
         row1[x] = a * row_uhf1[x] + b * row_hf1[x];
@@ -763,31 +725,27 @@ void MaskPsychoImage(const PsychoImage& pi0, const PsychoImage& pi1,
   Mask(mask_xyb0, mask_xyb1, mask, mask_dc);
 }
 
-ButteraugliComparator::ButteraugliComparator(const std::vector<ImageF>& rgb0,
+ButteraugliComparator::ButteraugliComparator(const Image3F& rgb0,
                                              double hf_asymmetry)
-    : xsize_(rgb0[0].xsize()),
-      ysize_(rgb0[0].ysize()),
-      hf_asymmetry_(hf_asymmetry) {
+    : xsize_(rgb0.xsize()), ysize_(rgb0.ysize()), hf_asymmetry_(hf_asymmetry) {
   if (xsize_ < 8 || ysize_ < 8) return;
-  std::vector<ImageF> xyb0 = OpsinDynamicsImage(rgb0);
+  Image3F xyb0 = OpsinDynamicsImage(rgb0);
   SeparateFrequencies(xsize_, ysize_, xyb0, pi0_);
 }
 
-void ButteraugliComparator::Mask(std::vector<ImageF>* BUTTERAUGLI_RESTRICT mask,
-                                 std::vector<ImageF>* BUTTERAUGLI_RESTRICT
-                                     mask_dc) const {
+void ButteraugliComparator::Mask(Image3F* PIK_RESTRICT mask,
+                                 Image3F* PIK_RESTRICT mask_dc) const {
   MaskPsychoImage(pi0_, pi0_, xsize_, ysize_, mask, mask_dc);
 }
 
-void ButteraugliComparator::Diffmap(const std::vector<ImageF>& rgb1,
-                                    ImageF& result) const {
+void ButteraugliComparator::Diffmap(const Image3F& rgb1, ImageF& result) const {
   PROFILER_FUNC;
   if (xsize_ < 8 || ysize_ < 8) return;
   DiffmapOpsinDynamicsImage(OpsinDynamicsImage(rgb1), result);
 }
 
-void ButteraugliComparator::DiffmapOpsinDynamicsImage(
-    const std::vector<ImageF>& xyb1, ImageF& result) const {
+void ButteraugliComparator::DiffmapOpsinDynamicsImage(const Image3F& xyb1,
+                                                      ImageF& result) const {
   PROFILER_FUNC;
   if (xsize_ < 8 || ysize_ < 8) return;
   PsychoImage pi1;
@@ -799,45 +757,44 @@ void ButteraugliComparator::DiffmapOpsinDynamicsImage(
 void ButteraugliComparator::DiffmapPsychoImage(const PsychoImage& pi1,
                                                ImageF& result) const {
   PROFILER_FUNC;
-  if (xsize_ < 8 || ysize_ < 8) {
-    return;
-  }
-  std::vector<ImageF> block_diff_dc(3);
-  std::vector<ImageF> block_diff_ac(3);
-  for (int c = 0; c < 3; ++c) {
-    block_diff_dc[c] = ImageF(xsize_, ysize_, 0.0);
-    block_diff_ac[c] = ImageF(xsize_, ysize_, 0.0);
-  }
-
+  if (xsize_ < 8 || ysize_ < 8) return;
+  Image3F block_diff_dc(xsize_, ysize_);
+  FillImage(0.0f, &block_diff_dc);
+  Image3F block_diff_ac(xsize_, ysize_);
+  FillImage(0.0f, &block_diff_ac);
   static const double wUhfMalta = 5.1409625726;
   static const double norm1Uhf = 58.5001247061;
   MaltaDiffMap(pi0_.uhf[1], pi1.uhf[1], wUhfMalta * hf_asymmetry_,
-               wUhfMalta / hf_asymmetry_, norm1Uhf, &block_diff_ac[1]);
+               wUhfMalta / hf_asymmetry_, norm1Uhf,
+               block_diff_ac.MutablePlane(1));
 
   static const double wUhfMaltaX = 4.91743441556;
   static const double norm1UhfX = 687196.39002;
   MaltaDiffMap(pi0_.uhf[0], pi1.uhf[0], wUhfMaltaX * hf_asymmetry_,
-               wUhfMaltaX / hf_asymmetry_, norm1UhfX, &block_diff_ac[0]);
+               wUhfMaltaX / hf_asymmetry_, norm1UhfX,
+               block_diff_ac.MutablePlane(0));
 
   static const double wHfMalta = 153.671655716;
   static const double norm1Hf = 83150785.9592;
   MaltaDiffMapLF(pi0_.hf[1], pi1.hf[1], wHfMalta * sqrt(hf_asymmetry_),
-                 wHfMalta / sqrt(hf_asymmetry_), norm1Hf, &block_diff_ac[1]);
+                 wHfMalta / sqrt(hf_asymmetry_), norm1Hf,
+                 block_diff_ac.MutablePlane(1));
 
   static const double wHfMaltaX = 668.358918152;
   static const double norm1HfX = 0.882954368025;
   MaltaDiffMapLF(pi0_.hf[0], pi1.hf[0], wHfMaltaX * sqrt(hf_asymmetry_),
-                 wHfMaltaX / sqrt(hf_asymmetry_), norm1HfX, &block_diff_ac[0]);
+                 wHfMaltaX / sqrt(hf_asymmetry_), norm1HfX,
+                 block_diff_ac.MutablePlane(0));
 
   static const double wMfMalta = 6841.81248144;
   static const double norm1Mf = 0.0135134962487;
-  MaltaDiffMapLF(pi0_.mf[1], pi1.mf[1], wMfMalta, wMfMalta, norm1Mf,
-                 &block_diff_ac[1]);
+  MaltaDiffMapLF(pi0_.mf.Plane(1), pi1.mf.Plane(1), wMfMalta, wMfMalta, norm1Mf,
+                 block_diff_ac.MutablePlane(1));
 
   static const double wMfMaltaX = 813.901703816;
   static const double norm1MfX = 16792.9322251;
-  MaltaDiffMapLF(pi0_.mf[0], pi1.mf[0], wMfMaltaX, wMfMaltaX, norm1MfX,
-                 &block_diff_ac[0]);
+  MaltaDiffMapLF(pi0_.mf.Plane(0), pi1.mf.Plane(0), wMfMaltaX, wMfMaltaX,
+                 norm1MfX, block_diff_ac.MutablePlane(0));
 
   static const double wmul[9] = {
       0, 32.4449876135, 0, 0, 0, 0, 1.01370836411, 0, 1.74566011615,
@@ -847,19 +804,26 @@ void ButteraugliComparator::DiffmapPsychoImage(const PsychoImage& pi1,
   static const double kSigmaHfX = 10.6666499623;
   static const double w = 884.809801415;
   SameNoiseLevels(pi0_.hf[1], pi1.hf[1], kSigmaHfX, w, maxclamp,
-                  &block_diff_ac[1]);
+                  block_diff_ac.MutablePlane(1));
+
+  block_diff_ac.CheckSizesSame();
 
   for (int c = 0; c < 3; ++c) {
     if (c < 2) {
       L2DiffAsymmetric(pi0_.hf[c], pi1.hf[c], wmul[c] * hf_asymmetry_,
-                       wmul[c] / hf_asymmetry_, &block_diff_ac[c]);
+                       wmul[c] / hf_asymmetry_, block_diff_ac.MutablePlane(c));
     }
-    L2Diff(pi0_.mf[c], pi1.mf[c], wmul[3 + c], &block_diff_ac[c]);
-    L2Diff(pi0_.lf[c], pi1.lf[c], wmul[6 + c], &block_diff_dc[c]);
+    L2Diff(pi0_.mf.Plane(c), pi1.mf.Plane(c), wmul[3 + c],
+           block_diff_ac.MutablePlane(c));
+    L2Diff(pi0_.lf.Plane(c), pi1.lf.Plane(c), wmul[6 + c],
+           block_diff_dc.MutablePlane(c));
   }
 
-  std::vector<ImageF> mask_xyb;
-  std::vector<ImageF> mask_xyb_dc;
+  block_diff_dc.CheckSizesSame();
+  block_diff_ac.CheckSizesSame();
+
+  Image3F mask_xyb;
+  Image3F mask_xyb_dc;
   MaskPsychoImage(pi0_, pi1, xsize_, ysize_, &mask_xyb, &mask_xyb_dc);
 
   result = CalculateDiffmap(
@@ -870,8 +834,7 @@ void ButteraugliComparator::DiffmapPsychoImage(const PsychoImage& pi1,
 struct MaltaTagLF {};
 struct MaltaTag {};
 
-static float MaltaUnit(MaltaTagLF, const float* BUTTERAUGLI_RESTRICT d,
-                       const int xs) {
+static float MaltaUnit(MaltaTagLF, const float* PIK_RESTRICT d, const int xs) {
   const int xs3 = 3 * xs;
   float retval = 0;
   {
@@ -1034,8 +997,7 @@ static float MaltaUnit(MaltaTagLF, const float* BUTTERAUGLI_RESTRICT d,
   return retval;
 }
 
-static float MaltaUnit(MaltaTag, const float* BUTTERAUGLI_RESTRICT d,
-                       const int xs) {
+static float MaltaUnit(MaltaTag, const float* PIK_RESTRICT d, const int xs) {
   const int xs3 = 3 * xs;
   float retval = 0;
   {
@@ -1203,13 +1165,15 @@ static float MaltaUnit(MaltaTag, const float* BUTTERAUGLI_RESTRICT d,
 }
 
 // Returns MaltaUnit. "fastMode" avoids bounds-checks when x0 and y0 are known
-// to be far enough from the image borders.
+// to be far enough from the image borders. "diffs" is a packed image.
 template <bool fastMode, class Tag>
-static BUTTERAUGLI_INLINE float PaddedMaltaUnit(
-    float* const BUTTERAUGLI_RESTRICT diffs, const size_t x0, const size_t y0,
-    const size_t xsize_, const size_t ysize_) {
+static BUTTERAUGLI_INLINE float PaddedMaltaUnit(float* PIK_RESTRICT diffs,
+                                                const size_t x0,
+                                                const size_t y0,
+                                                const size_t xsize_,
+                                                const size_t ysize_) {
   int ix0 = y0 * xsize_ + x0;
-  const float* BUTTERAUGLI_RESTRICT d = &diffs[ix0];
+  const float* PIK_RESTRICT d = &diffs[ix0];
   if (fastMode ||
       (x0 >= 4 && y0 >= 4 && x0 < (xsize_ - 4) && y0 < (ysize_ - 4))) {
     return MaltaUnit(Tag(), d, xsize_);
@@ -1252,8 +1216,8 @@ static void MaltaDiffMapImpl(const ImageF& lum0, const ImageF& lum1,
 
   std::vector<float> diffs(ysize_ * xsize_);
   for (size_t y = 0, ix = 0; y < ysize_; ++y) {
-    const float* BUTTERAUGLI_RESTRICT const row0 = lum0.Row(y);
-    const float* BUTTERAUGLI_RESTRICT const row1 = lum1.Row(y);
+    const float* PIK_RESTRICT row0 = lum0.Row(y);
+    const float* PIK_RESTRICT row1 = lum1.Row(y);
     for (size_t x = 0; x < xsize_; ++x, ++ix) {
       const float absval = 0.5f * std::abs(row0[x]) + 0.5f * std::abs(row1[x]);
       const float diff = row0[x] - row1[x];
@@ -1308,7 +1272,7 @@ static void MaltaDiffMapImpl(const ImageF& lum0, const ImageF& lum1,
   size_t y0 = 0;
   // Top
   for (; y0 < 4; ++y0) {
-    float* const BUTTERAUGLI_RESTRICT row_diff = block_diff_ac->Row(y0);
+    float* PIK_RESTRICT row_diff = block_diff_ac->Row(y0);
     for (size_t x0 = 0; x0 < xsize_; ++x0) {
       row_diff[x0] +=
           PaddedMaltaUnit<false, Tag>(&diffs[0], x0, y0, xsize_, ysize_);
@@ -1317,7 +1281,7 @@ static void MaltaDiffMapImpl(const ImageF& lum0, const ImageF& lum1,
 
   // Middle
   for (; y0 < ysize_ - 4; ++y0) {
-    float* const BUTTERAUGLI_RESTRICT row_diff = block_diff_ac->Row(y0);
+    float* PIK_RESTRICT row_diff = block_diff_ac->Row(y0);
     size_t x0 = 0;
     for (; x0 < 4; ++x0) {
       row_diff[x0] +=
@@ -1336,7 +1300,7 @@ static void MaltaDiffMapImpl(const ImageF& lum0, const ImageF& lum1,
 
   // Bottom
   for (; y0 < ysize_; ++y0) {
-    float* const BUTTERAUGLI_RESTRICT row_diff = block_diff_ac->Row(y0);
+    float* PIK_RESTRICT row_diff = block_diff_ac->Row(y0);
     for (size_t x0 = 0; x0 < xsize_; ++x0) {
       row_diff[x0] +=
           PaddedMaltaUnit<false, Tag>(&diffs[0], x0, y0, xsize_, ysize_);
@@ -1347,7 +1311,7 @@ static void MaltaDiffMapImpl(const ImageF& lum0, const ImageF& lum1,
 void ButteraugliComparator::MaltaDiffMap(
     const ImageF& lum0, const ImageF& lum1, const double w_0gt1,
     const double w_0lt1, const double norm1,
-    ImageF* BUTTERAUGLI_RESTRICT block_diff_ac) const {
+    ImageF* PIK_RESTRICT block_diff_ac) const {
   PROFILER_FUNC;
   const double len = 3.75;
   static const double mulli = 0.354191303559;
@@ -1358,7 +1322,7 @@ void ButteraugliComparator::MaltaDiffMap(
 void ButteraugliComparator::MaltaDiffMapLF(
     const ImageF& lum0, const ImageF& lum1, const double w_0gt1,
     const double w_0lt1, const double norm1,
-    ImageF* BUTTERAUGLI_RESTRICT block_diff_ac) const {
+    ImageF* PIK_RESTRICT block_diff_ac) const {
   PROFILER_FUNC;
   const double len = 3.75;
   static const double mulli = 0.405371989604;
@@ -1367,23 +1331,22 @@ void ButteraugliComparator::MaltaDiffMapLF(
 }
 
 ImageF ButteraugliComparator::CombineChannels(
-    const std::vector<ImageF>& mask_xyb, const std::vector<ImageF>& mask_xyb_dc,
-    const std::vector<ImageF>& block_diff_dc,
-    const std::vector<ImageF>& block_diff_ac) const {
+    const Image3F& mask_xyb, const Image3F& mask_xyb_dc,
+    const Image3F& block_diff_dc, const Image3F& block_diff_ac) const {
   PROFILER_FUNC;
   ImageF result(xsize_, ysize_);
   for (size_t y = 0; y < ysize_; ++y) {
-    float* const BUTTERAUGLI_RESTRICT row_out = result.Row(y);
+    float* PIK_RESTRICT row_out = result.Row(y);
     for (size_t x = 0; x < xsize_; ++x) {
       float mask[3];
       float dc_mask[3];
       float diff_dc[3];
       float diff_ac[3];
       for (int i = 0; i < 3; ++i) {
-        mask[i] = mask_xyb[i].Row(y)[x];
-        dc_mask[i] = mask_xyb_dc[i].Row(y)[x];
-        diff_dc[i] = block_diff_dc[i].Row(y)[x];
-        diff_ac[i] = block_diff_ac[i].Row(y)[x];
+        mask[i] = mask_xyb.PlaneRow(i, y)[x];
+        dc_mask[i] = mask_xyb_dc.PlaneRow(i, y)[x];
+        diff_dc[i] = block_diff_dc.PlaneRow(i, y)[x];
+        diff_ac[i] = block_diff_ac.PlaneRow(i, y)[x];
       }
       row_out[x] = (DotProduct(diff_dc, dc_mask) + DotProduct(diff_ac, mask));
     }
@@ -1393,14 +1356,14 @@ ImageF ButteraugliComparator::CombineChannels(
 
 double ButteraugliScoreFromDiffmap(const ImageF& diffmap) {
   PROFILER_FUNC;
-  float retval = 0.0f;
+  float max = 0.0f;
   for (size_t y = 0; y < diffmap.ysize(); ++y) {
-    const float* const BUTTERAUGLI_RESTRICT row = diffmap.Row(y);
+    const float* PIK_RESTRICT row = diffmap.ConstRow(y);
     for (size_t x = 0; x < diffmap.xsize(); ++x) {
-      retval = std::max(retval, row[x]);
+      max = std::max(max, row[x]);
     }
   }
-  return retval;
+  return max;
 }
 
 #include <stdio.h>
@@ -1480,11 +1443,11 @@ ImageF DiffPrecompute(const ImageF& xyb0, const ImageF& xyb1) {
     } else {
       y2 = y;
     }
-    const float* const BUTTERAUGLI_RESTRICT row0_in = xyb0.Row(y);
-    const float* const BUTTERAUGLI_RESTRICT row1_in = xyb1.Row(y);
-    const float* const BUTTERAUGLI_RESTRICT row0_in2 = xyb0.Row(y2);
-    const float* const BUTTERAUGLI_RESTRICT row1_in2 = xyb1.Row(y2);
-    float* const BUTTERAUGLI_RESTRICT row_out = result.Row(y);
+    const float* PIK_RESTRICT row0_in = xyb0.Row(y);
+    const float* PIK_RESTRICT row1_in = xyb1.Row(y);
+    const float* PIK_RESTRICT row0_in2 = xyb0.Row(y2);
+    const float* PIK_RESTRICT row1_in2 = xyb1.Row(y2);
+    float* PIK_RESTRICT row_out = result.Row(y);
     for (size_t x = 0; x < xsize; ++x) {
       if (x + 1 < xsize) {
         x2 = x + 1;
@@ -1508,14 +1471,13 @@ ImageF DiffPrecompute(const ImageF& xyb0, const ImageF& xyb1) {
   return result;
 }
 
-void Mask(const std::vector<ImageF>& xyb0, const std::vector<ImageF>& xyb1,
-          std::vector<ImageF>* BUTTERAUGLI_RESTRICT mask,
-          std::vector<ImageF>* BUTTERAUGLI_RESTRICT mask_dc) {
+void Mask(const Image3F& xyb0, const Image3F& xyb1, Image3F* PIK_RESTRICT mask,
+          Image3F* PIK_RESTRICT mask_dc) {
   PROFILER_FUNC;
-  const size_t xsize = xyb0[0].xsize();
-  const size_t ysize = xyb0[0].ysize();
-  mask->resize(3);
-  *mask_dc = CreatePlanes<float>(xsize, ysize, 3);
+  const size_t xsize = xyb0.xsize();
+  const size_t ysize = xyb0.ysize();
+  *mask = Image3F(xsize, ysize);
+  *mask_dc = Image3F(xsize, ysize);
   double muls[2] = {
       0.207017089891,
       0.267138152891,
@@ -1530,31 +1492,28 @@ void Mask(const std::vector<ImageF>& xyb0, const std::vector<ImageF>& xyb1,
 
   {
     // X component
-    ImageF diff = DiffPrecompute(xyb0[0], xyb1[0]);
+    ImageF diff = DiffPrecompute(xyb0.Plane(0), xyb1.Plane(0));
     ImageF blurred = Blur(diff, r2, border_ratio);
-    (*mask)[0] = ImageF(xsize, ysize);
     for (size_t y = 0; y < ysize; ++y) {
       for (size_t x = 0; x < xsize; ++x) {
-        (*mask)[0].Row(y)[x] = blurred.Row(y)[x];
+        mask->PlaneRow(0, y)[x] = blurred.Row(y)[x];
       }
     }
   }
   {
     // Y component
-    (*mask)[1] = ImageF(xsize, ysize);
-    ImageF diff = DiffPrecompute(xyb0[1], xyb1[1]);
+    ImageF diff = DiffPrecompute(xyb0.Plane(1), xyb1.Plane(1));
     ImageF blurred1 = Blur(diff, r0, border_ratio);
     ImageF blurred2 = Blur(diff, r1, border_ratio);
     for (size_t y = 0; y < ysize; ++y) {
       for (size_t x = 0; x < xsize; ++x) {
         const double val = normalizer * (muls[0] * blurred1.Row(y)[x] +
                                          muls[1] * blurred2.Row(y)[x]);
-        (*mask)[1].Row(y)[x] = val;
+        mask->PlaneRow(1, y)[x] = val;
       }
     }
   }
   // B component
-  (*mask)[2] = ImageF(xsize, ysize);
   static const double mul[2] = {
       16.6963293877,
       2.1364621982,
@@ -1567,27 +1526,28 @@ void Mask(const std::vector<ImageF>& xyb0, const std::vector<ImageF>& xyb1,
 
   for (size_t y = 0; y < ysize; ++y) {
     for (size_t x = 0; x < xsize; ++x) {
-      const double s0 = (*mask)[0].Row(y)[x];
-      const double s1 = (*mask)[1].Row(y)[x];
+      const double s0 = mask->PlaneRow(0, y)[x];
+      const double s1 = mask->PlaneRow(1, y)[x];
       const double p1 = mul[1] * w11 * s1;
       const double p0 = mul[0] * w00 * s0 + p1_to_p0 * p1;
 
-      (*mask)[0].Row(y)[x] = MaskX(p0);
-      (*mask)[1].Row(y)[x] = MaskY(p1);
-      (*mask)[2].Row(y)[x] = w_ytob_hf * MaskY(p1);
-      (*mask_dc)[0].Row(y)[x] = MaskDcX(p0);
-      (*mask_dc)[1].Row(y)[x] = MaskDcY(p1);
-      (*mask_dc)[2].Row(y)[x] = w_ytob_lf * MaskDcY(p1);
+      mask->PlaneRow(0, y)[x] = MaskX(p0);
+      mask->PlaneRow(1, y)[x] = MaskY(p1);
+      mask->PlaneRow(2, y)[x] = w_ytob_hf * MaskY(p1);
+      mask_dc->PlaneRow(0, y)[x] = MaskDcX(p0);
+      mask_dc->PlaneRow(1, y)[x] = MaskDcY(p1);
+      mask_dc->PlaneRow(2, y)[x] = w_ytob_lf * MaskDcY(p1);
     }
   }
 }
 
-void ButteraugliDiffmap(const std::vector<ImageF>& rgb0_image,
-                        const std::vector<ImageF>& rgb1_image,
+bool ButteraugliDiffmap(const Image3F& rgb0, const Image3F& rgb1,
                         double hf_asymmetry, ImageF& result_image) {
   PROFILER_FUNC;
-  const size_t xsize = rgb0_image[0].xsize();
-  const size_t ysize = rgb0_image[0].ysize();
+  const size_t xsize = rgb0.xsize();
+  const size_t ysize = rgb0.ysize();
+  if (xsize < 1 || ysize < 1) return PIK_FAILURE("Zero-sized image");
+  if (!SameSize(rgb0, rgb1)) return PIK_FAILURE("Size mismatch");
   static const int kMax = 8;
   if (xsize < kMax || ysize < kMax) {
     // Butteraugli values for small (where xsize or ysize is smaller
@@ -1598,72 +1558,39 @@ void ButteraugliDiffmap(const std::vector<ImageF>& rgb0_image,
     int yborder = ysize < kMax ? (kMax - ysize) / 2 : 0;
     size_t xscaled = std::max<size_t>(kMax, xsize);
     size_t yscaled = std::max<size_t>(kMax, ysize);
-    std::vector<ImageF> scaled0 = CreatePlanes<float>(xscaled, yscaled, 3);
-    std::vector<ImageF> scaled1 = CreatePlanes<float>(xscaled, yscaled, 3);
+    Image3F scaled0(xscaled, yscaled);
+    Image3F scaled1(xscaled, yscaled);
     for (int i = 0; i < 3; ++i) {
       for (int y = 0; y < yscaled; ++y) {
         for (int x = 0; x < xscaled; ++x) {
           size_t x2 = std::min<size_t>(xsize - 1, std::max(0, x - xborder));
           size_t y2 = std::min<size_t>(ysize - 1, std::max(0, y - yborder));
-          scaled0[i].Row(y)[x] = rgb0_image[i].Row(y2)[x2];
-          scaled1[i].Row(y)[x] = rgb1_image[i].Row(y2)[x2];
+          scaled0.PlaneRow(i, y)[x] = rgb0.PlaneRow(i, y2)[x2];
+          scaled1.PlaneRow(i, y)[x] = rgb1.PlaneRow(i, y2)[x2];
         }
       }
     }
     ImageF diffmap_scaled;
-    ButteraugliDiffmap(scaled0, scaled1, hf_asymmetry, diffmap_scaled);
+    const bool ok =
+        ButteraugliDiffmap(scaled0, scaled1, hf_asymmetry, diffmap_scaled);
     result_image = ImageF(xsize, ysize);
-    for (int y = 0; y < ysize; ++y) {
-      for (int x = 0; x < xsize; ++x) {
+    for (size_t y = 0; y < ysize; ++y) {
+      for (size_t x = 0; x < xsize; ++x) {
         result_image.Row(y)[x] = diffmap_scaled.Row(y + yborder)[x + xborder];
       }
     }
-    return;
+    return ok;
   }
-  ButteraugliComparator butteraugli(rgb0_image, hf_asymmetry);
-  butteraugli.Diffmap(rgb1_image, result_image);
-}
-
-bool ButteraugliInterface(const std::vector<ImageF>& rgb0,
-                          const std::vector<ImageF>& rgb1, float hf_asymmetry,
-                          ImageF& diffmap, double& diffvalue) {
-  const size_t xsize = rgb0[0].xsize();
-  const size_t ysize = rgb0[0].ysize();
-  if (xsize < 1 || ysize < 1) {
-    return false;  // No image.
-  }
-  for (int i = 1; i < 3; i++) {
-    if (rgb0[i].xsize() != xsize || rgb0[i].ysize() != ysize ||
-        rgb1[i].xsize() != xsize || rgb1[i].ysize() != ysize) {
-      return false;  // Image planes must have same dimensions.
-    }
-  }
-  ButteraugliDiffmap(rgb0, rgb1, hf_asymmetry, diffmap);
-  diffvalue = ButteraugliScoreFromDiffmap(diffmap);
+  ButteraugliComparator butteraugli(rgb0, hf_asymmetry);
+  butteraugli.Diffmap(rgb1, result_image);
   return true;
 }
 
-bool ButteraugliAdaptiveQuantization(
-    size_t xsize, size_t ysize, const std::vector<std::vector<float> >& rgb,
-    std::vector<float>& quant) {
-  if (xsize < 16 || ysize < 16) {
-    return false;  // Butteraugli is undefined for small images.
-  }
-  size_t size = xsize * ysize;
-
-  std::vector<ImageF> rgb_planes = PlanesFromPacked(xsize, ysize, rgb);
-  std::vector<ImageF> scale_xyb;
-  std::vector<ImageF> scale_xyb_dc;
-  Mask(rgb_planes, rgb_planes, &scale_xyb, &scale_xyb_dc);
-  quant.reserve(size);
-
-  // Mask gives us values in 3 color channels, but for now we take only
-  // the intensity channel.
-  for (size_t y = 0; y < ysize; ++y) {
-    for (size_t x = 0; x < xsize; ++x) {
-      quant.push_back(scale_xyb[1].Row(y)[x]);
-    }
-  }
+bool ButteraugliInterface(const Image3F& rgb0, const Image3F& rgb1,
+                          float hf_asymmetry, ImageF& diffmap,
+                          double& diffvalue) {
+  if (!ButteraugliDiffmap(rgb0, rgb1, hf_asymmetry, diffmap)) return false;
+  diffvalue = ButteraugliScoreFromDiffmap(diffmap);
   return true;
 }
 
@@ -1747,19 +1674,24 @@ void ScoreToRgb(double score, double good_threshold, double bad_threshold,
 
 }  // namespace
 
-void CreateHeatMapImage(const std::vector<float>& distmap,
-                        double good_threshold, double bad_threshold,
-                        size_t xsize, size_t ysize,
-                        std::vector<uint8_t>* heatmap) {
-  heatmap->resize(3 * xsize * ysize);
-  for (size_t y = 0; y < ysize; ++y) {
-    for (size_t x = 0; x < xsize; ++x) {
-      int px = xsize * y + x;
-      double d = distmap[px];
-      uint8_t* rgb = &(*heatmap)[3 * px];
+Image3B CreateHeatMapImage(const ImageF& distmap, double good_threshold,
+                           double bad_threshold) {
+  Image3B heatmap(distmap.xsize(), distmap.ysize());
+  for (size_t y = 0; y < distmap.ysize(); ++y) {
+    const float* PIK_RESTRICT row_distmap = distmap.ConstRow(y);
+    uint8_t* PIK_RESTRICT row_h0 = heatmap.PlaneRow(0, y);
+    uint8_t* PIK_RESTRICT row_h1 = heatmap.PlaneRow(1, y);
+    uint8_t* PIK_RESTRICT row_h2 = heatmap.PlaneRow(2, y);
+    for (size_t x = 0; x < distmap.xsize(); ++x) {
+      const float d = row_distmap[x];
+      uint8_t rgb[3];
       ScoreToRgb(d, good_threshold, bad_threshold, rgb);
+      row_h0[x] = rgb[0];
+      row_h1[x] = rgb[1];
+      row_h2[x] = rgb[2];
     }
   }
+  return heatmap;
 }
 
 }  // namespace butteraugli

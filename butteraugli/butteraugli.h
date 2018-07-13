@@ -28,6 +28,8 @@
 #include <memory>
 #include <vector>
 
+#include "image.h"
+
 #define BUTTERAUGLI_ENABLE_CHECKS 0
 
 // This is the main interface to butteraugli image similarity
@@ -35,12 +37,6 @@
 
 namespace pik {
 namespace butteraugli {
-
-template<typename T>
-class Image;
-
-using Image8 = Image<uint8_t>;
-using ImageF = Image<float>;
 
 // ButteraugliInterface defines the public interface for butteraugli.
 //
@@ -74,10 +70,8 @@ using ImageF = Image<float>;
 //
 // Returns true on success.
 
-bool ButteraugliInterface(const std::vector<ImageF> &rgb0,
-                          const std::vector<ImageF> &rgb1,
-                          ImageF &diffmap,
-                          double &diffvalue);
+bool ButteraugliInterface(const Image3F &rgb0, const Image3F &rgb1,
+                          ImageF &diffmap, double &diffvalue);
 
 const double kButteraugliQuantLow = 0.26;
 const double kButteraugliQuantHigh = 1.454;
@@ -98,21 +92,8 @@ double ButteraugliFuzzyClass(double score);
 // kButteraugliNormalization as normalization.
 double ButteraugliFuzzyInverse(double seek);
 
-// Returns a map which can be used for adaptive quantization. Values can
-// typically range from kButteraugliQuantLow to kButteraugliQuantHigh. Low
-// values require coarse quantization (e.g. near random noise), high values
-// require fine quantization (e.g. in smooth bright areas).
-bool ButteraugliAdaptiveQuantization(size_t xsize, size_t ysize,
-    const std::vector<std::vector<float> > &rgb, std::vector<float> &quant);
-
 // Implementation details, don't use anything below or your code will
 // break in the future.
-
-#ifdef _MSC_VER
-#define BUTTERAUGLI_RESTRICT __restrict
-#else
-#define BUTTERAUGLI_RESTRICT __restrict__
-#endif
 
 #ifdef _MSC_VER
 #define BUTTERAUGLI_INLINE __forceinline
@@ -140,227 +121,6 @@ bool ButteraugliAdaptiveQuantization(size_t xsize, size_t ysize,
 #define BUTTERAUGLI_ASSUME_ALIGNED(ptr, align) (ptr)
 #endif  // BUTTERAUGLI_HAS_ASSUME_ALIGNED
 
-// Functions that depend on the cache line size.
-class CacheAligned {
- public:
-  static constexpr size_t kPointerSize = sizeof(void *);
-  static constexpr size_t kCacheLineSize = 64;
-
-  // The aligned-return annotation is only allowed on function declarations.
-  static void *Allocate(const size_t bytes);
-  static void Free(void *aligned_pointer);
-};
-
-template <typename T>
-using CacheAlignedUniquePtrT = std::unique_ptr<T[], void (*)(void *)>;
-
-using CacheAlignedUniquePtr = CacheAlignedUniquePtrT<uint8_t>;
-
-template <typename T = uint8_t>
-static inline CacheAlignedUniquePtrT<T> Allocate(const size_t entries) {
-  return CacheAlignedUniquePtrT<T>(
-      static_cast<T * const BUTTERAUGLI_RESTRICT>(
-          CacheAligned::Allocate(entries * sizeof(T))),
-      CacheAligned::Free);
-}
-
-// Returns the smallest integer not less than "amount" that is divisible by
-// "multiple", which must be a power of two.
-template <size_t multiple>
-static inline size_t Align(const size_t amount) {
-  static_assert(multiple != 0 && ((multiple & (multiple - 1)) == 0),
-                "Align<> argument must be a power of two");
-  return (amount + multiple - 1) & ~(multiple - 1);
-}
-
-// Single channel, contiguous (cache-aligned) rows separated by padding.
-// T must be POD.
-//
-// Rationale: vectorization benefits from aligned operands - unaligned loads and
-// especially stores are expensive when the address crosses cache line
-// boundaries. Introducing padding after each row ensures the start of a row is
-// aligned, and that row loops can process entire vectors (writes to the padding
-// are allowed and ignored).
-//
-// We prefer a planar representation, where channels are stored as separate
-// 2D arrays, because that simplifies vectorization (repeating the same
-// operation on multiple adjacent components) without the complexity of a
-// hybrid layout (8 R, 8 G, 8 B, ...). In particular, clients can easily iterate
-// over all components in a row and Image requires no knowledge of the pixel
-// format beyond the component type "T". The downside is that we duplicate the
-// xsize/ysize members for each channel.
-//
-// This image layout could also be achieved with a vector and a row accessor
-// function, but a class wrapper with support for "deleter" allows wrapping
-// existing memory allocated by clients without copying the pixels. It also
-// provides convenient accessors for xsize/ysize, which shortens function
-// argument lists. Supports move-construction so it can be stored in containers.
-template <typename ComponentType>
-class Image {
-  // Returns cache-aligned row stride, being careful to avoid 2K aliasing.
-  static size_t BytesPerRow(const size_t xsize) {
-    // Allow reading one extra AVX-2 vector on the right margin.
-    const size_t row_size = xsize * sizeof(T) + 32;
-    const size_t align = CacheAligned::kCacheLineSize;
-    size_t bytes_per_row = (row_size + align - 1) & ~(align - 1);
-    // During the lengthy window before writes are committed to memory, CPUs
-    // guard against read after write hazards by checking the address, but
-    // only the lower 11 bits. We avoid a false dependency between writes to
-    // consecutive rows by ensuring their sizes are not multiples of 2 KiB.
-    if (bytes_per_row % 2048 == 0) {
-      bytes_per_row += align;
-    }
-    return bytes_per_row;
-  }
-
- public:
-  using T = ComponentType;
-
-  // MSVC 2015 needs the cast.
-  Image()
-      : xsize_(0),
-        ysize_(0),
-        bytes_per_row_(0),
-        bytes_(static_cast<uint8_t *>(nullptr), Ignore) {}
-
-  Image(const size_t xsize, const size_t ysize)
-      : xsize_(xsize),
-        ysize_(ysize),
-        bytes_per_row_(BytesPerRow(xsize)),
-        bytes_(Allocate(bytes_per_row_ * ysize)) {}
-
-  Image(const size_t xsize, const size_t ysize, T val)
-      : xsize_(xsize),
-        ysize_(ysize),
-        bytes_per_row_(BytesPerRow(xsize)),
-        bytes_(Allocate(bytes_per_row_ * ysize)) {
-    for (size_t y = 0; y < ysize_; ++y) {
-      T* const BUTTERAUGLI_RESTRICT row = Row(y);
-      for (int x = 0; x < xsize_; ++x) {
-        row[x] = val;
-      }
-    }
-  }
-
-  Image(const size_t xsize, const size_t ysize,
-        uint8_t * const BUTTERAUGLI_RESTRICT bytes,
-        const size_t bytes_per_row)
-      : xsize_(xsize),
-        ysize_(ysize),
-        bytes_per_row_(bytes_per_row),
-        bytes_(bytes, Ignore) {}
-
-  // Move constructor (required for returning Image from function)
-  Image(Image &&other)
-      : xsize_(other.xsize_),
-        ysize_(other.ysize_),
-        bytes_per_row_(other.bytes_per_row_),
-        bytes_(std::move(other.bytes_)) {}
-
-  // Move assignment (required for std::vector)
-  Image &operator=(Image &&other) {
-    xsize_ = other.xsize_;
-    ysize_ = other.ysize_;
-    bytes_per_row_ = other.bytes_per_row_;
-    bytes_ = std::move(other.bytes_);
-    return *this;
-  }
-
-  void Swap(Image &other) {
-    std::swap(xsize_, other.xsize_);
-    std::swap(ysize_, other.ysize_);
-    std::swap(bytes_per_row_, other.bytes_per_row_);
-    std::swap(bytes_, other.bytes_);
-  }
-
-  // How many pixels.
-  size_t xsize() const { return xsize_; }
-  size_t ysize() const { return ysize_; }
-
-  T *const BUTTERAUGLI_RESTRICT Row(const size_t y) {
-#ifdef BUTTERAUGLI_ENABLE_CHECKS
-    if (y >= ysize_) {
-      printf("Row %zu out of bounds (ysize=%zu)\n", y, ysize_);
-      abort();
-    }
-#endif
-    void *row = bytes_.get() + y * bytes_per_row_;
-    return reinterpret_cast<T *>(BUTTERAUGLI_ASSUME_ALIGNED(row, 64));
-  }
-
-  const T *const BUTTERAUGLI_RESTRICT Row(const size_t y) const {
-#ifdef BUTTERAUGLI_ENABLE_CHECKS
-    if (y >= ysize_) {
-      printf("Const row %zu out of bounds (ysize=%zu)\n", y, ysize_);
-      abort();
-    }
-#endif
-    void *row = bytes_.get() + y * bytes_per_row_;
-    return reinterpret_cast<const T *>(BUTTERAUGLI_ASSUME_ALIGNED(row, 64));
-  }
-
-  // Raw access to byte contents, for interfacing with other libraries.
-  // Unsigned char instead of char to avoid surprises (sign extension).
-  uint8_t * const BUTTERAUGLI_RESTRICT bytes() { return bytes_.get(); }
-  const uint8_t * const BUTTERAUGLI_RESTRICT bytes() const {
-      return bytes_.get();
-  }
-  size_t bytes_per_row() const { return bytes_per_row_; }
-
-  // Returns number of pixels (some of which are padding) per row. Useful for
-  // computing other rows via pointer arithmetic.
-  intptr_t PixelsPerRow() const {
-    static_assert(CacheAligned::kCacheLineSize % sizeof(T) == 0,
-                  "Padding must be divisible by the pixel size.");
-    return static_cast<intptr_t>(bytes_per_row_ / sizeof(T));
-  }
-
- private:
-  // Deleter used when bytes are not owned.
-  static void Ignore(void *ptr) {}
-
-  // (Members are non-const to enable assignment during move-assignment.)
-  size_t xsize_;  // original intended pixels, not including any padding.
-  size_t ysize_;
-  size_t bytes_per_row_;  // [bytes] including padding.
-  CacheAlignedUniquePtr bytes_;
-};
-
-// Returns newly allocated planes of the given dimensions.
-template <typename T>
-static inline std::vector<Image<T>> CreatePlanes(const size_t xsize,
-                                                 const size_t ysize,
-                                                 const size_t num_planes) {
-  std::vector<Image<T>> planes;
-  planes.reserve(num_planes);
-  for (size_t i = 0; i < num_planes; ++i) {
-    planes.emplace_back(xsize, ysize);
-  }
-  return planes;
-}
-
-// Returns a new image with the same dimensions and pixel values.
-template <typename T>
-static inline Image<T> CopyPixels(const Image<T> &other) {
-  Image<T> copy(other.xsize(), other.ysize());
-  const void *BUTTERAUGLI_RESTRICT from = other.bytes();
-  void *BUTTERAUGLI_RESTRICT to = copy.bytes();
-  memcpy(to, from, other.ysize() * other.bytes_per_row());
-  return copy;
-}
-
-// Returns new planes with the same dimensions and pixel values.
-template <typename T>
-static inline std::vector<Image<T>> CopyPlanes(
-    const std::vector<Image<T>> &planes) {
-  std::vector<Image<T>> copy;
-  copy.reserve(planes.size());
-  for (const Image<T> &plane : planes) {
-    copy.push_back(CopyPixels(plane));
-  }
-  return copy;
-}
-
 // Compacts a padded image into a preallocated packed vector.
 template <typename T>
 static inline void CopyToPacked(const Image<T> &from, std::vector<T> *to) {
@@ -373,12 +133,11 @@ static inline void CopyToPacked(const Image<T> &from, std::vector<T> *to) {
   }
 #endif
   for (size_t y = 0; y < ysize; ++y) {
-    const float* const BUTTERAUGLI_RESTRICT row_from = from.Row(y);
-    float* const BUTTERAUGLI_RESTRICT row_to = to->data() + y * xsize;
+    const float *PIK_RESTRICT row_from = from.Row(y);
+    float *PIK_RESTRICT row_to = to->data() + y * xsize;
     memcpy(row_to, row_from, xsize * sizeof(T));
   }
 }
-
 // Expands a packed vector into a preallocated padded image.
 template <typename T>
 static inline void CopyFromPacked(const std::vector<T> &from, Image<T> *to) {
@@ -386,84 +145,73 @@ static inline void CopyFromPacked(const std::vector<T> &from, Image<T> *to) {
   const size_t ysize = to->ysize();
   assert(from.size() == xsize * ysize);
   for (size_t y = 0; y < ysize; ++y) {
-    const float* const BUTTERAUGLI_RESTRICT row_from =
-        from.data() + y * xsize;
-    float* const BUTTERAUGLI_RESTRICT row_to = to->Row(y);
+    const float *PIK_RESTRICT row_from = from.data() + y * xsize;
+    float *PIK_RESTRICT row_to = to->Row(y);
     memcpy(row_to, row_from, xsize * sizeof(T));
   }
 }
 
 template <typename T>
-static inline std::vector<Image<T>> PlanesFromPacked(
+static inline Image3<T> PlanesFromPacked(
     const size_t xsize, const size_t ysize,
     const std::vector<std::vector<T>> &packed) {
-  std::vector<Image<T>> planes;
-  planes.reserve(packed.size());
-  for (const std::vector<T> &p : packed) {
-    planes.push_back(Image<T>(xsize, ysize));
-    CopyFromPacked(p, &planes.back());
-  }
+  Image3<T> planes(xsize, ysize);
+  CopyFromPacked(packed[0], planes.MutablePlane(0));
+  CopyFromPacked(packed[1], planes.MutablePlane(1));
+  CopyFromPacked(packed[2], planes.MutablePlane(2));
   return planes;
 }
 
 template <typename T>
 static inline std::vector<std::vector<T>> PackedFromPlanes(
-    const std::vector<Image<T>> &planes) {
-  assert(!planes.empty());
-  const size_t num_pixels = planes[0].xsize() * planes[0].ysize();
+    const Image3<T> &planes) {
+  const size_t num_pixels = planes.xsize() * planes.ysize();
   std::vector<std::vector<T>> packed;
-  packed.reserve(planes.size());
-  for (const Image<T> &image : planes) {
-    packed.push_back(std::vector<T>(num_pixels));
-    CopyToPacked(image, &packed.back());
-  }
+  packed.reserve(3);
+  packed.push_back(std::vector<T>(num_pixels));
+  CopyToPacked(planes.Plane(0), &packed.back());
+  packed.push_back(std::vector<T>(num_pixels));
+  CopyToPacked(planes.Plane(1), &packed.back());
+  packed.push_back(std::vector<T>(num_pixels));
+  CopyToPacked(planes.Plane(2), &packed.back());
   return packed;
 }
 
 struct PsychoImage {
-  std::vector<ImageF> uhf;
-  std::vector<ImageF> hf;
-  std::vector<ImageF> mf;
-  std::vector<ImageF> lf;
+  ImageF uhf[2];  // XY
+  ImageF hf[2];   // XY
+  Image3F mf;     // XYB
+  Image3F lf;     // XYB
 };
 
 class ButteraugliComparator {
  public:
-  ButteraugliComparator(const std::vector<ImageF>& rgb0, double hf_asymmetry);
+  ButteraugliComparator(const Image3F &rgb0, double hf_asymmetry);
 
   // Computes the butteraugli map between the original image given in the
   // constructor and the distorted image give here.
-  void Diffmap(const std::vector<ImageF>& rgb1, ImageF& result) const;
+  void Diffmap(const Image3F &rgb1, ImageF &result) const;
 
   // Same as above, but OpsinDynamicsImage() was already applied.
-  void DiffmapOpsinDynamicsImage(const std::vector<ImageF>& xyb1,
-                                 ImageF& result) const;
+  void DiffmapOpsinDynamicsImage(const Image3F &xyb1, ImageF &result) const;
 
   // Same as above, but the frequency decomposition was already applied.
   void DiffmapPsychoImage(const PsychoImage& ps1, ImageF &result) const;
 
-  void Mask(std::vector<ImageF>* BUTTERAUGLI_RESTRICT mask,
-            std::vector<ImageF>* BUTTERAUGLI_RESTRICT mask_dc) const;
+  void Mask(Image3F *PIK_RESTRICT mask, Image3F *PIK_RESTRICT mask_dc) const;
 
  private:
-  void MaltaDiffMapLF(const ImageF& y0,
-                      const ImageF& y1,
-                      double w_0gt1,
-                      double w_0lt1,
-                      double normalization,
-                      ImageF* BUTTERAUGLI_RESTRICT block_diff_ac) const;
+  void MaltaDiffMapLF(const ImageF &y0, const ImageF &y1, double w_0gt1,
+                      double w_0lt1, double normalization,
+                      ImageF *PIK_RESTRICT block_diff_ac) const;
 
-  void MaltaDiffMap(const ImageF& y0,
-                    const ImageF& y1,
-                    double w_0gt1,
-                    double w_0lt1,
-                    double normalization,
-                    ImageF* BUTTERAUGLI_RESTRICT block_diff_ac) const;
+  void MaltaDiffMap(const ImageF &y0, const ImageF &y1, double w_0gt1,
+                    double w_0lt1, double normalization,
+                    ImageF *PIK_RESTRICT block_diff_ac) const;
 
-  ImageF CombineChannels(const std::vector<ImageF>& scale_xyb,
-                         const std::vector<ImageF>& scale_xyb_dc,
-                         const std::vector<ImageF>& block_diff_dc,
-                         const std::vector<ImageF>& block_diff_ac) const;
+  ImageF CombineChannels(const Image3F &scale_xyb, const Image3F &scale_xyb_dc,
+                         const Image3F &block_diff_dc,
+                         const Image3F &block_diff_ac) const;
 
   const size_t xsize_;
   const size_t ysize_;
@@ -471,31 +219,24 @@ class ButteraugliComparator {
   PsychoImage pi0_;
 };
 
-void ButteraugliDiffmap(const std::vector<ImageF> &rgb0,
-                        const std::vector<ImageF> &rgb1,
-                        double hf_asymmetry,
-                        ImageF &diffmap);
+bool ButteraugliDiffmap(const Image3F &rgb0, const Image3F &rgb1,
+                        double hf_asymmetry, ImageF &diffmap);
 
 double ButteraugliScoreFromDiffmap(const ImageF& distmap);
 
 // Generate rgb-representation of the distance between two images.
-void CreateHeatMapImage(const std::vector<float> &distmap,
-                        double good_threshold, double bad_threshold,
-                        size_t xsize, size_t ysize,
-                        std::vector<uint8_t> *heatmap);
+Image3B CreateHeatMapImage(const ImageF &distmap, double good_threshold,
+                           double bad_threshold);
 
 // Compute values of local frequency and dc masking based on the activity
 // in the two images.
-void Mask(const std::vector<ImageF>& xyb0,
-          const std::vector<ImageF>& xyb1,
-          std::vector<ImageF>* BUTTERAUGLI_RESTRICT mask,
-          std::vector<ImageF>* BUTTERAUGLI_RESTRICT mask_dc);
+void Mask(const Image3F &xyb0, const Image3F &xyb1, Image3F *PIK_RESTRICT mask,
+          Image3F *PIK_RESTRICT mask_dc);
 
 template <class V>
 BUTTERAUGLI_INLINE void RgbToXyb(const V &r, const V &g, const V &b,
-                                 V *BUTTERAUGLI_RESTRICT valx,
-                                 V *BUTTERAUGLI_RESTRICT valy,
-                                 V *BUTTERAUGLI_RESTRICT valb) {
+                                 V *PIK_RESTRICT valx, V *PIK_RESTRICT valy,
+                                 V *PIK_RESTRICT valb) {
   *valx = r - g;
   *valy = r + g;
   *valb = b;
@@ -503,10 +244,9 @@ BUTTERAUGLI_INLINE void RgbToXyb(const V &r, const V &g, const V &b,
 
 template <class V>
 BUTTERAUGLI_INLINE void OpsinAbsorbance(const V &in0, const V &in1,
-                                        const V &in2,
-                                        V *BUTTERAUGLI_RESTRICT out0,
-                                        V *BUTTERAUGLI_RESTRICT out1,
-                                        V *BUTTERAUGLI_RESTRICT out2) {
+                                        const V &in2, V *PIK_RESTRICT out0,
+                                        V *PIK_RESTRICT out1,
+                                        V *PIK_RESTRICT out2) {
   // https://en.wikipedia.org/wiki/Photopsin absorbance modeling.
   static const double mixi0 = 0.254462330846;
   static const double mixi1 = 0.488238255095;
@@ -539,7 +279,7 @@ BUTTERAUGLI_INLINE void OpsinAbsorbance(const V &in0, const V &in1,
   *out2 = mix8 * in0 + mix9 * in1 + mix10 * in2 + mix11;
 }
 
-std::vector<ImageF> OpsinDynamicsImage(const std::vector<ImageF>& rgb);
+Image3F OpsinDynamicsImage(const Image3F &rgb);
 
 ImageF Blur(const ImageF& in, float sigma, float border_ratio);
 

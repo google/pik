@@ -15,8 +15,6 @@
 #ifndef BUTTERAUGLI_DISTANCE_H_
 #define BUTTERAUGLI_DISTANCE_H_
 
-#include <vector>
-
 #include "image.h"
 
 namespace pik {

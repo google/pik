@@ -31,32 +31,10 @@ namespace pik {
 float ButteraugliDistance(const Image3F& rgb0, const Image3F& rgb1,
                           float hf_asymmetry,
                           ImageF* distmap_out) {
-  const size_t xsize = rgb0.xsize();
-  const size_t ysize = rgb0.ysize();
-  const size_t row_size = xsize * sizeof(*rgb0.PlaneRow(0, 0));
-  std::vector<butteraugli::ImageF> rgb0b;
-  std::vector<butteraugli::ImageF> rgb1b;
-  for (int c = 0; c < 3; ++c) {
-    butteraugli::ImageF plane0(xsize, ysize);
-    butteraugli::ImageF plane1(xsize, ysize);
-    for (int y = 0; y < ysize; ++y) {
-      memcpy(plane0.Row(y), rgb0.PlaneRow(c, y), row_size);
-    }
-    for (int y = 0; y < ysize; ++y) {
-      memcpy(plane1.Row(y), rgb1.PlaneRow(c, y), row_size);
-    }
-    rgb0b.emplace_back(std::move(plane0));
-    rgb1b.emplace_back(std::move(plane1));
-  }
-  butteraugli::ImageF distmap;
-  butteraugli::ButteraugliDiffmap(rgb0b, rgb1b, hf_asymmetry, distmap);
+  ImageF distmap;
+  PIK_CHECK(butteraugli::ButteraugliDiffmap(rgb0, rgb1, hf_asymmetry, distmap));
   if (distmap_out != nullptr) {
-    *distmap_out = ImageF(rgb0.xsize(), rgb0.ysize());
-    for (int y = 0; y < rgb0.ysize(); ++y) {
-      const float* const PIK_RESTRICT row = distmap.Row(y);
-      float* const PIK_RESTRICT row_out = distmap_out->Row(y);
-      memcpy(row_out, row, rgb0.xsize() * sizeof(row[0]));
-    }
+    *distmap_out = CopyImage(distmap);
   }
   return butteraugli::ButteraugliScoreFromDiffmap(distmap);
 }
