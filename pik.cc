@@ -37,17 +37,13 @@
 #include "common.h"
 #include "compiler_specific.h"
 #include "compressed_image.h"
+#include "container.h"
 #include "convolve.h"
 #include "dct_util.h"
 #include "entropy_coder.h"
 #include "fast_log.h"
 #include "guetzli/jpeg_data.h"
 #include "guetzli/jpeg_data_decoder.h"
-#include "guetzli/jpeg_data_encoder.h"
-#include "guetzli/jpeg_data_reader.h"
-#include "guetzli/jpeg_data_writer.h"
-#include "guetzli/jpeg_error.h"
-#include "guetzli/processor.h"
 #include "header.h"
 #include "image_io.h"
 #include "jpeg_quant_tables.h"
@@ -57,7 +53,6 @@
 #include "pik_alpha.h"
 #include "profiler.h"
 #include "quantizer.h"
-#include "sections.h"
 #include "simd/dispatch.h"
 
 bool FLAGS_log_search_state = false;
@@ -81,12 +76,7 @@ size_t TargetSize(const CompressParams& params, const Image& img) {
   return 0;
 }
 
-inline int Clamp(int minval, int maxval, int val) {
-  return std::min(maxval, std::max(minval, val));
-}
-
-ImageF TileDistMap(const butteraugli::ImageF& distmap, int tile_size,
-                   int margin) {
+ImageF TileDistMap(const ImageF& distmap, int tile_size, int margin) {
   PROFILER_FUNC;
   const int tile_xsize = (distmap.xsize() + tile_size - 1) / tile_size;
   const int tile_ysize = (distmap.ysize() + tile_size - 1) / tile_size;
@@ -155,46 +145,30 @@ bool AdjustQuantVal(float* const PIK_RESTRICT q,
 }
 
 void DumpHeatmap(const PikInfo* info, const std::string& label,
-                 const std::vector<float>& vals, size_t xsize, size_t ysize,
-                 float good_threshold, float bad_threshold) {
-  std::vector<uint8_t> heatmap(3 * xsize * ysize);
-  butteraugli::CreateHeatMapImage(vals, good_threshold, bad_threshold,
-                                  xsize, ysize, &heatmap);
+                 const ImageF& image, float good_threshold,
+                 float bad_threshold) {
+  Image3B heatmap =
+      butteraugli::CreateHeatMapImage(image, good_threshold, bad_threshold);
   char filename[200];
   snprintf(filename, sizeof(filename), "%s%05d", label.c_str(),
            info->num_butteraugli_iters);
-  info->DumpImage(filename,
-                  Image3FromInterleaved(&heatmap[0], xsize, ysize, 3 * xsize));
+  info->DumpImage(filename, heatmap);
 }
 
-void DumpHeatmaps(const PikInfo* info,
-                  size_t xsize, size_t ysize, int qres,
-                  float ba_target,
-                  const ImageF& quant_field,
-                  const ImageF& tile_heatmap) {
+void DumpHeatmaps(const PikInfo* info, float ba_target,
+                  const ImageF& quant_field, const ImageF& tile_heatmap) {
   if (!WantDebugOutput(info)) return;
-  std::vector<float> qmap(xsize * ysize);
-  std::vector<float> dmap(xsize * ysize);
-  for (int y = 0; y < quant_field.ysize(); ++y) {
+  ImageF inv_qmap(quant_field.xsize(), quant_field.ysize());
+  for (size_t y = 0; y < quant_field.ysize(); ++y) {
     const float* PIK_RESTRICT row_q = quant_field.ConstRow(y);
-    const float* PIK_RESTRICT row_d = tile_heatmap.ConstRow(y);
-    for (int x = 0; x < quant_field.xsize(); ++x) {
-      for (int dy = 0; dy < qres; ++dy) {
-        for (int dx = 0; dx < qres; ++dx) {
-          int px = qres * x + dx;
-          int py = qres * y + dy;
-          if (px < xsize && py < ysize) {
-            qmap[py * xsize + px] = 1.0f / row_q[x];  // never zero
-            dmap[py * xsize + px] = row_d[x];
-          }
-        }
-      }
+    float* PIK_RESTRICT row_inv_q = inv_qmap.Row(y);
+    for (size_t x = 0; x < quant_field.xsize(); ++x) {
+      row_inv_q[x] = 1.0f / row_q[x];  // never zero
     }
   }
-  DumpHeatmap(info, "quant_heatmap", qmap, xsize, ysize,
-              4.0f * ba_target, 6.0f * ba_target);
-  DumpHeatmap(info, "tile_heatmap", dmap, xsize, ysize,
-              ba_target, 1.5f * ba_target);
+  DumpHeatmap(info, "quant_heatmap", inv_qmap, 4.0f * ba_target,
+              6.0f * ba_target);
+  DumpHeatmap(info, "tile_heatmap", tile_heatmap, ba_target, 1.5f * ba_target);
 }
 
 void DoDenoise(const Quantizer& quantizer, Image3F* PIK_RESTRICT opsin) {
@@ -220,8 +194,12 @@ void FindBestQuantization(const Image3F& opsin_orig, const Image3F& opsin_arg,
                       pow(butteraugli_target, 0.75868992821757641));
   const float kInitialQuantDC = (0.72356878844141492  ) / butteraugli_target_dc;
   const float kQuantAC = (1.2543199079397958  ) / butteraugli_target;
+
+  ImageF intensity_ac = IntensityAcEstimate(opsin_orig.Plane(1), pool);
+
   ImageF quant_field =
-      ScaleImage(kQuantAC, AdaptiveQuantizationMap(opsin_orig.Plane(1), 8));
+      ScaleImage(kQuantAC,
+                 AdaptiveQuantizationMap(opsin_orig.Plane(1), intensity_ac, 8));
   ImageF tile_distmap;
 
   EncCache cache;
@@ -263,13 +241,12 @@ void FindBestQuantization(const Image3F& opsin_orig, const Image3F& opsin_arg,
       static const int kMargins[100] = { 0, 0, 1, 2, 1, 0, 0 };
       tile_distmap = TileDistMap(comparator.distmap(), 8, kMargins[i]);
       if (WantDebugOutput(aux_out)) {
-        DumpHeatmaps(aux_out, opsin_orig.xsize(), opsin_orig.ysize(),
-                     8, butteraugli_target, quant_field, tile_distmap);
-          char pathname[200];
-          snprintf(pathname, 200, "%s%s%05d.png", aux_out->debug_prefix.c_str(),
-                   "rgb_out", aux_out->num_butteraugli_iters);
-          WriteImage(ImageFormatPNG(), srgb, pathname);
-          ++aux_out->num_butteraugli_iters;
+        DumpHeatmaps(aux_out, butteraugli_target, quant_field, tile_distmap);
+        char pathname[200];
+        snprintf(pathname, 200, "%s%s%05d.png", aux_out->debug_prefix.c_str(),
+                 "rgb_out", aux_out->num_butteraugli_iters);
+        WriteImage(ImageFormatPNG(), srgb, pathname);
+        ++aux_out->num_butteraugli_iters;
       }
       if (FLAGS_log_search_state) {
         float minval, maxval;
@@ -332,8 +309,10 @@ void FindBestQuantizationHQ(const Image3F& opsin_orig, const Image3F& opsin,
                             Quantizer* quantizer, PikInfo* aux_out) {
   const bool slow = cparams.guetzli_mode;
   ButteraugliComparator comparator(opsin_orig, cparams.hf_asymmetry);
+  ImageF intensity_ac = IntensityAcEstimate(opsin_orig.Plane(1), pool);
   ImageF quant_field = ScaleImage(
-      slow ? 1.2f : 1.5f, AdaptiveQuantizationMap(opsin_orig.Plane(1), 8));
+      slow ? 1.2f : 1.5f,
+      AdaptiveQuantizationMap(opsin_orig.Plane(1), intensity_ac, 8));
   ImageF best_quant_field = CopyImage(quant_field);
   float best_butteraugli = 1000.0f;
   ImageF tile_distmap;
@@ -388,12 +367,11 @@ void FindBestQuantizationHQ(const Image3F& opsin_orig, const Image3F& opsin,
       }
       tile_distmap = TileDistMap(comparator.distmap(), 8, 0);
       if (WantDebugOutput(aux_out)) {
-        DumpHeatmaps(aux_out, opsin_orig.xsize(), opsin_orig.ysize(),
-                     8, butteraugli_target, quant_field, tile_distmap);
-          char pathname[200];
-          snprintf(pathname, 200, "%s%s%05d.png", aux_out->debug_prefix.c_str(),
-                   "rgb_out", aux_out->num_butteraugli_iters);
-          WriteImage(ImageFormatPNG(), srgb, pathname);
+        DumpHeatmaps(aux_out, butteraugli_target, quant_field, tile_distmap);
+        char pathname[200];
+        snprintf(pathname, 200, "%s%s%05d.png", aux_out->debug_prefix.c_str(),
+                 "rgb_out", aux_out->num_butteraugli_iters);
+        WriteImage(ImageFormatPNG(), srgb, pathname);
       }
       if (aux_out) {
         ++aux_out->num_butteraugli_iters;
@@ -718,12 +696,19 @@ void CompressToTargetSize(const Image3F& opsin_orig, const Image3F& opsin,
 
 bool JpegToPikLossless(const guetzli::JPEGData& jpg, PaddedBytes* compressed,
                        PikInfo* aux_out) {
+  Container container;
+  size_t container_bits;
+  PIK_CHECK(CanEncode(container, &container_bits));
+
   Header header;
   header.bitstream = Header::kBitstreamBrunsli;
-  size_t encoded_bits;
-  PIK_CHECK(CanEncode(header, &encoded_bits));
+  size_t header_bits;
+  PIK_CHECK(CanEncode(header, &header_bits));
+
+  const size_t encoded_bits = container_bits + header_bits;
   compressed->resize((encoded_bits + 7) / 8 + BrunsliV2MaximumEncodedSize(jpg));
   size_t pos = 0;
+  PIK_CHECK(StoreContainer(container, &pos, compressed->data()));
   PIK_CHECK(StoreHeader(header, &pos, compressed->data()));
   WriteZeroesToByteBoundary(&pos, compressed->data());
   if (!BrunsliV2EncodeJpegData(jpg, pos / 8, compressed)) {
@@ -761,40 +746,6 @@ bool BrunsliToPixels(const PaddedBytes& compressed, size_t pos,
 
 }  // namespace
 
-bool PixelsToBrunsli(const CompressParams& params, const Image3B& srgb,
-                     PaddedBytes* compressed, PikInfo* aux_out) {
-  const std::vector<uint8_t>& rgb = InterleavedFromImage3(srgb);
-  guetzli::JPEGData jpeg;
-  if (params.butteraugli_distance >= 0.0) {
-    guetzli::Params guetzli_params;
-    guetzli_params.butteraugli_target = params.butteraugli_distance;
-    if (!guetzli::Process(guetzli_params, rgb, srgb.xsize(), srgb.ysize(),
-                          &jpeg)) {
-      return PIK_FAILURE("Guetzli processing failed.");
-    }
-  } else {
-    uint8_t quant[3 * 64];
-    FillQuantMatrix(false, params.jpeg_quality, quant + 0 * 64);
-    FillQuantMatrix(true, params.jpeg_quality, quant + 1 * 64);
-    FillQuantMatrix(true, params.jpeg_quality, quant + 2 * 64);
-    if (!EncodeRGBToJpeg(rgb, srgb.xsize(), srgb.ysize(), quant, &jpeg)) {
-      return PIK_FAILURE("JPEG encoding failed.");
-    }
-  }
-  return JpegToPikLossless(jpeg, compressed, aux_out);
-}
-
-bool PixelsToBrunsli(const CompressParams& params, const Image3F& srgb,
-                     PaddedBytes* compressed, PikInfo* aux_out) {
-  return PIK_FAILURE("Brunsli not supported for Image3F");
-}
-
-template<typename T>
-bool PixelsToBrunsli(const CompressParams& params, const MetaImage<T>& image,
-                     PaddedBytes* compressed, PikInfo* aux_out) {
-  return PixelsToBrunsli(params, image.GetColor(), compressed, aux_out);
-}
-
 template<typename T>
 MetaImageF OpsinDynamicsMetaImage(const Image3<T>& image) {
   Image3F opsin = OpsinDynamicsImage(image);
@@ -815,9 +766,6 @@ bool PixelsToPikT(const CompressParams& params_in, const Image& image,
                   ThreadPool* pool, PaddedBytes* compressed, PikInfo* aux_out) {
   if (image.xsize() == 0 || image.ysize() == 0) {
     return PIK_FAILURE("Empty image");
-  }
-  if (params_in.use_brunsli_v2) {
-    return PixelsToBrunsli(params_in, image, compressed, aux_out);
   }
   MetaImageF opsin = OpsinDynamicsMetaImage(image);
 
@@ -850,6 +798,11 @@ bool PixelsToPikT(const CompressParams& params_in, const Image& image,
   if (params_in.butteraugli_distance > kMinButteraugliForDither) {
     header.flags |= Header::kDither;
   }
+
+  Container container;
+  size_t container_bits;
+  PIK_CHECK(CanEncode(container, &container_bits));
+
   size_t header_bits;
   if (!CanEncode(header, &header_bits)) return false;
 
@@ -865,7 +818,8 @@ bool PixelsToPikT(const CompressParams& params_in, const Image& image,
   if (!CanEncode(sections, &sections_bits)) return false;
 
   size_t pos = 0;
-  compressed->resize((header_bits + sections_bits + 7) / 8);
+  compressed->resize((container_bits + header_bits + sections_bits + 7) / 8);
+  if (!StoreContainer(container, &pos, compressed->data())) return false;
   if (!StoreHeader(header, &pos, compressed->data())) return false;
   if (!StoreSections(sections, &pos, compressed->data())) return false;
   WriteZeroesToByteBoundary(&pos, compressed->data());
@@ -975,7 +929,10 @@ bool OpsinToPik(const CompressParams& params, const Header& header,
                         pow(butteraugli_target, 0.65564410590742384 ));
     const float kQuantDC = 0.57 / butteraugli_target_dc;
     const float kQuantAC = ( 2.4528887094120813 ) / butteraugli_target;
-    ImageF qf = AdaptiveQuantizationMap(opsin_orig.GetColor().Plane(1), 8);
+    ImageF intensity_ac =
+        IntensityAcEstimate(opsin_orig.GetColor().Plane(1), pool);
+    ImageF qf = AdaptiveQuantizationMap(opsin_orig.GetColor().Plane(1),
+                                        intensity_ac, 8);
     quantizer.SetQuantField(kQuantDC, QuantField(ScaleImage(kQuantAC, qf)),
                             params);
   } else if (params.target_size > 0 || params.target_bitrate > 0.0) {
@@ -1040,14 +997,11 @@ bool JpegToPik(const CompressParams& params, const guetzli::JPEGData& jpeg,
     return JpegToPikLossless(jpeg, compressed, aux_out);
   }
 
-  guetzli::Params guetzli_params;
-  guetzli_params.butteraugli_target = params.butteraugli_distance;
-  guetzli_params.clear_metadata = params.clear_metadata;
-  guetzli::JPEGData jpeg_out;
-  if (!guetzli::Process(guetzli_params, jpeg, &jpeg_out)) {
-    return PIK_FAILURE("Guetzli processing failed.");
-  }
-  return JpegToPikLossless(jpeg_out, compressed, aux_out);
+  const std::vector<uint8_t>& interleaved = DecodeJpegToRGB(jpeg);
+  MetaImageB meta;
+  meta.SetColor(Image3FromInterleaved(interleaved.data(), jpeg.width,
+                                      jpeg.height, 3 * jpeg.width));
+  return PixelsToPik(params, meta, pool, compressed, aux_out);
 }
 
 bool ValidateHeaderFields(const Header& header,
@@ -1083,6 +1037,7 @@ class Decoder {
 
   bool ReadHeader() {
     PIK_CHECK(valid_ == 0);
+    if (!LoadContainer(&reader_, &container_)) return false;
     if (!LoadHeader(&reader_, &header_)) return false;
     valid_ |= kHeader;
     return true;
@@ -1122,6 +1077,7 @@ class Decoder {
 
   BitReader reader_;
   uint64_t valid_ = 0;
+  Container container_;
   Header header_;
   Sections sections_;
 };

@@ -26,7 +26,9 @@ namespace pik {
 // more fine-grained quantization should be used in the corresponding block
 // of the input image, while a value less than 1.0 indicates that less
 // fine-grained quantization should be enough.
-ImageF AdaptiveQuantizationMap(const ImageF& img, size_t resolution);
+ImageF AdaptiveQuantizationMap(const ImageF& img,
+                               const ImageF& img_ac,
+                               size_t resolution);
 
 }  // namespace pik
 

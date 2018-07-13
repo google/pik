@@ -100,7 +100,8 @@ std::vector<T> OptimizeWithScaledConjugateGradientMethod(
       alpha = mu / delta1;
       w1 = w + (alpha * p);
       fw1 = f.Compute(w1, &r1);
-      Delta = 2 * (fw - fw1) / (mu * alpha);
+      const T div = mu * alpha;
+      Delta = div == 0 ? 0 : 2 * (fw - fw1) / div;
       success = (fw1 <= fw);
       if (!success) {
         lambda += delta1 * (1 - Delta) / psq;

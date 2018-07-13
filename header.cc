@@ -14,88 +14,35 @@
 
 #include "header.h"
 
-#include <stdint.h>
-#include <string.h>
-#include <algorithm>
-
-#include "byte_order.h"
 #include "fields.h"
+#include "status.h"
 
 namespace pik {
-namespace {
-
-// T provides a non-const VisitFields (allows ReadFieldsVisitor to load fields),
-// so we need to cast const T to non-const for visitors that don't actually need
-// non-const (e.g. WriteFieldsVisitor).
-template <class Visitor, class T>
-void VisitFieldsConst(Visitor* visitor, const T& t) {
-  // Note: only called for Visitor that don't actually change T.
-  VisitFields(visitor, const_cast<T*>(&t));
-}
-
-// Stores and verifies the 4-byte file signature.
-class Magic {
- public:
-  static constexpr size_t EncodedBits() { return 32; }
-
-  static bool Verify(BitReader* PIK_RESTRICT reader) {
-    reader->FillBitBuffer();
-    // (FillBitBuffer ensures we can read up to 32 bits over several calls)
-    for (int i = 0; i < 4; ++i) {
-      if (reader->PeekFixedBits<8>() != String()[i]) {
-        return PIK_FAILURE("Wrong magic bytes");
-      }
-      reader->Advance(8);
-    }
-    return true;
-  }
-
-  static void Store(size_t* PIK_RESTRICT pos, uint8_t* storage) {
-#if PIK_BYTE_ORDER_LITTLE
-    uint32_t buf;
-    memcpy(&buf, String(), 4);
-    WriteBits(32, buf, pos, storage);
-#else
-    for (int i = 0; i < 4; ++i) {
-      WriteBits(8, String()[i], pos, storage);
-    }
-#endif
-  }
-
- private:
-  static const unsigned char* String() {
-    // \n causes files opened in text mode to be rejected, and \xCC detects
-    // 7-bit transfers (it is also an uppercase I with accent in ISO-8859-1).
-    return reinterpret_cast<const unsigned char*>("P\xCCK\n");
-  }
-};
-
-}  // namespace
 
 bool CanEncode(const Header& header, size_t* PIK_RESTRICT encoded_bits) {
-  const size_t magic_bits = Magic::EncodedBits();
-
-  CanEncodeFieldsVisitor visitor;
-  VisitFieldsConst(&visitor, header);
-  const bool ok = visitor.OK();
-  *encoded_bits = ok ? magic_bits + visitor.EncodedBits() : 0;
-  return ok;
+  return CanEncodeFields(header, encoded_bits);
 }
 
 bool LoadHeader(BitReader* reader, Header* PIK_RESTRICT header) {
-  if (!Magic::Verify(reader)) return false;
-
-  ReadFieldsVisitor visitor(reader);
-  VisitFields(&visitor, header);
+  LoadFields(reader, header);
   return true;
 }
 
 bool StoreHeader(const Header& header, size_t* pos, uint8_t* storage) {
-  Magic::Store(pos, storage);
+  return StoreFields(header, pos, storage);
+}
 
-  WriteFieldsVisitor visitor(pos, storage);
-  VisitFieldsConst(&visitor, header);
-  return visitor.OK();
+bool CanEncode(const Sections& sections, size_t* PIK_RESTRICT encoded_bits) {
+  return CanEncodeSectionsT(sections, encoded_bits);
+}
+
+bool LoadSections(BitReader* reader, Sections* PIK_RESTRICT sections) {
+  return LoadSectionsT(reader, sections);
+}
+
+bool StoreSections(const Sections& sections, size_t* PIK_RESTRICT pos,
+                   uint8_t* storage) {
+  return StoreSectionsT(sections, pos, storage);
 }
 
 }  // namespace pik

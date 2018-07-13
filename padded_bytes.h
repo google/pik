@@ -24,7 +24,7 @@
 namespace pik {
 
 // Subset of std::vector; allows WriteBits to write 64 bits at a time without
-// bounds checking.
+// bounds checking. Also takes care of zero-initializing the first byte.
 class PaddedBytes {
  public:
   // Required for output params.
@@ -34,6 +34,9 @@ class PaddedBytes {
       : size_(size),
         padded_size_(PaddedSize(size)),
         data_(AllocateArray(padded_size_)) {
+    // Zero-initialize first byte in case this is used by write_bits.h
+    data_[0] = 0;
+    // Zero-initialize padding
     memset(data_.get() + size_, 0, padded_size_ - size_);
   }
 

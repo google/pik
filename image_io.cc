@@ -19,12 +19,14 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
+#include <algorithm>
 #include <array>
 #include <memory>
 #include <utility>
 #include <vector>
 
 #include "third_party/lodepng/lodepng.h"
+#include "bits.h"
 #include "cache_aligned.h"
 #include "common.h"
 #include "compiler_specific.h"
@@ -45,6 +47,23 @@ extern "C" {
 
 namespace pik {
 namespace {
+
+static size_t PlanesFromPNGType(const LodePNGColorType type) {
+  switch (type) {
+    case LCT_GREY:
+      return 1;
+    case LCT_GREY_ALPHA:
+      return 2;
+    case LCT_RGB:
+      return 3;
+    case LCT_RGBA:
+    case LCT_PALETTE:
+      return 4;
+    default:
+      PIK_NOTIFY_ERROR("Unknown color mode");
+      return 1;
+  }
+}
 
 // Case-specific (filename may be UTF-8)
 bool EndsWith(const char* name, const char* suffix) {
@@ -74,6 +93,103 @@ class FileWrapper {
 };
 
 }  // namespace
+
+bool LoadFile(const std::string& pathname,
+              CacheAlignedUniquePtr* PIK_RESTRICT data,
+              size_t* PIK_RESTRICT data_size) {
+  FileWrapper f(pathname, "rb");
+  if (f == nullptr) return PIK_FAILURE("Failed to open file");
+
+  if (fseek(f, 0, SEEK_END) != 0) return PIK_FAILURE("Failed to seek end");
+  *data_size = ftell(f);
+  if (*data_size == 0) return PIK_FAILURE("Zero-length file");
+  if (fseek(f, 0, SEEK_SET) != 0) return PIK_FAILURE("Failed to seek set");
+
+  *data = AllocateArray(*data_size);
+  size_t pos = 0;
+  while (pos < *data_size) {
+    const size_t bytes_read = fread(data->get() + pos, 1, *data_size - pos, f);
+    if (bytes_read == 0) return PIK_FAILURE("Failed to read");
+    pos += bytes_read;
+  }
+  PIK_ASSERT(pos == *data_size);
+
+  return true;
+}
+
+bool InspectPNG(CacheAlignedUniquePtr&& data, const size_t data_size,
+                StoredImage* stored) {
+  unsigned w, h;
+  LodePNGState state;
+  lodepng_state_init(&state);
+  const unsigned err = lodepng_inspect(&w, &h, &state, data.get(), data_size);
+  if (err != 0) return false;
+  const LodePNGColorMode& color_mode = state.info_png.color;
+  stored->format = ImageFormat::kPNG;
+  stored->xsize = w;
+  stored->ysize = h;
+  // Ensure LodePNG expands anything less than 8 bits to 8.
+  stored->bit_depth = std::max(color_mode.bitdepth, 8u);
+  stored->num_components = PlanesFromPNGType(color_mode.colortype);
+  // TODO(janwas): metadata
+  stored->data = std::move(data);
+  return true;
+}
+
+bool InspectPNM(CacheAlignedUniquePtr&& data, const size_t data_size,
+                StoredImage* stored) {
+  const size_t kMinHeaderSize = 9;
+  if (data_size < kMinHeaderSize) return PIK_FAILURE("Too small for PNM");
+  if (data[0] != 'P') return false;
+  switch (data[1]) {
+    case 'F':
+      stored->num_components = 3;
+      stored->bit_depth = 32;
+      break;
+    case 'f':
+      stored->num_components = 1;
+      stored->bit_depth = 32;
+      break;
+    case '6':
+      stored->num_components = 3;
+      stored->bit_depth = 0;
+      break;
+    case '5':
+      stored->num_components = 1;
+      stored->bit_depth = 0;
+      break;
+    default:
+      return false;
+  }
+
+  float scale_or_max;
+  int offset;
+  const int num_fields =
+      sscanf(reinterpret_cast<const char*>(&data[2]), "\n%zu %zu\n%f\n%n",
+             &stored->xsize, &stored->ysize, &scale_or_max, &offset);
+  if (num_fields != 4) {
+    return PIK_FAILURE("Invalid PNM header");
+  }
+  PIK_ASSERT(offset >= 9);
+  // P5 or P6: max pixel value
+  if (stored->bit_depth == 0) {
+    const int32_t max = static_cast<int32_t>(scale_or_max);
+    stored->bit_depth = CeilLog2Nonzero(static_cast<uint32_t>(max));
+  }
+
+  stored->format = ImageFormat::kPNM;
+  stored->data = std::move(data);
+  stored->offset_to_pixels = offset;
+  // No metadata!
+  return true;
+}
+
+bool InspectImage(CacheAlignedUniquePtr&& data, const size_t data_size,
+                  StoredImage* stored) {
+  if (InspectPNG(std::move(data), data_size, stored)) return true;
+  if (InspectPNM(std::move(data), data_size, stored)) return true;
+  return false;
+}
 
 bool ReadImage(ImageFormatPNM, const std::string& pathname, ImageB* image) {
   FileWrapper f(pathname, "rb");
@@ -433,25 +549,8 @@ static LodePNGColorType PNGTypeFromNumPlanes(size_t num_planes) {
     case 4:
       return LCT_RGBA;
     default:
-      PIK_FAILURE("Invalid num_planes");
+      PIK_NOTIFY_ERROR("Invalid num_planes");
       return LCT_GREY;
-  }
-}
-
-static size_t PlanesFromPNGType(const LodePNGColorType type) {
-  switch (type) {
-    case LCT_GREY:
-      return 1;
-    case LCT_GREY_ALPHA:
-      return 2;
-    case LCT_RGB:
-      return 3;
-    case LCT_RGBA:
-    case LCT_PALETTE:
-      return 4;
-    default:
-      PIK_FAILURE("Unknown color mode");
-      return 1;
   }
 }
 
@@ -459,7 +558,7 @@ class PngReader {
  public:
   PngReader(const std::string& pathname) {
     if (lodepng::load_file(file_, pathname) != 0) {
-      PIK_FAILURE("Failed to read PNG");
+      PIK_NOTIFY_ERROR("Failed to read PNG");
     }
   }
 
@@ -490,7 +589,7 @@ class PngReader {
     std::vector<uint8_t> image;
     const LodePNGColorType color_type = PNGTypeFromNumPlanes(num_planes);
     if (lodepng::decode(image, w, h, file_, color_type, bit_depth) != 0) {
-      PIK_FAILURE("Failed to decode PNG");
+      PIK_NOTIFY_ERROR("Failed to decode PNG");
     }
     return image;
   }

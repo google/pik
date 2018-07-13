@@ -124,6 +124,8 @@ bool DecodeFromBitstream(const Header& header, const PaddedBytes& compressed,
                          ColorTransform* ctan, NoiseParams* noise_params,
                          Quantizer* quantizer, DecCache* cache);
 
+// Optionally dequantizes coefficients, optionally does DC preconditioning,
+// performs IDCT, and optionally applies image post-processing.
 // Uses (cache->eager_dequant ? cache->dc/ac : cache->quantized_dc/ac).
 Image3F ReconOpsinImage(const Header& header, const Quantizer& quantizer,
                         const ColorTransform& ctan, ThreadPool* pool,
@@ -131,6 +133,8 @@ Image3F ReconOpsinImage(const Header& header, const Quantizer& quantizer,
 
 void GaborishInverse(Image3F& opsin);
 Image3F ConvolveGaborish(const Image3F& in, ThreadPool* pool);
+
+ImageF IntensityAcEstimate(const ImageF &image, ThreadPool *pool);
 
 }  // namespace pik
 

@@ -154,7 +154,12 @@ class Quantizer {
   }
 
   float inv_quant_patch() const { return inv_quant_patch_; }
+
+  // Returns the DC quantization base value, which is currently global (not
+  // adaptive). The actual scale factor used to dequantize pixels in channel c
+  // is: inv_quant_dc() * DequantMatrix()[c * kBlockSize].
   float inv_quant_dc() const { return inv_quant_dc_; }
+
   float inv_quant_ac(int quant_x, int quant_y) const {
     return inv_global_scale_ / quant_img_ac_.Row(quant_y)[quant_x];
   }

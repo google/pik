@@ -24,14 +24,30 @@
 #include <vector>
 
 #include "arch_specific.h"
+#include "cache_aligned.h"
+#include "container.h"
 #include "image.h"
 #include "status.h"
 
 namespace pik {
 
-// Formats
-// IsExtension() = true if the filename appears to be an image of this format.
-// NativeImage3 is what to load from file before converting to linear RGB.
+enum class ImageFormat { kUnknown, kPNM, kPNG };
+
+struct StoredImage {
+  ImageFormat format = ImageFormat::kUnknown;
+  size_t xsize = 0;
+  size_t ysize = 0;
+  size_t bit_depth = 0;       // 8 => SRGB, anything else => f32 linear
+  size_t num_components = 0;  // including alpha
+  Metadata metadata;
+  CacheAlignedUniquePtr data;
+  size_t offset_to_pixels = 0;
+};
+
+bool LoadFile(const std::string& pathname, CacheAlignedUniquePtr* PIK_RESTRICT data, size_t* PIK_RESTRICT data_size);
+
+bool InspectImage(CacheAlignedUniquePtr&& data, const size_t data_size,
+                  StoredImage* PIK_RESTRICT stored);
 
 // PGM for 1 plane, PPM for 3 planes.
 struct ImageFormatPNM {

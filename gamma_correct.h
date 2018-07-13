@@ -42,7 +42,7 @@ PIK_INLINE float Srgb8ToLinearDirect(float val) {
   return 255.0 * std::pow(((val / 255.0) + 0.055) / 1.055, 2.4);
 }
 
-// Naive/direct computation used to initialize lookup table. In/out: 0-255.
+// Naive/direct computation used to compute polynomial. In/out: 0-255.
 PIK_INLINE double LinearToSrgb8Direct(double val) {
   // Tests fail if this is computed with single-precision.
   using T = double;

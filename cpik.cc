@@ -205,7 +205,9 @@ int CompressAndWrite(int argc, char** argv) {
   PaddedBytes compressed;
   if (!Compress(args, &pool, &compressed)) return 1;
 
-  if (!WriteFile(compressed, args.file_out)) return 1;
+  if (args.file_out != nullptr) {
+    if (!WriteFile(compressed, args.file_out)) return 1;
+  }
 
   if (args.print_profile == Override::kOn) {
     PROFILER_PRINT_RESULTS();

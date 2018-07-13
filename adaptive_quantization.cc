@@ -257,7 +257,9 @@ ImageF SubsampleWithMax(const ImageF& in, int factor) {
 
 }  // namespace
 
-ImageF AdaptiveQuantizationMap(const ImageF& img, size_t resolution) {
+ImageF AdaptiveQuantizationMap(const ImageF& img,
+                               const ImageF& img_ac,
+                               size_t resolution) {
   PROFILER_ZONE("aq AdaptiveQuantMap");
   static const int kSampleRate = 8;
   PIK_ASSERT(resolution % kSampleRate == 0);
@@ -284,9 +286,9 @@ ImageF AdaptiveQuantizationMap(const ImageF& img, size_t resolution) {
   if (resolution > kSampleRate) {
     out = SubsampleWithMax(out, resolution / kSampleRate);
   }
-  DctModulation(img, &out);
-  RangeModulation(img, &out);
-  HfModulation(img, &out);
+  DctModulation(img_ac, &out);
+  RangeModulation(img_ac, &out);
+  HfModulation(img_ac, &out);
   return out;
 }
 

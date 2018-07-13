@@ -184,7 +184,7 @@ bool NormalizeCounts(int* counts, int* omit_pos, const int length,
     // to create a histogram that is positive wherever the original one was.
     if (!RebalanceHistogram<true>(&targets[0], max_symbol, table_size,
                                   omit_pos, counts)) {
-      return PIK_FAILURE("Logic error: couldn't rebalance a histogram");;
+      return PIK_FAILURE("Logic error: couldn't rebalance a histogram");
     }
   }
   return true;
@@ -292,7 +292,7 @@ void BuildAndStoreANSEncodingData(const int* histogram,
   int num_symbols;
   int symbols[kMaxNumSymbolsForSmallCode] = { 0 };
   std::vector<int> counts(histogram, histogram + alphabet_size);
-  int omit_pos;
+  int omit_pos = 0;
   PIK_CHECK(NormalizeCounts(counts.data(), &omit_pos, alphabet_size,
                             ANS_LOG_TAB_SIZE, &num_symbols, symbols));
   ANSBuildInfoTable(counts.data(), alphabet_size, info);

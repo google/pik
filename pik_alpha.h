@@ -16,9 +16,9 @@
 #define PIK_ALPHA_H_
 
 #include <memory>
+#include "header.h"
 #include "image.h"
 #include "pik_params.h"
-#include "sections.h"
 
 namespace pik {
 

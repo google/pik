@@ -11,14 +11,6 @@ namespace pik {
 // REQUIRES: xsize() == 64*N
 Image3F UndoTransposeAndScale(const Image3F& transposed_scaled);
 
-// Returns a 8*N x 8*M image where each 8x8 block is produced with
-// ComputeBlockIDCTFloat() from the corresponding 64x1 block of
-// the coefficient image, which is obtained from UndoTransposeAndScale.
-// REQUIRES: coeffs.xsize() == 64*N, coeffs.ysize() == M.
-// Intended for testing deblocking algorithms.
-Image3F SlowIDCT(const Image3F& coeffs);
-Image3F SlowDCT(const Image3F& img);
-
 // Returns an N x M image by taking the DC coefficient from each 64x1 block.
 // REQUIRES: coeffs.xsize() == 64*N, coeffs.ysize() == M
 template <typename T>

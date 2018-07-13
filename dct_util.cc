@@ -36,54 +36,6 @@ Image3F UndoTransposeAndScale(const Image3F& transposed_scaled) {
   return out;
 }
 
-// Same as DCT below, except that coeffs are not transposed/scaled.
-Image3F SlowDCT(const Image3F& img) {
-  PIK_ASSERT(img.xsize() % 8 == 0);
-  PIK_ASSERT(img.ysize() % 8 == 0);
-  Image3F coeffs(img.xsize() * 8, img.ysize() / 8);
-  SIMD_ALIGN float block[64];
-  for (int c = 0; c < 3; ++c) {
-    for (size_t y = 0; y < coeffs.ysize(); ++y) {
-      const int yoff = y * 8;
-      float* PIK_RESTRICT row_out = coeffs.PlaneRow(c, y);
-      for (size_t x = 0; x < coeffs.xsize(); x += 64) {
-        const int xoff = x / 8;
-        for (int iy = 0; iy < 8; ++iy) {
-          const float* const PIK_RESTRICT row_in =
-              &img.PlaneRow(c, yoff + iy)[xoff];
-          memcpy(&block[iy * 8], row_in, 8 * sizeof(block[0]));
-        }
-        ComputeBlockDCTFloat(block);
-        memcpy(&row_out[x], block, sizeof(block));
-      }
-    }
-  }
-  return coeffs;
-}
-
-// Same as IDCT below, except that coeffs are not transposed/scaled.
-Image3F SlowIDCT(const Image3F& coeffs) {
-  PIK_ASSERT(coeffs.xsize() % 64 == 0);
-  Image3F img(coeffs.xsize() / 8, coeffs.ysize() * 8);
-  SIMD_ALIGN float block[64];
-  for (int c = 0; c < 3; ++c) {
-    for (size_t y = 0; y < coeffs.ysize(); ++y) {
-      const int yoff = y * 8;
-      const float* PIK_RESTRICT row_in = coeffs.ConstPlaneRow(c, y);
-      for (size_t x = 0; x < coeffs.xsize(); x += 64) {
-        const int xoff = x / 8;
-        memcpy(block, &row_in[x], sizeof(block));
-        ComputeBlockIDCTFloat(block);
-        for (int iy = 0; iy < 8; ++iy) {
-          float* const PIK_RESTRICT row_out = &img.PlaneRow(c, yoff + iy)[xoff];
-          memcpy(row_out, &block[iy * 8], 8 * sizeof(block[0]));
-        }
-      }
-    }
-  }
-  return img;
-}
-
 void ZeroOut2x2(Image3F* coeffs) {
   PIK_ASSERT(coeffs->xsize() % 64 == 0);
       for (int c = 0; c < 3; ++c) {
@@ -493,12 +445,10 @@ ImageF Upsample(const ImageF& image, int f) {
   int nys = image.ysize() * f;
   ImageF retval(nxs, nys);
   for (int ny = 0; ny < nys; ++ny) {
-    int y = ny  / f;
+    int y = ny / f;
     for (int nx = 0; nx < nxs; ++nx) {
       int x = nx / f;
-      for (int c = 0; c < 3; ++c) {
-        retval.Row(ny)[nx] = image.Row(y)[x];
-      }
+      retval.Row(ny)[nx] = image.Row(y)[x];
     }
   }
   return retval;

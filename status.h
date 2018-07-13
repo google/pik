@@ -49,9 +49,9 @@ inline bool PikFailure(const char* f, int l, const char* msg) {
   return false;
 }
 #define PIK_NOTIFY_ERROR(message_string)                                \
-  PikFailure(__FILE__, __LINE__, message_string);
+  (void)PikFailure(__FILE__, __LINE__, message_string)
 #define PIK_FAILURE(message_string)                        \
-  PikFailure(__FILE__, __LINE__, message_string);
+  PikFailure(__FILE__, __LINE__, message_string)
 #else
 #define PIK_NOTIFY_ERROR(message_string)
 #define PIK_FAILURE(message_string) false

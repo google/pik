@@ -38,6 +38,7 @@ namespace pik {
 
 // The predictors operate on DCT coefficients or perhaps original pixels.
 // Must be 16-bit because we have 128 bit vectors and 8 predictors.
+// Can be full-range [-32768, 32767].
 using DC = int16_t;
 
 // Predicts "in_y" coefficients within "rect_in" based on their neighbors and

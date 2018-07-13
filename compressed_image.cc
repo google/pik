@@ -1592,7 +1592,8 @@ bool DecodeFromBitstream(const Header& header, const PaddedBytes& compressed,
                                          reader, ctan, pool, cache, quantizer);
 }
 
-void AddPredictions_Smooth(const Image3F& dc, ThreadPool* pool,
+template<typename Func>
+void AddPredictions_Smooth(const Image3F& dc, Func mask, ThreadPool* pool,
                            const Image3F* PIK_RESTRICT dcoeffs,
                            Image3F* PIK_RESTRICT idct) {
   PROFILER_FUNC;
@@ -1600,11 +1601,14 @@ void AddPredictions_Smooth(const Image3F& dc, ThreadPool* pool,
   const Image3F upsampled_dc = BlurUpsampleDC(dc, pool);
 
   // Treats dcoeffs.DC as 0, then adds upsampled_dc after IDCT.
-  *idct = TransposedScaledIDCTAndAdd<DC_Zero>(*dcoeffs, upsampled_dc, pool);
+  *idct = TransposedScaledIDCTAndAdd<DC_Zero>(
+      *dcoeffs, mask, upsampled_dc, pool);
 }
 
-void AddPredictions(const Image3F& dc, ThreadPool* pool,
-                    Image3F* PIK_RESTRICT dcoeffs, Image3F* PIK_RESTRICT idct) {
+template<typename Func>
+void AddPredictions(const Image3F& dc, Func mask,
+                    ThreadPool* pool, Image3F* PIK_RESTRICT dcoeffs,
+                    Image3F* PIK_RESTRICT idct) {
   PROFILER_FUNC;
 
   // Sets dcoeffs.0 from DC and updates 189.
@@ -1612,7 +1616,20 @@ void AddPredictions(const Image3F& dc, ThreadPool* pool,
   // Updates dcoeffs _except_ 0189.
   UpSample4x4BlurDCT(pred2x2, 1.5f, 0.0f, pool, dcoeffs);
 
-  *idct = TransposedScaledIDCT(*dcoeffs, pool);
+  *idct = TransposedScaledIDCT(*dcoeffs, mask, pool);
+}
+
+ImageF IntensityAcEstimate(const ImageF &image, ThreadPool *pool) {
+  std::vector<float> blur = DCfiedGaussianKernel(5.5);
+  ImageF retval = Convolve(image, blur);
+  for (size_t y = 0; y < retval.ysize(); y++) {
+    float* PIK_RESTRICT retval_row = retval.Row(y);
+    const float* PIK_RESTRICT image_row = image.ConstRow(y);
+    for (size_t x = 0; x < retval.xsize(); ++x) {
+      retval_row[x] = image_row[x] - retval_row[x];
+    }
+  }
+  return retval;
 }
 
 Image3F ReconOpsinImage(const Header& header, const Quantizer& quantizer,
@@ -1663,14 +1680,18 @@ Image3F ReconOpsinImage(const Header& header, const Quantizer& quantizer,
     map.Unapply(&cache->dc);
   }
 
+  auto block_mask = (header.flags & Header::kBlockStrategy) ?
+      ([] (size_t bx, size_t by) { return (bool)((bx + by) & 1); }) :
+      ([] (size_t bx, size_t by) { return true; });
+
   Image3F idct(xsize_blocks * kBlockWidth, ysize_blocks * kBlockHeight);
 
   // AddPredictions* do not use the (invalid) DC component of cache->ac.
   // Does IDCT already internally to save work.
   if (header.flags & Header::kSmoothDCPred) {
-    AddPredictions_Smooth(cache->dc, pool, &cache->ac, &idct);
+    AddPredictions_Smooth(cache->dc, block_mask, pool, &cache->ac, &idct);
   } else {
-    AddPredictions(cache->dc, pool, &cache->ac, &idct);
+    AddPredictions(cache->dc, block_mask, pool, &cache->ac, &idct);
   }
 
   if (header.flags & Header::kGaborishTransform) {

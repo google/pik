@@ -38,15 +38,12 @@ struct CompressParams {
   int max_butteraugli_iters_guetzli_mode = 100;
 
   Override denoise = Override::kDefault;
-
   Override apply_noise = Override::kDefault;
-
-  bool use_brunsli_v2 = false;
 
   // Prints extra information after encoding.
   bool verbose = false;
 
-  float hf_asymmetry = 1.0;
+  float hf_asymmetry = 1.0f;
 };
 
 struct DecompressParams {
