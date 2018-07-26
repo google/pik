@@ -51,6 +51,8 @@ bool WriteFile(const PaddedBytes& compressed, const char* pathname) {
 
 struct CompressArgs {
   bool Init(int argc, char** argv) {
+    bool distance_specified = false;
+    bool target_size_specified = false;
     for (int i = 1; i < argc; i++) {
       if (argv[i][0] == '-') {
         const std::string arg = argv[i];
@@ -77,8 +79,10 @@ struct CompressArgs {
                     argv[i]);
             return false;
           }
+          distance_specified = true;
         } else if (arg == "--target_size") {
           if (!ParseUnsigned(argc, argv, &i, &params.target_size)) return false;
+          target_size_specified = true;
         } else {
           // Unknown arg or --help: caller will print help string
           return false;
@@ -93,6 +97,14 @@ struct CompressArgs {
           return false;
         }
       }
+    }
+
+    // The default distance is 1, and there is a check downstream that only one
+    // of distance and target_size is specified. Thus, if target_size is
+    // specified, we reset distance to -1 to avoid the error if it is
+    // unwarranted.
+    if (target_size_specified && !distance_specified) {
+      params.butteraugli_distance = -1.0f;
     }
 
     if (file_in == nullptr) {
