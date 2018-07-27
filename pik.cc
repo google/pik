@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -659,6 +660,7 @@ void CompressToTargetSize(const Image3F& opsin_orig, const Image3F& opsin,
   const float kIntervalLenThresh = 0.05f;
   float dist_bad = -1.0f;
   float dist_good = -1.0f;
+  size_t current_size = std::numeric_limits<size_t>::max();
   EncCache cache;
   for (;;) {
     float dist = 1.0f;
@@ -684,8 +686,10 @@ void CompressToTargetSize(const Image3F& opsin_orig, const Image3F& opsin,
         cparams, header, opsin, *quantizer, ctan, pool, &cache);
     PaddedBytes candidate = EncodeToBitstream(qcoeffs, *quantizer, noise_params,
                                               ctan, false, nullptr);
-    if (candidate.size() <= target_size) {
+    if (candidate.size() <= target_size ||
+        (target_size < candidate.size() && candidate.size() < current_size)) {
       dist_good = dist;
+      current_size = candidate.size();
       quantizer->GetQuantField(&quant_dc_good, &quant_ac_good);
     } else {
       dist_bad = dist;
