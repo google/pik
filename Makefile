@@ -66,11 +66,11 @@ all: $(addprefix bin/, cpik dpik butteraugli_main)
 # print an error message with helpful instructions if the brotli git submodule
 # is not checked out
 ifeq (,$(wildcard third_party/brotli/c/include/brotli/decode.h))
-$(error Brotli is required to make pik, run "git submodule init && git submodule update" to get it, then run make again)
+$(error Brotli is required to make pik, run "git submodule update --init" to get it, then run make again)
 endif
 
 third_party/brotli/libbrotli.a:
-	make -C third_party/brotli lib
+	$(MAKE) -C third_party/brotli lib
 
 obj/af_edge_preserving_filter_none.o: af_edge_preserving_filter.cc
 	@mkdir -p obj
@@ -102,6 +102,6 @@ clean:
 	[ ! -d obj ] || $(RM) -r -- obj/
 	[ ! -d bin ] || $(RM) -r -- bin/
 	[ ! -d lib ] || $(RM) -r -- lib/
-	make -C third_party/brotli clean
+	$(MAKE) -C third_party/brotli clean
 
 .PHONY: clean all install third_party/brotli/libbrotli.a
