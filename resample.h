@@ -564,7 +564,7 @@ class Upsampler8Base {
     const size_t out_ysize = out->ysize();
 
     // Short: single loop (ignore pool - not worthwhile).
-    if (out_ysize < kBorder) {
+    if (out_ysize <= 2 * kBorder) {
       for (size_t out_y = 0; out_y < out_ysize; ++out_y) {
         ProduceRow(horz, out_y, in, WrapMirror(), weights, out);
       }
@@ -592,7 +592,7 @@ class Upsampler8Base {
     const size_t out_ysize = out->ysize();
 
     // Short: single loop (ignore pool - not worthwhile).
-    if (out_ysize < kBorder) {
+    if (out_ysize <= 2 * kBorder) {
       for (int c = 0; c < 3; ++c) {
         for (size_t out_y = 0; out_y < out_ysize; ++out_y) {
           ProduceRow(horz, out_y, in.Plane(c), WrapMirror(), weights,
