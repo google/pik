@@ -662,6 +662,9 @@ void CompressToTargetSize(const Image3F& opsin_orig, const Image3F& opsin,
   float dist_good = -1.0f;
   size_t current_size = std::numeric_limits<size_t>::max();
   EncCache cache;
+  // Try to find dist_bad and dist_good such that size at dist_good <=
+  // target_size, size at dist_bad > target_size, and dist_good - dist_bad <
+  // kIntervalLenThresh.
   for (;;) {
     float dist = 1.0f;
     if (dist_good >= 0.0f && dist_bad >= 0.0f) {
@@ -672,11 +675,14 @@ void CompressToTargetSize(const Image3F& opsin_orig, const Image3F& opsin,
     } else if (dist_good >= 0.0f) {
       dist = dist_good * 0.8f;
       if (dist < 0.3) {
+        // Quality is already excellent at this point, no need to try and
+        // generate a bigger file for the sake of it.
         break;
       }
     } else if (dist_bad >= 0.0f) {
       dist = dist_bad * 1.25f;
       if (dist > 32.0f) {
+        // Conversely, quality is terrible enough here.
         break;
       }
     }
@@ -687,10 +693,14 @@ void CompressToTargetSize(const Image3F& opsin_orig, const Image3F& opsin,
     PaddedBytes candidate = EncodeToBitstream(qcoeffs, *quantizer, noise_params,
                                               ctan, false, nullptr);
     if (candidate.size() <= target_size ||
-        (target_size < candidate.size() && candidate.size() < current_size)) {
-      dist_good = dist;
+        // Even if the candidate is too big, we still pick it if we don't yet
+        // have an acceptable candidate and this is the smallest so far.
+        (target_size < current_size && candidate.size() < current_size)) {
       current_size = candidate.size();
       quantizer->GetQuantField(&quant_dc_good, &quant_ac_good);
+    }
+    if (candidate.size() <= target_size) {
+      dist_good = dist;
     } else {
       dist_bad = dist;
     }
