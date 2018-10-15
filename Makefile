@@ -2,9 +2,8 @@ SIMD_FLAGS := -march=haswell
 ROI_DETECTOR_FLAGS := -DROI_DETECTOR_OPENCV=1
 OPENCVDIR = ${OPENCV_STATIC_INSTALL_DIR}
 
-CXX = clang++
-CPP = clang++
-CC = clang
+CXX ?= clang++
+CC ?= clang
 
 INC_FLAGS = -I. -I../ -Ithird_party/brotli/c/include/
 
