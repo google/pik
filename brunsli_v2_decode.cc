@@ -41,7 +41,7 @@ int DecodeVarint(BrunsliV2Input* input, int max_bits) {
   return n;
 }
 
-bool DecodeQuantTables(BrunsliV2Input* input, guetzli::JPEGData* jpg) {
+Status DecodeQuantTables(BrunsliV2Input* input, guetzli::JPEGData* jpg) {
   int num_quant_tables = input->ReadBits(2) + 1;
   jpg->quant.resize(num_quant_tables);
   for (int i = 0; i < num_quant_tables; ++i) {
@@ -238,7 +238,7 @@ bool DecodeDC(int mcu_cols, int mcu_rows, int num_components,
       }
     }
   }
-  if (!ans.CheckCRC()) return false;
+  PIK_RETURN_IF_ERROR(ans.CheckCRC());
   if (in->error_) return false;
   return true;
 }
@@ -270,9 +270,7 @@ bool DecodeAC(const int mcu_cols, const int mcu_rows, const int num_components,
   ac.Init(in);
 
   for (int i = 0; i < num_components; ++i) {
-    if (!DecodeCoeffOrder(&comps[i].order[0], in)) {
-      return false;
-    }
+    PIK_RETURN_IF_ERROR(DecodeCoeffOrder(&comps[i].order[0], in));
   }
 
   int block_ipos = 0;
@@ -389,7 +387,7 @@ bool DecodeAC(const int mcu_cols, const int mcu_rows, const int num_components,
       }
     }
   }
-  if (!ans.CheckCRC()) return false;
+  PIK_RETURN_IF_ERROR(ans.CheckCRC());
   if (in->error_) return false;
   return true;
 }
@@ -401,8 +399,8 @@ struct JPEGDecodingState {
   std::vector<bool> block_state;
 };
 
-bool DecodeBase128(const uint8_t* data, const size_t len, size_t* pos,
-                   size_t* val) {
+Status DecodeBase128(const uint8_t* data, const size_t len, size_t* pos,
+                     size_t* val) {
   int shift = 0;
   uint64_t b;
   *val = 0;
@@ -417,11 +415,9 @@ bool DecodeBase128(const uint8_t* data, const size_t len, size_t* pos,
   return true;
 }
 
-bool DecodeDataLength(const uint8_t* data, const size_t len, size_t* pos,
-                      size_t* data_len) {
-  if (!DecodeBase128(data, len, pos, data_len)) {
-    return false;
-  }
+Status DecodeDataLength(const uint8_t* data, const size_t len, size_t* pos,
+                        size_t* data_len) {
+  PIK_RETURN_IF_ERROR(DecodeBase128(data, len, pos, data_len));
   return *data_len <= len && *pos <= len - *data_len;
 }
 
@@ -491,21 +487,20 @@ bool DecodeHeader(const uint8_t* data, const size_t len, size_t* pos,
   return true;
 }
 
-bool DecodeQuantDataSection(const uint8_t* data, const size_t len,
-                            guetzli::JPEGData* jpg) {
+Status DecodeQuantDataSection(const uint8_t* data, const size_t len,
+                              guetzli::JPEGData* jpg) {
   if (len == 0) {
     return false;
   }
   BrunsliV2Input input(data, len);
   input.InitBitReader();
-  if (!DecodeQuantTables(&input, jpg)) {
-    return false;
-  }
+  PIK_RETURN_IF_ERROR(DecodeQuantTables(&input, jpg));
   return !input.error_;
 }
 
-bool DecodeHistogramDataSection(const uint8_t* data, const size_t len,
-                                JPEGDecodingState* s, guetzli::JPEGData* jpg) {
+Status DecodeHistogramDataSection(const uint8_t* data, const size_t len,
+                                  JPEGDecodingState* s,
+                                  guetzli::JPEGData* jpg) {
   if (jpg->components.empty()) {
     // Histogram data can not be decoded without knowing the number of
     // components from the header.
@@ -523,14 +518,11 @@ bool DecodeHistogramDataSection(const uint8_t* data, const size_t len,
   }
   s->context_map.resize(num_contexts * kNumAvrgContexts);
   size_t num_histograms;
-  if (!DecodeContextMap(&s->context_map, &num_histograms, &input)) {
-    return false;
-  }
+  PIK_RETURN_IF_ERROR(
+      DecodeContextMap(&s->context_map, &num_histograms, &input));
   s->entropy_codes.resize(num_histograms);
   for (int i = 0; i < num_histograms; ++i) {
-    if (!s->entropy_codes[i].ReadFromBitStream(&input)) {
-      return false;
-    }
+    PIK_RETURN_IF_ERROR(s->entropy_codes[i].ReadFromBitStream(&input));
   }
   return ((input.Position() + 3) & ~3) <= len;
 }
@@ -592,8 +584,8 @@ void UnpredictDCWithY(const coeff_t* const PIK_RESTRICT coeffs_y,
   }
 }
 
-bool DecodeDCDataSection(const uint8_t* data, const size_t len,
-                         JPEGDecodingState* s, guetzli::JPEGData* jpg) {
+Status DecodeDCDataSection(const uint8_t* data, const size_t len,
+                           JPEGDecodingState* s, guetzli::JPEGData* jpg) {
   if (jpg->width == 0 || jpg->height == 0 || jpg->MCU_rows == 0 ||
       jpg->MCU_cols == 0 || jpg->components.empty() || jpg->quant.empty() ||
       s->context_map.empty()) {
@@ -613,11 +605,9 @@ bool DecodeDCDataSection(const uint8_t* data, const size_t len,
     v_samp[i] = c->v_samp_factor;
   }
   BrunsliV2Input in(data, len);
-  if (!DecodeDC(jpg->MCU_cols, jpg->MCU_rows, jpg->components.size(), h_samp,
-                v_samp, s->context_map, s->entropy_codes, coeffs,
-                &s->block_state, &in)) {
-    return false;
-  }
+  PIK_RETURN_IF_ERROR(DecodeDC(
+      jpg->MCU_cols, jpg->MCU_rows, jpg->components.size(), h_samp, v_samp,
+      s->context_map, s->entropy_codes, coeffs, &s->block_state, &in));
   // Unpredict
   const bool use_uv_prediction = jpg->components.size() == 3 &&
                                  jpg->max_h_samp_factor == 1 &&
@@ -637,8 +627,8 @@ bool DecodeDCDataSection(const uint8_t* data, const size_t len,
   return true;
 }
 
-bool DecodeACDataSection(const uint8_t* data, const size_t len,
-                         JPEGDecodingState* s, guetzli::JPEGData* jpg) {
+Status DecodeACDataSection(const uint8_t* data, const size_t len,
+                           JPEGDecodingState* s, guetzli::JPEGData* jpg) {
   if (jpg->width == 0 || jpg->height == 0 || jpg->MCU_rows == 0 ||
       jpg->MCU_cols == 0 || jpg->components.empty() || jpg->quant.empty() ||
       s->block_state.empty() || s->context_map.empty()) {
@@ -669,19 +659,18 @@ bool DecodeACDataSection(const uint8_t* data, const size_t len,
     v_samp[i] = c->v_samp_factor;
   }
   BrunsliV2Input in(data, len);
-  if (!DecodeAC(jpg->MCU_cols, jpg->MCU_rows, jpg->components.size(), h_samp,
-                v_samp, quant, s->context_bits, s->context_map,
-                s->entropy_codes, s->block_state, coeffs, &in)) {
-    return false;
-  }
+  PIK_RETURN_IF_ERROR(DecodeAC(jpg->MCU_cols, jpg->MCU_rows,
+                               jpg->components.size(), h_samp, v_samp, quant,
+                               s->context_bits, s->context_map,
+                               s->entropy_codes, s->block_state, coeffs, &in));
   return true;
 }
 
-bool BrunsliV2DecodeJpegData(const uint8_t* data, const size_t len,
-                             guetzli::JPEGData* jpg) {
+Status BrunsliV2DecodeJpegData(const uint8_t* data, const size_t len,
+                               guetzli::JPEGData* jpg) {
   size_t pos = 0;
 
-  if (!DecodeHeader(data, len, &pos, jpg)) return false;
+  PIK_RETURN_IF_ERROR(DecodeHeader(data, len, &pos, jpg));
 
   for (int i = 0; i < jpg->components.size(); ++i) {
     guetzli::JPEGComponent* c = &jpg->components[i];

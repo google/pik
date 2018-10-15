@@ -14,8 +14,8 @@ namespace pik {
 // The *jpg object is valid only as long as the input data is valid.
 // Returns true, unless the data is not valid brunsli v2 byte stream, or is
 // truncated.
-bool BrunsliV2DecodeJpegData(const uint8_t* data, const size_t len,
-                             guetzli::JPEGData* jpg);
+Status BrunsliV2DecodeJpegData(const uint8_t* data, const size_t len,
+                               guetzli::JPEGData* jpg);
 
 }  // namespace pik
 

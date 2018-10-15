@@ -15,31 +15,10 @@
 #ifndef ARCH_SPECIFIC_H_
 #define ARCH_SPECIFIC_H_
 
-// WARNING: this is a "restricted" header because it is included from
-// translation units compiled with different flags. This header and its
-// dependencies must not define any function unless it is static inline and/or
-// within namespace SIMD_NAMESPACE.
-//
-// Background: older GCC/Clang require flags such as -mavx2 before AVX2 SIMD
-// intrinsics can be used. These intrinsics are only used within blocks that
-// first verify CPU capabilities. However, the flag also allows the compiler to
-// generate AVX2 code in other places. This can violate the One Definition Rule,
-// which requires multiple instances of a function with external linkage
-// (e.g. extern inline in a header) to be "equivalent". To prevent the resulting
-// crashes on non-AVX2 CPUs, any header (transitively) included from a
-// translation unit compiled with different flags is "restricted". This means
-// all function definitions must have internal linkage (e.g. static inline), or
-// reside in namespace SIMD_NAMESPACE, which expands to a name unique to the
-// current compiler flags.
-//
-// Most C system headers are safe to include, but C++ headers should generally
-// be avoided because they often do not specify static linkage and cannot
-// reliably be wrapped in a namespace.
+#include <stddef.h>
+#include <stdint.h>
 
 #include "compiler_specific.h"
-#include "simd/port.h"
-
-#include <stdint.h>
 
 namespace pik {
 
@@ -67,7 +46,7 @@ double NominalClockRate();
 
 // Returns tsc_timer frequency, useful for converting ticks to seconds. This is
 // unaffected by CPU throttling ("invariant"). Thread-safe. Returns timebase
-// frequency on PPC and NominalClockRate on all other platforms.
+// frequency on PPC, NominalClockRate on X64, otherwise 1E9.
 double InvariantTicksPerSecond();
 
 #if PIK_ARCH_X64
@@ -82,8 +61,6 @@ void Cpuid(const uint32_t level, const uint32_t count,
 
 // Returns the APIC ID of the CPU on which we're currently running.
 uint32_t ApicId();
-
-float X64_Reciprocal12(const float x);
 
 #else
 

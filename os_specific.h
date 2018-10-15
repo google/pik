@@ -19,13 +19,9 @@
 
 namespace pik {
 
-// Returns current wall-clock time [seconds].
+// Returns current time [seconds] from a monotonic clock with unspecified
+// starting point - only suitable for computing elapsed time.
 double Now();
-
-// Sets this thread's priority to the maximum. This should not be called on
-// single-core systems. Requires elevated permissions. No effect on Linux
-// because it increases runtime and variability (issue #19).
-void RaiseThreadPriority();
 
 // Returns CPU numbers in [0, N), where N is the number of bits in the
 // thread's initial affinity (unaffected by any SetThreadAffinity).

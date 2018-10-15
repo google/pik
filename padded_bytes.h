@@ -17,44 +17,113 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 #include <memory>
 
 #include "cache_aligned.h"
+#include "status.h"
 
 namespace pik {
 
-// Subset of std::vector; allows WriteBits to write 64 bits at a time without
-// bounds checking. Also takes care of zero-initializing the first byte.
+// Provides a subset of the std::vector interface with some differences:
+// - allows WriteBits to write 64 bits at a time without bounds checking;
+// - ONLY zero-initializes the first byte (required by WriteBits);
+// - ensures cache-line alignment.
 class PaddedBytes {
  public:
   // Required for output params.
-  PaddedBytes() : size_(0), padded_size_(0), data_() {}
+  PaddedBytes() {}
 
-  PaddedBytes(size_t size)
-      : size_(size),
-        padded_size_(PaddedSize(size)),
-        data_(AllocateArray(padded_size_)) {
-    // Zero-initialize first byte in case this is used by write_bits.h
-    data_[0] = 0;
-    // Zero-initialize padding
-    memset(data_.get() + size_, 0, padded_size_ - size_);
+  explicit PaddedBytes(size_t size) : size_(size) {
+    if (size != 0) IncreaseCapacityTo(size);
   }
 
-  // Reallocates and copies if PaddedSize(size) > padded_size_. The common case
-  // of resizing to the final size after preallocating the upper bound is cheap.
-  void resize(size_t size);
+  PaddedBytes(const PaddedBytes& other) : size_(other.size_) {
+    if (size_ != 0) IncreaseCapacityTo(size_);
+    if (data() != nullptr) memcpy(data(), other.data(), size_);
+  }
+  PaddedBytes& operator=(const PaddedBytes& other) {
+    // Self-assignment is safe.
+    resize(other.size());
+    if (data() != nullptr) memmove(data(), other.data(), size_);
+    return *this;
+  }
 
-  const uint8_t* data() const { return data_.get(); }
-  uint8_t* data() { return data_.get(); }
+  PaddedBytes(PaddedBytes&& other) = default;
+  PaddedBytes& operator=(PaddedBytes&& other) = default;
+
+  void swap(PaddedBytes& other) {
+    std::swap(size_, other.size_);
+    std::swap(capacity_, other.capacity_);
+    std::swap(data_, other.data_);
+  }
+
+  void reserve(size_t capacity) {
+    if (capacity > capacity_) IncreaseCapacityTo(capacity);
+  }
+  // NOTE: unlike vector, this does not initialize the new data!
+  // However, we guarantee that write_bits can safely append after
+  // the resize, as we zero-initialize the first new byte of data.
+  void resize(size_t size) {
+    if (size > capacity_) IncreaseCapacityTo(size);
+    size_ = (data() == nullptr) ? 0 : size;
+  }
+  // Amortized constant complexity due to exponential growth.
+  void push_back(uint8_t x) {
+    if (size_ == capacity_) {
+      IncreaseCapacityTo(std::max<size_t>(3 * capacity_ / 2, 64));
+      if (data() == nullptr) return;
+    }
+
+    data_[size_++] = x;
+  }
+
   size_t size() const { return size_; }
+  size_t capacity() const { return capacity_; }
 
-  size_t padded_size() const { return padded_size_; }
+  uint8_t* data() { return data_.get(); }
+  const uint8_t* data() const { return data_.get(); }
+
+  // std::vector operations implemented in terms of the public interface above.
+
+  void clear() { resize(0); }
+  bool empty() const { return size() == 0; }
+
+  void assign(std::initializer_list<uint8_t> il) {
+    resize(il.size());
+    memcpy(data(), il.begin(), il.size());
+  }
+
+  uint8_t* begin() { return data(); }
+  const uint8_t* begin() const { return data(); }
+  uint8_t* end() { return begin() + size(); }
+  const uint8_t* end() const { return begin() + size(); }
+
+  uint8_t& operator[](const size_t i) {
+    PIK_ASSERT(i < size());
+    return data()[i];
+  }
+  const uint8_t& operator[](const size_t i) const {
+    PIK_ASSERT(i < size());
+    return data()[i];
+  }
+
+  uint8_t& back() {
+    PIK_ASSERT(size() != 0);
+    return data()[size() - 1];
+  }
+  const uint8_t& back() const {
+    PIK_ASSERT(size() != 0);
+    return data()[size() - 1];
+  }
 
  private:
-  static size_t PaddedSize(size_t size);
+  // Copies existing data to newly allocated "data_". If allocation fails,
+  // data() == nullptr and size_ = capacity_ = 0.
+  void IncreaseCapacityTo(size_t capacity);
 
-  size_t size_;
-  size_t padded_size_;
+  size_t size_ = 0;
+  size_t capacity_ = 0;
   CacheAlignedUniquePtr data_;
 };
 

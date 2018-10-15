@@ -25,7 +25,7 @@
 #include "data_parallel.h"
 #include "image.h"
 #include "profiler.h"
-#include "simd_helpers.h"
+#include "simd/simd.h"
 #include "status.h"
 #include "tile_flow.h"
 
@@ -33,7 +33,7 @@ namespace pik {
 
 // Usable by any 3x3 kernel; applied as-is without flipping.
 struct Weights3x3 {
-  // top/middle/bottom left/center/right, replicated 4x via PIK_REP4.
+  // top/middle/bottom left/center/right, replicated 4x via SIMD_REP4.
   float tl[4];
   float tc[4];
   float tr[4];
@@ -86,9 +86,9 @@ struct Laplacian3 {
     constexpr float w1 = 1.0f;
     constexpr float w2 = 0.0f;
     static constexpr Weights3x3 weights = {
-        {PIK_REP4(w2)}, {PIK_REP4(w1)}, {PIK_REP4(w2)},
-        {PIK_REP4(w1)}, {PIK_REP4(w0)}, {PIK_REP4(w1)},
-        {PIK_REP4(w2)}, {PIK_REP4(w1)}, {PIK_REP4(w2)}};
+        {SIMD_REP4(w2)}, {SIMD_REP4(w1)}, {SIMD_REP4(w2)},
+        {SIMD_REP4(w1)}, {SIMD_REP4(w0)}, {SIMD_REP4(w1)},
+        {SIMD_REP4(w2)}, {SIMD_REP4(w1)}, {SIMD_REP4(w2)}};
     return weights;
   }
 };
@@ -102,9 +102,9 @@ struct Lowpass3 {
     constexpr float w1 = 0.12820096f;
     constexpr float w2 = 0.03127668f;
     static constexpr Weights3x3 weights = {
-        {PIK_REP4(w2)}, {PIK_REP4(w1)}, {PIK_REP4(w2)},
-        {PIK_REP4(w1)}, {PIK_REP4(w0)}, {PIK_REP4(w1)},
-        {PIK_REP4(w2)}, {PIK_REP4(w1)}, {PIK_REP4(w2)}};
+        {SIMD_REP4(w2)}, {SIMD_REP4(w1)}, {SIMD_REP4(w2)},
+        {SIMD_REP4(w1)}, {SIMD_REP4(w0)}, {SIMD_REP4(w1)},
+        {SIMD_REP4(w2)}, {SIMD_REP4(w1)}, {SIMD_REP4(w2)}};
     return weights;
   }
 };
@@ -115,8 +115,8 @@ struct Lowpass5 {
     constexpr float w1 = 0.25539268f;
     constexpr float w2 = 0.03603267f;
     static constexpr WeightsSeparable5 weights = {
-        {PIK_REP4(w0), PIK_REP4(w1), PIK_REP4(w2)},
-        {PIK_REP4(w0), PIK_REP4(w1), PIK_REP4(w2)}};
+        {SIMD_REP4(w0), SIMD_REP4(w1), SIMD_REP4(w2)},
+        {SIMD_REP4(w0), SIMD_REP4(w1), SIMD_REP4(w2)}};
     return weights;
   }
 };
@@ -127,8 +127,8 @@ struct Gaussian5Sigma1 {
     constexpr float w1 = 0.24477f;
     constexpr float w2 = 0.06136f;
     static constexpr WeightsSeparable5 weights = {
-        {PIK_REP4(w0), PIK_REP4(w1), PIK_REP4(w2)},
-        {PIK_REP4(w0), PIK_REP4(w1), PIK_REP4(w2)}};
+        {SIMD_REP4(w0), SIMD_REP4(w1), SIMD_REP4(w2)},
+        {SIMD_REP4(w0), SIMD_REP4(w1), SIMD_REP4(w2)}};
     return weights;
   }
 };
@@ -139,8 +139,8 @@ struct Gaussian5Sigma2 {
     constexpr float w1 = 0.221461f;
     constexpr float w2 = 0.153388f;
     static constexpr WeightsSeparable5 weights = {
-        {PIK_REP4(w0), PIK_REP4(w1), PIK_REP4(w2)},
-        {PIK_REP4(w0), PIK_REP4(w1), PIK_REP4(w2)}};
+        {SIMD_REP4(w0), SIMD_REP4(w1), SIMD_REP4(w2)},
+        {SIMD_REP4(w0), SIMD_REP4(w1), SIMD_REP4(w2)}};
     return weights;
   }
 };
@@ -154,8 +154,8 @@ namespace slow {
 template <int64_t kRadius, class Wrap>
 class SeparableConvolution {
  public:
-  template <class ImageOrView, class Kernel>
-  static void Run(const ImageOrView& in, const size_t xsize, const size_t ysize,
+  template <class Kernel>
+  static void Run(const ImageF& in, const size_t xsize, const size_t ysize,
                   const Kernel& kernel, ImageF* out) {
     const float* horz_weights = &kernel.Weights().horz[0];
     const float* vert_weights = &kernel.Weights().vert[0];
@@ -169,8 +169,7 @@ class SeparableConvolution {
   }
 
  private:
-  template <class ImageOrView>
-  static float ConvolvePixel(const ImageOrView& in, const size_t xsize,
+  static float ConvolvePixel(const ImageF& in, const size_t xsize,
                              const size_t ysize, const size_t x, const size_t y,
                              const float* PIK_RESTRICT horz_weights,
                              const float* PIK_RESTRICT vert_weights) {
@@ -196,8 +195,8 @@ template <int64_t kRadius, class Wrap>
 struct Symmetric3x3Convolution {
   static_assert(kRadius == 1, "Wrong kRadius");
 
-  template <class ImageOrView, class Kernel>
-  static void Run(const ImageOrView& in, const size_t xsize, const size_t ysize,
+  template <class Kernel>
+  static void Run(const ImageF& in, const size_t xsize, const size_t ysize,
                   const Kernel& kernel, ImageF* out) {
     PIK_CHECK(xsize == out->xsize() && ysize == out->ysize());
     const Weights3x3& weights = kernel.Weights();
@@ -230,8 +229,8 @@ template <int64_t kRadius, class Wrap>
 struct General3x3Convolution {
   static_assert(kRadius == 1, "Wrong kRadius");
 
-  template <class ImageOrView, class Kernel>
-  static void Run(const ImageOrView& in, const size_t xsize, const size_t ysize,
+  template <class Kernel>
+  static void Run(const ImageF& in, const size_t xsize, const size_t ysize,
                   const Kernel& kernel, ImageF* out) {
     PIK_CHECK(xsize == out->xsize() && ysize == out->ysize());
     const Weights3x3& weights = kernel.Weights();
@@ -276,8 +275,7 @@ struct General3x3Convolution {
 template <int64_t kRadius, class Wrap>
 class SymmetricConvolution {
  public:
-  template <class ImageOrView>
-  static void Run(const ImageOrView& in, const size_t xsize, const size_t ysize,
+  static void Run(const ImageF& in, const size_t xsize, const size_t ysize,
                   const float (&weights)[(kRadius + 1) * (kRadius + 1)],
                   ImageF* out) {
     // Normalize all weights (expand quadrant into entire kernel)
@@ -316,9 +314,9 @@ class SymmetricConvolution {
   }
 
  private:
-  template <class WrapX, class WrapY, class ImageOrView>
+  template <class WrapX, class WrapY>
   static float ConvolvePixel(
-      const ImageOrView& in, const size_t xsize, const size_t ysize,
+      const ImageF& in, const size_t xsize, const size_t ysize,
       const int64_t ix, const int64_t iy,
       const float (&weights)[(kRadius + 1) * (kRadius + 1)]) {
     float sum = 0.0;
@@ -339,9 +337,9 @@ class SymmetricConvolution {
     return sum;
   }
 
-  template <class WrapY, class ImageOrView>
+  template <class WrapY>
   static inline void ConvolveRow(
-      const ImageOrView& in, const size_t xsize, const size_t ysize,
+      const ImageF& in, const size_t xsize, const size_t ysize,
       const int64_t iy, const float (&weights)[(kRadius + 1) * (kRadius + 1)],
       ImageF* PIK_RESTRICT out) {
     float* PIK_RESTRICT row_out = out->Row(iy);
@@ -365,15 +363,14 @@ class SymmetricConvolution {
 
 // Synthesizes left/right neighbors from a vector of center pixels.
 class Neighbors {
-  using D = SIMD_NAMESPACE::Full<float>;
+  using D = SIMD_FULL(float);
   using V = D::V;
   static const D d;
 
  public:
   // Returns l[i] == c[i - 1].
-  static PIK_INLINE V L1(const V c, const V p) {
+  static SIMD_ATTR PIK_INLINE V L1(const V c, const V p) {
     // For AVX-512: try permutex2var_ps.
-    using namespace SIMD_NAMESPACE;
 #if SIMD_TARGET_VALUE == SIMD_AVX2
     // c = PONM'LKJI, p = Hxxx'xxxx
     const V L_H = concat_lo_hi(c, p);
@@ -387,8 +384,7 @@ class Neighbors {
   }
 
   // Returns l[i] == c[Mirror(i - 1)].
-  static PIK_INLINE V FirstL1(const V c) {
-    using namespace SIMD_NAMESPACE;
+  static SIMD_ATTR PIK_INLINE V FirstL1(const V c) {
 #if SIMD_TARGET_VALUE == SIMD_AVX2
     SIMD_ALIGN constexpr int lanes[8] = {0, 0, 1, 2, 3, 4, 5, 6};
     const auto indices = set_table_indices(d, lanes);
@@ -403,8 +399,7 @@ class Neighbors {
   }
 
   // Returns l[i] == c[Mirror(i - 2)].
-  static PIK_INLINE V FirstL2(const V c) {
-    using namespace SIMD_NAMESPACE;
+  static SIMD_ATTR PIK_INLINE V FirstL2(const V c) {
 #if SIMD_TARGET_VALUE == SIMD_AVX2
     SIMD_ALIGN constexpr int lanes[8] = {1, 0, 0, 1, 2, 3, 4, 5};
     const auto indices = set_table_indices(d, lanes);
@@ -419,8 +414,7 @@ class Neighbors {
   }
 
   // Returns r[i] == c[i + 1].
-  static PIK_INLINE V R1(const V c, const V n) {
-    using namespace SIMD_NAMESPACE;
+  static SIMD_ATTR PIK_INLINE V R1(const V c, const V n) {
 #if SIMD_TARGET_VALUE == SIMD_AVX2
     // c = PONM'LKJI, n = xxxx'xxxQ
     const V Q_M = concat_lo_hi(n, c);             // Right-aligned (lower lane)
@@ -434,11 +428,10 @@ class Neighbors {
   }
 
   // Returns r[i] == c[i + 1].
-  static PIK_INLINE V LastR1(const V c) {
-    using namespace SIMD_NAMESPACE;
+  static SIMD_ATTR PIK_INLINE V LastR1(const V c) {
 #if SIMD_TARGET_VALUE == SIMD_AVX2
     SIMD_ALIGN constexpr uint32_t lanes[8] = {1, 2, 3, 4, 5, 6, 7, 7};
-    const auto indices = load(Full<uint32_t>(), lanes);
+    const auto indices = load(SIMD_FULL(uint32_t)(), lanes);
     // c = PONM'LKJI
     return V(_mm256_permutevar8x32_ps(c.raw, indices.raw));  // PPON'MLKJ
 #elif SIMD_TARGET_VALUE == SIMD_NONE
@@ -462,12 +455,12 @@ struct LeftRightValid {};
 // avoids needing PadImage.
 struct LeftRightInvalid {};
 
-// LeftRightInvalid requires xsize >= Full<float>::N + kConvolveMaxRadius.
+// LeftRightInvalid requires xsize >= SIMD_FULL(float)::N + kConvolveMaxRadius.
 static constexpr size_t kConvolveMaxRadius = 3;
 
 // For use by set_table_indices.
 static inline const int32_t* MirrorLanes(const size_t mod) {
-  SIMD_NAMESPACE::Full<float> d;
+  SIMD_FULL(float) d;
 #if SIMD_TARGET_VALUE == SIMD_AVX2
   // last  part  mirrored
   // 01234567| 76543210   loadedReg 76543210 mirroredReg 01234567
@@ -490,6 +483,7 @@ static inline const int32_t* MirrorLanes(const size_t mod) {
   };
   return idx_lanes + mod * d.N;
 #elif SIMD_TARGET_VALUE == SIMD_NONE
+  (void)d;  // silence warning about unused d
   return nullptr;  // do not call
 #else
   // 0123| 3210   loadedReg 3210 mirroredReg 0123
@@ -510,7 +504,7 @@ namespace strategy {
 
 // 3x3 convolution by symmetric kernel with a single scan through the input.
 class Symmetric3 {
-  using D = SIMD_NAMESPACE::Full<float>;
+  using D = SIMD_FULL(float);
   using V = D::V;
 
  public:
@@ -518,12 +512,10 @@ class Symmetric3 {
 
   // Only accesses pixels in [0, xsize).
   template <size_t kSizeModN, class WrapRow>
-  static PIK_INLINE void ConvolveRow(LeftRightInvalid,
-                                     const float* const PIK_RESTRICT row_m,
-                                     const size_t xsize, const int64_t stride,
-                                     const WrapRow& wrap_row,
-                                     const Weights3x3& weights,
-                                     float* const PIK_RESTRICT row_out) {
+  static SIMD_ATTR PIK_INLINE void ConvolveRow(
+      LeftRightInvalid, const float* const PIK_RESTRICT row_m,
+      const size_t xsize, const int64_t stride, const WrapRow& wrap_row,
+      const Weights3x3& weights, float* const PIK_RESTRICT row_out) {
     const D d;
     // t, m, b = top, middle, bottom row;
     const float* const PIK_RESTRICT row_t = wrap_row(row_m - stride, stride);
@@ -593,12 +585,11 @@ class Symmetric3 {
   }
 
   template <size_t kSizeModN, class WrapRow>
-  static PIK_INLINE void ConvolveRow(LeftRightValid,
-                                     const float* const PIK_RESTRICT row_m,
-                                     const size_t xsize, const int64_t stride,
-                                     const WrapRow& wrap_row,
-                                     const Weights3x3& PIK_RESTRICT weights,
-                                     float* const PIK_RESTRICT row_out) {
+  static SIMD_ATTR PIK_INLINE void ConvolveRow(
+      LeftRightValid, const float* const PIK_RESTRICT row_m, const size_t xsize,
+      const int64_t stride, const WrapRow& wrap_row,
+      const Weights3x3& PIK_RESTRICT weights,
+      float* const PIK_RESTRICT row_out) {
     const D d;
     // t, m, b = top, middle, bottom row;
     const float* const PIK_RESTRICT row_t = wrap_row(row_m - stride, stride);
@@ -618,10 +609,11 @@ class Symmetric3 {
  private:
   // Returns sum{x_i * w_i}.
   template <class V>
-  static PIK_INLINE V WeightedSum(const V tl, const V tc, const V tr,
-                                  const V ml, const V mc, const V mr,
-                                  const V bl, const V bc, const V br,
-                                  const V w0, const V w1, const V w2) {
+  static SIMD_ATTR PIK_INLINE V WeightedSum(const V tl, const V tc, const V tr,
+                                            const V ml, const V mc, const V mr,
+                                            const V bl, const V bc, const V br,
+                                            const V w0, const V w1,
+                                            const V w2) {
     const V sum_tb = tc + bc;
 
     // Faster than 5 mul + 4 FMA.
@@ -638,11 +630,11 @@ class Symmetric3 {
     return mul2;
   }
 
-  static PIK_INLINE V ConvolveValid(const float* PIK_RESTRICT row_t,
-                                    const float* PIK_RESTRICT row_m,
-                                    const float* PIK_RESTRICT row_b,
-                                    const int64_t x, const V w0, const V w1,
-                                    const V w2) {
+  static SIMD_ATTR PIK_INLINE V ConvolveValid(const float* PIK_RESTRICT row_t,
+                                              const float* PIK_RESTRICT row_m,
+                                              const float* PIK_RESTRICT row_b,
+                                              const int64_t x, const V w0,
+                                              const V w1, const V w2) {
     const D d;
     const V tc = load_unaligned(d, row_t + x);
     const V mc = load_unaligned(d, row_m + x);
@@ -659,7 +651,7 @@ class Symmetric3 {
 
 // 3x3, center column zero, right column = negated left column.
 class GradX3 {
-  using D = SIMD_NAMESPACE::Full<float>;
+  using D = SIMD_FULL(float);
   using V = D::V;
 
  public:
@@ -667,12 +659,10 @@ class GradX3 {
 
   // Only accesses pixels in [0, xsize).
   template <size_t kSizeModN, class WrapRow>
-  static PIK_INLINE void ConvolveRow(LeftRightInvalid,
-                                     const float* const PIK_RESTRICT row_m,
-                                     const size_t xsize, const int64_t stride,
-                                     const WrapRow& wrap_row,
-                                     const Weights3x3& weights,
-                                     float* const PIK_RESTRICT row_out) {
+  static SIMD_ATTR PIK_INLINE void ConvolveRow(
+      LeftRightInvalid, const float* const PIK_RESTRICT row_m,
+      const size_t xsize, const int64_t stride, const WrapRow& wrap_row,
+      const Weights3x3& weights, float* const PIK_RESTRICT row_out) {
     const D d;
     // t, m, b = top, middle, bottom row;
     const float* const PIK_RESTRICT row_t = wrap_row(row_m - stride, stride);
@@ -740,12 +730,11 @@ class GradX3 {
   }
 
   template <size_t kSizeModN, class WrapRow>
-  static PIK_INLINE void ConvolveRow(LeftRightValid,
-                                     const float* const PIK_RESTRICT row_m,
-                                     const size_t xsize, const int64_t stride,
-                                     const WrapRow& wrap_row,
-                                     const Weights3x3& PIK_RESTRICT weights,
-                                     float* const PIK_RESTRICT row_out) {
+  static SIMD_ATTR PIK_INLINE void ConvolveRow(
+      LeftRightValid, const float* const PIK_RESTRICT row_m, const size_t xsize,
+      const int64_t stride, const WrapRow& wrap_row,
+      const Weights3x3& PIK_RESTRICT weights,
+      float* const PIK_RESTRICT row_out) {
     const D d;
     // t, m, b = top, middle, bottom row;
     const float* const PIK_RESTRICT row_t = wrap_row(row_m - stride, stride);
@@ -764,9 +753,9 @@ class GradX3 {
  private:
   // Returns sum{x_i * w_i}.
   template <class V>
-  static PIK_INLINE V WeightedSum(const V tl, const V tr, const V ml,
-                                  const V mr, const V bl, const V br,
-                                  const V wtb, const V wm) {
+  static SIMD_ATTR PIK_INLINE V WeightedSum(const V tl, const V tr, const V ml,
+                                            const V mr, const V bl, const V br,
+                                            const V wtb, const V wm) {
     const V sub_m = ml - mr;
     const V mul_m = sub_m * wm;
     const V sub_t = tl - tr;
@@ -775,10 +764,11 @@ class GradX3 {
     return mul_add(sum_tb, wtb, mul_m);
   }
 
-  static PIK_INLINE V ConvolveValid(const float* PIK_RESTRICT row_t,
-                                    const float* PIK_RESTRICT row_m,
-                                    const float* PIK_RESTRICT row_b,
-                                    const int64_t x, const V wtb, const V wm) {
+  static SIMD_ATTR PIK_INLINE V ConvolveValid(const float* PIK_RESTRICT row_t,
+                                              const float* PIK_RESTRICT row_m,
+                                              const float* PIK_RESTRICT row_b,
+                                              const int64_t x, const V wtb,
+                                              const V wm) {
     const D d;
     const V tl = load_unaligned(d, row_t + x - 1);
     const V tr = load_unaligned(d, row_t + x + 1);
@@ -792,7 +782,7 @@ class GradX3 {
 
 // 3x3, center row zero, bottom row = negated top row.
 class GradY3 {
-  using D = SIMD_NAMESPACE::Full<float>;
+  using D = SIMD_FULL(float);
   using V = D::V;
 
  public:
@@ -800,12 +790,10 @@ class GradY3 {
 
   // Only accesses pixels in [0, xsize).
   template <size_t kSizeModN, class WrapRow>
-  static PIK_INLINE void ConvolveRow(LeftRightInvalid,
-                                     const float* const PIK_RESTRICT row_m,
-                                     const size_t xsize, const int64_t stride,
-                                     const WrapRow& wrap_row,
-                                     const Weights3x3& weights,
-                                     float* const PIK_RESTRICT row_out) {
+  static SIMD_ATTR PIK_INLINE void ConvolveRow(
+      LeftRightInvalid, const float* const PIK_RESTRICT row_m,
+      const size_t xsize, const int64_t stride, const WrapRow& wrap_row,
+      const Weights3x3& weights, float* const PIK_RESTRICT row_out) {
     const D d;
     // t, m, b = top, middle, bottom row;
     const float* const PIK_RESTRICT row_t = wrap_row(row_m - stride, stride);
@@ -865,12 +853,11 @@ class GradY3 {
   }
 
   template <size_t kSizeModN, class WrapRow>
-  static PIK_INLINE void ConvolveRow(LeftRightValid,
-                                     const float* const PIK_RESTRICT row_m,
-                                     const size_t xsize, const int64_t stride,
-                                     const WrapRow& wrap_row,
-                                     const Weights3x3& PIK_RESTRICT weights,
-                                     float* const PIK_RESTRICT row_out) {
+  static SIMD_ATTR PIK_INLINE void ConvolveRow(
+      LeftRightValid, const float* const PIK_RESTRICT row_m, const size_t xsize,
+      const int64_t stride, const WrapRow& wrap_row,
+      const Weights3x3& PIK_RESTRICT weights,
+      float* const PIK_RESTRICT row_out) {
     const D d;
     // t, m, b = top, middle, bottom row;
     const float* const PIK_RESTRICT row_t = wrap_row(row_m - stride, stride);
@@ -889,9 +876,9 @@ class GradY3 {
  private:
   // Returns sum{x_i * w_i}.
   template <class V>
-  static PIK_INLINE V WeightedSum(const V tl, const V tc, const V tr,
-                                  const V bl, const V bc, const V br,
-                                  const V wlr, const V wc) {
+  static SIMD_ATTR PIK_INLINE V WeightedSum(const V tl, const V tc, const V tr,
+                                            const V bl, const V bc, const V br,
+                                            const V wlr, const V wc) {
     const V sub_c = tc - bc;
     const V mul_c = sub_c * wc;
     const V sub_l = tl - bl;
@@ -900,9 +887,10 @@ class GradY3 {
     return mul_add(sum_lr, wlr, mul_c);
   }
 
-  static PIK_INLINE V ConvolveValid(const float* PIK_RESTRICT row_t,
-                                    const float* PIK_RESTRICT row_b,
-                                    const int64_t x, const V wlr, const V wc) {
+  static SIMD_ATTR PIK_INLINE V ConvolveValid(const float* PIK_RESTRICT row_t,
+                                              const float* PIK_RESTRICT row_b,
+                                              const int64_t x, const V wlr,
+                                              const V wc) {
     const D d;
     const V tc = load_unaligned(d, row_t + x);
     const V bc = load_unaligned(d, row_b + x);
@@ -916,7 +904,7 @@ class GradY3 {
 
 // 3x3, all but corners zero, br = -tl.
 class Corner3 {
-  using D = SIMD_NAMESPACE::Full<float>;
+  using D = SIMD_FULL(float);
   using V = D::V;
 
  public:
@@ -924,12 +912,10 @@ class Corner3 {
 
   // Only accesses pixels in [0, xsize).
   template <size_t kSizeModN, class WrapRow>
-  static PIK_INLINE void ConvolveRow(LeftRightInvalid,
-                                     const float* const PIK_RESTRICT row_m,
-                                     const size_t xsize, const int64_t stride,
-                                     const WrapRow& wrap_row,
-                                     const Weights3x3& weights,
-                                     float* const PIK_RESTRICT row_out) {
+  static SIMD_ATTR PIK_INLINE void ConvolveRow(
+      LeftRightInvalid, const float* const PIK_RESTRICT row_m,
+      const size_t xsize, const int64_t stride, const WrapRow& wrap_row,
+      const Weights3x3& weights, float* const PIK_RESTRICT row_out) {
     const D d;
     // t, m, b = top, middle, bottom row;
     const float* const PIK_RESTRICT row_t = wrap_row(row_m - stride, stride);
@@ -988,12 +974,11 @@ class Corner3 {
   }
 
   template <size_t kSizeModN, class WrapRow>
-  static PIK_INLINE void ConvolveRow(LeftRightValid,
-                                     const float* const PIK_RESTRICT row_m,
-                                     const size_t xsize, const int64_t stride,
-                                     const WrapRow& wrap_row,
-                                     const Weights3x3& PIK_RESTRICT weights,
-                                     float* const PIK_RESTRICT row_out) {
+  static SIMD_ATTR PIK_INLINE void ConvolveRow(
+      LeftRightValid, const float* const PIK_RESTRICT row_m, const size_t xsize,
+      const int64_t stride, const WrapRow& wrap_row,
+      const Weights3x3& PIK_RESTRICT weights,
+      float* const PIK_RESTRICT row_out) {
     const D d;
     // t, m, b = top, middle, bottom row;
     const float* const PIK_RESTRICT row_t = wrap_row(row_m - stride, stride);
@@ -1011,17 +996,17 @@ class Corner3 {
  private:
   // Returns sum{x_i * w_i}.
   template <class V>
-  static PIK_INLINE V WeightedSum(const V tl, const V tr, const V bl,
-                                  const V br, const V w) {
+  static SIMD_ATTR PIK_INLINE V WeightedSum(const V tl, const V tr, const V bl,
+                                            const V br, const V w) {
     const V sub_l = tl - bl;
     const V sub_r = br - tr;
     const V sum = sub_l + sub_r;
     return sum * w;
   }
 
-  static PIK_INLINE V ConvolveValid(const float* PIK_RESTRICT row_t,
-                                    const float* PIK_RESTRICT row_b,
-                                    const int64_t x, const V w) {
+  static SIMD_ATTR PIK_INLINE V ConvolveValid(const float* PIK_RESTRICT row_t,
+                                              const float* PIK_RESTRICT row_b,
+                                              const int64_t x, const V w) {
     const D d;
     const V tl = load_unaligned(d, row_t + x - 1);
     const V tr = load_unaligned(d, row_t + x + 1);
@@ -1033,7 +1018,7 @@ class Corner3 {
 
 // 3x3, NSEW = 1 and corners == 0.
 class Laplacian3 {
-  using D = SIMD_NAMESPACE::Full<float>;
+  using D = SIMD_FULL(float);
   using V = D::V;
 
  public:
@@ -1041,12 +1026,10 @@ class Laplacian3 {
 
   // Only accesses pixels in [0, xsize).
   template <size_t kSizeModN, class WrapRow>
-  static PIK_INLINE void ConvolveRow(LeftRightInvalid,
-                                     const float* const PIK_RESTRICT row_m,
-                                     const size_t xsize, const int64_t stride,
-                                     const WrapRow& wrap_row,
-                                     const Weights3x3& weights,
-                                     float* const PIK_RESTRICT row_out) {
+  static SIMD_ATTR PIK_INLINE void ConvolveRow(
+      LeftRightInvalid, const float* const PIK_RESTRICT row_m,
+      const size_t xsize, const int64_t stride, const WrapRow& wrap_row,
+      const Weights3x3& weights, float* const PIK_RESTRICT row_out) {
     const D d;
     // t, m, b = top, middle, bottom row;
     const float* const PIK_RESTRICT row_t = wrap_row(row_m - stride, stride);
@@ -1112,12 +1095,10 @@ class Laplacian3 {
 
   // Weights: Manhattan distance 0 = center, 1 = 4-neighborhood, 2 = diagonal.
   template <size_t kSizeModN, class WrapRow>
-  static PIK_INLINE void ConvolveRow(LeftRightValid,
-                                     const float* const PIK_RESTRICT row_m,
-                                     const size_t xsize, const int64_t stride,
-                                     const WrapRow& wrap_row,
-                                     const Weights3x3& weights,
-                                     float* const PIK_RESTRICT row_out) {
+  static SIMD_ATTR PIK_INLINE void ConvolveRow(
+      LeftRightValid, const float* const PIK_RESTRICT row_m, const size_t xsize,
+      const int64_t stride, const WrapRow& wrap_row, const Weights3x3& weights,
+      float* const PIK_RESTRICT row_out) {
     const D d;
     // t, m, b = top, middle, bottom row;
     const float* const PIK_RESTRICT row_t = wrap_row(row_m - stride, stride);
@@ -1154,19 +1135,17 @@ class Laplacian3 {
 
 // 5x5 convolution by separable kernel with a single scan through the input.
 class Separable5 {
-  using D = SIMD_NAMESPACE::Full<float>;
+  using D = SIMD_FULL(float);
   using V = D::V;
 
  public:
   static constexpr int64_t kRadius = 2;
 
   template <size_t kSizeModN, class WrapRow>
-  static PIK_INLINE void ConvolveRow(LeftRightInvalid,
-                                     const float* const PIK_RESTRICT row_m,
-                                     const size_t xsize, const int64_t stride,
-                                     const WrapRow& wrap_row,
-                                     const WeightsSeparable5& weights,
-                                     float* const PIK_RESTRICT row_out) {
+  static SIMD_ATTR PIK_INLINE void ConvolveRow(
+      LeftRightInvalid, const float* const PIK_RESTRICT row_m,
+      const size_t xsize, const int64_t stride, const WrapRow& wrap_row,
+      const WeightsSeparable5& weights, float* const PIK_RESTRICT row_out) {
     const D d;
     const int64_t neg_stride = -stride;  // allows LEA addressing.
     const float* const PIK_RESTRICT row_t2 =
@@ -1258,12 +1237,10 @@ class Separable5 {
   }
 
   template <size_t kSizeModN, class WrapRow>
-  static PIK_INLINE void ConvolveRow(LeftRightValid,
-                                     const float* const PIK_RESTRICT row_m,
-                                     const size_t xsize, const int64_t stride,
-                                     const WrapRow& wrap_row,
-                                     const WeightsSeparable5& weights,
-                                     float* const PIK_RESTRICT row_out) {
+  static SIMD_ATTR PIK_INLINE void ConvolveRow(
+      LeftRightValid, const float* const PIK_RESTRICT row_m, const size_t xsize,
+      const int64_t stride, const WrapRow& wrap_row,
+      const WeightsSeparable5& weights, float* const PIK_RESTRICT row_out) {
     const D d;
     const int64_t neg_stride = -stride;  // allows LEA addressing.
     const float* const PIK_RESTRICT row_t2 =
@@ -1300,9 +1277,9 @@ class Separable5 {
 
  private:
   // Same as HorzConvolve for the first/last vector in a row.
-  static PIK_INLINE V HorzConvolveFirst(const float* const PIK_RESTRICT row,
-                                        const int64_t x, const int64_t xsize,
-                                        const V wh0, const V wh1, const V wh2) {
+  static SIMD_ATTR PIK_INLINE V HorzConvolveFirst(
+      const float* const PIK_RESTRICT row, const int64_t x, const int64_t xsize,
+      const V wh0, const V wh1, const V wh2) {
     const D d;
     const V c = load_unaligned(d, row + x);
     const V mul0 = c * wh0;
@@ -1324,9 +1301,9 @@ class Separable5 {
   }
 
   template <size_t kSizeModN>
-  static PIK_INLINE V HorzConvolveLast(const float* const PIK_RESTRICT row,
-                                       const int64_t x, const int64_t xsize,
-                                       const V wh0, const V wh1, const V wh2) {
+  static SIMD_ATTR PIK_INLINE V
+  HorzConvolveLast(const float* const PIK_RESTRICT row, const int64_t x,
+                   const int64_t xsize, const V wh0, const V wh1, const V wh2) {
     const D d;
     const V c = load_unaligned(d, row + x);
     const V mul0 = c * wh0;
@@ -1358,8 +1335,9 @@ class Separable5 {
   }
 
   // Requires kRadius valid pixels before/after pos.
-  static PIK_INLINE V HorzConvolve(const float* const PIK_RESTRICT pos,
-                                   const V wh0, const V wh1, const V wh2) {
+  static SIMD_ATTR PIK_INLINE V
+  HorzConvolve(const float* const PIK_RESTRICT pos, const V wh0, const V wh1,
+               const V wh2) {
     const D d;
     const V c = load_unaligned(d, pos);
     const V mul0 = c * wh0;
@@ -1380,10 +1358,6 @@ class Separable5 {
 
 }  // namespace strategy
 
-// Avoids all bounds checks, but requires ImageView input, e.g. TileFlow nodes
-// with Borders(kRadius) and TFWrap::kMirror for sources.
-struct BorderAlreadyValid {};
-
 // Avoids PadImage, but requires a strategy that supports LeftRightInvalid.
 struct BorderNeverUsed {};
 
@@ -1392,7 +1366,7 @@ struct BorderNeedsInit {};
 
 // 3x3 kernels require inputs at least this wide - for the first vector, they
 // load right neighbors (N lanes starting from x + 1).
-static constexpr size_t kConvolveMinWidth = SIMD_NAMESPACE::Full<float>::N + 1;
+static constexpr size_t kConvolveMinWidth = SIMD_FULL(float)::N + 1;
 
 // Single entry point for convolution.
 // "Strategy" (Direct*/Separable*) decides kernel size and how to evaluate it.
@@ -1401,137 +1375,165 @@ class ConvolveT {
   static constexpr int64_t kRadius = Strategy::kRadius;
 
  public:
-  // Wrappers for common case (no Border nor Executor).
-  template <class Kernel>
-  static PIK_INLINE void Run(const ImageF& in, const Kernel& kernel,
-                             const ImageF* out) {
-    Run(BorderNeverUsed(), ExecutorLoop(), in, kernel, out);
-  }
-  template <class Kernel>
-  static PIK_INLINE void Run(const Image3F& in, const Kernel& kernel,
-                             const Image3F* out) {
+  // Uses default Border/Executor. "Image" is ImageF or Image3F.
+  template <class Image, class Kernel>
+  static SIMD_ATTR PIK_INLINE void Run(const Image& in, const Kernel& kernel,
+                                       const Image* out) {
     Run(BorderNeverUsed(), ExecutorLoop(), in, kernel, out);
   }
 
   // "Border" is Border{NeverUsed/NeedsInit/AlreadyValid}.
   // "Executor": ExecutorPool uses a ThreadPool; ExecutorLoop just loops.
-  template <class Border, class Executor, class Kernel>
-  static PIK_INLINE void Run(const Border border, const Executor executor,
-                             const ImageF& in, const Kernel& kernel,
-                             const ImageF* out) {
+  // "Image" is ImageF or Image3F.
+  template <class Border, class Executor, class Image, class Kernel>
+  static SIMD_ATTR PIK_INLINE void Run(const Border border,
+                                       const Executor executor, const Image& in,
+                                       const Kernel& kernel, const Image* out) {
     PIK_CHECK(SameSize(in, *out));
-    const size_t xsize = in.xsize();
-    const size_t ysize = in.ysize();
-    PIK_CHECK(xsize >= kConvolveMinWidth);  // For BorderNeverUsed.
-
-    RunImpl(border, executor, in, xsize, ysize, kernel, out);
-  }
-  template <class Border, class Executor, class Kernel>
-  static PIK_INLINE void Run(const Border border, const Executor executor,
-                             const Image3F& in, const Kernel& kernel,
-                             const Image3F* out) {
-    PIK_CHECK(SameSize(in, *out));
-    const size_t xsize = in.xsize();
-    const size_t ysize = in.ysize();
-    PIK_CHECK(xsize >= kConvolveMinWidth);  // For BorderNeverUsed.
-
-    for (int c = 0; c < 3; ++c) {
-      RunImpl(border, executor, in.Plane(c), xsize, ysize, kernel,
-              &out->Plane(c));
-    }
-  }
-
-  // Border is typically BorderAlreadyValid if the TFNode has Borders(>0).
-  // It can also be BorderNeverUsed if called for a view of an entire image.
-  template <class Kernel, class Border>
-  static void RunView(const ConstImageViewF* in, const Kernel& kernel,
-                      const Border border, const OutputRegion& output_region,
-                      const MutableImageViewF* out) {
-    RunImpl(border, ExecutorLoop(), *in, output_region.xsize,
-            output_region.ysize, kernel, out);
+    PIK_CHECK(in.xsize() >= kConvolveMinWidth);  // For BorderNeverUsed.
+    RunImpl(border, executor, in, kernel, out);
   }
 
  private:
   template <size_t kSizeModN, class LeftRight, class WrapRow, class Kernel>
-  static PIK_INLINE void RunRow(const float* PIK_RESTRICT in,
-                                const size_t xsize, const int64_t stride,
-                                const WrapRow& wrap_row, const Kernel& kernel,
-                                const float* PIK_RESTRICT out) {
+  static SIMD_ATTR PIK_INLINE void RunRow(const float* PIK_RESTRICT in,
+                                          const size_t xsize,
+                                          const int64_t stride,
+                                          const WrapRow& wrap_row,
+                                          const Kernel& kernel,
+                                          const float* PIK_RESTRICT out) {
     // LeftRight value instead of template arg enables overload resolution.
     Strategy::template ConvolveRow<kSizeModN>(LeftRight(), in, xsize, stride,
                                               wrap_row, kernel.Weights(),
                                               const_cast<float*>(out));
   }
 
+  template <size_t kSizeModN, class LeftRight, class Kernel>
+  static SIMD_ATTR PIK_INLINE void RunBorder(const ImageF& in,
+                                             const int64_t ybegin,
+                                             const int64_t yend,
+                                             const Kernel& kernel,
+                                             const ImageF* out) {
+    const int64_t stride = in.bytes_per_row() / sizeof(float);
+    const WrapRowMirror wrap_row(in, in.ysize());
+    for (int64_t y = ybegin; y < yend; ++y) {
+      RunRow<kSizeModN, LeftRight>(in.ConstRow(y), in.xsize(), stride, wrap_row,
+                                   kernel, out->Row(y));
+    }
+  }
+
+  // Image3F.
+  template <size_t kSizeModN, class LeftRight, class Kernel>
+  static SIMD_ATTR PIK_INLINE void RunBorder(const Image3F& in,
+                                             const int64_t ybegin,
+                                             const int64_t yend,
+                                             const Kernel& kernel,
+                                             const Image3F* out) {
+    const int64_t stride = in.Plane(0).bytes_per_row() / sizeof(float);
+    for (size_t c = 0; c < 3; ++c) {
+      const WrapRowMirror wrap_row(in.Plane(c), in.ysize());
+      for (int64_t y = ybegin; y < yend; ++y) {
+        RunRow<kSizeModN, LeftRight>(in.ConstPlaneRow(c, y), in.xsize(), stride,
+                                     wrap_row, kernel, out->PlaneRow(c, y));
+      }
+    }
+  }
+
   // Threaded.
-  template <size_t kSizeModN, class LeftRight, class ImageOrConstView,
-            class Kernel, class ImageOrMutableView>
-  static PIK_INLINE void RunInterior(const ExecutorPool executor,
-                                     const ImageOrConstView& in,
-                                     const size_t xsize, const int64_t ybegin,
-                                     const int64_t yend, const int64_t stride,
-                                     const Kernel& kernel,
-                                     const ImageOrMutableView* out) {
+  template <size_t kSizeModN, class LeftRight, class Kernel>
+  static SIMD_ATTR PIK_INLINE void RunInterior(
+      const ExecutorPool executor, const ImageF& in, const int64_t ybegin,
+      const int64_t yend, const Kernel& kernel, const ImageF* out) {
     // There is no interior if ysize <= 2 * kRadius.
     if (ybegin >= yend) return;
 
-    executor.pool->Run(
-        ybegin, yend,
-        [&in, xsize, stride, &kernel, out](const int y, const int thread) {
-          RunRow<kSizeModN, LeftRight>(in.ConstRow(y), xsize, stride,
-                                       WrapRowUnchanged(), kernel, out->Row(y));
-        });
+    const int64_t stride = in.bytes_per_row() / sizeof(float);
+    executor.Run(ybegin, yend,
+                 [&in, stride, &kernel, out](const int y, const int thread) {
+                   RunRow<kSizeModN, LeftRight>(in.ConstRow(y), in.xsize(),
+                                                stride, WrapRowUnchanged(),
+                                                kernel, out->Row(y));
+                 },
+                 "Convolve");
   }
 
-  // No thread, just loop.
-  template <size_t kSizeModN, class LeftRight, class ImageOrConstView,
-            class Kernel, class ImageOrMutableView>
-  static PIK_INLINE void RunInterior(ExecutorLoop, const ImageOrConstView& in,
-                                     const size_t xsize, const int64_t ybegin,
-                                     const int64_t yend, const int64_t stride,
-                                     const Kernel& kernel,
-                                     const ImageOrMutableView* out) {
+  // Threaded, Image3.
+  template <size_t kSizeModN, class LeftRight, class Kernel>
+  static SIMD_ATTR PIK_INLINE void RunInterior(
+      const ExecutorPool executor, const Image3F& in, const int64_t ybegin,
+      const int64_t yend, const Kernel& kernel, const Image3F* out) {
+    // There is no interior if ysize <= 2 * kRadius.
+    if (ybegin >= yend) return;
+
+    const int64_t stride = in.Plane(0).bytes_per_row() / sizeof(float);
+    executor.Run(ybegin, yend,
+                 [&in, stride, &kernel, out](const int y, const int thread) {
+                   for (size_t c = 0; c < 3; ++c) {
+                     RunRow<kSizeModN, LeftRight>(
+                         in.ConstPlaneRow(c, y), in.xsize(), stride,
+                         WrapRowUnchanged(), kernel, out->PlaneRow(c, y));
+                   }
+                 },
+                 "Convolve3");
+  }
+
+  // Plain loop.
+  template <size_t kSizeModN, class LeftRight, class Kernel>
+  static SIMD_ATTR PIK_INLINE void RunInterior(ExecutorLoop, const ImageF& in,
+                                               const int64_t ybegin,
+                                               const int64_t yend,
+                                               const Kernel& kernel,
+                                               const ImageF* out) {
+    const int64_t stride = in.bytes_per_row() / sizeof(float);
     const float* row_in = in.ConstRow(ybegin);
     const float* row_out = out->Row(ybegin);  // RunRow casts to float*.
     for (int64_t y = ybegin; y < yend; ++y) {
-      RunRow<kSizeModN, LeftRight>(row_in, xsize, stride, WrapRowUnchanged(),
-                                   kernel, row_out);
+      RunRow<kSizeModN, LeftRight>(row_in, in.xsize(), stride,
+                                   WrapRowUnchanged(), kernel, row_out);
       row_in += in.bytes_per_row() / sizeof(float);
       row_out += out->bytes_per_row() / sizeof(float);
     }
   }
 
-  template <size_t kSizeModN, class LeftRight, class Executor,
-            class ImageOrConstView, class Kernel, class ImageOrMutableView>
-  static PIK_INLINE void RunWithBoundsChecks(const Executor executor,
-                                             const ImageOrConstView& in,
-                                             const size_t xsize,
-                                             const int64_t ysize,
-                                             const Kernel& kernel,
-                                             const ImageOrMutableView* out) {
-    const int64_t stride = in.bytes_per_row() / sizeof(float);
-    const WrapRowMirror wrap_row(in, ysize);
-
-    for (int64_t y = 0; y < kRadius; ++y) {
-      RunRow<kSizeModN, LeftRight>(in.ConstRow(y), xsize, stride, wrap_row,
-                                   kernel, out->Row(y));
+  // Plain loop, Image3.
+  template <size_t kSizeModN, class LeftRight, class Kernel>
+  static SIMD_ATTR PIK_INLINE void RunInterior(ExecutorLoop, const Image3F& in,
+                                               const int64_t ybegin,
+                                               const int64_t yend,
+                                               const Kernel& kernel,
+                                               const Image3F* out) {
+    const int64_t stride = in.Plane(0).bytes_per_row() / sizeof(float);
+    for (size_t c = 0; c < 3; ++c) {
+      const float* row_in = in.ConstPlaneRow(c, ybegin);
+      const float* row_out = out->PlaneRow(c, ybegin);  // Used as float*.
+      for (int64_t y = ybegin; y < yend; ++y) {
+        RunRow<kSizeModN, LeftRight>(row_in, in.xsize(), stride,
+                                     WrapRowUnchanged(), kernel, row_out);
+        row_in += in.Plane(0).bytes_per_row() / sizeof(float);
+        row_out += out->Plane(0).bytes_per_row() / sizeof(float);
+      }
     }
+  }
 
-    RunInterior<kSizeModN, LeftRight>(executor, in, xsize, kRadius,
-                                      ysize - kRadius, stride, kernel, out);
-
-    for (int64_t y = ysize - kRadius; y < ysize; ++y) {
-      RunRow<kSizeModN, LeftRight>(in.ConstRow(y), xsize, stride, wrap_row,
-                                   kernel, out->Row(y));
-    }
+  template <size_t kSizeModN, class LeftRight, class Executor, class Image,
+            class Kernel>
+  static SIMD_ATTR PIK_INLINE void RunWithBoundsChecks(const Executor executor,
+                                                       const Image& in,
+                                                       const Kernel& kernel,
+                                                       const Image* out) {
+    const int64_t ysize = in.ysize();
+    RunBorder<kSizeModN, LeftRight>(in, 0, kRadius, kernel, out);
+    RunInterior<kSizeModN, LeftRight>(executor, in, kRadius, ysize - kRadius,
+                                      kernel, out);
+    RunBorder<kSizeModN, LeftRight>(in, ysize - kRadius, ysize, kernel, out);
   }
 
   // Ensures each row has an additional vector's worth of valid values on the
   // right AND left borders (residing in otherwise unused padding area reserved
   // by BytesPerRow), initialized via mirroring with replication.
-  template <template <typename> class ImageOrView, typename T>
   static void PadImage(const size_t xsize, const size_t ysize,
-                       const ImageOrView<T>* image) {
+                       const ImageF* image) {
+    using T = float;
     PIK_ASSERT(xsize > kRadius && ysize > kRadius);
     static_assert(kRadius * sizeof(T) <= kMaxVectorSize, "Not enough padding");
 
@@ -1546,75 +1548,71 @@ class ConvolveT {
     }
   }
 
+  // Same for Image3.
+  static void PadImage(const size_t xsize, const size_t ysize,
+                       const Image3F* image) {
+    using T = float;
+    PIK_ASSERT(xsize > kRadius && ysize > kRadius);
+    static_assert(kRadius * sizeof(T) <= kMaxVectorSize, "Not enough padding");
+
+    for (size_t c = 0; c < 3; ++c) {
+      for (size_t y = 0; y < ysize; ++y) {
+        // Even if the image is const, we're allowed to overwrite its padding.
+        T* const PIK_RESTRICT row = const_cast<T*>(image->ConstPlaneRow(c, y));
+
+        for (int64_t i = 0; i < kRadius; ++i) {
+          row[xsize + i] = row[Mirror(xsize + i, xsize)];
+          row[-1 - i] = row[i];
+        }
+      }
+    }
+  }
+
   // Slow path: padding and bounds checks.
-  template <class Executor, class ImageOrConstView, class Kernel,
-            class ImageOrMutableView>
-  static PIK_INLINE void RunImpl(BorderNeedsInit, const Executor executor,
-                                 const ImageOrConstView& in, const size_t xsize,
-                                 const size_t ysize, const Kernel& kernel,
-                                 const ImageOrMutableView* out) {
+  template <class Executor, class Image, class Kernel>
+  static SIMD_ATTR PIK_INLINE void RunImpl(BorderNeedsInit,
+                                           const Executor executor,
+                                           const Image& in,
+                                           const Kernel& kernel,
+                                           const Image* out) {
     PROFILER_ZONE("Convolve slow");
     // Each RunRow requires that 2*kRadius+1 rows already be padded. Padding
     // the entire image pollutes the cache. We could pre-pad 2*kRadius rows and
     // then one row per RunRow, but callers who care about speed should anyway
     // use the other, faster Border modes.
-    PadImage(xsize, ysize, &in);
+    PadImage(in.xsize(), in.ysize(), &in);
 
-    switch (xsize % SIMD_NAMESPACE::Full<float>::N) {
+    switch (in.xsize() % SIMD_FULL(float)::N) {
       case 0:
-        return RunWithBoundsChecks<0, LeftRightValid>(executor, in, xsize,
-                                                      ysize, kernel, out);
+        return RunWithBoundsChecks<0, LeftRightValid>(executor, in, kernel,
+                                                      out);
       case 1:
-        return RunWithBoundsChecks<1, LeftRightValid>(executor, in, xsize,
-                                                      ysize, kernel, out);
+        return RunWithBoundsChecks<1, LeftRightValid>(executor, in, kernel,
+                                                      out);
       default:  // Only need <= kRadius
-        return RunWithBoundsChecks<2, LeftRightValid>(executor, in, xsize,
-                                                      ysize, kernel, out);
-    }
-  }
-
-  // Fast: already have extra columns AND rows => no bounds checks. Only
-  // possible with *ImageView because Image rows must be vector-aligned.
-  template <class Executor, class Kernel>
-  static PIK_INLINE void RunImpl(BorderAlreadyValid, const Executor executor,
-                                 const ConstImageViewF& in, const size_t xsize,
-                                 const size_t ysize, const Kernel& kernel,
-                                 const MutableImageViewF* out) {
-    PROFILER_ZONE("Convolve tile");
-    const int64_t stride = in.bytes_per_row() / sizeof(float);
-
-    switch (xsize % SIMD_NAMESPACE::Full<float>::N) {
-      case 0:
-        return RunInterior<0, LeftRightValid>(executor, in, xsize, 0, ysize,
-                                              stride, kernel, out);
-      case 1:
-        return RunInterior<1, LeftRightValid>(executor, in, xsize, 0, ysize,
-                                              stride, kernel, out);
-      default:  // Only need <= kRadius
-        return RunInterior<2, LeftRightValid>(executor, in, xsize, 0, ysize,
-                                              stride, kernel, out);
+        return RunWithBoundsChecks<2, LeftRightValid>(executor, in, kernel,
+                                                      out);
     }
   }
 
   // Fast: no padding, but bounds checks.
-  template <class ImageOrConstView, class Executor, class Kernel,
-            class ImageOrMutableView>
-  static PIK_INLINE void RunImpl(BorderNeverUsed, const Executor executor,
-                                 const ImageOrConstView& in, const size_t xsize,
-                                 const size_t ysize, const Kernel kernel,
-                                 const ImageOrMutableView* out) {
+  template <class Image, class Executor, class Kernel>
+  static SIMD_ATTR PIK_INLINE void RunImpl(BorderNeverUsed,
+                                           const Executor executor,
+                                           const Image& in, const Kernel kernel,
+                                           const Image* out) {
     PROFILER_ZONE("Convolve fast");
 
-    switch (xsize % SIMD_NAMESPACE::Full<float>::N) {
+    switch (in.xsize() % SIMD_FULL(float)::N) {
       case 0:
-        return RunWithBoundsChecks<0, LeftRightInvalid>(executor, in, xsize,
-                                                        ysize, kernel, out);
+        return RunWithBoundsChecks<0, LeftRightInvalid>(executor, in, kernel,
+                                                        out);
       case 1:
-        return RunWithBoundsChecks<1, LeftRightInvalid>(executor, in, xsize,
-                                                        ysize, kernel, out);
+        return RunWithBoundsChecks<1, LeftRightInvalid>(executor, in, kernel,
+                                                        out);
       default:  // Only need <= kRadius
-        return RunWithBoundsChecks<2, LeftRightInvalid>(executor, in, xsize,
-                                                        ysize, kernel, out);
+        return RunWithBoundsChecks<2, LeftRightInvalid>(executor, in, kernel,
+                                                        out);
     }
   }
 };

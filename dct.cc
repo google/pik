@@ -13,24 +13,9 @@
 // limitations under the License.
 
 #include "dct.h"
-#include <cmath>
-
-#define PROFILER_ENABLED 1
-#include "arch_specific.h"
-#include "compiler_specific.h"
-#include "profiler.h"
 
 namespace pik {
 
-void ComputeBlockDCTFloat(float block[kBlockSize]) {
-  ComputeTransposedScaledBlockDCTFloat(block);
-  TransposeBlock(block);
-  for (size_t y = 0; y < kBlockHeight; ++y) {
-    const float scale_y = static_cast<int>(kBlockSize) * kIDCTScales[y];
-    for (size_t x = 0; x < kBlockWidth; ++x) {
-      block[kBlockWidth * y + x] /= scale_y * kIDCTScales[x];
-    }
-  }
-}
+// Nothing here. This file remains, as it could be useful in the future.
 
 }  // namespace pik

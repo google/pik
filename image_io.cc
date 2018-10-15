@@ -27,9 +27,11 @@
 
 #include "third_party/lodepng/lodepng.h"
 #include "bits.h"
+#include "byte_order.h"
 #include "cache_aligned.h"
 #include "common.h"
 #include "compiler_specific.h"
+#include "file_io.h"
 #include "gamma_correct.h"
 #include "yuv_convert.h"
 
@@ -73,123 +75,7 @@ bool EndsWith(const char* name, const char* suffix) {
   return memcmp(name + name_len - suffix_len, suffix, suffix_len) == 0;
 }
 
-// RAII, ensures files are closed even when returning early.
-class FileWrapper {
- public:
-  FileWrapper(const std::string& pathname, const char* mode)
-      : file_(fopen(pathname.c_str(), mode)) {}
-
-  ~FileWrapper() {
-    if (file_ != nullptr) {
-      const int err = fclose(file_);
-      PIK_CHECK(err == 0);
-    }
-  }
-
-  operator FILE*() const { return file_; }
-
- private:
-  FILE* const file_;
-};
-
 }  // namespace
-
-bool LoadFile(const std::string& pathname,
-              CacheAlignedUniquePtr* PIK_RESTRICT data,
-              size_t* PIK_RESTRICT data_size) {
-  FileWrapper f(pathname, "rb");
-  if (f == nullptr) return PIK_FAILURE("Failed to open file");
-
-  if (fseek(f, 0, SEEK_END) != 0) return PIK_FAILURE("Failed to seek end");
-  *data_size = ftell(f);
-  if (*data_size == 0) return PIK_FAILURE("Zero-length file");
-  if (fseek(f, 0, SEEK_SET) != 0) return PIK_FAILURE("Failed to seek set");
-
-  *data = AllocateArray(*data_size);
-  size_t pos = 0;
-  while (pos < *data_size) {
-    const size_t bytes_read = fread(data->get() + pos, 1, *data_size - pos, f);
-    if (bytes_read == 0) return PIK_FAILURE("Failed to read");
-    pos += bytes_read;
-  }
-  PIK_ASSERT(pos == *data_size);
-
-  return true;
-}
-
-bool InspectPNG(CacheAlignedUniquePtr&& data, const size_t data_size,
-                StoredImage* stored) {
-  unsigned w, h;
-  LodePNGState state;
-  lodepng_state_init(&state);
-  const unsigned err = lodepng_inspect(&w, &h, &state, data.get(), data_size);
-  if (err != 0) return false;
-  const LodePNGColorMode& color_mode = state.info_png.color;
-  stored->format = ImageFormat::kPNG;
-  stored->xsize = w;
-  stored->ysize = h;
-  // Ensure LodePNG expands anything less than 8 bits to 8.
-  stored->bit_depth = std::max(color_mode.bitdepth, 8u);
-  stored->num_components = PlanesFromPNGType(color_mode.colortype);
-  // TODO(janwas): metadata
-  stored->data = std::move(data);
-  return true;
-}
-
-bool InspectPNM(CacheAlignedUniquePtr&& data, const size_t data_size,
-                StoredImage* stored) {
-  const size_t kMinHeaderSize = 9;
-  if (data_size < kMinHeaderSize) return PIK_FAILURE("Too small for PNM");
-  if (data[0] != 'P') return false;
-  switch (data[1]) {
-    case 'F':
-      stored->num_components = 3;
-      stored->bit_depth = 32;
-      break;
-    case 'f':
-      stored->num_components = 1;
-      stored->bit_depth = 32;
-      break;
-    case '6':
-      stored->num_components = 3;
-      stored->bit_depth = 0;
-      break;
-    case '5':
-      stored->num_components = 1;
-      stored->bit_depth = 0;
-      break;
-    default:
-      return false;
-  }
-
-  float scale_or_max;
-  int offset;
-  const int num_fields =
-      sscanf(reinterpret_cast<const char*>(&data[2]), "\n%zu %zu\n%f\n%n",
-             &stored->xsize, &stored->ysize, &scale_or_max, &offset);
-  if (num_fields != 4) {
-    return PIK_FAILURE("Invalid PNM header");
-  }
-  PIK_ASSERT(offset >= 9);
-  // P5 or P6: max pixel value
-  if (stored->bit_depth == 0) {
-    const int32_t max = static_cast<int32_t>(scale_or_max);
-    stored->bit_depth = CeilLog2Nonzero(static_cast<uint32_t>(max));
-  }
-
-  stored->format = ImageFormat::kPNM;
-  stored->data = std::move(data);
-  stored->offset_to_pixels = offset;
-  // No metadata!
-  return true;
-}
-
-bool InspectImage(CacheAlignedUniquePtr&& data, const size_t data_size,
-                  StoredImage* stored) {
-  if (InspectPNG(std::move(data), data_size, stored)) return true;
-  if (InspectPNM(std::move(data), data_size, stored)) return true;
-  return false;
-}
 
 bool ReadImage(ImageFormatPNM, const std::string& pathname, ImageB* image) {
   FileWrapper f(pathname, "rb");
@@ -199,9 +85,11 @@ bool ReadImage(ImageFormatPNM, const std::string& pathname, ImageB* image) {
 
   int mode;
   size_t xsize, ysize;
-  const int num_fields =
-      fscanf(f, "P%d\n%zu %zu\n255\n", &mode, &xsize, &ysize);
-  if (num_fields != 3) {
+  const int num_fields = fscanf(f, "P%d\n%zu %zu\n255", &mode, &xsize, &ysize);
+  // TODO(janwas): avoid fscanf because it can consume multiple whitespace
+  // chars; also allow comments.
+  char c = getc(f);
+  if (num_fields != 3 || !isspace(c)) {
     return PIK_FAILURE("Read header");
   }
   if (mode != 5) {
@@ -225,9 +113,11 @@ bool ReadImage(ImageFormatPNM, const std::string& pathname, Image3B* image) {
 
   int mode;
   size_t xsize, ysize;
-  const int num_fields =
-      fscanf(f, "P%d\n%zu %zu\n255\n", &mode, &xsize, &ysize);
-  if (num_fields != 3) {
+  const int num_fields = fscanf(f, "P%d\n%zu %zu\n255", &mode, &xsize, &ysize);
+  // TODO(janwas): avoid fscanf because it can consume multiple whitespace
+  // chars; also allow comments.
+  char c = getc(f);
+  if (num_fields != 3 || !isspace(c)) {
     return PIK_FAILURE("Read header");
   }
   if (mode != 6) {
@@ -287,10 +177,8 @@ class Y4MReader {
 
   int bit_depth() const { return bit_depth_; }
 
-  bool ReadHeader() {
-    if (!ReadLine()) {
-      return false;
-    }
+  Status ReadHeader() {
+    PIK_RETURN_IF_ERROR(ReadLine());
     if (memcmp(line_, "YUV4MPEG2 ", 10)) {
       return PIK_FAILURE("Invalid Y4M signature");
     }
@@ -356,8 +244,8 @@ class Y4MReader {
     return (xsize_ > 0 && ysize_ > 0);
   }
 
-  bool ReadFrame(Image3B* yuv) {
-    if (!ReadLine()) return false;
+  Status ReadFrame(Image3B* yuv) {
+    PIK_RETURN_IF_ERROR(ReadLine());
     if (memcmp(line_, "FRAME", 5)) {
       return PIK_FAILURE("Invalid frame header");
     }
@@ -380,8 +268,8 @@ class Y4MReader {
     return true;
   }
 
-  bool ReadFrame(Image3U* yuv) {
-    if (!ReadLine()) return false;
+  Status ReadFrame(Image3U* yuv) {
+    PIK_RETURN_IF_ERROR(ReadLine());
     if (memcmp(line_, "FRAME", 5)) {
       return PIK_FAILURE("Invalid frame header");
     }
@@ -447,9 +335,7 @@ bool ReadImage(ImageFormatY4M, const std::string& pathname, Image3B* image) {
     return PIK_FAILURE("File open");
   }
   Y4MReader reader(f);
-  if (!reader.ReadHeader()) {
-    return false;
-  }
+  PIK_RETURN_IF_ERROR(reader.ReadHeader());
   return reader.ReadFrame(image);
 }
 
@@ -460,9 +346,7 @@ bool ReadImage(ImageFormatY4M, const std::string& pathname, Image3U* image,
     return PIK_FAILURE("File open");
   }
   Y4MReader reader(f);
-  if (!reader.ReadHeader()) {
-    return false;
-  }
+  PIK_RETURN_IF_ERROR(reader.ReadHeader());
   *bit_depth = reader.bit_depth();
   return reader.ReadFrame(image);
 }
@@ -624,13 +508,12 @@ T PIK_INLINE ReadFromU16(const uint8_t* const p, const int bias) {
 // bias is 0x8000 when T=int16_t to convert the smallest unsigned value into
 // the smallest signed value.
 template <typename T>
-bool ReadPNGImage(const std::string& pathname, const int bias,
-                  Image<T>* image) {
+Status ReadPNGImage(const std::string& pathname, const int bias,
+                    Image<T>* image) {
   PngReader reader(pathname);
   size_t xsize, ysize, num_planes, bit_depth;
-  if (!reader.ReadHeader(&xsize, &ysize, &num_planes, &bit_depth)) {
-    return false;
-  }
+  PIK_RETURN_IF_ERROR(
+      reader.ReadHeader(&xsize, &ysize, &num_planes, &bit_depth));
   if (num_planes != 1) {
     return PIK_FAILURE("Wrong #planes");
   }
@@ -663,13 +546,12 @@ bool ReadPNGImage(const std::string& pathname, const int bias,
 
 // Adds alpha channel to the output image only if a non-opaque pixel is present.
 template <typename T>
-bool ReadPNGMetaImage(const std::string& pathname, const int bias,
-                      MetaImage<T>* image) {
+Status ReadPNGMetaImage(const std::string& pathname, const int bias,
+                        MetaImage<T>* image) {
   PngReader reader(pathname);
   size_t xsize, ysize, num_planes, bit_depth;
-  if (!reader.ReadHeader(&xsize, &ysize, &num_planes, &bit_depth)) {
-    return false;
-  }
+  PIK_RETURN_IF_ERROR(
+      reader.ReadHeader(&xsize, &ysize, &num_planes, &bit_depth));
   if (num_planes < 1 || num_planes > 4) {
     return PIK_FAILURE("Wrong #planes");
   }
@@ -804,9 +686,7 @@ template <typename T>
 bool ReadPNGImage3(const std::string& pathname, const int bias,
                    Image3<T>* image) {
   MetaImage<T> meta;
-  if (!ReadPNGMetaImage(pathname, bias, &meta)) {
-    return false;
-  }
+  PIK_RETURN_IF_ERROR(ReadPNGMetaImage(pathname, bias, &meta));
   if (meta.HasAlpha()) {
     return PIK_FAILURE("Translucent PNG not supported");
   }
@@ -1233,181 +1113,6 @@ bool ImageFormatY4M::IsExtension(const char* filename) {
 
 bool ImageFormatJPG::IsExtension(const char* filename) {
   return EndsWith(filename, "jpg") || EndsWith(filename, "jpeg");
-}
-
-// Returns true when the visitor returns true.
-template <class Visitor>
-bool VisitFormats(Visitor* visitor) {
-  if ((*visitor)(ImageFormatPNM())) return true;
-  if ((*visitor)(ImageFormatPNG())) return true;
-  if ((*visitor)(ImageFormatY4M())) return true;
-  if ((*visitor)(ImageFormatJPG())) return true;
-  return false;
-}
-
-// Returns true if the given file was loaded and converted to linear RGB.
-// Called via VisitFormats. To avoid opening and loading the file multiple
-// times, we first attempt to detect the format via file extension.
-class LinearLoader {
- public:
-  LinearLoader(const std::string& pathname, MetaImageF* linear_rgb)
-      : pathname_(pathname), linear_rgb_(linear_rgb) {}
-
-  void DisregardExtensions() { check_extension_ = false; }
-
-  template <class Format>
-  bool operator()(const Format format) {
-    if (check_extension_ && !Format::IsExtension(pathname_.c_str())) {
-      return false;
-    }
-
-    typename Format::NativeImage3 image;
-    if (!ReadImage(format, pathname_, &image)) {
-      return false;
-    }
-
-    ConvertToLinearRGB(format, std::move(image));
-    return true;
-  }
-
- private:
-  // Common case: from sRGB bytes
-  template <class Format>
-  void ConvertToLinearRGB(Format, const Image3B& bytes) {
-    linear_rgb_->SetColor(LinearFromSrgb(bytes));
-  }
-
-  // From YUV bytes
-  void ConvertToLinearRGB(ImageFormatY4M, const Image3B& bytes) {
-    linear_rgb_->SetColor(RGBLinearImageFromYUVRec709(
-        StaticCastImage3<uint8_t, uint16_t>(bytes), 8));
-  }
-
-  // From 16-bit sRGB
-  template <class Format>
-  void ConvertToLinearRGB(Format, const Image3U& srgb) {
-    linear_rgb_->SetColor(Image3F(srgb.xsize(), srgb.ysize()));
-    for (int c = 0; c < 3; ++c) {
-      for (size_t y = 0; y < srgb.ysize(); ++y) {
-        const uint16_t* PIK_RESTRICT row_rgb = srgb.PlaneRow(c, y);
-        float* PIK_RESTRICT row_lin = linear_rgb_->GetColor().PlaneRow(c, y);
-        for (size_t x = 0; x < srgb.xsize(); ++x) {
-          // Dividing the 16 value by 257 scales it to the [0.0, 255.0]
-          // interval. If the PNG was 8-bit, this has the same effect as
-          // casting the original 8-bit value to a float.
-          row_lin[x] = Srgb8ToLinearDirect(row_rgb[x] / 257.0f);
-        }
-      }
-    }
-  }
-
-  // From 16-bit signed
-  template <class Format>
-  void ConvertToLinearRGB(Format format, const MetaImageU& srgb) {
-    ConvertToLinearRGB(format, srgb.GetColor());
-    linear_rgb_->CopyAlpha(srgb);
-  }
-
-  // From 16-bit signed
-  template <class Format>
-  void ConvertToLinearRGB(Format, const Image3S& srgb) {
-    linear_rgb_->SetColor(Image3F(srgb.xsize(), srgb.ysize()));
-    for (int c = 0; c < 3; ++c) {
-      for (size_t y = 0; y < srgb.ysize(); ++y) {
-        const int16_t* PIK_RESTRICT row_rgb = srgb.PlaneRow(c, y);
-        float* PIK_RESTRICT row_lin = linear_rgb_->GetColor().PlaneRow(c, y);
-        for (size_t x = 0; x < srgb.xsize(); ++x) {
-          const int unsigned_value = row_rgb[x] + 0x8000;  // [0, 0x10000)
-          row_lin[x] = Srgb8ToLinearDirect(unsigned_value / 257.0);
-        }
-      }
-    }
-  }
-
-  // From 16-bit signed
-  template <class Format>
-  void ConvertToLinearRGB(Format format, const MetaImageS& srgb) {
-    ConvertToLinearRGB(format, srgb.GetColor());
-    linear_rgb_->CopyAlpha(srgb);
-  }
-
-  // From linear float (zero-copy)
-  template <class Format>
-  void ConvertToLinearRGB(Format, Image3F&& linear) {
-    linear_rgb_->SetColor(std::move(linear));
-  }
-
-  // From linear float (zero-copy)
-  template <class Format>
-  void ConvertToLinearRGB(Format, MetaImageF&& linear) {
-    *linear_rgb_ = std::move(linear);
-  }
-
-  const std::string pathname_;
-  MetaImageF* linear_rgb_;
-  bool check_extension_ = true;
-};
-
-MetaImageF ReadMetaImageLinear(const std::string& pathname) {
-  MetaImageF linear_rgb;
-  LinearLoader loader(pathname, &linear_rgb);
-
-  // First round: only attempt to load if extension matches.
-  if (VisitFormats(&loader)) {
-    return linear_rgb;
-  }
-
-  // Let each format load, regardless of extension.
-  loader.DisregardExtensions();
-  if (VisitFormats(&loader)) {
-    return linear_rgb;
-  }
-
-  PIK_NOTIFY_ERROR("Unsupported file format");
-  return linear_rgb;
-}
-
-Image3F ReadImage3Linear(const std::string& pathname) {
-  MetaImageF meta = ReadMetaImageLinear(pathname);
-  if (meta.HasAlpha()) {
-    PIK_NOTIFY_ERROR("Alpha channel not supported");
-  }
-  return std::move(meta.GetColor());
-}
-
-template <class ImageT>
-class LinearWriter {
- public:
-  LinearWriter(const ImageT* linear, const std::string& pathname)
-      : linear_(linear), pathname_(pathname) {}
-
-  template <class Format>
-  bool operator()(const Format format) {
-    if (!Format::IsExtension(pathname_.c_str())) {
-      return false;
-    }
-
-    WriteImage(Format(), Srgb8FromLinear(*linear_), pathname_);
-    return true;
-  }
-
- private:
-  const ImageT* const linear_;
-  const std::string pathname_;
-};
-
-void WriteImageLinear(const ImageF& linear, const std::string& pathname) {
-  LinearWriter<ImageF> writer(&linear, pathname);
-  if (!VisitFormats(&writer)) {
-    PIK_NOTIFY_ERROR("Unsupported image extension");
-  }
-}
-
-void WriteImageLinear(const Image3F& linear, const std::string& pathname) {
-  LinearWriter<Image3F> writer(&linear, pathname);
-  if (!VisitFormats(&writer)) {
-    PIK_NOTIFY_ERROR("Unsupported image extension");
-  }
 }
 
 }  // namespace pik

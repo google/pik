@@ -73,11 +73,12 @@ class CacheAligned {
   // Overwrites "to_items" without loading it into cache (read-for-ownership).
   // Copies kCacheLineSize bytes from/to naturally aligned addresses.
   template <typename T>
-  static void StreamCacheLine(const T* PIK_RESTRICT from, T* PIK_RESTRICT to) {
+  static SIMD_ATTR void StreamCacheLine(const T* PIK_RESTRICT from,
+                                        T* PIK_RESTRICT to) {
     static_assert(16 % sizeof(T) == 0, "T must fit in a lane");
 #if SIMD_TARGET_VALUE != SIMD_NONE
     constexpr size_t kLanes = 16 / sizeof(T);
-    const SIMD_NAMESPACE::Part<T, kLanes> d;
+    const SIMD_PART(T, kLanes) d;
     PIK_COMPILER_FENCE;
     const auto v0 = load(d, from + 0 * kLanes);
     const auto v1 = load(d, from + 1 * kLanes);

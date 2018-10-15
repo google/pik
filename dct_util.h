@@ -6,63 +6,52 @@
 
 namespace pik {
 
-// Returns same size image, such that ComputeBlockIDCTFloat could be called
-// for each block (interpretation/layout: see TransposedScaledIDCT).
-// REQUIRES: xsize() == 64*N
-Image3F UndoTransposeAndScale(const Image3F& transposed_scaled);
-
 // Returns an N x M image by taking the DC coefficient from each 64x1 block.
 // REQUIRES: coeffs.xsize() == 64*N, coeffs.ysize() == M
-template <typename T>
-Image3<T> DCImage(const Image3<T>& coeffs) {
-  PIK_ASSERT(coeffs.xsize() % 64 == 0);
-  Image3<T> out(coeffs.xsize() / 64, coeffs.ysize());
-  for (int c = 0; c < 3; ++c) {
-    for (size_t y = 0; y < out.ysize(); ++y) {
-      const T* PIK_RESTRICT row_in = coeffs.ConstPlaneRow(c, y);
-      T* PIK_RESTRICT row_out = out.PlaneRow(c, y);
-      for (size_t x = 0; x < out.xsize(); ++x) {
-        row_out[x] = row_in[x * 64];
-      }
+template <size_t N, typename T>
+Image<T> DCImage(const Image<T>& coeffs) {
+  constexpr size_t block_size = N * N;
+  PIK_ASSERT(coeffs.xsize() % block_size == 0);
+  Image<T> out(coeffs.xsize() / block_size, coeffs.ysize());
+  for (size_t y = 0; y < out.ysize(); ++y) {
+    const T* PIK_RESTRICT row_in = coeffs.ConstRow(y);
+    T* PIK_RESTRICT row_out = out.Row(y);
+    for (size_t x = 0; x < out.xsize(); ++x) {
+      row_out[x] = row_in[x * block_size];
     }
   }
   return out;
 }
 
-// Scatters dc into "coeffs" at offset 0 within 1x64 blocks.
-template <typename T>
-void FillDC(const Image3<T>& dc, Image3<T>* coeffs) {
+template <size_t N, typename T>
+Image3<T> DCImage(const Image3<T>& coeffs) {
+  return Image3<T>(DCImage<N>(coeffs.Plane(0)),
+                   DCImage<N>(coeffs.Plane(1)),
+                   DCImage<N>(coeffs.Plane(2)));
+}
+
+template <int N, typename T>
+void FillDC(const Image<T>& dc, Image<T>* coeffs) {
+  constexpr size_t block_size = N * N;
   const size_t xsize = dc.xsize();
   const size_t ysize = dc.ysize();
 
-  for (int c = 0; c < 3; c++) {
-    for (size_t y = 0; y < ysize; y++) {
-      const T* PIK_RESTRICT row_dc = dc.PlaneRow(c, y);
-      T* PIK_RESTRICT row_out = coeffs->PlaneRow(c, y);
-      for (size_t x = 0; x < xsize; ++x) {
-        row_out[64 * x] = row_dc[x];
-      }
+  for (size_t y = 0; y < ysize; y++) {
+    const T* PIK_RESTRICT row_dc = dc.ConstRow(y);
+    T* PIK_RESTRICT row_out = coeffs->Row(y);
+    for (size_t x = 0; x < xsize; ++x) {
+      row_out[block_size * x] = row_dc[x];
     }
   }
 }
 
-// Zeroes out the top-left 2x2 corner of each DCT block.
-// REQUIRES: coeffs.xsize() == 64*N, coeffs.ysize() == M
-void ZeroOut2x2(Image3F* coeffs);
-Image3F KeepOnly2x2Corners(const Image3F& coeffs);
-
-// Returns a 2*N x 2*M image which is defined by the following 3 transforms:
-//  1) zero out every coefficient that is outside the top 2x2 corner
-//  2) perform TransposedScaledIDCT()
-//  3) subsample the result 4x4 by taking simple averages
-// REQUIRES: coeffs.xsize() == 64*N, coeffs.ysize() == M
-Image3F GetPixelSpaceImageFrom0189_64(const Image3F& coeffs);
-
-// Puts back the top 2x2 corner of each 8x8 block of *coeffs from the
-// transformed pixel space image img.
-// REQUIRES: coeffs->xsize() == 64*N, coeffs->ysize() == M
-void Add2x2CornersFromPixelSpaceImage(const Image3F& img,
-                                      Image3F* coeffs);
+// Scatters dc into "coeffs" at offset 0 within 1x64 blocks.
+template <int N, typename T>
+void FillDC(const Image3<T>& dc, Image3<T>* coeffs) {
+  for (int c = 0; c < 3; c++) {
+    FillDC<N>(dc.Plane(c), coeffs->MutablePlane(c));
+  }
+}
 
 // Returns an image that is defined by the following transformations:
 //  1) Upsample image 8x8 with nearest-neighbor
@@ -85,38 +74,22 @@ void UpSample4x4BlurDCT(const Image3F& img, const float sigma, const float sign,
 //  2) Blur with a Gaussian kernel of radius 8 and given sigma
 Image3F UpSample8x8Blur(const Image3F& img, const float sigma);
 
-// Returns an image that is defined by the following transformations:
-//  1) Upsample image 4x4 with nearest-neighbor
-//  2) Blur with a Gaussian kernel of radius 4 and given sigma
-Image3F UpSample4x4Blur(const Image3F& img, const float sigma);
+// Returns a (N*N)*W x H image where each (N*N)x1 block is produced with
+// ComputeTransposedScaledDCT() from the corresponding NxN block of
+// the image. Note that the whole coefficient image is scaled by 1 / (N*N)
+// afterwards, so that ComputeTransposedScaledIDCT() applied to each block will
+// return exactly the input image block.
+// REQUIRES: img.xsize() == N*W, img.ysize() == N*H
+template <size_t N>
+Image3F TransposedScaledDCT(const Image3F& img, ThreadPool* pool);
 
-// Returns an N x M image where each pixel is the average of the corresponding
-// f x f block in the original.
-// REQUIRES: image.xsize() == f*N, image.ysize() == f *M
-ImageF Subsample(const ImageF& image, int f);
-Image3F Subsample(const Image3F& image, int f);
+// Same as above, but only DC coefficients are computed. Not "transposed",
+// because output consists of single coefficient per block.
+template <size_t N>
+ImageF ScaledDC(const ImageF& image, ThreadPool* pool);
 
-// Same as above for f=8.
-ImageF Subsample8(const ImageF& image);
-
-// Returns an f*N x f*M upsampled image where each fxf block has the same value
-// as the corresponding pixel in the original image.
-ImageF Upsample(const ImageF& image, int f);
-Image3F Upsample(const Image3F& image, int f);
-
-// Takes the maximum of the 3x3 block around each pixel.
-ImageF Dilate(const ImageF& in);
-Image3F Dilate(const Image3F& in);
-
-// Takes the minimum of the 3x3 block around each pixel.
-ImageF Erode(const ImageF& in);
-Image3F Erode(const Image3F& in);
-
-// Takes the pixel-by-pixel min/max of the two inputs.
-ImageF Min(const ImageF& a, const ImageF& b);
-ImageF Max(const ImageF& a, const ImageF& b);
-Image3F Min(const Image3F& a, const Image3F& b);
-Image3F Max(const Image3F& a, const Image3F& b);
+template <size_t N>
+Image3F ScaledDC(const Image3F& image, ThreadPool* pool);
 
 }  // namespace pik
 

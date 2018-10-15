@@ -40,7 +40,8 @@
 #define PROFILER_THREAD_STORAGE 16ULL
 #endif
 
-#if PROFILER_ENABLED
+// Temporarily disabled.
+#if PROFILER_ENABLED && 0
 
 #define PROFILER_PRINT_OVERHEAD 0
 
@@ -201,7 +202,7 @@ class Results {
   // Draw all required information from the packets, which can be discarded
   // afterwards. Called whenever this thread's storage is full.
   void AnalyzePackets(const Packet* packets, const size_t num_packets) {
-    const uint64_t t0 = Start<uint64_t>();
+    const uint64_t t0 = TicksBefore();
 
     for (size_t i = 0; i < num_packets; ++i) {
       const Packet p = packets[i];
@@ -231,14 +232,14 @@ class Results {
       }
     }
 
-    const uint64_t t1 = Stop<uint64_t>();
+    const uint64_t t1 = TicksAfter();
     analyze_elapsed_ += t1 - t0;
   }
 
   // Incorporates results from another thread. Call after all threads have
   // exited any zones.
   void Assimilate(const Results& other) {
-    const uint64_t t0 = Start<uint64_t>();
+    const uint64_t t0 = TicksBefore();
     PIK_ASSERT(depth_ == 0);
     PIK_ASSERT(other.depth_ == 0);
 
@@ -246,13 +247,13 @@ class Results {
       const Accumulator& zone = other.zones_[i];
       UpdateOrAdd(zone.BiasedOffset(), zone.NumCalls(), zone.total_duration);
     }
-    const uint64_t t1 = Stop<uint64_t>();
+    const uint64_t t1 = TicksAfter();
     analyze_elapsed_ += t1 - t0 + other.analyze_elapsed_;
   }
 
   // Single-threaded.
   void Print() {
-    const uint64_t t0 = Start<uint64_t>();
+    const uint64_t t0 = TicksBefore();
     MergeDuplicates();
 
     // Sort by decreasing total (self) cost.
@@ -274,7 +275,7 @@ class Results {
       }
     }
 
-    const uint64_t t1 = Stop<uint64_t>();
+    const uint64_t t1 = TicksAfter();
     analyze_elapsed_ += t1 - t0;
     printf("Total clocks during analysis: %" PRIu64 "\n", analyze_elapsed_);
     printf("Total clocks measured: %" PRIu64 "\n", total_visible_duration);
@@ -582,13 +583,13 @@ class Zone {
 
     // (Capture timestamp ASAP, not inside WriteEntry.)
     PIK_COMPILER_FENCE;
-    const uint64_t timestamp = Start<uint64_t>();
+    const uint64_t timestamp = TicksBefore();
     thread_specific->WriteEntry(name, timestamp);
   }
 
   PIK_NOINLINE ~Zone() {
     PIK_COMPILER_FENCE;
-    const uint64_t timestamp = Stop<uint64_t>();
+    const uint64_t timestamp = TicksAfter();
     StaticThreadSpecific()->WriteExit(timestamp);
     PIK_COMPILER_FENCE;
   }
@@ -679,14 +680,14 @@ inline void ThreadSpecific::ComputeOverhead() {
 #if PIK_ARCH_X64
       _mm_mfence();
 #endif
-      const uint64_t t0 = Start<uint64_t>();
+      const uint64_t t0 = TicksBefore();
       for (size_t i = 0; i < kReps; ++i) {
         PROFILER_ZONE("Dummy");
       }
 #if PIK_ARCH_X64
       _mm_sfence();
 #endif
-      const uint64_t t1 = Stop<uint64_t>();
+      const uint64_t t1 = TicksAfter();
 #if PIK_ARCH_X64
       PIK_CHECK(num_packets_ + buffer_size_ == kReps * 2);
       buffer_size_ = 0;

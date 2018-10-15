@@ -16,19 +16,19 @@
 
 #include "common.h"
 #include "fields.h"
-#include "status.h"
 
 namespace pik {
 
-bool CanEncode(const Container& container, size_t* PIK_RESTRICT encoded_bits) {
-  if (!CanEncodeFields(container, encoded_bits)) return false;
+Status CanEncode(const Container& container,
+                 size_t* PIK_RESTRICT encoded_bits) {
+  PIK_RETURN_IF_ERROR(CanEncodeFields(container, encoded_bits));
   *encoded_bits = DivCeil(*encoded_bits, kBitsPerByte) * kBitsPerByte;
   return true;
 }
 
-bool LoadContainer(BitReader* PIK_RESTRICT reader,
-                   Container* PIK_RESTRICT container) {
-  LoadFields(reader, container);
+Status LoadContainer(BitReader* PIK_RESTRICT reader,
+                     Container* PIK_RESTRICT container) {
+  PIK_RETURN_IF_ERROR(LoadFields(reader, container));
   if (container->signature != Container::kSignature) {
     return PIK_FAILURE("Container signature mismatch");
   }
@@ -37,25 +37,25 @@ bool LoadContainer(BitReader* PIK_RESTRICT reader,
   return true;
 }
 
-bool StoreContainer(const Container& container, size_t* PIK_RESTRICT pos,
-                    uint8_t* storage) {
-  if (!StoreFields(container, pos, storage)) return false;
+Status StoreContainer(const Container& container, size_t* PIK_RESTRICT pos,
+                      uint8_t* storage) {
+  PIK_RETURN_IF_ERROR(StoreFields(container, pos, storage));
   WriteZeroesToByteBoundary(pos, storage);
   return true;
 }
 
-bool CanEncodeSections(const ContainerSections& sections,
-                       size_t* PIK_RESTRICT encoded_bits) {
+Status CanEncode(const ContainerSections& sections,
+                 size_t* PIK_RESTRICT encoded_bits) {
   return CanEncodeSectionsT(sections, encoded_bits);
 }
 
-bool LoadSections(BitReader* reader, ContainerSections* PIK_RESTRICT sections) {
+Status LoadSections(BitReader* reader,
+                    ContainerSections* PIK_RESTRICT sections) {
   return LoadSectionsT(reader, sections);
 }
 
-template <class T>
-bool StoreSections(const ContainerSections& sections, size_t* PIK_RESTRICT pos,
-                   uint8_t* storage) {
+Status StoreSections(const ContainerSections& sections,
+                     size_t* PIK_RESTRICT pos, uint8_t* storage) {
   return StoreSectionsT(sections, pos, storage);
 }
 

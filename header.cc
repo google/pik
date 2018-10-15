@@ -19,29 +19,28 @@
 
 namespace pik {
 
-bool CanEncode(const Header& header, size_t* PIK_RESTRICT encoded_bits) {
+Status CanEncode(const Header& header, size_t* PIK_RESTRICT encoded_bits) {
   return CanEncodeFields(header, encoded_bits);
 }
 
-bool LoadHeader(BitReader* reader, Header* PIK_RESTRICT header) {
-  LoadFields(reader, header);
-  return true;
+Status LoadHeader(BitReader* reader, Header* PIK_RESTRICT header) {
+  return LoadFields(reader, header);
 }
 
-bool StoreHeader(const Header& header, size_t* pos, uint8_t* storage) {
+Status StoreHeader(const Header& header, size_t* pos, uint8_t* storage) {
   return StoreFields(header, pos, storage);
 }
 
-bool CanEncode(const Sections& sections, size_t* PIK_RESTRICT encoded_bits) {
+Status CanEncode(const Sections& sections, size_t* PIK_RESTRICT encoded_bits) {
   return CanEncodeSectionsT(sections, encoded_bits);
 }
 
-bool LoadSections(BitReader* reader, Sections* PIK_RESTRICT sections) {
+Status LoadSections(BitReader* reader, Sections* PIK_RESTRICT sections) {
   return LoadSectionsT(reader, sections);
 }
 
-bool StoreSections(const Sections& sections, size_t* PIK_RESTRICT pos,
-                   uint8_t* storage) {
+Status StoreSections(const Sections& sections, size_t* PIK_RESTRICT pos,
+                     uint8_t* storage) {
   return StoreSectionsT(sections, pos, storage);
 }
 

@@ -24,7 +24,7 @@ struct ANSSymbolInfo {
 struct ANSDecodingData {
   ANSDecodingData() {}
 
-  bool ReadFromBitStream(BitReader* input);
+  Status ReadFromBitStream(BitReader* input);
 
   ANSSymbolInfo map_[ANS_TAB_SIZE];
 };
@@ -65,7 +65,6 @@ struct ANSCode {
 };
 
 bool DecodeANSCodes(const size_t num_histograms, const size_t max_alphabet_size,
-                    const uint8_t* symbol_lut, size_t symbol_lut_size,
                     BitReader* in, ANSCode* result);
 
 class ANSSymbolReader {

@@ -97,13 +97,6 @@ ImageF Blur(const ImageF& in, float sigma, float border_ratio) {
                      border_ratio);
 }
 
-Image3F Blur(const Image3F& image, float sigma) {
-  float border = 0.0;
-  return Image3F(Blur(image.Plane(0), sigma, border),
-                 Blur(image.Plane(1), sigma, border),
-                 Blur(image.Plane(2), sigma, border));
-}
-
 Image3F SuperSample4x4(const Image3F& image) {
   size_t nxs = image.xsize() << 2;
   size_t nys = image.ysize() << 2;
@@ -163,13 +156,20 @@ void Smooth4x4Corners(Image3F& ima) {
 
 }  // namespace
 
-Image3F UpscalerReconstruct(const Image3F& in) {
+SIMD_ATTR Image3F UpscalerReconstruct(const Image3F& in) {
   Image3F out1 = SuperSample4x4(in);
   Smooth4x4Corners(out1);
   out1 = Blur(out1, 2.5);
   Image3F out(out1.xsize() * 2, out1.ysize() * 2);
   Upsample<slow::Upsampler>(ExecutorLoop(), out1, kernel::CatmullRom(), &out);
   return out;
+}
+
+Image3F Blur(const Image3F& image, float sigma) {
+  float border = 0.0;
+  return Image3F(Blur(image.Plane(0), sigma, border),
+                 Blur(image.Plane(1), sigma, border),
+                 Blur(image.Plane(2), sigma, border));
 }
 
 }  // namespace pik

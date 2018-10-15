@@ -18,10 +18,15 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include "compiler_specific.h"
+
 namespace pik {
 
-#if defined(PIK_ENABLE_ASSERT) || \
-  defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION)
+#ifndef PIK_ENABLE_ASSERT
+#define PIK_ENABLE_ASSERT 1
+#endif
+
+#if PIK_ENABLE_ASSERT || defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION)
 #define PIK_ASSERT(condition)                                   \
   while (!(condition)) {                                        \
     printf("Pik assert failed at %s:%d\n", __FILE__, __LINE__); \
@@ -36,6 +41,9 @@ namespace pik {
     printf("Pik check failed at %s:%d\n", __FILE__, __LINE__); \
     abort();                                                   \
   }
+
+#define PIK_RETURN_IF_ERROR(condition) \
+  while (!(condition)) return false
 
 // Annotation for the location where an error condition is first noticed.
 // Error codes are too unspecific to pinpoint the exact location, so we
@@ -56,6 +64,20 @@ inline bool PikFailure(const char* f, int l, const char* msg) {
 #define PIK_NOTIFY_ERROR(message_string)
 #define PIK_FAILURE(message_string) false
 #endif
+
+// Drop-in replacement for bool that raises compiler warnings if not used
+// after being returned from a function. Example:
+// Status LoadFile(...) { return true; } is more compact than
+// bool PIK_MUST_USE_RESULT LoadFile(...) { return true; }
+class PIK_MUST_USE_RESULT Status {
+ public:
+  Status(bool ok) : ok_(ok) {}
+
+  operator bool() const { return ok_; }
+
+ private:
+  bool ok_;
+};
 
 }  // namespace pik
 

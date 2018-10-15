@@ -12,11 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// 128-bit SSE4 vectors and operations.
-// (No include guard nor namespace: this is included from the middle of simd.h.)
+#ifndef SIMD_X86_SSE4_H_
+#define SIMD_X86_SSE4_H_
 
-// Avoid compile errors when generating deps.mk.
-#if SIMD_DEPS == 0
+// 128-bit SSE4 vectors and operations.
+
+#include "simd/compiler_specific.h"
+#include "simd/shared.h"
+#include "simd/targets.h"
+#include "simd/util.h"
+
+#if SIMD_ENABLE & SIMD_SSE4
+#include <smmintrin.h>
+
+namespace pik {
+
+// On X86, it is cheaper to use small vectors (prefixes of larger registers)
+// when possible; this also reduces the number of overloaded functions.
+template <class Target>
+struct PartTargetT<1, Target> {
+  using type = SSE4;
+};
 
 template <typename T>
 struct raw_sse4 {
@@ -950,6 +966,114 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, N> nmul_add(
 #endif
 }
 
+// Returns x + add
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> fadd(
+    vec_sse4<float, N> x, const vec_sse4<float, N> k1,
+    const vec_sse4<float, N> add) {
+#if SIMD_TARGET_VALUE == SIMD_AVX2
+#if SIMD_COMPILER != SIMD_COMPILER_MSVC && defined(__AVX2__)
+  asm volatile("vfmadd132ps %2, %1, %0"
+               : "+x"(x.raw)
+               : "x"(add.raw), "x"(k1.raw));
+  return x;
+#else
+  return vec_sse4<float, N>(_mm_fmadd_ps(x.raw, k1.raw, add.raw));
+#endif
+#else
+  return x + add;
+#endif
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, N> fadd(
+    vec_sse4<double, N> x, const vec_sse4<double, N> k1,
+    const vec_sse4<double, N> add) {
+#if SIMD_TARGET_VALUE == SIMD_AVX2
+#if SIMD_COMPILER != SIMD_COMPILER_MSVC && defined(__AVX2__)
+  asm volatile("vfmadd132pd %2, %1, %0"
+               : "+x"(x.raw)
+               : "x"(add.raw), "x"(k1.raw));
+  return x;
+#else
+  return vec_sse4<double, N>(_mm_fmadd_pd(x.raw, k1.raw, add.raw));
+#endif
+#else
+  return x + add;
+#endif
+}
+
+// Returns x - sub
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> fsub(
+    vec_sse4<float, N> x, const vec_sse4<float, N> k1,
+    const vec_sse4<float, N> sub) {
+#if SIMD_TARGET_VALUE == SIMD_AVX2
+#if SIMD_COMPILER != SIMD_COMPILER_MSVC && defined(__AVX2__)
+  asm volatile("vfmsub132ps %2, %1, %0"
+               : "+x"(x.raw)
+               : "x"(sub.raw), "x"(k1.raw));
+  return x;
+#else
+  return vec_sse4<float, N>(_mm_fmsub_ps(x.raw, k1.raw, sub.raw));
+#endif
+#else
+  return x - sub;
+#endif
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, N> fsub(
+    vec_sse4<double, N> x, const vec_sse4<double, N> k1,
+    const vec_sse4<double, N> sub) {
+#if SIMD_TARGET_VALUE == SIMD_AVX2
+#if SIMD_COMPILER != SIMD_COMPILER_MSVC && defined(__AVX2__)
+  asm volatile("vfmsub132pd %2, %1, %0"
+               : "+x"(x.raw)
+               : "x"(sub.raw), "x"(k1.raw));
+  return x;
+#else
+  return vec_sse4<double, N>(_mm_fmsub_pd(x.raw, k1.raw, sub.raw));
+#endif
+#else
+  return x - sub;
+#endif
+}
+
+// Returns -sub + x (clobbers sub register)
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> fnadd(
+    vec_sse4<float, N> sub, const vec_sse4<float, N> k1,
+    const vec_sse4<float, N> x) {
+#if SIMD_TARGET_VALUE == SIMD_AVX2
+#if SIMD_COMPILER != SIMD_COMPILER_MSVC && defined(__AVX2__)
+  asm volatile("vfnmadd132ps %2, %1, %0"
+               : "+x"(sub.raw)
+               : "x"(x.raw), "x"(k1.raw));
+  return sub;
+#else
+  return vec_sse4<float, N>(_mm_fnmadd_ps(sub.raw, k1.raw, x.raw));
+#endif
+#else
+  return x - sub;
+#endif
+}
+template <size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double, N> fnadd(
+    vec_sse4<double, N> sub, const vec_sse4<double, N> k1,
+    const vec_sse4<double, N> x) {
+#if SIMD_TARGET_VALUE == SIMD_AVX2
+#if SIMD_COMPILER != SIMD_COMPILER_MSVC && defined(__AVX2__)
+  asm volatile("vfnmadd132pd %2, %1, %0"
+               : "+x"(sub.raw)
+               : "x"(x.raw), "x"(k1.raw));
+  return sub;
+#else
+  return vec_sse4<double, N>(_mm_fnmadd_pd(sub.raw, k1.raw, x.raw));
+#endif
+#else
+  return x - sub;
+#endif
+}
+
 // Slightly more expensive on ARM (extra negate)
 namespace ext {
 
@@ -1168,11 +1292,6 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int32_t, N> operator<(
   return vec_sse4<int32_t, N>(_mm_cmpgt_epi32(b.raw, a.raw));
 }
 template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int64_t, N> operator<(
-    const vec_sse4<int64_t, N> a, const vec_sse4<int64_t, N> b) {
-  return vec_sse4<int64_t, N>(_mm_cmpgt_epi64(b.raw, a.raw));
-}
-template <size_t N>
 SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> operator<(
     const vec_sse4<float, N> a, const vec_sse4<float, N> b) {
   return vec_sse4<float, N>(_mm_cmplt_ps(a.raw, b.raw));
@@ -1198,11 +1317,6 @@ template <size_t N>
 SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int32_t, N> operator>(
     const vec_sse4<int32_t, N> a, const vec_sse4<int32_t, N> b) {
   return vec_sse4<int32_t, N>(_mm_cmpgt_epi32(a.raw, b.raw));
-}
-template <size_t N>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int64_t, N> operator>(
-    const vec_sse4<int64_t, N> a, const vec_sse4<int64_t, N> b) {
-  return vec_sse4<int64_t, N>(_mm_cmpgt_epi64(a.raw, b.raw));
 }
 template <size_t N>
 SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<float, N> operator>(
@@ -2309,15 +2423,6 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int32_t, N> nearest_int(
 
 // ================================================== MISC
 
-// ------------------------------ AES cipher
-
-// One round of AES. "round_key" is a constant for breaking the symmetry of AES
-// (ensures previously equal columns differ afterwards).
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint8_t> aes_round(
-    const vec_sse4<uint8_t> state, const vec_sse4<uint8_t> round_key) {
-  return vec_sse4<uint8_t>(_mm_aesenc_si128(state.raw, round_key.raw));
-}
-
 // "Extensions": useful but not quite performance-portable operations. We add
 // functions to this namespace in multiple places.
 namespace ext {
@@ -2399,5 +2504,7 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> sum_of_lanes(const vec_sse4<T> v) {
 }  // namespace ext
 
 // TODO(janwas): wrappers for all intrinsics (in x86 namespace).
+}  // namespace pik
 
-#endif  // SIMD_DEPS
+#endif  // SIMD_ENABLE & SIMD_SSE4
+#endif  // SIMD_X86_SSE4_H_

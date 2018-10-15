@@ -20,69 +20,90 @@
 #define PROFILER_ENABLED 1
 #include "arch_specific.h"
 #include "args.h"
+#include "codec.h"
+#include "common.h"
+#include "file_io.h"
 #include "image.h"
-#include "image_io.h"
 #include "os_specific.h"
 #include "padded_bytes.h"
 #include "pik.h"
 #include "pik_info.h"
 #include "profiler.h"
-#include "simd/dispatch.h"
-#include "tsc_timer.h"
+#include "simd/targets.h"
 
 namespace pik {
 namespace {
 
-bool WriteFile(const PaddedBytes& compressed, const char* pathname) {
-  FILE* f = fopen(pathname, "wb");
-  if (f == nullptr) {
-    fprintf(stderr, "Failed to open %s.\n", pathname);
-    return false;
-  }
-  const size_t bytes_written =
-      fwrite(compressed.data(), 1, compressed.size(), f);
-  if (bytes_written != compressed.size()) {
-    fprintf(stderr, "I/O error, only wrote %zu bytes.\n", bytes_written);
-    return false;
-  }
-  fclose(f);
-  return true;
-}
-
 struct CompressArgs {
-  bool Init(int argc, char** argv) {
-    bool distance_specified = false;
-    bool target_size_specified = false;
+  Status Init(int argc, char** argv) {
+    bool got_distance = false;
+    bool got_target_size = false;
     for (int i = 1; i < argc; i++) {
       if (argv[i][0] == '-') {
         const std::string arg = argv[i];
         if (arg == "--fast") {
           params.fast_mode = true;
-        } else if (arg == "--denoise") {
-          if (!ParseOverride(argc, argv, &i, &params.denoise)) return false;
         } else if (arg == "--noise") {
-          if (!ParseOverride(argc, argv, &i, &params.apply_noise)) return false;
+          PIK_RETURN_IF_ERROR(ParseOverride(argc, argv, &i, &params.noise));
+        } else if (arg == "--smooth") {
+          PIK_RETURN_IF_ERROR(ParseOverride(argc, argv, &i, &params.smooth));
+        } else if (arg == "--gradient") {
+          PIK_RETURN_IF_ERROR(ParseOverride(argc, argv, &i, &params.gradient));
+        } else if (arg == "--adaptive_reconstruction") {
+          PIK_RETURN_IF_ERROR(
+              ParseOverride(argc, argv, &i, &params.adaptive_reconstruction));
+        } else if (strcmp(argv[i], "--gaborish") == 0) {
+          size_t strength;
+          PIK_RETURN_IF_ERROR(ParseUnsigned(argc, argv, &i, &strength));
+          if (strength > 7) {
+            fprintf(stderr, "Invalid gaborish strength, must be 0..7.\n");
+            return PIK_FAILURE("Invalid gaborish strength");
+          }
+          params.gaborish = strength;
+        } else if (arg == "--resampleX2") {
+          PIK_RETURN_IF_ERROR(
+              ParseUnsigned(argc, argv, &i, &params.resampling_factor2));
         } else if (arg == "--num_threads") {
-          if (!ParseUnsigned(argc, argv, &i, &num_threads)) return false;
+          PIK_RETURN_IF_ERROR(ParseUnsigned(argc, argv, &i, &num_threads));
+          got_num_threads = true;
         } else if (arg == "-v") {
           params.verbose = true;
+        } else if (arg == "-x") {
+          if (i + 2 >= argc) {
+            fprintf(stderr, "Expected key and value arguments.\n");
+            return PIK_FAILURE("Args");
+          }
+          const std::string key(argv[i + 1]);
+          const std::string value(argv[i + 2]);
+          i += 2;
+          dec_hints.Add(key, value);
         } else if (arg == "--print_profile") {
-          if (!ParseOverride(argc, argv, &i, &print_profile)) return false;
+          PIK_RETURN_IF_ERROR(ParseOverride(argc, argv, &i, &print_profile));
         } else if (arg == "--distance") {
-          if (!ParseFloat(argc, argv, &i, &params.butteraugli_distance)) {
-            return false;
+          PIK_RETURN_IF_ERROR(
+              ParseFloat(argc, argv, &i, &params.butteraugli_distance));
+          {
+            constexpr float butteraugli_min_dist = 0.125f;
+            constexpr float butteraugli_max_dist = 15.0f;
+            if (!(butteraugli_min_dist <= params.butteraugli_distance &&
+                  params.butteraugli_distance <= butteraugli_max_dist)) {
+              fprintf(stderr,
+                      "Invalid/out of range distance '%s', try %g to %g.\n",
+                      argv[i], butteraugli_min_dist, butteraugli_max_dist);
+              return false;
+            }
           }
-          if (!(0.5f <= params.butteraugli_distance &&
-                params.butteraugli_distance <= 3.0f)) {
-            fprintf(stderr,
-                    "Invalid/out of range distance '%s', try 0.5 to 3.\n",
-                    argv[i]);
-            return false;
-          }
-          distance_specified = true;
+          got_distance = true;
         } else if (arg == "--target_size") {
-          if (!ParseUnsigned(argc, argv, &i, &params.target_size)) return false;
-          target_size_specified = true;
+          printf("Warning: target_size does not set all flags/modes.\n");
+          PIK_RETURN_IF_ERROR(
+              ParseUnsigned(argc, argv, &i, &params.target_size));
+          got_target_size = true;
+        } else if (arg == "--intensity_target") {
+          PIK_RETURN_IF_ERROR(
+              ParseFloat(argc, argv, &i, &params.intensity_target));
+        } else if (arg == "--roi_factor") {
+          PIK_RETURN_IF_ERROR(ParseFloat(argc, argv, &i, &params.roi_factor));
         } else {
           // Unknown arg or --help: caller will print help string
           return false;
@@ -103,8 +124,17 @@ struct CompressArgs {
     // of distance and target_size is specified. Thus, if target_size is
     // specified, we reset distance to -1 to avoid the error if it is
     // unwarranted.
-    if (target_size_specified && !distance_specified) {
+    if (got_target_size && !got_distance) {
       params.butteraugli_distance = -1.0f;
+    }
+
+    if (got_target_size && got_distance) {
+      fprintf(stderr, "Cannot specify both --distance and --target_size.\n");
+      return false;
+    }
+
+    if (!got_num_threads) {
+      num_threads = AvailableCPUs().size();
     }
 
     if (file_in == nullptr) {
@@ -116,66 +146,76 @@ struct CompressArgs {
   }
 
   static const char* HelpFormatString() {
-    return "Usage: %s in.png out.pik [--distance <maxError>] [--fast] "
-           "[--denoise <0,1>] [--noise <0,1>] [--num_threads <0..N>\n"
-           "[--print_profile <0,1>]\n"
+    return "Usage: %s in out.pik [--distance <maxError>] [--fast] [-v]\n"
+           "[--num_threads <0..N>] [--print_profile <0,1>] [-x key value]\n"
+           "[--resampleX2 N]\n"
+           "[--noise <0,1>] [--smooth <0,1>] [--gradient <0,1>]\n"
+           "[--adaptive_reconstruction <0,1>] [--gaborish <0..7>]\n"
+           " in can be PNG, PNM or PFM.\n"
            " --distance: Max. butteraugli distance, lower = higher quality.\n"
            "             Good default: 1.0. Supported range: 0.5 .. 3.0.\n"
-           " --fast: Use fast encoding, ignores distance.\n"
-           " --denoise: force enable/disable edge-preserving smoothing.\n"
+           " --resampleX2 is twice the downsampling factor, 3 for 1.5x.\n"
+           " --fast: Use fast encoding mode (less dense).\n"
            " --noise: force enable/disable noise generation.\n"
+           " --smooth: force enable/disable smooth predictor.\n"
+           " --gradient: force enable/disable extra gradient map.\n"
+           " --adaptive_reconstruction: force enable/disable decoder filter.\n"
+           " --gaborish 0..7 chooses deblocking strength (4=normal).\n"
+           " --intensity_target: Intensity target of monitor in nits, higher"
+           "   results in higher quality image. Supported range: 250 .. 6000,"
+           "   default is 250.\n"
            " --num_threads: number of worker threads (zero = none).\n"
            " --print_profile 1: print timing information before exiting.\n"
+           " -x color_space indicates the ColorEncoding, see Description().\n"
+           " -v enable verbose mode with additional output.\n"
            " --help: Show this help.\n";
   }
 
   const char* file_in = nullptr;
   const char* file_out = nullptr;
+  DecoderHints dec_hints;
   CompressParams params;
-  size_t num_threads = 4;
+  size_t num_threads = 0;
+  bool got_num_threads = false;
   Override print_profile = Override::kDefault;
 };
 
-bool Compress(const CompressArgs& args, ThreadPool* pool,
-              PaddedBytes* compressed) {
-  MetaImageF in = ReadMetaImageLinear(args.file_in);
-  if (in.xsize() == 0 || in.ysize() == 0) {
-    fprintf(stderr, "Failed to open image %s.\n", args.file_in);
+Status Compress(CodecContext* codec_context,
+                const CompressArgs& args, PaddedBytes* compressed) {
+  CodecInOut io(codec_context);
+  io.dec_hints = args.dec_hints;
+  if (!io.SetFromFile(args.file_in)) {
+    fprintf(stderr, "Failed to read image %s.\n", args.file_in);
     return false;
   }
 
-  if (args.params.target_size != 0 &&
-      args.params.butteraugli_distance != -1.0f) {
-    fprintf(stderr,
-            "Only one of --distance or --target_size can be specified.\n");
-    return false;
-  }
-
-  const size_t xsize = in.xsize();
-  const size_t ysize = in.ysize();
-  fprintf(stderr, "Compressing %zu x %zu pixels ", xsize, ysize);
+  const size_t xsize = io.xsize();
+  const size_t ysize = io.ysize();
+  char mode[200];
   if (args.params.fast_mode) {
-    fprintf(stderr, "with fast mode");
+    strcpy(mode, "with fast mode");
   } else if (args.params.target_size != 0) {
-    fprintf(stderr, "to target size %zd", args.params.target_size);
+    snprintf(mode, sizeof(mode), "with target size %zu",
+             args.params.target_size);
   } else {
-    fprintf(stderr, "with maximum Butteraugli distance %f",
-            args.params.butteraugli_distance);
+    snprintf(mode, sizeof(mode), "with maximum Butteraugli distance %f",
+             args.params.butteraugli_distance);
   }
-  printf(", %zu threads.\n", pool->NumThreads());
+  fprintf(stderr, "Read %zu bytes (%zux%zu px); compressing %s, %zu threads.\n",
+          io.enc_size, xsize, ysize, mode, codec_context->pool.NumThreads());
 
   PikInfo aux_out;
-  const uint64_t t0 = Start<uint64_t>();
-  if (!PixelsToPik(args.params, in, pool, compressed, &aux_out)) {
+  const double t0 = Now();
+  if (!PixelsToPik(args.params, &io, compressed, &aux_out)) {
     fprintf(stderr, "Failed to compress.\n");
     return false;
   }
-  const uint64_t t1 = Stop<uint64_t>();
-  const double elapsed = (t1 - t0) / InvariantTicksPerSecond();
-  // TODO(janwas): account for 8 vs 16-bit input
-  const size_t bytes = xsize * ysize * (in.HasAlpha() ? 4 : 3);
+  const double t1 = Now();
+  const size_t channels = io.c_current().Channels() + io.HasAlpha();
+  const size_t bytes = xsize * ysize * channels * DivCeil(
+      io.original_bits_per_sample(), kBitsPerByte);
   fprintf(stderr, "Compressed to %zu bytes (%.2f MB/s).\n", compressed->size(),
-          bytes * 1E-6 / elapsed);
+          bytes * 1E-6 / (t1 - t0));
 
   if (args.params.verbose) {
     aux_out.Print(1);
@@ -184,26 +224,12 @@ bool Compress(const CompressArgs& args, ThreadPool* pool,
   return true;
 }
 
-void InitThreads(ThreadPool* pool) {
-  // Warm up profiler on main AND worker threads so its expensive initialization
-  // doesn't count towards the timer measurements below for encode throughput.
-  PROFILER_ZONE("@InitMainThread");
-  pool->RunOnEachThread(
-      [](const int task, const int thread) { PROFILER_ZONE("@InitWorkers"); });
-}
-
 int CompressAndWrite(int argc, char** argv) {
-#if SIMD_ENABLE_AVX2
-  if ((dispatch::SupportedTargets() & SIMD_AVX2) == 0) {
-    fprintf(stderr, "Cannot continue because CPU lacks AVX2/FMA support.\n");
+  const int bits = TargetBitfield().Bits();
+  if ((bits & SIMD_ENABLE) != SIMD_ENABLE) {
+    fprintf(stderr, "CPU does not support all enabled targets => exiting.\n");
     return 1;
   }
-#elif SIMD_ENABLE_SSE4
-  if ((dispatch::SupportedTargets() & SIMD_SSE4) == 0) {
-    fprintf(stderr, "Cannot continue because CPU lacks SSE4 support.\n");
-    return 1;
-  }
-#endif
 
   CompressArgs args;
   if (!args.Init(argc, argv)) {
@@ -211,11 +237,10 @@ int CompressAndWrite(int argc, char** argv) {
     return 1;
   }
 
-  ThreadPool pool(static_cast<int>(args.num_threads));
-  InitThreads(&pool);
+  CodecContext codec_context(args.num_threads);
 
   PaddedBytes compressed;
-  if (!Compress(args, &pool, &compressed)) return 1;
+  if (!Compress(&codec_context, args, &compressed)) return 1;
 
   if (args.file_out != nullptr) {
     if (!WriteFile(compressed, args.file_out)) return 1;

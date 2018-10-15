@@ -25,7 +25,7 @@
 #include "arch_specific.h"
 #include "cache_aligned.h"
 #include "profiler.h"
-#include "simd_helpers.h"
+#include "simd/simd.h"
 
 // Prints graph summary.
 #define VERBOSE_GRAPH 1
@@ -847,8 +847,6 @@ class SourceTLS {
 
   template <typename T>
   PIK_INLINE void RunT(const OutputRegion& output_region) const {
-    using namespace SIMD_NAMESPACE;
-
     const int64_t ix_size = source_size_.xsize;
     const int64_t iy_size = source_size_.ysize;
     const int64_t ox_size = output_region.xsize;
@@ -1419,18 +1417,21 @@ void TFGraph::Run() {
 
   // Preferred: enough strips to keep threads busy (better locality).
   if (num_tiles_y_ >= pool_->NumThreads() * 2) {
-    pool_->Run(0, num_tiles_y_, [self](const int task, const int thread) {
-      const TileIndex tile_iy = task;
-      RunArg arg(0, tile_iy, self->num_tiles_x_, self->num_tiles_y_);
-      for (TileIndex tile_ix = 0; tile_ix < self->num_tiles_x_ - 1; ++tile_ix) {
-        arg.tile_ix = tile_ix;
-        RunGraph(self->instances_[thread], arg);
-      }
+    pool_->Run(0, num_tiles_y_,
+               [self](const int task, const int thread) {
+                 const TileIndex tile_iy = task;
+                 RunArg arg(0, tile_iy, self->num_tiles_x_, self->num_tiles_y_);
+                 for (TileIndex tile_ix = 0; tile_ix < self->num_tiles_x_ - 1;
+                      ++tile_ix) {
+                   arg.tile_ix = tile_ix;
+                   RunGraph(self->instances_[thread], arg);
+                 }
 
-      arg.tile_ix = self->num_tiles_x_ - 1;
-      arg.is_partial_x = 1;
-      RunGraph(self->instances_[thread], arg);
-    });
+                 arg.tile_ix = self->num_tiles_x_ - 1;
+                 arg.is_partial_x = 1;
+                 RunGraph(self->instances_[thread], arg);
+               },
+               "tf strips");
     return;
   }
 
@@ -1444,19 +1445,23 @@ void TFGraph::Run() {
                  const RunArg arg(tile_ix, tile_iy, self->num_tiles_x_,
                                   self->num_tiles_y_);
                  RunGraph(self->instances_[thread], arg);
-               });
+               },
+               "tf scatter");
     return;
   }
 
   // Fallback: expand task into x,y via 'division'.
   const Divider divide(num_tiles_x_);
-  pool_->Run(0, num_tiles_, [&divide, self](const int task, const int thread) {
-    const TileIndex tile_iy = divide(task);
-    // Remainder - subtracting after mul is faster than modulo.
-    const TileIndex tile_ix = task - tile_iy * self->num_tiles_x_;
-    const RunArg arg(tile_ix, tile_iy, self->num_tiles_x_, self->num_tiles_y_);
-    RunGraph(self->instances_[thread], arg);
-  });
+  pool_->Run(0, num_tiles_,
+             [&divide, self](const int task, const int thread) {
+               const TileIndex tile_iy = divide(task);
+               // Remainder - subtracting after mul is faster than modulo.
+               const TileIndex tile_ix = task - tile_iy * self->num_tiles_x_;
+               const RunArg arg(tile_ix, tile_iy, self->num_tiles_x_,
+                                self->num_tiles_y_);
+               RunGraph(self->instances_[thread], arg);
+             },
+             "tf div");
 }
 
 TFBuilder::TFBuilder() : impl_(new TFBuilderImpl) {}

@@ -12,11 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// 128-bit ARM64 NEON vectors and operations.
-// (No include guard nor namespace: this is included from the middle of simd.h.)
+#ifndef SIMD_ARM64_NEON_H_
+#define SIMD_ARM64_NEON_H_
 
-// Avoid compile errors when generating deps.mk.
-#if SIMD_DEPS == 0
+// 128-bit ARM64 NEON vectors and operations.
+
+#include "simd/compiler_specific.h"
+#include "simd/shared.h"
+#include "simd/targets.h"
+
+#if SIMD_ENABLE & SIMD_ARM8
+#include <arm_neon.h>
+
+namespace pik {
 
 template <typename T, size_t N>
 struct raw_arm8;
@@ -2554,15 +2562,6 @@ SIMD_INLINE vec_arm8<T> odd_even(
 
 // ================================================== MISC
 
-// ------------------------------ AES cipher
-
-// One round of AES. "round_key" is a constant for breaking the symmetry of AES
-// (ensures previously equal columns differ afterwards).
-SIMD_INLINE vec_arm8<uint8_t> aes_round(const vec_arm8<uint8_t> state,
-                                        const vec_arm8<uint8_t> round_key) {
-  return vec_arm8<uint8_t>(vaesmcq_u8(vaeseq_u8(state.raw, round_key.raw)));
-}
-
 // "Extensions": useful but not quite performance-portable operations. We add
 // functions to this namespace in multiple places.
 namespace ext {
@@ -2646,5 +2645,7 @@ SIMD_INLINE vec_arm8<double> sum_of_lanes(const vec_arm8<double> v) {
 }  // namespace ext
 
 // TODO(user): wrappers for all intrinsics (in neon namespace).
+}  // namespace pik
 
-#endif  // SIMD_DEPS
+#endif  // SIMD_ENABLE & SIMD_ARM8
+#endif  // SIMD_ARM64_NEON_H_

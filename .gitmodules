@@ -4,3 +4,6 @@
 [submodule "third_party/pcg_random"]
 	path = third_party/pcg_random
 	url = https://github.com/imneme/pcg-cpp
+[submodule "third_party/lcms"]
+	path = third_party/lcms
+	url = https://github.com/mm2/Little-CMS

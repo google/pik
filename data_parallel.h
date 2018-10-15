@@ -30,12 +30,7 @@
 #include <vector>
 
 #include "bits.h"
-
-#define DATA_PARALLEL_CHECK(condition)                           \
-  while (!(condition)) {                                         \
-    printf("data_parallel check failed at line %d\n", __LINE__); \
-    abort();                                                     \
-  }
+#include "status.h"
 
 namespace pik {
 
@@ -73,8 +68,8 @@ class ThreadPool {
   explicit ThreadPool(
       const int num_threads = std::thread::hardware_concurrency())
       : num_threads_(num_threads) {
-    DATA_PARALLEL_CHECK(num_threads >= 0);
-    DATA_PARALLEL_CHECK(num_threads <= kMaxThreads);
+    PIK_CHECK(num_threads >= 0);
+    PIK_CHECK(num_threads <= kMaxThreads);
     threads_.reserve(num_threads);
 
     // Suppress "unused-private-field" warning.
@@ -102,6 +97,7 @@ class ThreadPool {
     }
 
     for (std::thread& thread : threads_) {
+      PIK_ASSERT(thread.joinable());
       thread.join();
     }
   }
@@ -117,8 +113,10 @@ class ThreadPool {
   //
   // Precondition: 0 <= begin <= end.
   template <class Func>
-  void Run(const int begin, const int end, const Func& func) {
-    DATA_PARALLEL_CHECK(0 <= begin && begin <= end);
+  void Run(const int begin, const int end, const Func& func,
+           const char* caller = "") {
+    //    printf("ThreadPool::Run: %s\n", caller);
+    PIK_ASSERT(0 <= begin && begin <= end);
     if (begin == end) {
       return;
     }
@@ -132,9 +130,9 @@ class ThreadPool {
 
     const WorkerCommand worker_command = (WorkerCommand(end) << 32) + begin;
     // Ensure the inputs do not result in a reserved command.
-    DATA_PARALLEL_CHECK(worker_command != kWorkerWait);
-    DATA_PARALLEL_CHECK(worker_command != kWorkerOnce);
-    DATA_PARALLEL_CHECK(worker_command != kWorkerExit);
+    PIK_ASSERT(worker_command != kWorkerWait);
+    PIK_ASSERT(worker_command != kWorkerOnce);
+    PIK_ASSERT(worker_command != kWorkerExit);
 
     func_ = &CallClosure<Func>;
     arg_ = &func;
@@ -297,7 +295,8 @@ class ThreadPool {
 struct ExecutorLoop {
   // Lambda must accept int task = [begin, end) and int thread = 0 arguments.
   template <class Lambda>
-  void Run(const int begin, const int end, const Lambda& lambda) const {
+  void Run(const int begin, const int end, const Lambda& lambda,
+           const char* caller = "") const {
     for (int i = begin; i < end; ++i) {
       lambda(i, 0);
     }
@@ -309,8 +308,9 @@ struct ExecutorPool {
 
   // Lambda must accept int task = [begin, end) and int thread arguments.
   template <class Lambda>
-  void Run(const int begin, const int end, const Lambda& lambda) const {
-    pool->Run(begin, end, lambda);
+  void Run(const int begin, const int end, const Lambda& lambda,
+           const char* caller) const {
+    pool->Run(begin, end, lambda, caller);
   }
 
   ThreadPool* pool;  // not owned
@@ -326,7 +326,7 @@ class Divider {
   Divider(const uint32_t d) : shift_(FloorLog2Nonzero(d)) {
     // Power of two divisors (including 1) are not supported because it is more
     // efficient to special-case them at a higher level.
-    DATA_PARALLEL_CHECK((d & (d - 1)) != 0);
+    PIK_ASSERT((d & (d - 1)) != 0);
 
     // ceil_log2 = floor_log2 + 1 because we ruled out powers of two above.
     const uint64_t next_pow2 = 1ULL << (shift_ + 1);

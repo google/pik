@@ -22,10 +22,10 @@ namespace pik {
 
 class ButteraugliComparator {
  public:
-  ButteraugliComparator(const Image3B& srgb, float hf_asymmetry);
-  ButteraugliComparator(const Image3F& opsin, float hf_asymmetry);
+  ButteraugliComparator(const Image3F& opsin,
+      float hf_asymmetry, float multiplier);
 
-  void Compare(const Image3B& srgb);
+  void Compare(const Image3F& linear_rgb);
 
   const ImageF& distmap() const { return distmap_; }
   float distance() const { return distance_; }
@@ -37,6 +37,7 @@ class ButteraugliComparator {
   const int ysize_;
   butteraugli::ButteraugliComparator comparator_;
   float distance_;
+  float multiplier_;
   ImageF distmap_;
 };
 

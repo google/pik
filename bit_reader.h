@@ -126,6 +126,8 @@ class BitReader {
   // Returns the (rounded up) number of bytes consumed so far.
   size_t Position() const { return (BitsRead() + 7) / 8; }
 
+  bool Healthy() const { return Position() <= (len32_ << 2) + len_mod4_; }
+
  private:
   // *32 counters/pointers are in units of 4 bytes, or 32 bits.
   const uint32_t* const PIK_RESTRICT data32_;

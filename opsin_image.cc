@@ -15,13 +15,13 @@
 #include "opsin_image.h"
 
 #include <stddef.h>
-#include <array>
 
 #undef PROFILER_ENABLED
 #define PROFILER_ENABLED 1
 #include "approx_cube_root.h"
+#include "codec.h"
 #include "compiler_specific.h"
-#include "gamma_correct.h"
+#include "external_image.h"
 #include "profiler.h"
 
 namespace pik {
@@ -39,68 +39,68 @@ void LinearXybTransform(float r, float g, float b, float* PIK_RESTRICT valx,
   *valz = b;
 }
 
-void LinearToXyb(const float rgb[3], float* PIK_RESTRICT valx,
-                 float* PIK_RESTRICT valy, float* PIK_RESTRICT valz) {
-  float mixed[3];
-  OpsinAbsorbance(rgb, mixed);
-  mixed[0] = SimpleGamma(mixed[0]);
-  mixed[1] = SimpleGamma(mixed[1]);
-  mixed[2] = SimpleGamma(mixed[2]);
-  LinearXybTransform(mixed[0], mixed[1], mixed[2], valx, valy, valz);
-}
-
 }  // namespace
 
-void RgbToXyb(uint8_t r, uint8_t g, uint8_t b, float* PIK_RESTRICT valx,
-              float* PIK_RESTRICT valy, float* PIK_RESTRICT valz) {
-  // TODO(janwas): replace with polynomial to enable vectorization.
-  const float* lut = Srgb8ToLinearTable();
-  const float rgb[3] = {lut[r], lut[g], lut[b]};
-  LinearToXyb(rgb, valx, valy, valz);
+void LinearToXyb(const float r, const float g, const float b,
+                 float* PIK_RESTRICT valx, float* PIK_RESTRICT valy,
+                 float* PIK_RESTRICT valz) {
+  float mixed[3];
+  OpsinAbsorbance(r, g, b, mixed);
+  for (size_t c = 0; c < 3; ++c) {
+    // mixed should be non-negative even for wide-gamut. Make sure of that:
+    mixed[c] = std::max(0.0f, mixed[c]);
+    mixed[c] = SimpleGamma(mixed[c]);
+  }
+  LinearXybTransform(mixed[0], mixed[1], mixed[2], valx, valy, valz);
+
+  // For wide-gamut inputs, r/g/b and valx (but not y/z) are often negative.
 }
 
-Image3F OpsinDynamicsImage(const Image3B& srgb) {
+// This is different from butteraugli::OpsinDynamicsImage() in the sense that
+// it does not contain a sensitivity multiplier based on the blurred image.
+Image3F OpsinDynamicsImage(const CodecInOut* in) {
   PROFILER_FUNC;
-  // This is different from butteraugli::OpsinDynamicsImage() in the sense that
-  // it does not contain a sensitivity multiplier based on the blurred image.
-  const size_t xsize = srgb.xsize();
-  const size_t ysize = srgb.ysize();
-  Image3F opsin(xsize, ysize);
-  for (size_t iy = 0; iy < ysize; iy++) {
-    const uint8_t* PIK_RESTRICT row_srgb0 = srgb.ConstPlaneRow(0, iy);
-    const uint8_t* PIK_RESTRICT row_srgb1 = srgb.ConstPlaneRow(1, iy);
-    const uint8_t* PIK_RESTRICT row_srgb2 = srgb.ConstPlaneRow(2, iy);
-    float* PIK_RESTRICT row_xyb0 = opsin.PlaneRow(0, iy);
-    float* PIK_RESTRICT row_xyb1 = opsin.PlaneRow(1, iy);
-    float* PIK_RESTRICT row_xyb2 = opsin.PlaneRow(2, iy);
-    for (size_t ix = 0; ix < xsize; ix++) {
-      RgbToXyb(row_srgb0[ix], row_srgb1[ix], row_srgb2[ix], &row_xyb0[ix],
-               &row_xyb1[ix], &row_xyb2[ix]);
-    }
+
+  // Convert to linear sRGB (unless already in that space)
+  const Image3F* linear_srgb = &in->color();
+  Image3F copy;
+  if (!in->IsLinearSRGB()) {
+    const ColorEncoding& c = in->Context()->c_linear_srgb[in->IsGray()];
+    PIK_CHECK(in->CopyTo(c, &copy));
+    linear_srgb = &copy;
   }
+
+  const size_t xsize = linear_srgb->xsize();
+  const size_t ysize = linear_srgb->ysize();
+  Image3F opsin(xsize, ysize);
+
+  in->Context()->pool.Run(
+      0, ysize,
+      [linear_srgb, xsize, &opsin](const int task, const int thread) {
+        const size_t y = task;
+        const float* PIK_RESTRICT row_in0 = linear_srgb->ConstPlaneRow(0, y);
+        const float* PIK_RESTRICT row_in1 = linear_srgb->ConstPlaneRow(1, y);
+        const float* PIK_RESTRICT row_in2 = linear_srgb->ConstPlaneRow(2, y);
+        float* PIK_RESTRICT row_xyb0 = opsin.PlaneRow(0, y);
+        float* PIK_RESTRICT row_xyb1 = opsin.PlaneRow(1, y);
+        float* PIK_RESTRICT row_xyb2 = opsin.PlaneRow(2, y);
+        for (size_t x = 0; x < xsize; x++) {
+          LinearToXyb(row_in0[x], row_in1[x], row_in2[x], &row_xyb0[x],
+                      &row_xyb1[x], &row_xyb2[x]);
+        }
+      },
+      "OpsinDynamicsImage");
   return opsin;
 }
 
-Image3F OpsinDynamicsImage(const Image3F& linear) {
-  PROFILER_FUNC;
-  // This is different from butteraugli::OpsinDynamicsImage() in the sense that
-  // it does not contain a sensitivity multiplier based on the blurred image.
-  const size_t xsize = linear.xsize();
-  const size_t ysize = linear.ysize();
-  Image3F opsin(xsize, ysize);
-  for (size_t iy = 0; iy < ysize; iy++) {
-    const float* PIK_RESTRICT row_in0 = linear.ConstPlaneRow(0, iy);
-    const float* PIK_RESTRICT row_in1 = linear.ConstPlaneRow(1, iy);
-    const float* PIK_RESTRICT row_in2 = linear.ConstPlaneRow(2, iy);
-    float* PIK_RESTRICT row_xyb0 = opsin.PlaneRow(0, iy);
-    float* PIK_RESTRICT row_xyb1 = opsin.PlaneRow(1, iy);
-    float* PIK_RESTRICT row_xyb2 = opsin.PlaneRow(2, iy);
-    for (size_t ix = 0; ix < xsize; ix++) {
-      const float rgb[3] = {row_in0[ix], row_in1[ix], row_in2[ix]};
-      LinearToXyb(rgb, &row_xyb0[ix], &row_xyb1[ix], &row_xyb2[ix]);
-    }
-  }
-  return opsin;
+// DEPRECATED
+Image3F OpsinDynamicsImage(const Image3B& srgb8) {
+  CodecContext codec_context(0);
+  CodecInOut io(&codec_context);
+  Image3F srgb = StaticCastImage3<uint8_t, float>(srgb8);
+  io.SetFromImage(std::move(srgb), codec_context.c_srgb[0]);
+  PIK_CHECK(io.TransformTo(codec_context.c_linear_srgb[io.IsGray()]));
+  return OpsinDynamicsImage(&io);
 }
 
 }  // namespace pik

@@ -12,6 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// TODO(user): Lehmer coding takes up to 5% of the decoding time on very
+// small images (32x32 pixels), and up to 1.5% for moderate-sized images (such
+// as set14/6.png). However, since computing and reversing Lehmer coding can be
+// seen as a variation of the Fisher-Yates shuffle, we can reduce the time
+// taken by this step significantly by changing the implementation to a linear
+// time one
+
 #include "lehmer_code.h"
 
 #include <vector>
@@ -41,6 +48,7 @@ void ComputeLehmerCode(const int* sigma, const int len, int* code) {
   }
 }
 
+// Result is guaranteed to be one of s[0] .. s[len - 1]
 int FindValueAndRemove(int idx, int* s, int len) {
   int pos = 0;
   int val = 0;
@@ -56,6 +64,7 @@ int FindValueAndRemove(int idx, int* s, int len) {
   return val;
 }
 
+// sigma[0] .. sigma[len - 1] are guaranteed to be in range 0 .. (len - 1)
 void DecodeLehmerCode(const int* code, int len, int* sigma) {
   std::vector<int> stdorder(len);
   for (int i = 0; i < len; ++i) {

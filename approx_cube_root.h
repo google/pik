@@ -1,3 +1,17 @@
+// Copyright 2017 Google Inc. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #ifndef APPROX_CUBE_ROOT_H_
 #define APPROX_CUBE_ROOT_H_
 
@@ -16,7 +30,7 @@ PIK_INLINE float CubeRootInitialGuess(float y) {
   // form of <magic constant> - ix / 2, our initial guess has the form
   // <magic constant> + ix / 3. Since we know the set of all floating
   // point values that will be the input of the cube root function in pik (see
-  // RgbToXyb() in opsin_image.cc), we can search for the magic constant that
+  // LinearToXyb() in opsin_image.cc), we can search for the magic constant that
   // gives the minimum worst-case error. The chosen value here is optimal among
   // the magic constants whose 8 least significant bits are zero.
   ix = 0x2a50f200 + ix / 3;

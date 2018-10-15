@@ -10,13 +10,12 @@
 namespace pik {
 namespace {
 
-void CumulativeDistributionFunction(const int* PIK_RESTRICT histogram,
-                                    const size_t num_bins,
-                                    int* PIK_RESTRICT cdf) {
-  using namespace SIMD_NAMESPACE;
+SIMD_ATTR void CumulativeDistributionFunction(const int* PIK_RESTRICT histogram,
+                                              const size_t num_bins,
+                                              int* PIK_RESTRICT cdf) {
 #if SIMD_TARGET_VALUE != SIMD_NONE
-  const Part<int32_t, 4> d;
-  using V = Part<int32_t, 4>::V;
+  const SIMD_PART(int32_t, 4) d;
+  using V = SIMD_PART(int32_t, 4)::V;
   PIK_CHECK(num_bins % d.N == 0);
   V sum = setzero(d);
   for (size_t idx_bin = 0; idx_bin < num_bins; idx_bin += d.N) {

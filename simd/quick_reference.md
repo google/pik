@@ -3,29 +3,21 @@
 ## Compiler support
 
 Some compilers require e.g. -mavx2 flags in order to use SIMD intrinsics.
-However, this enables AVX2 instructions in the entire translation unit. That can
-violate the one-definition rule and cause crashes. We work around this problem
-by ensuring all SIMD code resides within target-specific namespaces.
-
-As an alternative, we support 'attr mode', in which our SIMD headers ensure all
-functions have a target-specific attribute that allows the use of SIMD
-intrinsics without -mavx2. However, user code must also add `SIMD_ATTR` to each
-function using SIMD.
+However, this enables AVX2 instructions in the entire translation unit, which
+may violate the one-definition rule and cause crashes. Instead, we use
+target-specific attribute annotations: any function using SIMD must be prefixed
+with `SIMD_ATTR`.
 
 ## Preprocessor macros
 
 Let `Target` denote an instruction set: `NONE/SSE4/AVX2/AVX512/PPC8/ARM8`.
 
-*   `SIMD_USE_ATTR` must be set to 1 by applications that want "attr mode".
 *   `SIMD_Target=##` are powers of two uniquely identifying `Target`.
-*   `SIMD_ENABLE=##` is defined by the build system to enable instruction sets
-    **if** the compiler supports them, which may require additional `-mavx2`
-    etc. compiler flags. `##` is the sum of zero or more `SIMD_Target`.
-*   `SIMD_ENABLE_Target` is 1 if `Target` is enabled, otherwise 0. Mainly for
-    internal use; applications should instead query vector width via `D::N`.
+*   `SIMD_ENABLE=##`, defined within `targets.h`, indicates for which Target(s)
+    to generate code. The compiler must support them.
 
 *   `SIMD_TARGET = Target` is the currently active instruction set; use this for
-    instantiating the `operator()` template called by dispatch.h. `Target` is a
+    instantiating the `operator()` template called by `Dispatch`. `Target` is a
     struct with a `value` member initialized to the `SIMD_Target` value.
 
 *   `SIMD_TARGET_VALUE == Target::value == SIMD_Target` enables preprocessor
@@ -33,15 +25,14 @@ Let `Target` denote an instruction set: `NONE/SSE4/AVX2/AVX512/PPC8/ARM8`.
     include avoiding `shift_*_var` if `SIMD_TARGET_VALUE == SIMD_SSE4` and
     avoiding shuffles etc. when `SIMD_TARGET_VALUE == SIMD_NONE`.
 
-*   `SIMD_NAMESPACE` is undefined `#if SIMD_USE_ATTR`, otherwise it is the
-    namespace enclosing any SIMD code.
+*   `SIMD_NAMESPACE` is useful for defining target-specific functions called by
+    `operator()` specializations.
 
-*   `SIMD_ATTR and SIMD_ATTR_Target` are attributes for any function that calls
-    SIMD functions, only used/required `#if SIMD_USE_ATTR`.
+*   `SIMD_ATTR` expands to `SIMD_ATTR_Target` and must be prefixed to any
+    inlined function declaration that (transitively) calls SIMD functions.
 
 *   `SIMD_FULL(T)` and `SIMD_PART(T, N)` expand to `Full<T, SIMD_TARGET>` and
-    `Part<T, N, SIMD_TARGET>`. This is useful in attr mode; in normal mode, the
-    last argument of `Full` and `Part` defaults to `SIMD_TARGET` anyway.
+    `Part<T, N, SIMD_TARGET>`.
 
 ## Vector types
 
@@ -161,6 +152,18 @@ prefixes `V`: `u8/16` or `uif` for unsigned/signed/floating-point types.
 
 *   `V`: `f` \
     `V nmul_add(V a, V b, V c)`: returns `-a[i] * b[i] + c[i]`.
+
+*   `V`: `f` \
+    `V fadd(V x, V k1, V add)`: returns `x[i] + add[i]` (k1 must equal 1.0).
+    Clobbers the register holding x due to 3-address encoding.
+
+*   `V`: `f` \
+    `V fsub(V x, V k1, V sub)`: returns `x[i] - sub[i]` (k1 must equal 1.0).
+    Clobbers the register holding x due to 3-address encoding.
+
+*   `V`: `f` \
+    `V fnadd(V sub, V k1, V x)`: returns `x[i] - sub[i]` (k1 must equal
+    1.0). Clobbers the register holding sub due to 3-address encoding.
 
 *   `V`: `f` \
     `V ext::mul_subtract(V a, V b, V c)`: returns `a[i] * b[i] - c[i]`.
@@ -438,6 +441,3 @@ NONE`):
 *   `V`: `uif32/64` \
     `V ext::sum_of_lanes(V v)`: returns the sum of all lanes in each lane; to
     obtain the result, use `get(D, horz_sum_result)`.
-
-*   `V`: `u8x16` \
-    `V aes_round(V state, V key)`: returns one-round AES permutation of `state`.

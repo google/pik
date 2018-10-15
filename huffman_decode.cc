@@ -339,7 +339,7 @@ bool HuffmanDecodingData::ReadFromBitStream(BitReader* input) {
                                &code_lengths, input);
   }
   if (!ok) {
-    return false;
+    return PIK_FAILURE("Failed to read Huffman data");
   }
   uint16_t counts[16] = { 0 };
   for (int i = 0; i < code_lengths.size(); ++i) {

@@ -1,4 +1,4 @@
-// Copyright 2017 Google Inc. All Rights Reserved.
+// Copyright 2018 Google Inc. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,21 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Facade/dispatcher for calling all supported SimdTest instantiations.
+// Facade for calling all enabled and supported SimdTest instantiations.
 
-#ifndef SIMD_ENABLE
-#define SIMD_ENABLE ~0  // allow all targets (if supported)
-#endif
 #include "simd/simd.h"
 #include <stdio.h>
-#include "simd/dispatch.h"
-#include "simd/simd_test_target.h"
 
 namespace pik {
 namespace {
 
-void NotifyFailed(const int target, const int line, const char* vec_name,
-                  const int lane, const char* expected, const char* actual) {
+// Specialized in simd_test.cctest. Called via TargetBitfield. Thread-hostile.
+struct SimdTest {
+  template <class Target>
+  void operator()();
+};
+
+// Called by simd_test.cctest functions.
+void NotifyFailure(const int target, const int line, const char* vec_name,
+                   const int lane, const char* expected, const char* actual) {
   fprintf(stderr,
           "target %x, line %d, %s lane %d mismatch: expected '%s', got '%s'.\n",
           target, line, vec_name, lane, expected, actual);
@@ -34,21 +36,19 @@ void NotifyFailed(const int target, const int line, const char* vec_name,
 }
 
 int RunTests() {
-  SimdTest tests;
-  const int targets = dispatch::SupportedTargets();
-  dispatch::ForeachTarget(targets, tests, NotifyFailed);
-
-  if (targets != tests.targets) {
-    printf("Did not run all tests. Expected: %x; actual: %x\n", targets,
-           tests.targets);
-    return 1;
-  }
-  printf("Successfully tested instruction sets: 0x%x.\n", targets);
+  TargetBitfield().Foreach(SimdTest());
+  printf("Successfully tested instruction sets: 0x%x.\n", SIMD_ENABLE);
   return 0;
 }
 
 }  // namespace
 }  // namespace pik
+
+// Must include "normally" so the build system understands the dependency.
+#include "simd/simd_test.cctest"
+
+#define SIMD_ATTR_IMPL "simd_test.cctest"
+#include "foreach_target.h"
 
 int main() {
   setvbuf(stdin, nullptr, _IONBF, 0);

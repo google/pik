@@ -19,6 +19,7 @@
 // ensure exactly the desired regions are measured.
 
 #include <stdint.h>
+#include <time.h>
 
 #include "arch_specific.h"
 #include "compiler_specific.h"
@@ -26,9 +27,9 @@
 
 namespace pik {
 
-// Start/Stop return absolute timestamps and must be placed immediately before
-// and after the region to measure. We provide separate Start/Stop functions
-// because they use different fences.
+// TicksBefore/After return absolute timestamps and must be placed immediately
+// before and after the region to measure. The functions are distinct because
+// they use different fences.
 //
 // Background: RDTSC is not 'serializing'; earlier instructions may complete
 // after it, and/or later instructions may complete before it. 'Fences' ensure
@@ -59,12 +60,12 @@ namespace pik {
 // When surrounded by fences, the additional RDTSCP half-fence provides no
 // benefit, so the initial timestamp can be recorded via RDTSC, which has
 // lower overhead than RDTSCP because it does not read TSC_AUX. In summary,
-// we define Start = LFENCE/RDTSC/LFENCE; Stop = RDTSCP/LFENCE.
+// we define Before = LFENCE/RDTSC/LFENCE; After = RDTSCP/LFENCE.
 //
-// Using Start+Start leads to higher variance and overhead than Stop+Stop.
-// However, Stop+Stop includes an LFENCE in the region measurements, which
-// adds a delay dependent on earlier loads. The combination of Start+Stop
-// is faster than Start+Start and more consistent than Stop+Stop because
+// Using Before+Before leads to higher variance and overhead than After+After.
+// However, After+After includes an LFENCE in the region measurements, which
+// adds a delay dependent on earlier loads. The combination of Before+After
+// is faster than Before+Before and more consistent than Stop+Stop because
 // the first LFENCE already delayed subsequent loads before the measured
 // region. This combination seems not to have been considered in prior work:
 // http://akaros.cs.berkeley.edu/lxr/akaros/kern/arch/x86/rdtsc_test.c
@@ -75,27 +76,18 @@ namespace pik {
 // prefer to avoid kernel-mode drivers. Performance counters are also affected
 // by several under/over-count errata, so we use the TSC instead.
 
-// Primary templates; must use one of the specializations.
-template <typename T>
-inline T Start();
-
-template <typename T>
-inline T Stop();
-
 // Returns a 64-bit timestamp in unit of 'ticks'; to convert to seconds,
-// divide by InvariantTicksPerSecond.
-template <>
-inline uint64_t Start<uint64_t>() {
+// divide by InvariantTicksPerSecond. Although 32-bit ticks are faster to read,
+// they overflow too quickly to measure long regions.
+static inline uint64_t TicksBefore() {
   uint64_t t;
 #if PIK_ARCH_PPC
   asm volatile("mfspr %0, %1" : "=r"(t) : "i"(268));
-#elif PIK_ARCH_AARCH64
-  asm volatile("mrs %0, cntvct_el0" : "=r"(t));
 #elif PIK_ARCH_X64 && PIK_COMPILER_MSVC
-  SIMD_NAMESPACE::load_fence();
+  load_fence();
   PIK_COMPILER_FENCE;
   t = __rdtsc();
-  SIMD_NAMESPACE::load_fence();
+  load_fence();
   PIK_COMPILER_FENCE;
 #elif PIK_ARCH_X64 && (PIK_COMPILER_CLANG || PIK_COMPILER_GCC)
   asm volatile(
@@ -110,23 +102,21 @@ inline uint64_t Start<uint64_t>() {
       // "cc" = flags modified by SHL.
       : "rdx", "memory", "cc");
 #else
-#error "Port"
+  // Fall back to OS - unsure how to reliably query cntvct_el0 frequency.
+  timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  t = ts.tv_sec * 1000000000LL + ts.tv_nsec;
 #endif
   return t;
 }
 
-template <>
-inline uint64_t Stop<uint64_t>() {
+static inline uint64_t TicksAfter() {
   uint64_t t;
-#if PIK_ARCH_PPC
-  asm volatile("mfspr %0, %1" : "=r"(t) : "i"(268));
-#elif PIK_ARCH_AARCH64
-  asm volatile("mrs %0, cntvct_el0" : "=r"(t));
-#elif PIK_ARCH_X64 && PIK_COMPILER_MSVC
+#if PIK_ARCH_X64 && PIK_COMPILER_MSVC
   PIK_COMPILER_FENCE;
   unsigned aux;
   t = __rdtscp(&aux);
-  SIMD_NAMESPACE::load_fence();
+  load_fence();
   PIK_COMPILER_FENCE;
 #elif PIK_ARCH_X64 && (PIK_COMPILER_CLANG || PIK_COMPILER_GCC)
   // Use inline asm because __rdtscp generates code to store TSC_AUX (ecx).
@@ -141,58 +131,7 @@ inline uint64_t Stop<uint64_t>() {
       // "cc" = flags modified by SHL.
       : "rcx", "rdx", "memory", "cc");
 #else
-#error "Port"
-#endif
-  return t;
-}
-
-// Returns a 32-bit timestamp with about 4 cycles less overhead than
-// Start<uint64_t>. Only suitable for measuring very short regions because the
-// timestamp overflows about once a second.
-template <>
-inline uint32_t Start<uint32_t>() {
-  uint32_t t;
-#if PIK_ARCH_X64 && PIK_COMPILER_MSVC
-  SIMD_NAMESPACE::load_fence();
-  PIK_COMPILER_FENCE;
-  t = static_cast<uint32_t>(__rdtsc());
-  SIMD_NAMESPACE::load_fence();
-  PIK_COMPILER_FENCE;
-#elif PIK_ARCH_X64 && (PIK_COMPILER_CLANG || PIK_COMPILER_GCC)
-  asm volatile(
-      "lfence\n\t"
-      "rdtsc\n\t"
-      "lfence"
-      : "=a"(t)
-      :
-      // "memory" avoids reordering. rdx = TSC >> 32.
-      : "rdx", "memory");
-#else
-  t = static_cast<uint32_t>(Start<uint64_t>());
-#endif
-  return t;
-}
-
-template <>
-inline uint32_t Stop<uint32_t>() {
-  uint32_t t;
-#if PIK_ARCH_X64 && PIK_COMPILER_MSVC
-  PIK_COMPILER_FENCE;
-  unsigned aux;
-  t = static_cast<uint32_t>(__rdtscp(&aux));
-  SIMD_NAMESPACE::load_fence();
-  PIK_COMPILER_FENCE;
-#elif PIK_ARCH_X64 && (PIK_COMPILER_CLANG || PIK_COMPILER_GCC)
-  // Use inline asm because __rdtscp generates code to store TSC_AUX (ecx).
-  asm volatile(
-      "rdtscp\n\t"
-      "lfence"
-      : "=a"(t)
-      :
-      // "memory" avoids reordering. rcx = TSC_AUX. rdx = TSC >> 32.
-      : "rcx", "rdx", "memory");
-#else
-  t = static_cast<uint32_t>(Stop<uint64_t>());
+  t = TicksBefore();  // no difference on other platforms.
 #endif
   return t;
 }

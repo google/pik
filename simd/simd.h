@@ -1,4 +1,4 @@
-// Copyright 2017 Google Inc. All Rights Reserved.
+// Copyright 2018 Google Inc. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,93 +15,62 @@
 #ifndef SIMD_SIMD_H_
 #define SIMD_SIMD_H_
 
-// Performance-portable SIMD API for SSE4/AVX2/ARMv8, later AVX-512 and PPC8.
+// Performance-portable SIMD API for SSE4/AVX2/ARMv8, later AVX-512 and POWER8.
 // Each operation is efficient on all platforms.
 
-// WARNING: this header may be included from translation units compiled with
-// different flags. To prevent ODR violations, all functions defined here or
-// in dependent headers must be inlined and/or within namespace SIMD_NAMESPACE.
-// The namespace name varies depending on compile flags, so this header requires
-// textual inclusion.
 #include <stddef.h>  // size_t
-#include "simd/port.h"
-#include "simd/util.h"
+#include <stdint.h>
+#include "simd/arch.h"
+#include "simd/util.h"  // CopyBytes
 
-// Ensures an array is aligned and suitable for load()/store() functions.
-// Example: SIMD_ALIGN T lanes[V::N];
-#define SIMD_ALIGN alignas(32)
+#include "simd/arm64_neon.h"
+#include "simd/scalar.h"
+#include "simd/x86_avx2.h"
+#include "simd/x86_sse4.h"
 
+#if SIMD_ARCH == SIMD_ARCH_X86 && SIMD_ENABLE == SIMD_NONE
+// No targets enabled, but we still need this for functions below.
+#include <emmintrin.h>
+#endif
+
+// Use SIMD_TARGET to derive other macros. NOTE: SIMD_TARGET is only evaluated
+// when these macros are expanded.
+#define SIMD_CONCAT_IMPL(a, b) a##b
+#define SIMD_CONCAT(a, b) SIMD_CONCAT_IMPL(a, b)
+
+// Attributes; must precede every function declaration.
+#define SIMD_ATTR SIMD_CONCAT(SIMD_ATTR_, SIMD_TARGET)
+
+// Target-specific namespace, required when using foreach_target.h.
+#define SIMD_NAMESPACE SIMD_CONCAT(N_, SIMD_TARGET)
+
+// Which target is active, e.g. #if SIMD_TARGET_VALUE == SIMD_AVX2
+#define SIMD_TARGET_VALUE SIMD_CONCAT(SIMD_, SIMD_TARGET)
+
+// Functions common to multiple targets:
 namespace pik {
-#ifdef SIMD_NAMESPACE
-namespace SIMD_NAMESPACE {
-#endif
 
-// SIMD operations are implemented as overloaded functions selected using a
-// "descriptor" D := Desc<T, N[, Target]>. For example: `D::V setzero(D)`.
-// T is the lane type, N the number of lanes, Target is an instruction set
-// (e.g. SSE4), defaulting to the best available. The return type D::V is either
-// a full vector of at least 128 bits, an N-lane (=2^j) part, or a scalar.
+// One Newton-Raphson iteration.
+template <class V>
+static SIMD_ATTR SIMD_INLINE V ReciprocalNR(const V x) {
+  const auto rcp = approximate_reciprocal(x);
+  const auto sum = rcp + rcp;
+  const auto x_rcp = x * rcp;
+  return nmul_add(x_rcp, rcp, sum);
+}
 
-// Specialized in platform-specific headers; see Desc::V.
-template <typename T, size_t N, class Target>
-struct VecT;
-
-// Descriptor: properties that uniquely identify a vector/part/scalar. Used to
-// select overloaded functions; see Full/Part/Scalar aliases below.
-template <typename LaneT, size_t kLanes, class TargetT>
-struct Desc {
-  constexpr Desc() {}
-
-  using T = LaneT;
-  static constexpr size_t N = kLanes;
-  using Target = TargetT;
-
-  // Alias for the actual vector data, e.g. scalar<float> for <float, 1, NONE>,
-  // returned by initializers such as setzero(). Parts and full vectors are
-  // distinct types on x86 to avoid inadvertent conversions. By contrast, PPC
-  // parts are merely aliases for full vectors to avoid wrapper overhead.
-  using V = typename VecT<T, N, Target>::type;
-
-  static_assert((N & (N - 1)) == 0, "N must be a power of two");
-  static_assert(N <= Target::template NumLanes<T>(), "N too large");
+// Primary template: default to actual division.
+template <typename T, class V>
+struct FastDivision {
+  SIMD_ATTR V operator()(const V n, const V d) const { return n / d; }
 };
-
-// Avoid having to specify SIMD_TARGET in every Part<>/Full<>. Option 1: macro,
-// required in attr mode, where we want a different default target for each
-// expansion of target-specific code (via foreach_target.h's includes).
-#define SIMD_FULL(T) Full<T, SIMD_TARGET>
-#define SIMD_PART(T, N) Part<T, N, SIMD_TARGET>
-
-#if SIMD_USE_ATTR
-#define SIMD_DEFAULT_TARGET
-#else
-// Option 2 (normal mode): default argument; sufficient because this entire
-// header is included from each target-specific translation unit.
-#define SIMD_DEFAULT_TARGET = SIMD_TARGET
-#endif
-
-// Shorthand for a full vector.
-template <typename T, class Target SIMD_DEFAULT_TARGET>
-using Full = Desc<T, Target::template NumLanes<T>(), Target>;
-
-// Shorthand for a part (or full) vector. N=2^j. Note that PartTarget selects
-// a 128-bit Target when T and N are small enough (avoids additional AVX2
-// versions of SSE4 initializers/loads).
-template <typename T, size_t N, class Target SIMD_DEFAULT_TARGET>
-using Part = Desc<T, N, PartTarget<T, N, Target>>;
-
-// Shorthand for a scalar; note that scalar<T> is the actual data class.
-template <typename T>
-using Scalar = Desc<T, 1, NONE>;
-
-// Convenient shorthand for VecT. Chooses the smallest possible Target.
-template <typename T, size_t N, class Target>
-using VT = typename VecT<T, N, PartTarget<T, N, Target>>::type;
-
-// Type tags for get_half(Upper(), v) etc.
-struct Upper {};
-struct Lower {};
-#define SIMD_HALF Lower()
+// Partial specialization for float vectors.
+template <class V>
+struct FastDivision<float, V> {
+  SIMD_ATTR V operator()(const V n, const V d) const {
+    return n * ReciprocalNR(d);
+  }
+};
 
 // Returns a name for the vector/part/scalar. The type prefix is u/i/f for
 // unsigned/signed/floating point, followed by the number of bits per lane;
@@ -137,28 +106,64 @@ inline const char* vec_name() {
   return sizeof(T) == 1 ? name1 : name2;
 }
 
-// Include all headers #if SIMD_DEPS to ensure they are added to deps.mk.
-// This has no other effect because the headers are empty #if SIMD_DEPS.
+// Cache control
 
-// Also used by x86_avx2.h => must be included first.
-#if SIMD_DEPS || (SIMD_ENABLE_SSE4 || SIMD_ENABLE_AVX2)
-#include "simd/x86_sse4.h"
+SIMD_INLINE void stream(const uint32_t t, uint32_t* SIMD_RESTRICT aligned) {
+#if SIMD_ARCH == SIMD_ARCH_X86
+  _mm_stream_si32(reinterpret_cast<int*>(aligned), t);
+#else
+  CopyBytes<4>(&t, aligned);
 #endif
+}
 
-#if SIMD_DEPS || SIMD_ENABLE_AVX2
-#include "simd/x86_avx2.h"
+SIMD_INLINE void stream(const uint64_t t, uint64_t* SIMD_RESTRICT aligned) {
+#if SIMD_ARCH == SIMD_ARCH_X86
+  _mm_stream_si64(reinterpret_cast<long long*>(aligned), t);
+#else
+  CopyBytes<8>(&t, aligned);
 #endif
+}
 
-#if SIMD_DEPS || SIMD_ENABLE_ARM8
-#include "simd/arm64_neon.h"
+// Delays subsequent loads until prior loads are visible. On Intel CPUs, also
+// serves as a full fence (waits for all prior instructions to complete).
+// No effect on non-x86.
+SIMD_INLINE void load_fence() {
+#if SIMD_ARCH == SIMD_ARCH_X86
+  _mm_lfence();
 #endif
+}
 
-// Always available
-#include "simd/scalar.h"
-
-#ifdef SIMD_NAMESPACE
-}  // namespace SIMD_NAMESPACE
+// Ensures previous weakly-ordered stores are visible. No effect on non-x86.
+SIMD_INLINE void store_fence() {
+#if SIMD_ARCH == SIMD_ARCH_X86
+  _mm_sfence();
 #endif
+}
+
+// Begins loading the cache line containing "p".
+template <typename T>
+SIMD_INLINE void prefetch(const T* p) {
+#if SIMD_ARCH == SIMD_ARCH_X86
+  _mm_prefetch(p, _MM_HINT_T0);
+#elif SIMD_ARCH == SIMD_ARCH_ARM
+  __pld(p);
+#endif
+}
+
+// Invalidates and flushes the cache line containing "p". No effect on non-x86.
+SIMD_INLINE void flush_cacheline(const void* p) {
+#if SIMD_ARCH == SIMD_ARCH_X86
+  _mm_clflush(p);
+#endif
+}
+
+// Call during spin loops to potentially reduce contention/power consumption.
+SIMD_INLINE void pause() {
+#if SIMD_ARCH == SIMD_ARCH_X86
+  _mm_pause();
+#endif
+}
+
 }  // namespace pik
 
 #endif  // SIMD_SIMD_H_

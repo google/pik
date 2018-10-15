@@ -69,6 +69,34 @@ ImageI MatMulI(const Image<T1>& A, const Image<T2>& B) {
   return MatMul<int, T1, T2>(A, B);
 }
 
+// Computes A = B * C, with sizes rows*cols: A=ha*wa, B=wa*wb, C=ha*wb
+template<typename T>
+void MatMul(const T* a, const T* b,
+            int ha, int wa, int wb, T* c) {
+  std::vector<T> temp(wa);  // Make better use of cache lines
+  for (int x = 0; x < wb; x++) {
+    for (int z = 0; z < wa; z++) {
+      temp[z] = b[z * wb + x];
+    }
+    for (int y = 0; y < ha; y++) {
+      double e = 0;
+      for (int z = 0; z < wa; z++) {
+        e += a[y * wa + z] * temp[z];
+      }
+      c[y * wb + x] = e;
+    }
+  }
+}
+
+// Computes C = A + factor * B
+template<typename T, typename F>
+void MatAdd(const T* a, const T* b, F factor,
+            int h, int w, T* c) {
+  for (int i = 0; i < w * h; i++) {
+    c[i] = a[i] + b[i] * factor;
+  }
+}
+
 template<typename T>
 inline Image<T> Identity(const size_t N) {
   Image<T> out(N, N);
@@ -135,6 +163,100 @@ void Inv3x3Matrix(T* matrix) {
   for (int i = 0; i < 9; i++) {
     matrix[i] = temp[i] * idet;
   }
+}
+
+
+
+// Solves system of linear equations A * X = B using the conjugate gradient
+// method. Matrix a must be a n*n, symmetric and positive definite.
+// Vectors b and x must have n elements
+template<typename T>
+void ConjugateGradient(const T* a, int n, const T* b, T* x) {
+  std::vector<T> r(n);
+  MatMul(a, x, n, n, 1, r.data());
+  MatAdd(b, r.data(), -1, n, 1, r.data());
+  std::vector<T> p = r;
+  T rr;
+  MatMul(r.data(), r.data(), 1, n, 1, &rr);  // inner product
+
+  if (rr == 0) return;  // The initial values were already optimal
+
+  for (int i = 0; i < n; i++) {
+    std::vector<T> ap(n);
+    MatMul(a, p.data(), n, n, 1, ap.data());
+    T alpha;
+    MatMul(r.data(), ap.data(), 1, n, 1, &alpha);
+    // Normally alpha couldn't be zero here but if numerical issues caused it,
+    // return assuming the solution is close.
+    if (alpha == 0) return;
+    alpha = rr / alpha;
+    MatAdd(x, p.data(), alpha, n, 1, x);
+    MatAdd(r.data(), ap.data(), -alpha, n, 1, r.data());
+
+    T rr2;
+    MatMul(r.data(), r.data(), 1, n, 1, &rr2);  // inner product
+    if (rr2 < 1e-20) break;
+
+    T beta = rr2 / rr;
+    MatAdd(r.data(), p.data(), beta, 1, n, p.data());
+    rr = rr2;
+  }
+}
+
+
+// Computes optimal coefficients r to approximate points p with linear
+// combination of functions f. The matrix f has h rows and w columns, r has h
+// values, p has w values. h is the amount of functions, w the amount of points.
+// Uses the finite element method and minimizes mean square error.
+template<typename T>
+void FEM(const T* f, int h, int w, const T* p, T* r) {
+  // Compute "Gramian" matrix G = F * F^T
+  // Speed up multiplication by using non-zero intervals in sparse F.
+  std::vector<int> start(h);
+  std::vector<int> end(h);
+  for (int y = 0; y < h; y++) {
+    start[y] = end[y] = 0;
+    for (int x = 0; x < w; x++) {
+      if (f[y * w + x] != 0) {
+        start[y] = x;
+        break;
+      }
+    }
+    for (int x = w - 1; x >= 0; x--) {
+      if (f[y * w + x] != 0) {
+        end[y] = x + 1;
+        break;
+      }
+    }
+  }
+
+  std::vector<T> g(h * h);
+  for (int y = 0; y < h; y++) {
+    for (int x = 0; x <= y; x++) {
+      T v = 0;
+      // Intersection of the two sparse intervals.
+      int s = std::max(start[x], start[y]);
+      int e = std::min(end[x], end[y]);
+      for (int z = s; z < e; z++) {
+        v += f[x * w + z] * f[y * w + z];
+      }
+      // Symmetric, so two values output at once
+      g[y * h + x] = v;
+      g[x * h + y] = v;
+    }
+  }
+
+  // B vector: sum of each column of F multiplied by corresponding p
+  std::vector<T> b(h, 0);
+  for (int y = 0; y < h; y++) {
+    T v = 0;
+    for (int x = 0; x < w; x++) {
+      v += f[y * w + x] * p[x];
+    }
+    b[y] = v;
+  }
+
+  ConjugateGradient(g.data(), h, b.data(), r);
 }
 
 }  // namespace pik

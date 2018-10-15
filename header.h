@@ -25,140 +25,139 @@
 
 #include "bit_reader.h"
 #include "compiler_specific.h"
+#include "field_encodings.h"
+#include "padded_bytes.h"
 
 namespace pik {
 
-#pragma pack(push, 1)
+enum class ImageType : uint32_t {
+  kPreview = 0,  // preview or pyramid
+  kMain,         // main image or animation rect(s)
+  // Used to terminate container of unbounded stream of Images.
+  // All other Header fields are default-initialized.
+  kSentinel
+  // Future extensions: [3, 6]
+};
+
+// What comes after the header + sections.
+enum class Bitstream : uint32_t {
+  // Subsequent header fields are (only) valid in this mode.
+  kDefault = 0,
+
+  // Special bitstream for JPEG input images
+  kBrunsli,
+
+  // Future extensions: [2, 6]
+};
 
 // Header preceding all (sub-)images.
 struct Header {
-  enum ImageType {
-    kImageTypePreview = 0,
-    kImageTypePyramid = 1,
-    kImageTypeFrame = 2,  // main image or animation frame
-    // Used to terminate container of unbounded stream of Images.
-    // All other Header fields are default-initialized.
-    kImageTypeSentinel = 3
-  };
-
-  // What comes after the header + sections.
-  enum Bitstream {
-    // Subsequent header fields are (only) valid in this mode.
-    kBitstreamDefault = 0,
-
-    // Special bitstream for JPEG input images
-    kBitstreamBrunsli = 1,
-  };
-
-  // Optional postprocessing steps.
+  // Optional postprocessing steps. These flags are the source of truth;
+  // Override must set/clear them rather than change their meaning.
   enum Flags {
-    kSmoothDCPred = 1,
-
-    // Decoder should apply edge-preserving filter in opsin space. Useful for
-    // deblocking/deringing in lower-quality settings.
-    kDenoise = 2,
-
     // Additional smoothing; helpful for medium/low-quality.
-    kGaborishTransform = 4,
+    // Builds a value from [0..7] indicating the strength of the transform.
+    // 0 when nothing is done, 4 at default smoothing.
+    // kGaborishTransform0 is the lsb value.
+    // kGaborishTransform2 is the msb value.
+    kGaborishTransform0 = 1,
+    kGaborishTransform1 = 2,
+    kGaborishTransform2 = 4,
+    kGaborishTransformMask = 7,
+    kGaborishTransformShift = 0,
 
-    // Dither opsin values before rounding to 8-bit SRGB. Generally beneficial
-    // except for high-quality bitstreams (<= distance 1).
-    kDither = 8,
+    // Inject noise into decoded output.
+    kNoise = 8,
+
+    // Predictor for DCT coefficients.
+    kSmoothDCPred = 16,
 
     // Gradient map used to predict smooth areas.
-    kGradientMap = 16,
+    kGradientMap = 32,
+
+    // Constrained filter in decoder, useful for deringing.
+    kAdaptiveReconstruction = 64,
 
     // Experimental, go/pik-block-strategy
-    kBlockStrategy = 32,
+    kUseAcStrategy = 128,
+
+    // Image is compressed with grayscale optimizations. Only used for parsing
+    // of pik file, may not be used to determine decompressed color format or
+    // ICC color profile.
+    kGrayscaleOpt = 256,
   };
 
-  enum Expand { kExpandNone = 8, kExpandLinear = 9, kExpandPower = 10 };
+  // If kSentinel, all other header fields are default-initialized.
+  ImageType image_type = ImageType::kMain;
 
-  // If kImageTypeSentinel, all other header fields are default-initialized.
-  uint32_t image_type = kImageTypeFrame;
-
-  uint32_t xsize = 0;  // pixels, not necessarily a multiple of kBlockWidth
+  uint32_t xsize = 0;  // pixels, not necessarily a multiple of kBlockDim
   uint32_t ysize = 0;
-  uint32_t num_components = 0;
 
-  // If != kBitstreamDefault, all subsequent fields are default-initialized.
-  uint32_t bitstream = kBitstreamDefault;
+  uint32_t resampling_factor2 = 2;
+
+  // If != kDefault, all subsequent fields are default-initialized.
+  Bitstream bitstream = Bitstream::kDefault;
 
   uint32_t flags = 0;
-
-  uint32_t original_bit_depth = 8;
-  uint32_t expand = kExpandNone;  // if original_bit_depth != 8
-  uint32_t expand_param = 0;      // if expand != kExpandNone
-
-  uint32_t quant_template = 0;
 };
 
 // For loading/storing fields from/to the compressed stream.
 template <class Visitor>
-void VisitFields(Visitor* PIK_RESTRICT visitor, Header* PIK_RESTRICT header) {
-  visitor->U32(0x83828180, &header->image_type);
-  if (header->image_type == Header::kImageTypeSentinel) return;
+Status VisitFields(Visitor* PIK_RESTRICT visitor, Header* PIK_RESTRICT header) {
+  visitor->Enum(kU32Direct3Plus4, &header->image_type);
+  if (header->image_type == ImageType::kSentinel) return true;
 
   // Almost all camera images are less than 8K * 8K. We also allow the
   // full 32-bit range for completeness.
   visitor->U32(0x200D0B09, &header->xsize);
   visitor->U32(0x200D0B09, &header->ysize);
-  // 2-bit encodings for 1 and 3 common cases; a dozen components for
-  // remote-sensing data, or thousands for hyperspectral images.
-  visitor->U32(0x10048381, &header->num_components);
+  visitor->U32(kU32Direct2348, &header->resampling_factor2);
 
-  visitor->U32(0x06828180, &header->bitstream);
-  if (header->bitstream != Header::kBitstreamDefault) return;
+  visitor->Enum(kU32Direct3Plus4, &header->bitstream);
+  if (header->bitstream != Bitstream::kDefault) return true;
 
   visitor->U32(0x20181008, &header->flags);
 
-  visitor->U32(0x058E8C88, &header->original_bit_depth);
-  if (header->original_bit_depth != 8) {
-    visitor->U32(0x038A8988, &header->expand);
-    if (header->expand != Header::kExpandNone) {
-      visitor->U32(~32u + 32, &header->expand_param);
-    }
-  }
-
-  // Direct 2-bit encoding for quant template ids 0, 1, 2, 3.
-  visitor->U32(0x83828180, &header->quant_template);
-
   // To extend: add a section, or add fields conditional on a NEW flag:
   // if (flag) visitor->U32(..).
+
+  return true;
 }
 
 // Returns whether the struct can be encoded (i.e. all fields have a valid
 // representation). If so, "*encoded_bits" is the exact number of bits required.
-bool CanEncode(const Header& header, size_t* PIK_RESTRICT encoded_bits);
+Status CanEncode(const Header& header, size_t* PIK_RESTRICT encoded_bits);
 
-bool LoadHeader(BitReader* reader, Header* PIK_RESTRICT header);
+Status LoadHeader(BitReader* reader, Header* PIK_RESTRICT header);
 
-bool StoreHeader(const Header& header, size_t* pos, uint8_t* storage);
+Status StoreHeader(const Header& header, size_t* pos, uint8_t* storage);
 
 // Optional per-image extensions (backward- and forward-compatible):
 
 // Alpha channel (lossless compression).
 struct Alpha {
-  enum { kModeBrotli, kModeTransform, kModeInvalid };
+  enum {
+    kModeBrotli = 0,
+    kModeTransform
+    // Future extensions: [2, 6]
+  };
 
   uint32_t mode = kModeBrotli;
   uint32_t bytes_per_alpha = 1;
-  std::vector<uint8_t> encoded;  // interpretation depends on mode
+  PaddedBytes encoded;  // interpretation depends on mode
 };
 
 template <class Visitor>
-void VisitFields(Visitor* PIK_RESTRICT visitor, Alpha* PIK_RESTRICT alpha) {
-  visitor->U32(0x04828180, &alpha->mode);
-  visitor->U32(0x84828180, &alpha->bytes_per_alpha);
-  visitor->Bytes(&alpha->encoded);
+Status VisitFields(Visitor* PIK_RESTRICT visitor, Alpha* PIK_RESTRICT alpha) {
+  visitor->U32(kU32Direct3Plus4, &alpha->mode);
+  visitor->U32(0x84828180u, &alpha->bytes_per_alpha);
+  visitor->Bytes(Bytes::kRaw, &alpha->encoded);
+  return true;
 }
 
 // Superset of PNG PLTE+tRNS.
 struct Palette {
   enum { kEncodingRaw = 0 };
-
-  // Whether color/alpha are compressed.
-  uint32_t encoding = kEncodingRaw;
 
   // 1 or 2 (little-endian) byte per entry AND channel (RGB).
   uint32_t bytes_per_color = 1;
@@ -170,20 +169,21 @@ struct Palette {
   uint32_t num_alpha = 0;
 
   // "num_colors_minus_one+1" times 8/16-bit {R, G, B}; will not be reordered.
-  std::vector<uint8_t> colors;
+  PaddedBytes colors;
 
   // "num_alpha" times 8/16-bit opacity; will not be reordered.
-  std::vector<uint8_t> alpha;
+  PaddedBytes alpha;
 };
 
 template <class Visitor>
-void VisitFields(Visitor* PIK_RESTRICT visitor, Palette* PIK_RESTRICT palette) {
-  visitor->U32(0x04828180, &palette->encoding);
-  visitor->U32(0x84828180, &palette->bytes_per_color);
+Status VisitFields(Visitor* PIK_RESTRICT visitor,
+                   Palette* PIK_RESTRICT palette) {
+  visitor->U32(0x84828180u, &palette->bytes_per_color);
   visitor->U32(0x0C0A0806, &palette->num_colors_minus_one);
   visitor->U32(0x0C088180, &palette->num_alpha);
-  visitor->Bytes(&palette->colors);
-  visitor->Bytes(&palette->alpha);
+  visitor->Bytes(Bytes::kBrotli, &palette->colors);
+  visitor->Bytes(Bytes::kBrotli, &palette->alpha);
+  return true;
 }
 
 struct Sections {
@@ -209,14 +209,12 @@ void VisitSections(Visitor* PIK_RESTRICT visitor,
 
 // Returns whether "sections" can be encoded (i.e. all fields have a valid
 // representation). If so, "*encoded_bits" is the exact number of bits required.
-bool CanEncode(const Sections& sections, size_t* PIK_RESTRICT encoded_bits);
+Status CanEncode(const Sections& sections, size_t* PIK_RESTRICT encoded_bits);
 
-bool LoadSections(BitReader* source, Sections* PIK_RESTRICT sections);
+Status LoadSections(BitReader* source, Sections* PIK_RESTRICT sections);
 
-bool StoreSections(const Sections& sections, size_t* PIK_RESTRICT pos,
-                   uint8_t* storage);
-
-#pragma pack(pop)
+Status StoreSections(const Sections& sections, size_t* PIK_RESTRICT pos,
+                     uint8_t* storage);
 
 }  // namespace pik
 

@@ -8,21 +8,20 @@
 #include "opsin_params.h"
 #include "optimize.h"
 #include "rational_polynomial.h"
-#include "simd_helpers.h"
+#include "simd/simd.h"
 #include "write_bits.h"
 #include "xorshift128plus.h"
 
 namespace pik {
 namespace {
-using namespace SIMD_NAMESPACE;
 
-ImageF RandomImage(ImageF* PIK_RESTRICT temp, Xorshift128Plus* rng) {
+SIMD_ATTR ImageF RandomImage(ImageF* PIK_RESTRICT temp, Xorshift128Plus* rng) {
   const size_t xsize = temp->xsize();
   const size_t ysize = temp->ysize();
   for (size_t y = 0; y < ysize; ++y) {
     float* PIK_RESTRICT row = temp->Row(y);
-    const Full<float> df;
-    const Full<uint32_t> du;
+    const SIMD_FULL(float) df;
+    const SIMD_FULL(uint32_t) du;
     for (size_t x = 0; x < xsize; x += df.N) {
       const auto bits = cast_to(du, (*rng)());
       // 1.0 + 23 random mantissa bits = [1, 2)
@@ -105,10 +104,18 @@ float GetSADThreshold(const Histogram& histogram, const int num_bin) {
   return static_cast<float>(mode) / Histogram::kBins;
 }
 
+// [0, max_value]
+template <class D, class V>
+static SIMD_ATTR SIMD_INLINE V Clamp0ToMax(D d, const V x, const V max_value) {
+  const auto clamped = min(x, max_value);
+  // If negative, replace with zero (faster than floating-point max()).
+  return select(clamped, setzero(d), condition_from_sign(clamped));
+}
+
 // x is in [0+delta, 1+delta], delta ~= 0.06
 template <class StrengthEval>
-typename StrengthEval::V NoiseStrength(const StrengthEval& eval,
-                                       const typename StrengthEval::V x) {
+SIMD_ATTR typename StrengthEval::V NoiseStrength(
+    const StrengthEval& eval, const typename StrengthEval::V x) {
   const typename StrengthEval::D d;
   return Clamp0ToMax(d, eval(x), set1(d, 1.0f));
 }
@@ -122,7 +129,7 @@ class StrengthEvalPow {
   StrengthEvalPow(const NoiseParams& noise_params)
       : noise_params_(noise_params) {}
 
-  V operator()(const V vx) const {
+  SIMD_ATTR V operator()(const V vx) const {
     float x;
     store(vx, D(), &x);
     return set1(D(), noise_params_.alpha * std::pow(x, noise_params_.gamma) +
@@ -141,10 +148,10 @@ class StrengthEvalLinear {
   using D = D_Arg;
   using V = typename D::V;
 
-  StrengthEvalLinear(const NoiseParams& noise_params)
+  SIMD_ATTR StrengthEvalLinear(const NoiseParams& noise_params)
       : strength_(set1(D(), noise_params.beta)) {}
 
-  V operator()(const V x) const { return strength_; }
+  SIMD_ATTR V operator()(const V x) const { return strength_; }
 
  private:
   V strength_;
@@ -156,8 +163,7 @@ class StrengthEvalPoly {
   // Max err < 1E-6.
   static constexpr size_t kDegreeP = 3;
   static constexpr size_t kDegreeQ = 2;
-  using Polynomial =
-      SIMD_NAMESPACE::RationalPolynomial<D_Arg, kDegreeP, kDegreeQ>;
+  using Polynomial = RationalPolynomial<D_Arg, kDegreeP, kDegreeQ>;
 
  public:
   using D = D_Arg;
@@ -173,12 +179,12 @@ class StrengthEvalPoly {
     return Polynomial(p, q);
   }
 
-  StrengthEvalPoly(const NoiseParams& noise_params)
+  SIMD_ATTR StrengthEvalPoly(const NoiseParams& noise_params)
       : poly_(InitPoly()),
         mul_(set1(D(), noise_params.alpha)),
         add_(set1(D(), noise_params.beta)) {}
 
-  PIK_INLINE V operator()(const V x) const {
+  SIMD_ATTR PIK_INLINE V operator()(const V x) const {
     return mul_add(mul_, poly_(x), add_);
   }
 
@@ -189,13 +195,11 @@ class StrengthEvalPoly {
 };
 
 template <class D>
-void AddNoiseToRGB(const typename D::V rnd_noise_r,
-                   const typename D::V rnd_noise_g,
-                   const typename D::V rnd_noise_cor,
-                   const typename D::V noise_strength_g,
-                   const typename D::V noise_strength_r,
-                   float* PIK_RESTRICT out_x, float* PIK_RESTRICT out_y,
-                   float* PIK_RESTRICT out_b) {
+SIMD_ATTR void AddNoiseToRGB(
+    const typename D::V rnd_noise_r, const typename D::V rnd_noise_g,
+    const typename D::V rnd_noise_cor, const typename D::V noise_strength_g,
+    const typename D::V noise_strength_r, float* PIK_RESTRICT out_x,
+    float* PIK_RESTRICT out_y, float* PIK_RESTRICT out_b) {
   const D d;
   const auto kRGCorr = set1(d, 0.9f);
   const auto kRGNCorr = set1(d, 0.1f);
@@ -223,7 +227,7 @@ void AddNoiseToRGB(const typename D::V rnd_noise_r,
 }
 
 template <class StrengthEval>
-void AddNoiseT(const StrengthEval& noise_model, Image3F* opsin) {
+SIMD_ATTR void AddNoiseT(const StrengthEval& noise_model, Image3F* opsin) {
   using D = typename StrengthEval::D;
   const D d;
   const auto half = set1(d, 0.5f);
@@ -275,8 +279,8 @@ void AddNoiseT(const StrengthEval& noise_model, Image3F* opsin) {
 
 // Returns max absolute error at uniformly spaced x.
 template <class EvalApprox>
-float MaxAbsError(const NoiseParams& noise_params,
-                  const EvalApprox& eval_approx) {
+SIMD_ATTR float MaxAbsError(const NoiseParams& noise_params,
+                            const EvalApprox& eval_approx) {
   const StrengthEvalPow eval_pow(noise_params);
 
   float max_abs_err = 0.0f;
@@ -284,7 +288,7 @@ float MaxAbsError(const NoiseParams& noise_params,
   const float x1 = kXybRange[1] + kXybCenter[1];
   for (float x = x0; x < x1; x += 1E-1f) {
     const Scalar<float> d1;
-    const Full<float> d;
+    const SIMD_FULL(float) d;
     const auto expected_v = NoiseStrength(eval_pow, set1(d1, x));
     const auto actual_v = NoiseStrength(eval_approx, set1(d, x));
     float expected;
@@ -303,9 +307,9 @@ float MaxAbsError(const NoiseParams& noise_params,
 
 }  // namespace
 
-void AddNoise(const NoiseParams& noise_params, Image3F* opsin) {
+SIMD_ATTR void AddNoise(const NoiseParams& noise_params, Image3F* opsin) {
   // SIMD descriptor.
-  using D = Full<float>;
+  using D = SIMD_FULL(float);
 
   if (noise_params.alpha == 0.0f) {
     // No noise at all

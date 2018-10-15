@@ -19,88 +19,13 @@
 #include <memory>
 #include <vector>
 
-#include "brotli/decode.h"
-#include "brotli/encode.h"
 #include "bit_reader.h"
+#include "brotli.h"
 #include "fast_log.h"
 #include "write_bits.h"
 
 namespace pik {
 namespace {
-
-bool BrotliDecompress(const std::vector<uint8_t>& in,
-                      size_t max_output_size,
-                      size_t* bytes_read,
-                      std::vector<uint8_t>* out) {
-  std::unique_ptr<BrotliDecoderState, decltype(BrotliDecoderDestroyInstance)*>
-      s(BrotliDecoderCreateInstance(nullptr, nullptr, nullptr),
-      BrotliDecoderDestroyInstance);
-  if (!s) return PIK_FAILURE("BrotliDecoderCreateInstance failed");
-
-  const size_t kBufferSize = 128 * 1024;
-  std::vector<uint8_t> temp_buffer(kBufferSize);
-
-  size_t insize = in.size();
-  size_t avail_in = insize;
-  const uint8_t* next_in = &in[0];
-  BrotliDecoderResult code;
-
-  while (1) {
-    size_t out_size;
-    size_t avail_out = kBufferSize;
-    uint8_t* next_out = temp_buffer.data();
-    code = BrotliDecoderDecompressStream(
-        s.get(), &avail_in, &next_in, &avail_out, &next_out, nullptr);
-    out_size = next_out - temp_buffer.data();
-    out->resize(out->size() + out_size);
-    if (out->size() > max_output_size)
-      return PIK_FAILURE("Too long alpha stream");
-    memcpy(out->data() + out->size() - out_size, temp_buffer.data(), out_size);
-    if (code != BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT) break;
-  }
-  if (code != BROTLI_DECODER_RESULT_SUCCESS)
-    return PIK_FAILURE("Decompressing alpha stream failed");
-  *bytes_read += (insize - avail_in);
-  return true;
-}
-
-bool BrotliCompress(int quality, const std::vector<uint8_t>& in,
-                    std::vector<uint8_t>* out) {
-  std::unique_ptr<BrotliEncoderState, decltype(BrotliEncoderDestroyInstance)*>
-      enc(BrotliEncoderCreateInstance(nullptr, nullptr, nullptr),
-      BrotliEncoderDestroyInstance);
-  if (!enc) return PIK_FAILURE("BrotliEncoderCreateInstance failed");
-
-  BrotliEncoderSetParameter(enc.get(), BROTLI_PARAM_QUALITY, quality);
-  BrotliEncoderSetParameter(enc.get(), BROTLI_PARAM_LGWIN, 24);
-  BrotliEncoderSetParameter(enc.get(), BROTLI_PARAM_LGBLOCK, 0);
-
-  const size_t kBufferSize = 128 * 1024;
-  std::vector<uint8_t> temp_buffer(kBufferSize);
-
-  size_t insize = in.size();
-  size_t avail_in = insize;
-  const uint8_t* next_in = &in[0];
-
-  size_t total_out = 0;
-
-  while (1) {
-    size_t out_size;
-    size_t avail_out = kBufferSize;
-    uint8_t* next_out = temp_buffer.data();
-    if (!BrotliEncoderCompressStream(
-        enc.get(), BROTLI_OPERATION_FINISH,
-        &avail_in, &next_in, &avail_out, &next_out, &total_out)) {
-      return PIK_FAILURE("Failed to compress alpha stream");
-    }
-    out_size = next_out - temp_buffer.data();
-    out->resize(out->size() + out_size);
-    memcpy(&(*out)[0] + out->size() - out_size, temp_buffer.data(), out_size);
-    if (BrotliEncoderIsFinished(enc.get())) break;
-  }
-
-  return true;
-}
 
 ImageU FilterAlpha(const ImageU& in, int bit_depth) {
   ImageU out(in.xsize(), in.ysize());
@@ -126,14 +51,13 @@ void UnfilterAlpha(int bit_depth, ImageU* img) {
   }
 }
 
-bool FilterAndBrotliEncode(const CompressParams& params,
-                           const ImageU& plane, int bit_depth,
-                           std::vector<uint8_t>* out) {
+bool FilterAndBrotliEncode(const CompressParams& params, const ImageU& plane,
+                           int bit_depth, PaddedBytes* out) {
   const size_t xsize = plane.xsize();
   const size_t ysize = plane.ysize();
   const size_t stride = bit_depth / 8;
   ImageU filtered = FilterAlpha(plane, bit_depth);
-  std::vector<uint8_t> data(xsize * ysize * stride);
+  PaddedBytes data(xsize * ysize * stride);
   for (size_t y = 0; y < ysize; ++y) {
     uint16_t* PIK_RESTRICT row = filtered.Row(y);
     for (size_t x = 0; x < xsize; ++x) {
@@ -146,15 +70,14 @@ bool FilterAndBrotliEncode(const CompressParams& params,
   return BrotliCompress(quality, data, out);
 }
 
-bool BrotliDecodeAndUnfilter(const std::vector<uint8_t>& brotli,
-                             const int bit_depth, ImageU* plane) {
+Status BrotliDecodeAndUnfilter(const PaddedBytes& brotli, const int bit_depth,
+                               ImageU* plane) {
   const size_t num_pixels = plane->xsize() * plane->ysize();
   const size_t stride = bit_depth / 8;
-  std::vector<uint8_t> data;
+  PaddedBytes data;
   size_t bytes_read;
-  if (!BrotliDecompress(brotli, num_pixels * stride, &bytes_read, &data)) {
-    return false;
-  }
+  PIK_RETURN_IF_ERROR(
+      BrotliDecompress(brotli, num_pixels * stride, &bytes_read, &data));
   if (data.size() != num_pixels * stride) {
     return PIK_FAILURE("Incorrect size of the alpha stream");
   }
@@ -297,14 +220,12 @@ bool TransformAlpha(const ImageU& plane, int bit_depth, AlphaImage* out) {
   return y == plane.ysize();
 }
 
-bool ReconstructAlpha(const AlphaImage& alpha, int bit_depth, ImageU* plane) {
+Status ReconstructAlpha(const AlphaImage& alpha, int bit_depth, ImageU* plane) {
   PIK_ASSERT(alpha.xsize == plane->xsize());
   PIK_ASSERT(alpha.ysize == plane->ysize());
   for (int y = 0; y < plane->ysize(); ++y) {
-    if (!ReconstructAlphaRow(alpha.rows[y], bit_depth,
-                             plane->xsize(), plane->Row(y))) {
-      return false;
-    }
+    PIK_RETURN_IF_ERROR(ReconstructAlphaRow(alpha.rows[y], bit_depth,
+                                            plane->xsize(), plane->Row(y)));
   }
   return true;
 }
@@ -343,7 +264,7 @@ int DecodeSigned(BitReader* br) {
 }
 
 void EncodeTransformedAlpha(const AlphaImage& alpha, int bit_depth,
-                            std::vector<uint8_t>* out) {
+                            PaddedBytes* out) {
   const size_t max_out_size = 4 * alpha.ysize * alpha.xsize + 1024;
   out->resize(max_out_size);
   size_t storage_ix = 0;
@@ -391,7 +312,7 @@ void EncodeTransformedAlpha(const AlphaImage& alpha, int bit_depth,
   out->resize((storage_ix >> 3) + 4);
 }
 
-bool DecodeTransformedAlpha(const std::vector<uint8_t>& data, int bit_depth,
+bool DecodeTransformedAlpha(const PaddedBytes& data, int bit_depth,
                             AlphaImage* alpha) {
   // TODO(user): This now wastes 4 bytes for simplicity.
   if (data.size() <= 4) {
@@ -454,18 +375,17 @@ bool AlphaToPik(const CompressParams& params, const ImageU& plane,
   std::unique_ptr<Alpha> alpha(new Alpha);
 
   alpha->mode = Alpha::kModeBrotli;
-  if (!FilterAndBrotliEncode(params, plane, bit_depth, &alpha->encoded)) {
-    return false;
-  }
+  PIK_RETURN_IF_ERROR(
+      FilterAndBrotliEncode(params, plane, bit_depth, &alpha->encoded));
 
   // Try alternative encoding that assumes that the opaque pixels form a convex
   // shape in the middle.
   AlphaImage tr_alpha(plane.xsize(), plane.ysize());
   if (TransformAlpha(plane, bit_depth, &tr_alpha)) {
-    std::vector<uint8_t> tr_out;
+    PaddedBytes tr_out;
     EncodeTransformedAlpha(tr_alpha, bit_depth, &tr_out);
     if (tr_out.size() < alpha->encoded.size()) {
-      alpha->encoded = tr_out;
+      alpha->encoded = std::move(tr_out);
       alpha->mode = Alpha::kModeTransform;
     }
   }
@@ -476,7 +396,8 @@ bool AlphaToPik(const CompressParams& params, const ImageU& plane,
 
 bool PikToAlpha(const DecompressParams& params, const Alpha& alpha,
                 ImageU* plane) {
-  if (alpha.mode >= Alpha::kModeInvalid) {
+  PIK_CHECK(plane->xsize() != 0);
+  if (alpha.mode != Alpha::kModeBrotli && alpha.mode != Alpha::kModeTransform) {
     return PIK_FAILURE("Invalid alpha mode");
   }
   if (alpha.bytes_per_alpha != 1 && alpha.bytes_per_alpha != 2) {

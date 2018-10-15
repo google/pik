@@ -109,6 +109,11 @@ class Image {
         ysize_(ysize),
         bytes_per_row_(BytesPerRow<kImageAlign>(xsize * sizeof(T))),
         bytes_(AllocateArray(bytes_per_row_ * ysize, Avoid2K())) {
+    // xsize and/or ysize can legitimately be zero.
+
+    PIK_ASSERT(reinterpret_cast<uintptr_t>(bytes_.get()) % kImageAlign == 0);
+    PIK_ASSERT(bytes_per_row_ % kImageAlign == 0);
+
 #ifdef MEMORY_SANITIZER
     // Only in MSAN builds: ensure full vectors are initialized.
     const size_t partial = (xsize_ * sizeof(T)) % kMaxVectorSize;
@@ -117,17 +122,6 @@ class Image {
       memset(Row(y) + xsize_, 0, remainder);
     }
 #endif
-  }
-
-  // Takes ownership.
-  Image(const size_t xsize, const size_t ysize, CacheAlignedUniquePtr&& bytes,
-        const size_t bytes_per_row)
-      : xsize_(xsize),
-        ysize_(ysize),
-        bytes_per_row_(bytes_per_row),
-        bytes_(std::move(bytes)) {
-    PIK_ASSERT(bytes_per_row >= xsize * sizeof(T));
-    PIK_CHECK(reinterpret_cast<uintptr_t>(bytes_.get()) % kImageAlign == 0);
   }
 
   // Copy construction/assignment is forbidden to avoid inadvertent copies,
@@ -174,7 +168,8 @@ class Image {
   // Returns pointer to the start of a row, with at least xsize (rounded up to
   // the number of vector lanes) accessible values.
   PIK_INLINE T* PIK_RESTRICT Row(const size_t y) {
-#ifdef PIK_ENABLE_ASSERT
+#if PIK_ENABLE_ASSERT && \
+    (defined(ADDRESS_SANITIZER) || defined(MEMORY_SANITIZER))
     if (y >= ysize_) {
       fprintf(stderr, "Row(%zu) >= %zu\n", y, ysize_);
       abort();
@@ -186,7 +181,8 @@ class Image {
 
   // Returns pointer to const (see above).
   PIK_INLINE const T* PIK_RESTRICT Row(const size_t y) const {
-#ifdef PIK_ENABLE_ASSERT
+#if PIK_ENABLE_ASSERT && \
+    (defined(ADDRESS_SANITIZER) || defined(MEMORY_SANITIZER))
     if (y >= ysize_) {
       fprintf(stderr, "Row(%zu) >= %zu\n", y, ysize_);
       abort();
@@ -388,7 +384,7 @@ template <typename T>
 double VerifyRelativeError(const Image<T>& expected, const Image<T>& actual,
                            const double threshold_l1,
                            const double threshold_relative,
-                           const size_t border = 0) {
+                           const size_t border = 0, const size_t c = 0) {
   PIK_CHECK(SameSize(expected, actual));
   // Max over current scanline to give a better idea whether there are
   // systematic errors or just one outlier. Invalid if negative.
@@ -421,9 +417,9 @@ double VerifyRelativeError(const Image<T>& expected, const Image<T>& actual,
     if (any_bad) {
       // Never had a valid relative value, don't print it.
       if (max_relative < 0) {
-        printf("Max +/- %E exceeds +/- %.2E\n", max_l1, threshold_l1);
+        printf("c=%zu: max +/- %E exceeds +/- %.2E\n", c, max_l1, threshold_l1);
       } else {
-        printf("Max +/- %E, x %E exceeds +/- %.2E, x %.2E\n", max_l1,
+        printf("c=%zu: max +/- %E, x %E exceeds +/- %.2E, x %.2E\n", c, max_l1,
                max_relative, threshold_l1, threshold_relative);
       }
       // Find first failing x for further debugging.
@@ -703,7 +699,7 @@ template <typename T>
 void ImageMinMax(const Image<T>& image, T* const PIK_RESTRICT min,
                  T* const PIK_RESTRICT max) {
   *min = std::numeric_limits<T>::max();
-  *max = std::numeric_limits<T>::min();
+  *max = std::numeric_limits<T>::lowest();
   for (size_t y = 0; y < image.ysize(); ++y) {
     const T* const PIK_RESTRICT row = image.Row(y);
     for (size_t x = 0; x < image.xsize(); ++x) {
@@ -711,6 +707,24 @@ void ImageMinMax(const Image<T>& image, T* const PIK_RESTRICT min,
       *max = std::max(*max, row[x]);
     }
   }
+}
+
+// Computes the average pixel value.
+template <typename T>
+double ImageAverage(const Image<T>& image) {
+  double result = 0;
+  size_t n = 0;
+  for (size_t y = 0; y < image.ysize(); ++y) {
+    const T* const PIK_RESTRICT row = image.Row(y);
+    for (size_t x = 0; x < image.xsize(); ++x) {
+      // Numerically stable method.
+      double v = row[x];
+      double delta = v - result;
+      n++;
+      result += delta / n;
+    }
+  }
+  return result;
 }
 
 // Copies pixels, scaling their value relative to the "from" min/max by
@@ -775,6 +789,9 @@ Image<T> ImageFromPacked(const std::vector<T>& packed, const size_t xsize,
 ImageB ImageFromPacked(const uint8_t* packed, const size_t xsize,
                        const size_t ysize, const size_t bytes_per_row);
 
+template <typename T>
+class Image3;
+
 // Rectangular region in image(s). Factoring this out of Image instead of
 // shifting the pointer by x0/y0 allows this to apply to multiple images with
 // different resolutions (e.g. color transform and quantization field).
@@ -794,14 +811,39 @@ class Rect {
   constexpr Rect(size_t xbegin, size_t ybegin, size_t xsize, size_t ysize)
       : x0_(xbegin), y0_(ybegin), xsize_(xsize), ysize_(ysize) {}
 
+  // Construct a rect that covers a whole image
+  template <typename T>
+  explicit Rect(const Image3<T>& image)
+      : Rect(0, 0, image.xsize(), image.ysize()) {}
+  template <typename T>
+  explicit Rect(const Image<T>& image)
+      : Rect(0, 0, image.xsize(), image.ysize()) {}
+
   template <typename T>
   T* Row(Image<T>* image, size_t y) const {
     return image->Row(y + y0_) + x0_;
   }
 
   template <typename T>
+  T* PlaneRow(Image3<T>* image, const int c, size_t y) const {
+    return image->PlaneRow(c, y + y0_) + x0_;
+  }
+
+  template <typename T>
   const T* ConstRow(const Image<T>& image, size_t y) const {
     return image.ConstRow(y + y0_) + x0_;
+  }
+
+  template <typename T>
+  const T* ConstPlaneRow(const Image3<T>& image, const int c, size_t y) const {
+    return image.ConstPlaneRow(c, y + y0_) + x0_;
+  }
+
+  // Returns true if this Rect fully resides in the given image. ImageT could be
+  // Image<T> or Image3<T>; however if ImageT is Rect, results are nonsensical.
+  template <class ImageT>
+  bool IsInside(const ImageT& image) const {
+    return (x0_ + xsize_ <= image.xsize()) && (y0_ + ysize_ <= image.ysize());
   }
 
   size_t x0() const { return x0_; }
@@ -947,6 +989,7 @@ class Image3 {
   // Sizes of all three images are guaranteed to be equal.
   PIK_INLINE size_t xsize() const { return planes_[0].xsize(); }
   PIK_INLINE size_t ysize() const { return planes_[0].ysize(); }
+  PIK_INLINE intptr_t PixelsPerRow() const { return planes_[0].PixelsPerRow(); }
 
  private:
   PlaneT planes_[kNumPlanes];
@@ -959,7 +1002,7 @@ using Image3I = Image3<int32_t>;
 using Image3F = Image3<float>;
 using Image3D = Image3<double>;
 
-// Image data for formats: Image3 for color, optional Image for alpha channel.
+// DEPRECATED. Image3 for color, optional Image for alpha channel.
 template <typename ComponentType>
 class MetaImage {
  public:
@@ -997,9 +1040,11 @@ class MetaImage {
     PIK_CHECK(bit_depth == 8 || bit_depth == 16);
     alpha_bit_depth_ = bit_depth;
     alpha_ = std::move(alpha);
-    for (int y = 0; y < alpha_.ysize(); ++y) {
-      for (int x = 0; x < alpha_.xsize(); ++x) {
-        PIK_CHECK(alpha_.Row(y)[x] <= (0xffff >> (16 - bit_depth)));
+    const size_t max = 0xFFFFu >> (16 - bit_depth);
+    for (size_t y = 0; y < alpha_.ysize(); ++y) {
+      const uint16_t* PIK_RESTRICT row = alpha_.Row(y);
+      for (size_t x = 0; x < alpha_.xsize(); ++x) {
+        PIK_CHECK(row[x] <= max);
       }
     }
   }
@@ -1036,8 +1081,8 @@ class MetaImage {
 
  private:
   Image3<T> color_;
-  int alpha_bit_depth_ = 0;
   ImageU alpha_;
+  int alpha_bit_depth_ = 0;
 };
 
 using MetaImageB = MetaImage<uint8_t>;
@@ -1079,15 +1124,15 @@ bool SamePixels(const Image3<T>& image1, const Image3<T>& image2) {
 }
 
 template <typename T>
-float VerifyRelativeError(const Image3<T>& expected, const Image3<T>& actual,
-                          const float threshold_l1,
-                          const float threshold_relative,
-                          const size_t border = 0) {
-  float max_relative = 0.0f;
+double VerifyRelativeError(const Image3<T>& expected, const Image3<T>& actual,
+                           const float threshold_l1,
+                           const float threshold_relative,
+                           const size_t border = 0) {
+  double max_relative = 0.0;
   for (int c = 0; c < 3; ++c) {
-    const float rel =
+    const double rel =
         VerifyRelativeError(expected.Plane(c), actual.Plane(c), threshold_l1,
-                            threshold_relative, border);
+                            threshold_relative, border, c);
     max_relative = std::max(max_relative, rel);
   }
   return max_relative;
@@ -1363,8 +1408,6 @@ Image3<T> ExpandAndCopyBorders(const Image3<T>& img, const size_t xres,
   return out;
 }
 
-float Average(const ImageF& img);
-
 template <typename T>
 void AddScalar(T v, Image<T>* img) {
   const size_t xsize = img->xsize();
@@ -1410,34 +1453,35 @@ template <typename T>
 void PrintImageStats(const std::string& desc, const Image<T>& img) {
   T mn, mx;
   ImageMinMax(img, &mn, &mx);
-  fprintf(stderr, "Image %s: min=%f, max=%f\n", desc.c_str(), double(mn),
-          double(mx));
+  T avg = ImageAverage(img);
+  fprintf(stderr, "Image %s: min=%f, max=%f, avg=%f\n",
+      desc.c_str(), double(mn), double(mx), double(avg));
 }
 
 template <typename T>
 void PrintImageStats(const std::string& desc, const Image3<T>& img) {
   for (int c = 0; c < 3; ++c) {
-    T mn, mx;
-    ImageMinMax(img.Plane(c), &mn, &mx);
-    fprintf(stderr, "Image %s, plane %d: min=%f, max=%f\n", desc.c_str(), c, mn,
-            mx);
+    std::string plane_desc = desc + " plane ";
+    plane_desc += ('0' + c);
+    PrintImageStats(plane_desc, img.Plane(c));
   }
 }
 
 template <typename T>
 void PrintImageStats(const std::string& desc,
                      const Image<std::complex<T>>& img) {
-  T r_mn, r_mx, i_mn, i_mx;
-  ImageMinMax(Real(img), &r_mn, &r_mx);
-  ImageMinMax(Imag(img), &i_mn, &i_mx);
-  fprintf(stderr, "Image %s: min(Re)=%f, min(Im)=%f, max(Re)=%f, max(Im)=%f\n",
-          desc.c_str(), r_mn, i_mn, r_mx, i_mx);
+  PrintImageStats(desc + " real", Real(img));
+  PrintImageStats(desc + " imag", Imag(img));
 }
 #define PRINT_IMAGE_STATS_S(x) #x
 #define PRINT_IMAGE_STATS_SS(x) PRINT_IMAGE_STATS_S(x)
 #define PRINT_IMAGE_STATS(img)                                                 \
   ::pik::PrintImageStats(#img "@" __FILE__ ":" PRINT_IMAGE_STATS_SS(__LINE__), \
                          img)
+
+// First, image is padded horizontally, with the rightmost value.
+// Next, image is padded vertically, by repeating the last line.
+Image3F PadImageToMultiple(const Image3F& in, const size_t N);
 
 }  // namespace pik
 

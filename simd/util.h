@@ -12,18 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Replacements for standard library functionality required from "restricted"
-// headers/source files where it is unsafe to include system headers.
-
 #ifndef SIMD_UTIL_H_
 #define SIMD_UTIL_H_
 
-#include "simd/port.h"
+// Optional replacements for standard library functionality.
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "simd/compiler_specific.h"
 
 namespace pik {
-#ifdef SIMD_NAMESPACE
-namespace SIMD_NAMESPACE {
-#endif
 
 // std::min/max.
 
@@ -180,67 +179,6 @@ inline bool StringsEqual(const char* s1, const char* s2) {
   return false;
 }
 
-// Cache control
-
-SIMD_INLINE void stream(const uint32_t t, uint32_t* SIMD_RESTRICT aligned) {
-#if SIMD_ARCH == SIMD_ARCH_X86
-  _mm_stream_si32(reinterpret_cast<int*>(aligned), t);
-#else
-  CopyBytes<4>(&t, aligned);
-#endif
-}
-
-SIMD_INLINE void stream(const uint64_t t, uint64_t* SIMD_RESTRICT aligned) {
-#if SIMD_ARCH == SIMD_ARCH_X86
-  _mm_stream_si64(reinterpret_cast<long long*>(aligned), t);
-#else
-  CopyBytes<8>(&t, aligned);
-#endif
-}
-
-// Delays subsequent loads until prior loads are visible. On Intel CPUs, also
-// serves as a full fence (waits for all prior instructions to complete).
-// No effect on non-x86.
-SIMD_INLINE void load_fence() {
-#if SIMD_ARCH == SIMD_ARCH_X86
-  _mm_lfence();
-#endif
-}
-
-// Ensures previous weakly-ordered stores are visible. No effect on non-x86.
-SIMD_INLINE void store_fence() {
-#if SIMD_ARCH == SIMD_ARCH_X86
-  _mm_sfence();
-#endif
-}
-
-// Begins loading the cache line containing "p".
-template <typename T>
-SIMD_INLINE void prefetch(const T* p) {
-#if SIMD_ARCH == SIMD_ARCH_X86
-  _mm_prefetch(p, _MM_HINT_T0);
-#elif SIMD_ARCH == SIMD_ARCH_ARM
-  __pld(p);
-#endif
-}
-
-// Invalidates and flushes the cache line containing "p". No effect on non-x86.
-SIMD_INLINE void flush_cacheline(const void* p) {
-#if SIMD_ARCH == SIMD_ARCH_X86
-  _mm_clflush(p);
-#endif
-}
-
-// Call during spin loops to potentially reduce contention/power consumption.
-SIMD_INLINE void pause() {
-#if SIMD_ARCH == SIMD_ARCH_X86
-  _mm_pause();
-#endif
-}
-
-#ifdef SIMD_NAMESPACE
-}  // namespace SIMD_NAMESPACE
-#endif
 }  // namespace pik
 
 #endif  // SIMD_UTIL_H_

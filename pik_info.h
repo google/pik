@@ -58,11 +58,11 @@ static const int kLayerHeader = 0;
 static const int kLayerSections = 1;
 static const int kLayerQuant = 2;
 static const int kLayerOrder = 3;
-static const int kLayerCtan = 4;
+static const int kLayerCmap = 4;
 static const int kLayerDC = 5;
 static const int kLayerAC = 6;
 static const char* kImageLayers[kNumImageLayers] = {
-    "header", "sections", "quant", "order", "ctan", "DC", "AC"};
+    "header", "sections", "quant", "order", "cmap", "DC", "AC"};
 
 // Metadata and statistics gathered during compression or decompression.
 struct PikInfo {
@@ -124,7 +124,6 @@ struct PikInfo {
   std::vector<int> num_dict_matches;
   std::size_t num_blocks = 0;
   int num_butteraugli_iters = 0;
-  size_t decoded_size = 0;
   // If not empty, additional debugging information (e.g. debug images) is
   // saved in files with this prefix.
   std::string debug_prefix;

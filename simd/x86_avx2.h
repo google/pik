@@ -12,14 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// 256-bit AVX2 vectors and operations.
-// (No include guard nor namespace: this is included from the middle of simd.h.)
+#ifndef SIMD_X86_AVX2_H_
+#define SIMD_X86_AVX2_H_
 
+// 256-bit AVX2 vectors and operations.
 // WARNING: most operations do not cross 128-bit block boundaries. In
 // particular, "broadcast", pack and zip behavior may be surprising.
 
-// Avoid compile errors when generating deps.mk.
-#if SIMD_DEPS == 0
+#include "simd/compiler_specific.h"
+#include "simd/shared.h"
+#include "simd/targets.h"
+#include "simd/x86_sse4.h"
+
+#if SIMD_ENABLE & SIMD_AVX2
+#include <immintrin.h>
+
+namespace pik {
+
+template <class Target>
+struct PartTargetT<2, Target> {
+  using type = AVX2;
+};
 
 template <typename T>
 struct raw_avx2 {
@@ -888,6 +901,95 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> nmul_add(
   return vec_avx2<double, N>(_mm256_fnmadd_pd(mul.raw, x.raw, add.raw));
 }
 
+// Expresses addition/subtraction as FMA for higher throughput (but also
+// higher latency) on HSW/BDW. Requires inline assembly because clang > 6
+// 'optimizes' FMA by 1.0 to addition/subtraction. x86 offers 132, 213, 231
+// forms (1=F, 2=M, 3=A); the first is also the destination.
+
+// Returns x + add
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float, N> fadd(
+    vec_avx2<float, N> x, const vec_avx2<float, N> k1,
+    const vec_avx2<float, N> add) {
+#if SIMD_COMPILER != SIMD_COMPILER_MSVC && defined(__AVX2__)
+  asm volatile("vfmadd132ps %2, %1, %0"
+               : "+x"(x.raw)
+               : "x"(add.raw), "x"(k1.raw));
+  return x;
+#else
+  return vec_avx2<float, N>(_mm256_fmadd_ps(k1.raw, x.raw, add.raw));
+#endif
+}
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> fadd(
+    vec_avx2<double, N> x, const vec_avx2<double, N> k1,
+    const vec_avx2<double, N> add) {
+#if SIMD_COMPILER != SIMD_COMPILER_MSVC && defined(__AVX2__)
+  asm volatile("vfmadd132pd %2, %1, %0"
+               : "+x"(x.raw)
+               : "x"(add.raw), "x"(k1.raw));
+  return x;
+#else
+  return vec_avx2<double, N>(_mm256_fmadd_pd(k1.raw, x.raw, add.raw));
+#endif
+}
+
+// Returns x - sub
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float, N> fsub(
+    vec_avx2<float, N> x, const vec_avx2<float, N> k1,
+    const vec_avx2<float, N> sub) {
+#if SIMD_COMPILER != SIMD_COMPILER_MSVC && defined(__AVX2__)
+  asm volatile("vfmsub132ps %2, %1, %0"
+               : "+x"(x.raw)
+               : "x"(sub.raw), "x"(k1.raw));
+  return x;
+#else
+  return vec_avx2<float, N>(_mm256_fmsub_ps(k1.raw, x.raw, sub.raw));
+#endif
+}
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> fsub(
+    vec_avx2<double, N> x, const vec_avx2<double, N> k1,
+    const vec_avx2<double, N> sub) {
+#if SIMD_COMPILER != SIMD_COMPILER_MSVC && defined(__AVX2__)
+  asm volatile("vfmsub132pd %2, %1, %0"
+               : "+x"(x.raw)
+               : "x"(sub.raw), "x"(k1.raw));
+  return x;
+#else
+  return vec_avx2<double, N>(_mm256_fmsub_pd(k1.raw, x.raw, sub.raw));
+#endif
+}
+
+// Returns -sub + x (clobbers sub register)
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float, N> fnadd(
+    vec_avx2<float, N> sub, const vec_avx2<float, N> k1,
+    const vec_avx2<float, N> x) {
+#if SIMD_COMPILER != SIMD_COMPILER_MSVC && defined(__AVX2__)
+  asm volatile("vfnmadd132ps %2, %1, %0"
+               : "+x"(sub.raw)
+               : "x"(x.raw), "x"(k1.raw));
+  return x;
+#else
+  return vec_avx2<float, N>(_mm256_fnmadd_ps(sub.raw, k1.raw, x.raw));
+#endif
+}
+template <size_t N>
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double, N> fnadd(
+    vec_avx2<double, N> sub, const vec_avx2<double, N> k1,
+    const vec_avx2<double, N> x) {
+#if SIMD_COMPILER != SIMD_COMPILER_MSVC && defined(__AVX2__)
+  asm volatile("vfnmadd132pd %2, %1, %0"
+               : "+x"(sub.raw)
+               : "x"(x.raw), "x"(k1.raw));
+  return x;
+#else
+  return vec_avx2<double, N>(_mm256_fnmadd_pd(sub.raw, k1.raw, x.raw));
+#endif
+}
+
 // Slightly more expensive on ARM (extra negate)
 namespace ext {
 
@@ -1294,37 +1396,36 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> load_unaligned(
 template <typename T>
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T> load_dup128(
     Full<T, AVX2>, const T* const SIMD_RESTRICT p) {
-#if defined(__clang__) && !SIMD_USE_ATTR
-  // Clang 3.9 compiles _mm256_broadcastsi128_si256 and _mm256_broadcast_ps to
-  // VINSERTF128. If SIMD_USE_ATTR, we get "invalid output size for constraint".
+  // Clang 3.9 generates VINSERTF128 which is slower, but inline assembly leads
+  // to "invalid output size for constraint" without -mavx2:
+  // https://gcc.godbolt.org/z/-Jt_-F
+#if (SIMD_COMPILER != SIMD_COMPILER_MSVC) && defined(__AVX2__)
   __m256i out;
-  asm volatile("vbroadcasti128 %1, %[reg]" : [reg] "=v"(out) : "m"(p[0]));
+  asm volatile("vbroadcasti128 %1, %[reg]" : [reg] "=x"(out) : "m"(p[0]));
   return vec_avx2<T>(out);
 #else
-  const Full<T, SSE4> d128;
-  return vec_avx2<T>(_mm256_broadcastsi128_si256(load_unaligned(d128, p).raw));
+  return vec_avx2<T>(
+      _mm256_broadcastsi128_si256(load_unaligned(Full<T, SSE4>(), p).raw));
 #endif
 }
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<float> load_dup128(
     Full<float, AVX2>, const float* const SIMD_RESTRICT p) {
-#if defined(__clang__) && !SIMD_USE_ATTR
+#if (SIMD_COMPILER != SIMD_COMPILER_MSVC) && defined(__AVX2__)
   __m256 out;
-  asm volatile("vbroadcastf128 %1, %[reg]" : [reg] "=v"(out) : "m"(p[0]));
+  asm volatile("vbroadcastf128 %1, %[reg]" : [reg] "=x"(out) : "m"(p[0]));
   return vec_avx2<float>(out);
 #else
-  return vec_avx2<float>(
-      _mm256_broadcast_ps(reinterpret_cast<const __m128*>(p)));
+  return vec_avx2<float>(_mm256_broadcast_ps((const __m128*)p));
 #endif
 }
 SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> load_dup128(
     Full<double, AVX2>, const double* const SIMD_RESTRICT p) {
-#if defined(__clang__) && !SIMD_USE_ATTR
+#if (SIMD_COMPILER != SIMD_COMPILER_MSVC) && defined(__AVX2__)
   __m256d out;
-  asm volatile("vbroadcastf128 %1, %[reg]" : [reg] "=v"(out) : "m"(p[0]));
+  asm volatile("vbroadcastf128 %1, %[reg]" : [reg] "=x"(out) : "m"(p[0]));
   return vec_avx2<double>(out);
 #else
-  return vec_avx2<double>(
-      _mm256_broadcast_pd(reinterpret_cast<const __m128d*>(p)));
+  return vec_avx2<double>(_mm256_broadcast_pd((const __m128d*)p));
 #endif
 }
 
@@ -2213,8 +2314,6 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<int32_t, N> nearest_int(
 
 // ================================================== MISC
 
-// aes_round already defined by x86_sse4.h.
-
 // "Extensions": useful but not quite performance-portable operations. We add
 // functions to this namespace in multiple places.
 namespace ext {
@@ -2293,5 +2392,7 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> sum_of_lanes(
 }  // namespace ext
 
 // TODO(janwas): wrappers for all intrinsics (in x86 namespace).
+}  // namespace pik
 
-#endif  // SIMD_DEPS
+#endif  // SIMD_ENABLE & SIMD_AVX2
+#endif  // SIMD_X86_AVX2_H_

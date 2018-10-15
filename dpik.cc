@@ -19,34 +19,64 @@
 #define PROFILER_ENABLED 1
 #include "arch_specific.h"
 #include "args.h"
-#include "gamma_correct.h"
+#include "codec.h"
+#include "common.h"
+#include "file_io.h"
 #include "image.h"
-#include "image_io.h"
 #include "os_specific.h"
 #include "padded_bytes.h"
 #include "pik.h"
 #include "pik_info.h"
 #include "profiler.h"
-#include "simd/dispatch.h"
-#include "tsc_timer.h"
+#include "robust_statistics.h"
+#include "simd/targets.h"
 
 namespace pik {
 namespace {
 
 struct DecompressArgs {
-  bool Init(int argc, char** argv) {
+  Status Init(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
       if (argv[i][0] == '-') {
-        if (strcmp(argv[i], "--16bit") == 0) {
-          sixteen_bit = true;
-        } else if (strcmp(argv[i], "--denoise") == 0) {
-          if (!ParseOverride(argc, argv, &i, &params.denoise)) return false;
+        if (strcmp(argv[i], "--bits_per_sample") == 0) {
+          PIK_RETURN_IF_ERROR(ParseUnsigned(argc, argv, &i, &bits_per_sample));
         } else if (strcmp(argv[i], "--num_threads") == 0) {
-          if (!ParseUnsigned(argc, argv, &i, &num_threads)) return false;
+          PIK_RETURN_IF_ERROR(ParseUnsigned(argc, argv, &i, &num_threads));
+          got_num_threads = true;
+        } else if (strcmp(argv[i], "--color_space") == 0) {
+          i += 1;
+          if (i >= argc) {
+            fprintf(stderr, "Expected color_space description.\n");
+            return PIK_FAILURE("Args");
+          }
+          color_space = argv[i];
         } else if (strcmp(argv[i], "--num_reps") == 0) {
-          if (!ParseUnsigned(argc, argv, &i, &num_reps)) return false;
+          PIK_RETURN_IF_ERROR(ParseUnsigned(argc, argv, &i, &num_reps));
+        } else if (strcmp(argv[i], "--noise") == 0) {
+          PIK_RETURN_IF_ERROR(ParseOverride(argc, argv, &i, &params.noise));
+          if (params.noise == Override::kOn) {
+            fprintf(stderr, "Noise can only be enabled by the encoder.\n");
+            return PIK_FAILURE("Cannot force noise on");
+          }
+        } else if (strcmp(argv[i], "--gradient") == 0) {
+          PIK_RETURN_IF_ERROR(ParseOverride(argc, argv, &i, &params.gradient));
+          if (params.gradient == Override::kOn) {
+            fprintf(stderr, "Gradient can only be enabled by the encoder.\n");
+            return PIK_FAILURE("Cannot force gradient on");
+          }
+        } else if (strcmp(argv[i], "--adaptive_reconstruction") == 0) {
+          PIK_RETURN_IF_ERROR(
+              ParseOverride(argc, argv, &i, &params.adaptive_reconstruction));
+        } else if (strcmp(argv[i], "--gaborish") == 0) {
+          size_t strength;
+          PIK_RETURN_IF_ERROR(ParseUnsigned(argc, argv, &i, &strength));
+          if (strength > 7) {
+            fprintf(stderr, "Invalid gaborish strength, must be 0..7.\n");
+            return PIK_FAILURE("Invalid gaborish strength");
+          }
+          params.gaborish = strength;
         } else if (strcmp(argv[i], "--print_profile") == 0) {
-          if (!ParseOverride(argc, argv, &i, &print_profile)) return false;
+          PIK_RETURN_IF_ERROR(ParseOverride(argc, argv, &i, &print_profile));
         } else {
           fprintf(stderr, "Unrecognized argument: %s.\n", argv[i]);
           return false;
@@ -68,105 +98,158 @@ struct DecompressArgs {
       return false;
     }
 
+    if (!got_num_threads) {
+      num_threads = AvailableCPUs().size();
+    }
     return true;
   }
 
   static const char* HelpFormatString() {
-    return "Usage: %s [--16bit] [--denoise B] [--num_threads N]\n"
-           "  [--num_reps N] [--print_profile B] in.pik [out.png]\n"
-           "  The output is 16 bit if --16bit is set, otherwise 8-bit sRGB.\n"
+    return "Usage: %s [--bits_per_sample N] [--num_threads N]\n"
+           "[--color_space RGB_D65_SRG_Rel_Lin] [--gaborish N]\n"
+           "[--noise 0] [--gradient 0] [--adaptive_reconstruction <0,1>]\n"
+           "[--num_reps N] [--print_profile B] in.pik [out]\n"
            "  B is a boolean (0/1), N an unsigned integer.\n"
-           "  --denoise 1: enable deringing/deblocking postprocessor.\n"
-           "  --print_profile 1: print timing information before exiting.\n";
+           "  --bits_per_sample defaults to original (input) bit depth.\n"
+           "  --noise 0 disables noise generation.\n"
+           "  --gradient 0 disables the extra gradient map.\n"
+           "  --adaptive_reconstruction 1/0 enables/disables extra filtering.\n"
+           "  --gaborish 0..7 chooses deblocking strength (4=normal).\n"
+           "  --color_space defaults to original (input) color space.\n"
+           "  --print_profile 1: print timing information before exiting.\n"
+           "  out is PNG with ICC, or PPM/PFM.\n";
   }
 
   const char* file_in = nullptr;
   const char* file_out = nullptr;
-  bool sixteen_bit = false;
+  size_t bits_per_sample = 0;
+  size_t num_threads = 0;
+  bool got_num_threads = false;
+  std::string color_space;  // description
   DecompressParams params;
-  size_t num_threads = 8;
   size_t num_reps = 1;
   Override print_profile = Override::kDefault;
 };
 
-bool LoadFile(const char* pathname, PaddedBytes* compressed) {
-  FILE* f = fopen(pathname, "rb");
-  if (f == nullptr) {
-    fprintf(stderr, "Failed to open %s.\n", pathname);
-    return false;
+class DecompressStats {
+ public:
+  void NotifyElapsed(double elapsed_seconds) {
+    PIK_ASSERT(elapsed_seconds > 0.0);
+    elapsed_.push_back(elapsed_seconds);
   }
 
-  if (fseek(f, 0, SEEK_END) != 0) {
-    fprintf(stderr, "Seek error at end.\n");
-    return false;
+  Status Print(const CodecInOut& io) {
+    const size_t xsize = io.xsize();
+    const size_t ysize = io.ysize();
+    const size_t channels = io.c_current().Channels() + io.HasAlpha();
+    const size_t bytes = xsize * ysize * channels *
+                         DivCeil(io.original_bits_per_sample(), kBitsPerByte);
+
+    double elapsed;
+    double variability;
+    const char* type;
+    PIK_RETURN_IF_ERROR(SummarizeElapsed(&elapsed, &variability, &type));
+    if (variability == 0.0) {
+      fprintf(stderr,
+              "%zu x %zu pixels (%s%.2f MB/s, %zu reps, %zu threads).\n", xsize,
+              ysize, type, bytes * 1E-6 / elapsed, elapsed_.size(),
+              io.Context()->pool.NumThreads());
+    } else {
+      fprintf(
+          stderr,
+          "%zu x %zu pixels (%s%.2f MB/s (var %.2f), %zu reps, %zu threads).\n",
+          xsize, ysize, type, bytes * 1E-6 / elapsed, variability,
+          elapsed_.size(), io.Context()->pool.NumThreads());
+    }
+    return true;
   }
-  compressed->resize(ftell(f));
-  if (fseek(f, 0, SEEK_SET) != 0) {
-    fprintf(stderr, "Seek error at beginning.\n");
-    return false;
+
+ private:
+  Status SummarizeElapsed(double* PIK_RESTRICT summary,
+                          double* PIK_RESTRICT variability, const char** type) {
+    // type depends on #reps.
+    if (elapsed_.empty()) return PIK_FAILURE("Didn't call NotifyElapsed");
+
+    // Single rep
+    if (elapsed_.size() == 1) {
+      *summary = elapsed_[0];
+      *variability = 0.0;
+      *type = "";
+      return true;
+    }
+
+    // Two: skip first (noisier)
+    if (elapsed_.size() == 2) {
+      *summary = elapsed_[1];
+      *variability = 0.0;
+      *type = "second: ";
+      return true;
+    }
+
+    // Prefer geomean unless numerically unreliable (too many reps)
+    if (std::pow(elapsed_[0], elapsed_.size()) < 1E100) {
+      double product = 1.0;
+      for (size_t i = 1; i < elapsed_.size(); ++i) {
+        product *= elapsed_[i];
+      }
+
+      *summary = std::pow(product, 1.0 / (elapsed_.size() - 1));
+      *variability = 0.0;
+      *type = "geomean: ";
+      return true;
+    }
+
+    // Else: mode
+    std::sort(elapsed_.begin(), elapsed_.end());
+    *summary = Mode(elapsed_.data(), elapsed_.size());
+    *variability = MedianAbsoluteDeviation(elapsed_, *summary);
+    *type = "mode: ";
+    return true;
   }
 
-  const size_t bytes_read = fread(compressed->data(), 1, compressed->size(), f);
-  if (bytes_read != compressed->size()) {
-    fprintf(stderr, "I/O error, only read %zu bytes.\n", bytes_read);
-    return false;
-  }
-  fprintf(stderr, "Read %zu compressed bytes\n", compressed->size());
-  fclose(f);
-  return true;
-}
+  std::vector<double> elapsed_;
+};
 
-void InitThreads(ThreadPool* pool) {
-  // Warm up profiler on main AND worker threads so its expensive initialization
-  // doesn't count towards the timer measurements below for decode throughput.
-  PROFILER_ZONE("@InitMainThread");
-  pool->RunOnEachThread([](const int task, const int thread) {
-    PROFILER_ZONE("@InitWorkers");
-
-    // PinThreadToCPU(1 + thread);
-    // const int group = thread & 1;
-    // const int member = thread >> 1;
-    // PinThreadToCPU(member + group * 12);
-  });
-}
-
-template <typename ComponentType>
-bool Decompress(const PaddedBytes& compressed, const DecompressParams& params,
-                ThreadPool* pool, MetaImage<ComponentType>* image) {
+// Called num_reps times.
+Status Decompress(CodecContext* codec_context, const PaddedBytes& compressed,
+                  const DecompressParams& params, CodecInOut* PIK_RESTRICT io,
+                  DecompressStats* PIK_RESTRICT stats) {
   PikInfo info;
-  const uint64_t t0 = Start<uint64_t>();
-  if (!PikToPixels(params, compressed, pool, image, &info)) {
+  const double t0 = Now();
+  if (!PikToPixels(params, compressed, io, &info)) {
     fprintf(stderr, "Failed to decompress.\n");
     return false;
   }
-  const uint64_t t1 = Stop<uint64_t>();
-  const double elapsed = (t1 - t0) / InvariantTicksPerSecond();
-  const size_t xsize = image->xsize();
-  const size_t ysize = image->ysize();
-  const size_t bytes =
-      xsize * ysize * sizeof(ComponentType) * (image->HasAlpha() ? 4 : 3);
-  fprintf(stderr, "Decompressed %zu x %zu pixels (%.2f MB/s, %zu threads).\n",
-          xsize, ysize, bytes * 1E-6 / elapsed, pool->NumThreads());
-
+  const double t1 = Now();
+  stats->NotifyElapsed(t1 - t0);
   return true;
 }
 
-template <typename ComponentType>
-bool DecompressAndWrite(const PaddedBytes& compressed,
-                        const DecompressArgs& args, ThreadPool* pool) {
-  MetaImage<ComponentType> image;
-  for (size_t i = 0; i < args.num_reps; ++i) {
-    if (!Decompress(compressed, args.params, pool, &image)) return false;
-  }
+Status WriteOutput(const DecompressArgs& args, const CodecInOut& io) {
+  // Can only write if we decoded and have an output filename.
+  // (Writing large PNGs is slow, so allow skipping it for benchmarks.)
+  if (args.num_reps == 0 || args.file_out == nullptr) return true;
 
-  // Writing large PNGs is slow, so allow skipping it for benchmarks.
-  if (args.file_out != nullptr) {
-    if (!WriteImage(ImageFormatPNG(), image, args.file_out)) {
-      fprintf(stderr, "Failed to write %s.\n", args.file_out);
+  // Override original color space with arg if specified.
+  ColorEncoding c_out = io.dec_c_original;
+  if (!args.color_space.empty()) {
+    ProfileParams pp;
+    if (!ParseDescription(args.color_space, &pp) ||
+        !io.Context()->cms.SetFromParams(pp, &c_out)) {
+      fprintf(stderr, "Failed to apply color_space.\n");
       return false;
     }
   }
 
+  // Override original #bits with arg if specified.
+  const size_t bits_per_sample = args.bits_per_sample == 0 ?
+      io.original_bits_per_sample() : args.bits_per_sample;
+
+  if (!io.EncodeToFile(c_out, bits_per_sample, args.file_out)) {
+    fprintf(stderr, "Failed to write decoded image.\n");
+    return false;
+  }
+  fprintf(stderr, "Wrote %zu bytes; done.\n", io.enc_size);
   return true;
 }
 
@@ -177,29 +260,29 @@ int Run(int argc, char* argv[]) {
     return 1;
   }
 
-#if SIMD_ENABLE_AVX2
-  if ((dispatch::SupportedTargets() & SIMD_AVX2) == 0) {
-    fprintf(stderr, "Cannot continue because CPU lacks AVX2/FMA support.\n");
+  const int bits = TargetBitfield().Bits();
+  if ((bits & SIMD_ENABLE) != SIMD_ENABLE) {
+    fprintf(stderr, "CPU does not support all enabled targets => exiting.\n");
     return 1;
   }
-#elif SIMD_ENABLE_SSE4
-  if ((dispatch::SupportedTargets() & SIMD_SSE4) == 0) {
-    fprintf(stderr, "Cannot continue because CPU lacks SSE4 support.\n");
-    return 1;
-  }
-#endif
 
   PaddedBytes compressed;
-  if (!LoadFile(args.file_in, &compressed)) {
-    return 1;
+  if (!ReadFile(args.file_in, &compressed)) return 1;
+  fprintf(stderr, "Read %zu compressed bytes\n", compressed.size());
+
+  CodecContext codec_context(args.num_threads);
+  DecompressStats stats;
+
+  CodecInOut io(&codec_context);
+  for (size_t i = 0; i < args.num_reps; ++i) {
+    if (!Decompress(&codec_context, compressed, args.params, &io, &stats)) {
+      return 1;
+    }
   }
 
-  ThreadPool pool(static_cast<int>(args.num_threads));
-  InitThreads(&pool);
+  if (!WriteOutput(args, io)) return 1;
 
-  const auto decompressor = args.sixteen_bit ? &DecompressAndWrite<uint16_t>
-                                             : &DecompressAndWrite<uint8_t>;
-  if (!decompressor(compressed, args, &pool)) return 1;
+  (void)stats.Print(io);
 
   if (args.print_profile == Override::kOn) {
     PROFILER_PRINT_RESULTS();

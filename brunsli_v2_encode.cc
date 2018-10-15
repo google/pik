@@ -604,10 +604,8 @@ uint32_t FrameTypeCode(const guetzli::JPEGData& jpg) {
   return code;
 }
 
-bool EncodeHeader(const guetzli::JPEGData& jpg,
-                  JPEGCodingState* s,
-                  uint8_t* data,
-                  size_t* len) {
+Status EncodeHeader(const guetzli::JPEGData& jpg, JPEGCodingState* s,
+                    uint8_t* data, size_t* len) {
   if ((jpg.version != 1 && (jpg.width == 0 || jpg.height == 0)) ||
       jpg.components.empty() ||
       jpg.components.size() > guetzli::kMaxComponents) {
@@ -627,16 +625,12 @@ bool EncodeHeader(const guetzli::JPEGData& jpg,
   return true;
 }
 
-bool EncodeQuantData(const guetzli::JPEGData& jpg,
-                     JPEGCodingState* s,
-                     uint8_t* data,
-                     size_t* len) {
+Status EncodeQuantData(const guetzli::JPEGData& jpg, JPEGCodingState* s,
+                       uint8_t* data, size_t* len) {
   // Initialize storage.
   size_t storage_ix = 0;
   data[0] = 0;
-  if (!EncodeQuantTables(jpg, &storage_ix, data)) {
-    return false;
-  }
+  PIK_RETURN_IF_ERROR(EncodeQuantTables(jpg, &storage_ix, data));
   *len = (storage_ix + 7) >> 3;
   // Brunsli V2 quant data section must contain an even number of bytes.
   // TODO(user): Remove this restriction by making BrunsliV2Input work
@@ -648,10 +642,8 @@ bool EncodeQuantData(const guetzli::JPEGData& jpg,
   return true;
 }
 
-bool EncodeHistogramData(const guetzli::JPEGData& jpg,
-                         JPEGCodingState* s,
-                         uint8_t* data,
-                         size_t* len) {
+Status EncodeHistogramData(const guetzli::JPEGData& jpg, JPEGCodingState* s,
+                           uint8_t* data, size_t* len) {
   // Initialize storage.
   size_t storage_ix = 0;
   data[0] = 0;
@@ -672,10 +664,8 @@ bool EncodeHistogramData(const guetzli::JPEGData& jpg,
   return true;
 }
 
-bool EncodeDCData(const guetzli::JPEGData& jpg,
-                  JPEGCodingState* s,
-                  uint8_t* data,
-                  size_t* len) {
+Status EncodeDCData(const guetzli::JPEGData& jpg, JPEGCodingState* s,
+                    uint8_t* data, size_t* len) {
   // Initialize storage.
   size_t storage_ix = 0;
   data[0] = 0;
@@ -684,10 +674,8 @@ bool EncodeDCData(const guetzli::JPEGData& jpg,
   return true;
 }
 
-bool EncodeACData(const guetzli::JPEGData& jpg,
-                  JPEGCodingState* s,
-                  uint8_t* data,
-                  size_t* len) {
+Status EncodeACData(const guetzli::JPEGData& jpg, JPEGCodingState* s,
+                    uint8_t* data, size_t* len) {
   // Initialize storage.
   size_t storage_ix = 0;
   data[0] = 0;
@@ -696,19 +684,14 @@ bool EncodeACData(const guetzli::JPEGData& jpg,
   return true;
 }
 
-typedef bool (*EncodeSectionDataFn)(const guetzli::JPEGData& jpg,
-                                    JPEGCodingState* s,
-                                    uint8_t* data,
-                                    size_t* len);
+typedef Status (*EncodeSectionDataFn)(const guetzli::JPEGData& jpg,
+                                      JPEGCodingState* s, uint8_t* data,
+                                      size_t* len);
 
-bool EncodeSection(const guetzli::JPEGData& jpg,
-                   JPEGCodingState* s,
-                   uint8_t marker,
-                   EncodeSectionDataFn write_section,
-                   size_t section_size_bytes,
-                   size_t len,
-                   uint8_t* data,
-                   size_t* pos) {
+Status EncodeSection(const guetzli::JPEGData& jpg, JPEGCodingState* s,
+                     uint8_t marker, EncodeSectionDataFn write_section,
+                     size_t section_size_bytes, size_t len, uint8_t* data,
+                     size_t* pos) {
   // Write the marker byte for the section.
   const size_t pos_start = *pos;
   data[(*pos)++] = marker;
@@ -718,9 +701,7 @@ bool EncodeSection(const guetzli::JPEGData& jpg,
   *pos += section_size_bytes;
 
   size_t section_size = len - *pos;
-  if (!write_section(jpg, s, &data[*pos], &section_size)) {
-    return false;
-  }
+  PIK_RETURN_IF_ERROR(write_section(jpg, s, &data[*pos], &section_size));
   *pos += section_size;
 
   if ((section_size >> (7 * section_size_bytes)) > 0) {

@@ -49,15 +49,17 @@ class Stats {
   double SampleVariance() const { return m2_ / static_cast<int>(n_); }
   // Unbiased estimator for population variance even for smaller n_.
   double Variance() const { return m2_ / static_cast<int>(n_ - 1); }
-  double StandardDeviation() const { return sqrt(Variance()); }
+  double StandardDeviation() const { return std::sqrt(Variance()); }
   // Near zero for normal distributions; if positive on a unimodal distribution,
   // the right tail is fatter. Assumes n_ is large.
-  double SampleSkewness() const { return m3_ * sqrt(n_) / pow(m2_, 1.5); }
+  double SampleSkewness() const {
+    return m3_ * std::sqrt(n_) / std::pow(m2_, 1.5);
+  }
   // Corrected for bias (same as Wikipedia and Minitab but not Excel).
   double Skewness() const {
     const double biased = SampleSkewness();
     const double r = (n_ - 1.0) / n_;
-    return biased * pow(r, 1.5);
+    return biased * std::pow(r, 1.5);
   }
   // Near zero for normal distributions; smaller values indicate fewer/smaller
   // outliers and larger indicates more/larger outliers. Assumes n_ is large.

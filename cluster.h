@@ -44,7 +44,7 @@ inline bool operator<(const HistogramPair& p1, const HistogramPair& p2) {
   if (p1.cost_diff != p2.cost_diff) {
     return p1.cost_diff > p2.cost_diff;
   }
-  return abs(p1.idx1 - p1.idx2) > abs(p2.idx1 - p2.idx2);
+  return std::abs(p1.idx1 - p1.idx2) > std::abs(p2.idx1 - p2.idx2);
 }
 
 // Returns entropy reduction of the context map when we combine two clusters.

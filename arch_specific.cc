@@ -83,11 +83,6 @@ uint32_t ApicId() {
   return abcd[1] >> 24;  // ebx
 }
 
-float X64_Reciprocal12(const float x) {
-  const SIMD_NAMESPACE::Part<float, 1> d;
-  return get_part(d, approximate_reciprocal(set_part(d, x)));
-}
-
 #endif  // PIK_ARCH_X64
 
 namespace {
@@ -153,8 +148,10 @@ double InvariantTicksPerSecond() {
 #if PIK_ARCH_PPC
   static const double cycles_per_second = __ppc_get_timebase_freq();
   return cycles_per_second;
-#else
+#elif PIK_ARCH_X64
   return NominalClockRate();
+#else
+  return 1E9;  // nanoseconds - matches tsc_timer.h CLOCK_MONOTONIC fallback.
 #endif
 }
 

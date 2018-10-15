@@ -59,22 +59,25 @@ Implemented for scalar/SSE4/AVX2/ARMv8 targets, each with unit tests.
 
 *   The API and its implementation should be usable and efficient with commonly
     used compilers. Some of our open-source users cannot upgrade, so we need to
-    support 4-6 year old compilers (e.g. GCC 4.8). For example, we write
-    `shift_left<3>(v)` instead of `v << 3` because MSVC 2017 (ARM64) does not
-    propagate the literal (https://godbolt.org/g/rKx5Ga). However, we utilize
-    newer features such as function-specific target attributes when available.
+    support ~4 year old compilers. For example, we write `shift_left<3>(v)`
+    instead of `v << 3` because MSVC 2017 (ARM64) does not propagate the literal
+    (https://godbolt.org/g/rKx5Ga). However, we do require function-specific
+    target attributes, supported by GCC 4.9 / Clang 3.9 / MSVC 2015.
 
 *   Efficient and safe runtime dispatch is important. Modules such as image or
     video codecs are typically embedded into larger applications such as
-    browsers, so they cannot require separate binaries for each CPU. Using only
-    the lowest-common denominator instructions sacrifices too much performance.
+    browsers, so they cannot require separate binaries for each CPU. Libraries
+    also cannot predict whether the application already uses AVX2 (and pays the
+    frequency throttling cost), so this decision must be left to the
+    application. Using only the lowest-common denominator instructions
+    sacrifices too much performance.
     Therefore, we need to provide code paths for multiple instruction sets and
-    choose the best one at runtime. To reduce overhead, dispatch should be
+    choose the most suitable at runtime. To reduce overhead, dispatch should be
     hoisted to higher layers instead of checking inside every low-level
     function. Generating each code path from the same source reduces
     implementation and debugging cost.
 
-*   Not every CPU need be supported. For example, pre-SSE4 CPUs are increasingly
+*   Not every CPU need be supported. For example, pre-SSE4.1 CPUs are increasingly
     rare and the AVX instruction set is limited to floating-point operations.
     To reduce code size and compile time, we provide specializations for SSE4,
     AVX2 and AVX-512 instruction sets on x86.
@@ -86,8 +89,7 @@ Implemented for scalar/SSE4/AVX2/ARMv8 targets, each with unit tests.
 
 *   The core API should be compact and easy to learn. We provide only the few
     dozen operations which are necessary and sufficient for most of the 150+
-    SIMD applications we examined. As a result, quick_reference.md is only 7
-    pages long.
+    SIMD applications we examined.
 
 ## Differences versus [P0214R5 proposal](https://goo.gl/zKW4SA)
 
@@ -117,12 +119,11 @@ Implemented for scalar/SSE4/AVX2/ARMv8 targets, each with unit tests.
     suggests compiling separate executables for each instruction set or using
     GCC's ifunc (indirect functions). The latter is compiler-specific and risks
     crashes due to ODR violations when compiling the same function with
-    different compiler flags. We provide two solutions: avoiding the need for
-    multiple flags on recent compilers, and defending against ODR violations on
-    older compilers (see HOWTO section below).
+    different compiler flags. We solve this problem via target-specific
+    attributes (see HOWTO section below).
 
 1.  Using built-in PPC vector types without a wrapper class. This leads to much
-    better code generation with GCC 4.8: https://godbolt.org/g/KYp7ew.
+    better code generation with GCC 6.3: https://godbolt.org/z/pd2PNP.
     By contrast, P0214R5 requires a wrapper. We avoid this by using only the
     member operators provided by the PPC vectors; all other functions and
     typedefs are non-members.
@@ -176,9 +177,9 @@ and/or instruction sets from the same source, and improves runtime dispatch.
 ### Overloaded function API
 
 Most C++ vector APIs rely on class templates. However, two PPC compilers
-including GCC 4.8 generate inefficient code for classes with a SIMD vector
+including GCC 6.3 generate inefficient code for classes with a SIMD vector
 member: an [extra load/store for every function argument/return
-value](https://godbolt.org/g/KYp7ew). To avoid this overhead, we use built-in
+value](https://godbolt.org/z/pd2PNP). To avoid this overhead, we use built-in
 vector types on PPC. These provide overloaded arithmetic operators but do not
 allow member functions/typedefs such as `size()` or `value_type`. We instead
 rely on overloaded functions.
@@ -195,53 +196,37 @@ possible rather than overloading for every single `T`. Because C++ does not
 allow partial specialization of function templates, we need multiple overloads:
 one primary template per target. Thus, functions cannot be invoked using
 template syntax. Can we instead add a wrapper function template that calls the
-appropriate overload? Unfortunately, the new compiler support for avoiding
+appropriate overload? Unfortunately, the compiler mechanism for avoiding
 dangerous per-file `-mavx2` requires per-function annotations, and these
 attributes are not generic. Thus, a wrapper into which SIMD functions are
 inlined cannot be a function, because it would also need a target-specific
 attribute. A macro `SETZERO(D)` could work, but this is hardly more clear than a
 normal function with arguments. Note that descriptors occur often, so user code
-can define a `const Full<float> d;` and then write `setzero(d)`.
+can define a `const SIMD_FULL(float) d;` and then write `setzero(d)`.
 
 ## Use cases and HOWTO
 
-Applications may rely on 128-bit vectors, e.g. `Part<float, 4>::V`, or
-preferably use vectors of unspecified size `Full<float>::V`. Support from the
-build system may be required depending on the use case:
+Applications may rely on 128-bit vectors, e.g. `SIMD_PART(float, 4)::V`, or
+preferably use vectors of unspecified size `SIMD_FULL(float)::V`.
 
-*   Older compilers, single instruction set per platform: compile normal C++
-    functions with `COPTS_REQUIRE_?` and `COPTS_ENABLE_?` flags.
+*   Single instruction set per platform: use normal C++ functions with
+    `SIMD_ATTR` annotation.
 
-*   Older compilers, runtime dispatch: compile the same source file multiple
-    times with target-specific flags (`COPTS_ENABLE_?` and `COPTS_REQUIRE_?`).
-    Dispatch requires functors with an `operator()` template, instantiated
-    for the current `SIMD_TARGET`. Use `dispatch::Run` to choose the best
-    available implementation at runtime. Prevent ODR violations by ensuring
-    functions are inlined or defined within `SIMD_NAMESPACE`. This can be
-    verified using binutils. Example: `simd_test.cc`.
-
-*   Newer compilers (GCC 4.9+, Clang 3.9+, MSVC 2015), single instruction set
-    per platform: normal C++ functions with `SIMD_ATTR` annotation. Set
-    `SIMD_USE_ATTR=1` before including `simd.h`. Build with `COPTS_ENABLE_?`.
-
-*   Newer compilers (GCC 4.9+, Clang 3.9+, MSVC 2015), runtime dispatch: SIMD
-    code resides in a file, included once for each `SIMD_TARGET`, with
-    `SIMD_ATTR` annotations on each function. Build with `COPTS_ENABLE_*`.
-    Select an implementation e.g. via `dispatch::SupportedTargets`. Example:
-    `attr_test.cc`.
+*   Runtime dispatch: move target-specific code into a separate file
+    (unlike .inc, .cctest extension leads to syntax highlighting). Specialize
+    an `operator()<SIMD_TARGET>` in this file; any helper functions must reside
+    in `namespace SIMD_NAMESPACE` to avoid ODR violations. All functions must
+    still be prefixed with `SIMD_ATTR`. Include the file for each target via
+    `foreach_target.h`. Call via `Dispatch`, choosing the 'best' available
+    target for the current CPU via `TargetBitfield.Best()`.
 
 ## Demos
 
-To compile on Unix systems: `make -j8`. We tested with Clang 3.4 and GCC 4.8.4.
+To compile on Unix systems: `make -j8`. We tested with GCC 7.3.0.
 
 `bin/simd_test` prints a bitfield of instruction sets that were
 tested, e.g. `6` for SSE4=`4` and AVX2=`2`. The demo compiles the same source
-file once per enabled instruction set. This approach has relatively modest
-compiler requirements.
-
-`bin/attr_test_test` also prints messages for every instruction set. It
-demonstrates "attr mode" without `-mavx2` flags. This approach requires Clang
-3.9+ or GCC 4.9+, or MSVC 2015+.
+file once per enabled instruction set.
 
 ## Example source code
 
@@ -249,9 +234,9 @@ demonstrates "attr mode" without `-mavx2` flags. This approach requires Clang
 void FloorLog2(const uint8_t* SIMD_RESTRICT values,
                uint8_t* SIMD_RESTRICT log2) {
   // Descriptors for all required data types:
-  const Full<int32_t> d32;
-  const Full<float> df;
-  const Part<uint8_t, d32.N> d8;
+  const SIMD_FULL(int32_t) d32;
+  const SIMD_FULL(float) df;
+  const SIMD_PART(uint8_t, d32.N) d8;
 
   const auto u8 = load(d8, values);
   const auto bits = cast_to(d32, convert_to(df, convert_to(d32, u8)));
@@ -286,7 +271,7 @@ This generates the following SSE4 and AVX2 code, as shown by IACA:
 void Copy(const uint8_t* SIMD_RESTRICT from, const size_t size,
           uint8_t* SIMD_RESTRICT to) {
   // Width-agnostic (library-specified N)
-  const Full<uint8_t> d;
+  const SIMD_FULL(uint8_t) d;
   const Scalar<uint8_t> ds;
   size_t i = 0;
   for (; i + d.N <= size; i += d.N) {
@@ -307,7 +292,7 @@ void MulAdd(const T* SIMD_RESTRICT mul_array, const T* SIMD_RESTRICT add_array,
             const size_t size, T* SIMD_RESTRICT x_array) {
   // Type-agnostic (caller-specified lane type) and width-agnostic (uses
   // best available instruction set).
-  const Full<T> d;
+  const SIMD_FULL(T) d;
   for (size_t i = 0; i < size; i += d.N) {
     const auto mul = load(d, mul_array + i);
     const auto add = load(d, add_array + i);

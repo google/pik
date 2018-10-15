@@ -248,18 +248,18 @@ BUTTERAUGLI_INLINE void OpsinAbsorbance(const V &in0, const V &in1,
                                         V *PIK_RESTRICT out1,
                                         V *PIK_RESTRICT out2) {
   // https://en.wikipedia.org/wiki/Photopsin absorbance modeling.
-  static const double mixi0 = 0.254462330846;
-  static const double mixi1 = 0.488238255095;
-  static const double mixi2 = 0.0635278003854;
-  static const double mixi3 = 1.01681026909;
-  static const double mixi4 = 0.195214015766;
-  static const double mixi5 = 0.568019861857;
-  static const double mixi6 = 0.0860755536007;
-  static const double mixi7 = 1.1510118369;
-  static const double mixi8 = 0.07374607900105684;
-  static const double mixi9 = 0.06142425304154509;
-  static const double mixi10 = 0.24416850520714256;
-  static const double mixi11 = 1.20481945273;
+  static const double mixi0 = 0.257709424788;
+  static const double mixi1 = 0.47396355934;
+  static const double mixi2 = 0.066410860767;
+  static const double mixi3 = 0.95;
+  static const double mixi4 = 0.191380264371;
+  static const double mixi5 = 0.583330953419;
+  static const double mixi6 = 0.0987313588422;
+  static const double mixi7 = 1.2;
+  static const double mixi8 = 0.0783885502602;
+  static const double mixi9 = 0.0623406135216;
+  static const double mixi10 = 0.216921850967;
+  static const double mixi11 = 3.2034793458;
 
   const V mix0(mixi0);
   const V mix1(mixi1);

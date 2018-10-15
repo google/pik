@@ -17,37 +17,19 @@
 #ifndef IMAGE_IO_H_
 #define IMAGE_IO_H_
 
-// Read/write Image or Image3.
+// Read/write Image or Image3. DEPRECATED, use CodecInOut instead.
 
+#include <memory>
 #include <string>
 #include <utility>  // std::move
 #include <vector>
 
 #include "arch_specific.h"
 #include "cache_aligned.h"
-#include "container.h"
 #include "image.h"
 #include "status.h"
 
 namespace pik {
-
-enum class ImageFormat { kUnknown, kPNM, kPNG };
-
-struct StoredImage {
-  ImageFormat format = ImageFormat::kUnknown;
-  size_t xsize = 0;
-  size_t ysize = 0;
-  size_t bit_depth = 0;       // 8 => SRGB, anything else => f32 linear
-  size_t num_components = 0;  // including alpha
-  Metadata metadata;
-  CacheAlignedUniquePtr data;
-  size_t offset_to_pixels = 0;
-};
-
-bool LoadFile(const std::string& pathname, CacheAlignedUniquePtr* PIK_RESTRICT data, size_t* PIK_RESTRICT data_size);
-
-bool InspectImage(CacheAlignedUniquePtr&& data, const size_t data_size,
-                  StoredImage* PIK_RESTRICT stored);
 
 // PGM for 1 plane, PPM for 3 planes.
 struct ImageFormatPNM {
@@ -82,15 +64,6 @@ struct ImageFormatJPG {
 };
 
 // Wrappers
-
-// Generic image reader with type auto-detection, the output is linear sRGB.
-// NOTE: For PNGs, we assume sRGB color space. 16-bit PNGs are also supported.
-MetaImageF ReadMetaImageLinear(const std::string& pathname);
-Image3F ReadImage3Linear(const std::string& pathname);
-
-// Converts to sRGB and writes to format auto-detected from "pathname".
-void WriteImageLinear(const ImageF& linear, const std::string& pathname);
-void WriteImageLinear(const Image3F& linear, const std::string& pathname);
 
 // Writes after linear rescaling to 0-255.
 template <class Format>

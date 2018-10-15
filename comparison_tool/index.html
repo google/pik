@@ -567,11 +567,11 @@
                 var offset = view.right.getBoundingClientRect();
                 splitTarget.x = event.clientX - offset.left;
                 splitTarget.y = event.clientY - offset.top;
-                var xMin = middleWidth / 2;
-                var xMax = offset.width - middleWidth / 2;
-                if (splitTarget.x < xMin) splitTarget.x = xMin;
+                var xBegin = middleWidth / 2;
+                var xEnd = offset.width - middleWidth / 2;
+                if (splitTarget.x < xBegin) splitTarget.x = xBegin;
                 if (splitTarget.y < textHeight) splitTarget.y = textHeight;
-                if (splitTarget.x >= xMax) splitTarget.x = xMax - 1;
+                if (splitTarget.x >= xEnd) splitTarget.x = xEnd - 1;
                 if (splitTarget.y >= offset.height) splitTarget.y = offset.height - 1;
                 setSplit();
             }

@@ -8,8 +8,8 @@
 namespace pik {
 namespace {
 
-bool ANSBuildMapTable(const std::vector<int>& counts,
-                      ANSSymbolInfo map[ANS_TAB_SIZE]) {
+Status ANSBuildMapTable(const std::vector<int>& counts,
+                        ANSSymbolInfo map[ANS_TAB_SIZE]) {
   int i;
   int pos = 0;
   for (i = 0; i < counts.size(); ++i) {
@@ -36,8 +36,8 @@ inline int DecodeVarLenUint16(BitReader* input) {
   return 0;
 }
 
-bool ReadHistogram(int precision_bits, std::vector<int>* counts,
-                   BitReader* input) {
+Status ReadHistogram(int precision_bits, std::vector<int>* counts,
+                     BitReader* input) {
   int simple_code = input->ReadBits(1);
   if (simple_code == 1) {
     int i;
@@ -122,14 +122,13 @@ bool ReadHistogram(int precision_bits, std::vector<int>* counts,
 
 } // namespace
 
-bool ANSDecodingData::ReadFromBitStream(BitReader* input) {
+Status ANSDecodingData::ReadFromBitStream(BitReader* input) {
   std::vector<int> counts;
   return (ReadHistogram(ANS_LOG_TAB_SIZE, &counts, input) &&
           ANSBuildMapTable(counts, map_));
 }
 
 bool DecodeANSCodes(const size_t num_histograms, const size_t max_alphabet_size,
-                    const uint8_t* symbol_lut, size_t symbol_lut_size,
                     BitReader* in, ANSCode* result) {
   PIK_ASSERT(max_alphabet_size <= ANS_TAB_SIZE);
   result->map.resize((num_histograms << ANS_LOG_TAB_SIZE) + 1);
@@ -145,11 +144,7 @@ bool DecodeANSCodes(const size_t num_histograms, const size_t max_alphabet_size,
     const size_t histo_offset = c << ANS_LOG_TAB_SIZE;
     uint32_t offset = 0;
     for (size_t i = 0, pos = 0; i < counts.size(); ++i) {
-      size_t symbol = i;
-      if (symbol_lut != nullptr && symbol < symbol_lut_size) {
-        symbol = symbol_lut[symbol];
-      }
-      const size_t symbol_idx = histo_offset + symbol;
+      const size_t symbol_idx = histo_offset + i;
       const uint32_t freq = counts[i];
 #if PIK_BYTE_ORDER_LITTLE
       const uint32_t s32 = offset + (freq << 16);
@@ -163,7 +158,7 @@ bool DecodeANSCodes(const size_t num_histograms, const size_t max_alphabet_size,
         return PIK_FAILURE("Invalid ANS histogram data.");
       }
       for (size_t j = 0; j < counts[i]; ++j, ++pos) {
-        result->map[histo_offset + pos] = symbol;
+        result->map[histo_offset + pos] = i;
       }
     }
   }

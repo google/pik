@@ -1,9 +1,21 @@
+# Upsampling
+
+[TOC]
+
+<!--*
+# Document freshness: For more information, see go/fresh-source.
+freshness: { owner: 'janwas' reviewed: '2018-07-24' }
+*-->
+
 pik/resample.h provides `Upsampler8` for fast 8x8 upsampling by 4x4
 (separable/non-separable) or 6x6 (non-separable) kernels.
 
-# Performance evaluation
+See 'Separability' section below for the surprising result that non-separable
+can be faster than separable and possibly better.
 
-## 4x4 separable/non-separable
+## Performance evaluation
+
+### 4x4 separable/non-separable
 
 __Single-core__: 5.1 GB/s (single-channel, floating-point, 160x96 input)
 
@@ -20,7 +32,7 @@ __Multicore__: 15-18 GB/s (single-channel, floating-point, 320x192 input)
 *   9-11x or 2.3-2.8x speedup vs. a parallel Halide bicubic (1.6G single-channel
     8-bit per second, 320x192 input) in terms of bytes or samples.
 
-## 6x6 non-separable
+### 6x6 non-separable
 
 Note that a separable (outer-product) kernel only requires 6+6 (12)
 multiplications per output pixel/vector. However, we do not assume anything
@@ -36,9 +48,9 @@ __Multicore__: 9-10 GB/s (single-channel, floating-point, 320x192 input)
     single-channel 8-bit per second, 320x192 input) in terms of bytes or
     samples.
 
-# Implementation details
+## Implementation details
 
-## Data type
+### Data type
 
 Our input pixels are 16-bit, so 8-bit integer multiplications are insufficient.
 16-bit fixed-point arithmetic is fast but risks overflow or loss of precision
@@ -49,14 +61,14 @@ per cycle with 5 cycle latency. The extra bandwidth vs. 16-bit types types may
 be a concern, but we can run 12 instances (on a 12-core socket) with zero
 slowdown, indicating that memory bandwidth is not the bottleneck at the moment.
 
-## Pixel layout
+### Pixel layout
 
 We require planar inputs, e.g. all red channel samples in a 2D matrix. This
 allows better utilization of 8-lane SIMD compared to dedicating four SIMD lanes
 to R,G,B,A samples. If upsampling is the only operation, this requires an extra
 deinterleaving step, but our application involves a larger processing pipeline.
 
-## No prefilter
+### No prefilter
 
 Nehab and Hoppe (http://hhoppe.com/filtering.pdf) advocate generalized sampling
 with an additional digital filter step. They claim "significantly higher
@@ -71,30 +83,20 @@ separate horizontal and vertical passes. To avoid cache thrashing would require
 a separate ring buffer of rows, which may be less efficient than our single-pass
 algorithm which only writes final outputs.
 
-## 8x upsampling
+### 8x upsampling
 
 Our code is currently specific to 8x upsampling because that is what is required
 for our (DCT prediction) application. This happens to be a particularly good fit
 for both 4-lane and 8-lane (AVX2) SIMD AVX2. It would be relatively easy to
 adapt the code to 4x upsampling.
 
-## Kernel support
+### Kernel support
 
 Even (asymmetric) kernels are often used to reduce computation. Many upsampling
 applications use 4-tap cubic interpolation kernels but at such extreme
 magnifications (8x) we find 6x6 to be better.
 
-## Dual grid
-
-A primal grid with `n` grid points at coordinates `k/n` would be convenient for
-index computations, but is asymmetric at the borders (0 and `(n-1)/n` != 1) and
-does not compensate for the asymmetric (even) kernel support. We instead use a
-dual grid with coordinates offset by half the sample spacing, which only adds a
-integer shift term to the index computations. Note that the offset still leads
-to four identical input pixels in 8x upsampling, which is convenient for 4 and
-even 8-lane SIMD.
-
-## Separability
+### Separability
 
 Separable kernels can be expressed as the (outer) product of two 1D kernels. For
 n x n kernels, this requires n + n multiplications per pixel rather than n x n.
@@ -108,7 +110,17 @@ Surprisingly, 4x4 non-separable is actually faster than the separable version
 due to better utilization of FMA units. For 6x6, we only implement the
 non-separable version because our application benefits from such kernels.
 
-## Kernel
+### Dual grid
+
+A primal grid with `n` grid points at coordinates `k/n` would be convenient for
+index computations, but is asymmetric at the borders (0 and `(n-1)/n` != 1) and
+does not compensate for the asymmetric (even) kernel support. We instead use a
+dual grid with coordinates offset by half the sample spacing, which only adds a
+integer shift term to the index computations. Note that the offset still leads
+to four identical input pixels in 8x upsampling, which is convenient for 4 and
+even 8-lane SIMD.
+
+### Kernel
 
 We use Catmull-Rom splines out of convenience. Computational cost does not
 matter because the weights are precomputed. Also, Catmull-Rom splines pass
@@ -116,7 +128,7 @@ through the control points, but that does not matter in this application.
 B-splines or other kernels (arbitrary coefficients, even non-separable) can also
 be used.
 
-## Single pixel loads
+### Single pixel loads
 
 For SIMD convolution, we have the choice whether to broadcast inputs or weights.
 To ensure we write a unit-stride vector of output pixels, we need to broadcast
@@ -125,7 +137,7 @@ avoiding complexity at the borders, where it is not safe to load an entire
 vector. Instead, we only load and broadcast single pixels, with bounds checking
 at the borders but not in the interior.
 
-## Single pass
+### Single pass
 
 Separable 2D convolutions are often implemented as two separate 1D passes.
 However, this leads to cache thrashing in the vertical pass, assuming the image

@@ -18,16 +18,15 @@
 #include "simd/simd.h"
 
 namespace pik {
-namespace SIMD_NAMESPACE {
 
 // Rewritten from https://github.com/lemire/SIMDxorshift (copyright Daniel
 // Lemire, Apache 2.0 license): wrapped in class, ported to SIMD API.
 class Xorshift128Plus {
  public:
   // 2 or 4 separate instances of Xorshift128+ running in parallel.
-  static constexpr size_t N = SIMD_MIN(Full<uint64_t>::N, 4);
+  static constexpr size_t N = SIMD_MIN(SIMD_FULL(uint64_t)::N, 4);
 
-  using D = Part<uint64_t, N>;
+  using D = SIMD_PART(uint64_t, N);
 
   Xorshift128Plus(const uint64_t key1, const uint64_t key2) {
     state_[0] = key1;
@@ -40,7 +39,7 @@ class Xorshift128Plus {
   }
 
   // Returns 128 or 256 bit vector of random bits (u64 lane type).
-  D::V operator()() {
+  SIMD_ATTR SIMD_INLINE D::V operator()() {
     const D d;
     auto s1 = load(d, state_ + 0);
     const auto s0 = load(d, state_ + N);
@@ -84,7 +83,6 @@ class Xorshift128Plus {
   SIMD_ALIGN uint64_t state_[N * 2];
 };
 
-}  // namespace SIMD_NAMESPACE
 }  // namespace pik
 
 #endif  // XORSHIFT128PLUS_H_

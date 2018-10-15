@@ -79,22 +79,8 @@ double Now() {
   return double(t) * timebase.numer / timebase.denom * 1E-9;
 #else
   timespec t;
-  clock_gettime(CLOCK_REALTIME, &t);
+  clock_gettime(CLOCK_MONOTONIC, &t);
   return t.tv_sec + t.tv_nsec * 1E-9;
-#endif
-}
-
-void RaiseThreadPriority() {
-#if OS_WIN
-  BOOL ok = SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
-  PIK_CHECK(ok);
-  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-  PIK_CHECK(ok);
-#elif OS_LINUX
-  // omit: SCHED_RR and SCHED_FIFO with sched_priority max, max-1 and max/2
-  // lead to 2-3x runtime and higher variability!
-#else
-// omit: unnecessary
 #endif
 }
 

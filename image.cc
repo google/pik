@@ -16,6 +16,7 @@
 
 #include <stdint.h>
 
+#include "common.h"
 #include "profiler.h"
 
 namespace pik {
@@ -47,6 +48,37 @@ ImageB ImageFromPacked(const uint8_t* packed, const size_t xsize,
   return image;
 }
 
+Image3F PadImageToMultiple(const Image3F& in, const size_t N) {
+  PROFILER_FUNC;
+  const size_t xsize_blocks = DivCeil(in.xsize(), N);
+  const size_t ysize_blocks = DivCeil(in.ysize(), N);
+  const size_t xsize = N * xsize_blocks;
+  const size_t ysize = N * ysize_blocks;
+  Image3F out(xsize, ysize);
+  for (int c = 0; c < 3; ++c) {
+    int y = 0;
+    for (; y < in.ysize(); ++y) {
+      const float* PIK_RESTRICT row_in = in.ConstPlaneRow(c, y);
+      float* PIK_RESTRICT row_out = out.PlaneRow(c, y);
+      memcpy(row_out, row_in, in.xsize() * sizeof(row_in[0]));
+      const int lastcol = in.xsize() - 1;
+      const float lastval = row_out[lastcol];
+      for (int x = in.xsize(); x < xsize; ++x) {
+        row_out[x] = lastval;
+      }
+    }
+
+    // TODO(janwas): no need to copy if we can 'extend' image: if rows are
+    // pointers to any memory? Or allocate larger image before IO?
+    const int lastrow = in.ysize() - 1;
+    for (; y < ysize; ++y) {
+      const float* PIK_RESTRICT row_in = out.ConstPlaneRow(c, lastrow);
+      float* PIK_RESTRICT row_out = out.PlaneRow(c, y);
+      memcpy(row_out, row_in, xsize * sizeof(row_out[0]));
+    }
+  }
+  return out;
+}
 
 Image3B Float255ToByteImage3(const Image3F& from) {
   Image3B to(from.xsize(), from.ysize());
@@ -62,20 +94,6 @@ Image3B Float255ToByteImage3(const Image3F& from) {
     }
   }
   return to;
-}
-
-float Average(const ImageF& img) {
-  // TODO(user): Make sure this is numerically stable.
-  const size_t xsize = img.xsize();
-  const size_t ysize = img.ysize();
-  double sum = 0.0f;
-  for (size_t y = 0; y < ysize; ++y) {
-    const float* PIK_RESTRICT row = img.ConstRow(y);
-    for (size_t x = 0; x < xsize; ++x) {
-      sum += row[x];
-    }
-  }
-  return sum / xsize / ysize;
 }
 
 float DotProduct(const ImageF& a, const ImageF& b) {

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "simd/dispatch.h"
+#include "simd/targets.h"
 
 #include <stdint.h>
 #include <atomic>
@@ -27,7 +27,6 @@
 #endif
 
 namespace pik {
-namespace dispatch {
 
 namespace {
 
@@ -98,14 +97,14 @@ enum {
 
 }  // namespace
 
-int SupportedTargets() {
-  int supported = supported_.load(std::memory_order_acquire);
-  // Already initialized, return that.
-  if (SIMD_LIKELY(supported != -1)) {
-    return supported;
+TargetBitfield::TargetBitfield() {
+  bits_ = supported_.load(std::memory_order_acquire);
+  // Already initialized?
+  if (SIMD_LIKELY(bits_ != -1)) {
+    return;
   }
 
-  supported = SIMD_NONE;
+  bits_ = SIMD_NONE;
 
 #if SIMD_ARCH == SIMD_ARCH_X86
   uint32_t flags = 0;
@@ -155,18 +154,20 @@ int SupportedTargets() {
 
   // Set target bit(s) if all their group's flags are all set.
   if ((flags & kGroupAVX2) == kGroupAVX2) {
-    supported |= SIMD_AVX2;
+    bits_ |= SIMD_AVX2;
   }
   if ((flags & kGroupSSE4) == kGroupSSE4) {
-    supported |= SIMD_SSE4;
+    bits_ |= SIMD_SSE4;
   }
 #elif SIMD_ARCH == SIMD_ARCH_ARM
-  supported |= SIMD_ARM8;
+  bits_ |= SIMD_ARM8;
 #endif
 
-  supported_.store(supported, std::memory_order_release);
-  return supported;
+  // Don't report targets that aren't enabled, otherwise foreach-target loops
+  // will not terminate.
+  bits_ &= SIMD_ENABLE;
+
+  supported_.store(bits_, std::memory_order_release);
 }
 
-}  // namespace dispatch
 }  // namespace pik

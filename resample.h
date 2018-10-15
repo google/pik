@@ -26,7 +26,7 @@
 #include "data_parallel.h"
 #include "image.h"
 #include "profiler.h"
-#include "simd_helpers.h"
+#include "simd/simd.h"
 #include "status.h"
 
 namespace pik {
@@ -36,29 +36,29 @@ namespace pik {
 
 // (Possibly) multithreaded, single channel: called by all other Upsample.
 template <class Upsampler, class Executor, class Kernel>
-PIK_INLINE void Upsample(const Executor executor, const ImageF& in,
-                         const Kernel& kernel, ImageF* out) {
+SIMD_ATTR PIK_INLINE void Upsample(const Executor executor, const ImageF& in,
+                                   const Kernel& kernel, ImageF* out) {
   Upsampler::Run(executor, in, kernel, out);
 }
 
 // (Possibly) multithreaded, RGB.
 template <class Upsampler, class Executor, class Kernel>
-PIK_INLINE void Upsample(const Executor executor, const Image3F& in,
-                         const Kernel& kernel, Image3F* out) {
+SIMD_ATTR PIK_INLINE void Upsample(const Executor executor, const Image3F& in,
+                                   const Kernel& kernel, Image3F* out) {
   Upsampler::Run(executor, in, kernel, out);
 }
 
 // Single-thread, single channel.
 template <class Upsampler, class Kernel>
-PIK_INLINE void Upsample(const ImageF& in, const Kernel& kernel,
-                         ImageF* PIK_RESTRICT out) {
+SIMD_ATTR PIK_INLINE void Upsample(const ImageF& in, const Kernel& kernel,
+                                   ImageF* PIK_RESTRICT out) {
   Upsample<Upsampler>(ExecutorLoop(), in, kernel, out);
 }
 
 // Single-thread, RGB.
 template <class Upsampler, class Kernel>
-PIK_INLINE void Upsample(const Image3F& in, const Kernel& kernel,
-                         Image3F* PIK_RESTRICT out) {
+SIMD_ATTR PIK_INLINE void Upsample(const Image3F& in, const Kernel& kernel,
+                                   Image3F* PIK_RESTRICT out) {
   Upsample<Upsampler>(ExecutorLoop(), in, kernel, out);
 }
 
@@ -155,13 +155,13 @@ class CatmullRom {
       Weight<tap_x, 3>(), Weight<tap_x, 4>(), Weight<tap_x, 5>(), \
       Weight<tap_x, 6>(), Weight<tap_x, 7>()
 
-#define PIK_FOREACH_TAP_X_AND_Y(mod_y)                                \
-  /* [tap_x=4][mod_x=8]: */                                           \
-  PIK_FOREACH_MOD_X(mod_y, 0), PIK_FOREACH_MOD_X(mod_y, 1),           \
-      PIK_FOREACH_MOD_X(mod_y, 2),                                    \
-      PIK_FOREACH_MOD_X(mod_y, 3), /* [tap_y=4][4]: */                \
-      PIK_REP4((Weight<0, mod_y>())), PIK_REP4((Weight<1, mod_y>())), \
-      PIK_REP4((Weight<2, mod_y>())), PIK_REP4((Weight<3, mod_y>()))
+#define PIK_FOREACH_TAP_X_AND_Y(mod_y)                                  \
+  /* [tap_x=4][mod_x=8]: */                                             \
+  PIK_FOREACH_MOD_X(mod_y, 0), PIK_FOREACH_MOD_X(mod_y, 1),             \
+      PIK_FOREACH_MOD_X(mod_y, 2),                                      \
+      PIK_FOREACH_MOD_X(mod_y, 3), /* [tap_y=4][4]: */                  \
+      SIMD_REP4((Weight<0, mod_y>())), SIMD_REP4((Weight<1, mod_y>())), \
+      SIMD_REP4((Weight<2, mod_y>())), SIMD_REP4((Weight<3, mod_y>()))
 
 #define PIK_FOREACH_MOD_Y                                     \
   PIK_FOREACH_TAP_X_AND_Y(0), PIK_FOREACH_TAP_X_AND_Y(1),     \
@@ -296,7 +296,7 @@ class Upsampler {
       const float x = (idx_out + 0.5f) / out_size;
       const float in_x = x * in_size - 0.5f;
       // Leftmost sample index.
-      const int in_min_x = static_cast<int>(ceil(in_x - Kernel::kRadius));
+      const int in_min_x = static_cast<int>(std::ceil(in_x - Kernel::kRadius));
 
       float sum = 0.0f;
       for (int i = in_min_x; i < in_min_x + 2 * Kernel::kRadius; i++) {
@@ -328,7 +328,7 @@ class GeneralUpsamplerFromSeparable {
     for (size_t out_y = 0; out_y < out_ysize; ++out_y) {
       float* PIK_RESTRICT out_row = out->Row(out_y);
       const float in_fy = ((out_y + 0.5f) / out_ysize) * in_ysize - 0.5f;
-      const int64_t top = ceil(in_fy - Kernel::kRadius);
+      const int64_t top = std::ceil(in_fy - Kernel::kRadius);
 
       const float* PIK_RESTRICT in_rows[kWidth];
       float wy[kWidth];
@@ -339,7 +339,7 @@ class GeneralUpsamplerFromSeparable {
 
       for (int64_t out_x = 0; out_x < out_xsize; out_x++) {
         const float in_fx = ((out_x + 0.5f) / out_xsize) * in_xsize - 0.5f;
-        const int64_t left = ceil(in_fx - Kernel::kRadius);
+        const int64_t left = std::ceil(in_fx - Kernel::kRadius);
 
         int64_t in_x[kWidth];
         float wx[kWidth];
@@ -392,7 +392,7 @@ class GeneralUpsampler {
     for (size_t out_y = 0; out_y < out_ysize; ++out_y) {
       float* PIK_RESTRICT out_row = out->Row(out_y);
       const float in_fy = ((out_y + 0.5f) / out_ysize) * in_ysize - 0.5f;
-      const int64_t top = ceil(in_fy - Kernel::kRadius);
+      const int64_t top = std::ceil(in_fy - Kernel::kRadius);
 
       const float* PIK_RESTRICT in_rows[kWidth];
       for (int64_t i = 0; i < kWidth; ++i) {
@@ -401,7 +401,7 @@ class GeneralUpsampler {
 
       for (int64_t out_x = 0; out_x < out_xsize; out_x++) {
         const float in_fx = ((out_x + 0.5f) / out_xsize) * in_xsize - 0.5f;
-        const int64_t left = ceil(in_fx - Kernel::kRadius);
+        const int64_t left = std::ceil(in_fx - Kernel::kRadius);
 
         int64_t in_x[kWidth];
         for (int64_t i = 0; i < kWidth; ++i) {
@@ -448,8 +448,8 @@ class Upsampler8Base {
  public:
   // Called by Upsample function templates. Image = Image[3]F.
   template <class Executor, class Image, class Kernel>
-  static PIK_INLINE void Run(const Executor executor, const Image& in,
-                             const Kernel& kernel, Image* out) {
+  static SIMD_ATTR PIK_INLINE void Run(const Executor executor, const Image& in,
+                                       const Kernel& kernel, Image* out) {
     PROFILER_ZONE("Upsampler8");
     PIK_CHECK(in.xsize() * kScale == out->xsize());
     PIK_CHECK(in.ysize() * kScale == out->ysize());
@@ -464,7 +464,7 @@ class Upsampler8Base {
   }
 
  protected:
-  using D = SIMD_NAMESPACE::Full<float>;
+  using D = SIMD_FULL(float);
   using V = D::V;
 
   static constexpr int64_t kRadius = kRadiusArg;
@@ -487,7 +487,7 @@ class Upsampler8Base {
 
   // Wide enough to skip bounds checks in the interior.
   struct HorzSplit {
-    PIK_INLINE void operator()(
+    SIMD_ATTR PIK_INLINE void operator()(
         const float* PIK_RESTRICT row_t3, const float* PIK_RESTRICT row_t2,
         const float* PIK_RESTRICT row_t, const float* PIK_RESTRICT row_m,
         const float* PIK_RESTRICT row_b, const float* PIK_RESTRICT row_b2,
@@ -515,7 +515,7 @@ class Upsampler8Base {
 
   // Narrow, only a single loop with X bounds checks.
   struct HorzLoop {
-    PIK_INLINE void operator()(
+    SIMD_ATTR PIK_INLINE void operator()(
         const float* PIK_RESTRICT row_t3, const float* PIK_RESTRICT row_t2,
         const float* PIK_RESTRICT row_t, const float* PIK_RESTRICT row_m,
         const float* PIK_RESTRICT row_b, const float* PIK_RESTRICT row_b2,
@@ -531,9 +531,10 @@ class Upsampler8Base {
 
   // Produces a row of output using a single pass through the input rows.
   template <class Horz, class WrapY>
-  static void ProduceRow(const Horz horz, const size_t out_y, const ImageF& in,
-                         const WrapY wrap_y, const float* PIK_RESTRICT weights,
-                         ImageF* out) {
+  static SIMD_ATTR void ProduceRow(const Horz horz, const size_t out_y,
+                                   const ImageF& in, const WrapY wrap_y,
+                                   const float* PIK_RESTRICT weights,
+                                   ImageF* out) {
     const size_t in_xsize = in.xsize();
     const size_t in_ysize = in.ysize();
 
@@ -558,9 +559,10 @@ class Upsampler8Base {
   }
 
   template <class Horz, class Executor>
-  static void RunImpl(const Horz horz, const Executor executor,
-                      const ImageF& in, const float* PIK_RESTRICT weights,
-                      ImageF* PIK_RESTRICT out) {
+  static SIMD_ATTR void RunImpl(const Horz horz, const Executor executor,
+                                const ImageF& in,
+                                const float* PIK_RESTRICT weights,
+                                ImageF* PIK_RESTRICT out) {
     const size_t out_ysize = out->ysize();
 
     // Short: single loop (ignore pool - not worthwhile).
@@ -579,16 +581,18 @@ class Upsampler8Base {
                  [horz, &in, weights, out](const int task, const int thread) {
                    const int64_t out_y = task;
                    ProduceRow(horz, out_y, in, WrapUnchanged(), weights, out);
-                 });
+                 },
+                 "Resample");
     for (size_t out_y = out_ysize - kBorder; out_y < out_ysize; ++out_y) {
       ProduceRow(horz, out_y, in, WrapMirror(), weights, out);
     }
   }
 
   template <class Horz, class Executor>
-  static void RunImpl(const Horz horz, const Executor executor,
-                      const Image3F& in, const float* PIK_RESTRICT weights,
-                      Image3F* PIK_RESTRICT out) {
+  static SIMD_ATTR void RunImpl(const Horz horz, const Executor executor,
+                                const Image3F& in,
+                                const float* PIK_RESTRICT weights,
+                                Image3F* PIK_RESTRICT out) {
     const size_t out_ysize = out->ysize();
 
     // Short: single loop (ignore pool - not worthwhile).
@@ -616,7 +620,8 @@ class Upsampler8Base {
                      ProduceRow(horz, out_y, in.Plane(c), WrapUnchanged(),
                                 weights, out->MutablePlane(c));
                    }
-                 });
+                 },
+                 "Resample3");
     for (int c = 0; c < 3; ++c) {
       for (size_t out_y = out_ysize - kBorder; out_y < out_ysize; ++out_y) {
         ProduceRow(horz, out_y, in.Plane(c), WrapMirror(), weights,
@@ -643,7 +648,7 @@ class Upsampler8 : public Upsampler8Base<2, Upsampler8> {
   // Stores 2 vectors of upsampled pixels to row_out + out_x. "weights" are
   // the return value of GetWeights. About 104 uops.
   template <class WrapX>
-  static PIK_INLINE void ProducePair(
+  static SIMD_ATTR PIK_INLINE void ProducePair(
       const size_t out_x, const float* PIK_RESTRICT row_t3,
       const float* PIK_RESTRICT row_t2, const float* PIK_RESTRICT row_t,
       const float* PIK_RESTRICT row_m, const float* PIK_RESTRICT row_b,
@@ -674,13 +679,10 @@ class Upsampler8 : public Upsampler8Base<2, Upsampler8> {
   // Without SIMD, there's no point in the pair unrolling because we cannot
   // reuse anything between them. This function produces a single output pixel.
   template <class WrapX>
-  static PIK_INLINE void MulAddHorzConv1(const size_t out_x,
-                                         const float* PIK_RESTRICT row_in,
-                                         const size_t in_xsize,
-                                         const WrapX wrap_x,
-                                         const float* PIK_RESTRICT weights,
-                                         const V wy, V* PIK_RESTRICT out) {
-    using namespace SIMD_NAMESPACE;
+  static SIMD_ATTR PIK_INLINE void MulAddHorzConv1(
+      const size_t out_x, const float* PIK_RESTRICT row_in,
+      const size_t in_xsize, const WrapX wrap_x,
+      const float* PIK_RESTRICT weights, const V wy, V* PIK_RESTRICT out) {
     const D d;
     const size_t mod_x = out_x % kScale;
     const V wx0 = load(d, weights + mod_x + 0 * kScale);
@@ -713,15 +715,12 @@ class Upsampler8 : public Upsampler8Base<2, Upsampler8> {
   // Computes two vectors of horizontal 1D convolution results, multiplies them
   // with the Y weight "wy" and accumulates into out0/1.
   template <class WrapX>
-  static PIK_INLINE void MulAddHorzConv(const size_t out_x,
-                                        const float* PIK_RESTRICT row_in,
-                                        const size_t in_xsize,
-                                        const WrapX wrap_x,
-                                        const float* PIK_RESTRICT weights,
-                                        const V wy, V* PIK_RESTRICT out0,
-                                        V* PIK_RESTRICT out1) {
+  static SIMD_ATTR PIK_INLINE void MulAddHorzConv(
+      const size_t out_x, const float* PIK_RESTRICT row_in,
+      const size_t in_xsize, const WrapX wrap_x,
+      const float* PIK_RESTRICT weights, const V wy, V* PIK_RESTRICT out0,
+      V* PIK_RESTRICT out1) {
 #if SIMD_TARGET_VALUE == SIMD_AVX2
-    using namespace SIMD_NAMESPACE;
     const D d;
     const size_t mod_x = 0;  // because 2 * d.N == 2 * kScale
 
@@ -768,7 +767,6 @@ class Upsampler8 : public Upsampler8Base<2, Upsampler8> {
     *out0 = mul_add(m2 + m3, wy, *out0);
     *out1 = mul_add(n2 + n3, wy, *out1);
 #elif SIMD_TARGET_VALUE != SIMD_NONE
-    using namespace SIMD_NAMESPACE;
     const D d;
 
     // Load first two weights for the first and second vectors.
@@ -831,7 +829,7 @@ class GeneralUpsampler8 : public Upsampler8Base<2, GeneralUpsampler8> {
   // Stores 2 vectors of upsampled pixels to row_out + out_x. "weights" are
   // the return value of GetWeights.
   template <class WrapX>
-  static PIK_INLINE void ProducePair(
+  static SIMD_ATTR PIK_INLINE void ProducePair(
       const size_t out_x, const float* PIK_RESTRICT row_t3,
       const float* PIK_RESTRICT row_t2, const float* PIK_RESTRICT row_t,
       const float* PIK_RESTRICT row_m, const float* PIK_RESTRICT row_b,
@@ -839,7 +837,6 @@ class GeneralUpsampler8 : public Upsampler8Base<2, GeneralUpsampler8> {
       const WrapX wrap_x, const float* PIK_RESTRICT weights,
       float* PIK_RESTRICT row_out) {
 #if SIMD_TARGET_VALUE == SIMD_AVX2
-    using namespace SIMD_NAMESPACE;
     const D d;
     const int64_t mod_x = 0;  // because 2 * d.N == 2 * kScale
 
@@ -974,7 +971,6 @@ class GeneralUpsampler8 : public Upsampler8Base<2, GeneralUpsampler8> {
     store(sum0, d, row_out + out_x);
     store(sum1, d, row_out + out_x + d.N);
 #elif SIMD_TARGET_VALUE != SIMD_NONE
-    using namespace SIMD_NAMESPACE;
     const D d;
     const int64_t mod_x = 0;  // because 2 * d.N == kScale.
     // wyx[i] is the weight for tap_x=x, tap_y=y and mod_x=i (mod_y was already
@@ -1095,13 +1091,12 @@ class GeneralUpsampler8 : public Upsampler8Base<2, GeneralUpsampler8> {
  private:
 #if SIMD_TARGET_VALUE == SIMD_NONE
   template <class WrapX>
-  static PIK_INLINE void ProduceSingle(
+  static SIMD_ATTR PIK_INLINE void ProduceSingle(
       const size_t out_x, const float* PIK_RESTRICT row_t2,
       const float* PIK_RESTRICT row_t, const float* PIK_RESTRICT row_m,
       const float* PIK_RESTRICT row_b, const size_t in_xsize,
       const WrapX wrap_x, const float* PIK_RESTRICT weights,
       float* PIK_RESTRICT row_out) {
-    using namespace SIMD_NAMESPACE;
     const D d;
     const int64_t mod_x = out_x % kScale;
 
@@ -1186,14 +1181,13 @@ class GeneralUpsampler8_6x6 : public Upsampler8Base<3, GeneralUpsampler8_6x6> {
   // Stores 2 vectors of upsampled pixels to row_out + out_x. "weights" are
   // the return value of GetWeights.
   template <class WrapX>
-  static PIK_INLINE void ProducePair(
+  static SIMD_ATTR PIK_INLINE void ProducePair(
       const size_t out_x, const float* PIK_RESTRICT row_t3,
       const float* PIK_RESTRICT row_t2, const float* PIK_RESTRICT row_t,
       const float* PIK_RESTRICT row_m, const float* PIK_RESTRICT row_b,
       const float* PIK_RESTRICT row_b2, const size_t in_xsize,
       const WrapX wrap_x, const float* PIK_RESTRICT weights,
       float* PIK_RESTRICT row_out) {
-    using namespace SIMD_NAMESPACE;
     const D d;
 #if SIMD_TARGET_VALUE == SIMD_AVX2
     const int64_t mod_x = 0;  // because 2 * d.N == 2 * kScale
@@ -1319,14 +1313,13 @@ class GeneralUpsampler8_6x6 : public Upsampler8Base<3, GeneralUpsampler8_6x6> {
   // If less than 8 lanes, produce a single output vector at a time because
   // there is not much benefit from pairwise unrolling.
   template <class WrapX>
-  static PIK_INLINE void ProduceVector(
+  static SIMD_ATTR PIK_INLINE void ProduceVector(
       const size_t out_x, const float* PIK_RESTRICT row_t3,
       const float* PIK_RESTRICT row_t2, const float* PIK_RESTRICT row_t,
       const float* PIK_RESTRICT row_m, const float* PIK_RESTRICT row_b,
       const float* PIK_RESTRICT row_b2, const size_t in_xsize,
       const WrapX wrap_x, const float* PIK_RESTRICT weights,
       float* PIK_RESTRICT row_out) {
-    using namespace SIMD_NAMESPACE;
     const D d;
     const int64_t mod_x = out_x % kScale;
 
@@ -1394,6 +1387,17 @@ class GeneralUpsampler8_6x6 : public Upsampler8Base<3, GeneralUpsampler8_6x6> {
   }
 #endif
 };
+
+// (Possibly) multithreaded, variable scale.
+template <size_t N, class Image, class Executor, class Kernel>
+PIK_NOINLINE SIMD_ATTR void Upsample(const Executor executor, const Image& in,
+                                     const Kernel& kernel, Image* out) {
+  if (N == 8) {
+    Upsample<GeneralUpsampler8_6x6>(executor, in, kernel, out);
+  } else {
+    Upsample<slow::GeneralUpsampler<N> >(executor, in, kernel, out);
+  }
+}
 
 }  // namespace pik
 

@@ -113,14 +113,29 @@ static const uint16_t kNumNonzeroContext[7][64] = {
  }
 };
 
-static const uint16_t kNumNonzeroContextSkip[7] = {
-  8, 15, 31, 61, 120, 231, 412
-};
+constexpr uint16_t kNumNonzeroContextSkip[7] = {8, 15, 31, 61, 120, 231, 412};
 
+/* This function is used for entropy-sources pre-clustering.
+ *
+ * Ideally, each combination of |nonzeros_left| and |k| should go to its own
+ * bucket; but it implies (64 * 63 / 2) == 2016 buckets. If there is other
+ * dimension (e.g. block context), then number of primary clusters becomes too
+ * big.
+ *
+ * To solve this problem, |nonzeros_left| and |k| values are clustered. It is
+ * known that their sum is less than 64, consequently, the total number buckets
+ * is less than A(64) * B(64).
+ *
+ * |bits| controls the granularity of pre-clustering. When |bits| is 0, all |k|
+ * values are put together. When |bits| is 6, then all 64 |k| values go to
+ * different buckets.
+ *
+ * Also see the test code, where more compact presentation is expanded into
+ * those lookup tables.
+ */
 inline int ZeroDensityContext(int nonzeros_left, int k, int bits) {
   PIK_ASSERT(bits < 7);
-  PIK_ASSERT(nonzeros_left < 64);
-  PIK_ASSERT(k < 64);
+  PIK_ASSERT(nonzeros_left + k < 64);
   return kNumNonzeroContext[bits][nonzeros_left] + kFreqContext[bits][k];
 }
 

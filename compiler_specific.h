@@ -114,6 +114,22 @@
 #define PIK_ASSUME_ALIGNED(ptr, align) __builtin_assume_aligned((ptr), (align))
 #else
 #define PIK_ASSUME_ALIGNED(ptr, align) (ptr) /* not supported */
-#endif  // PIK_HAS_ASSUME_ALIGNED
+#endif
+
+#ifdef __has_attribute
+#define PIK_HAVE_ATTRIBUTE(x) __has_attribute(x)
+#else
+#define PIK_HAVE_ATTRIBUTE(x) 0
+#endif
+
+// Raises warnings if the function return value is unused. Should appear as the
+// first part of a function definition/declaration.
+#if PIK_HAVE_ATTRIBUTE(nodiscard)
+#define PIK_MUST_USE_RESULT [[nodiscard]]
+#elif PIK_COMPILER_CLANG && PIK_HAVE_ATTRIBUTE(warn_unused_result)
+#define PIK_MUST_USE_RESULT __attribute__((warn_unused_result))
+#else
+#define PIK_MUST_USE_RESULT
+#endif
 
 #endif  // COMPILER_SPECIFIC_H_

@@ -1,31 +1,30 @@
 #include "padded_bytes.h"
 
-#include <string.h>
-#include <algorithm>
-#include <memory>
-
 namespace pik {
 
-size_t PaddedBytes::PaddedSize(const size_t size) {
-  // Allow writing entire 64-bit words.
-  return (size + 7) & ~7;
-}
+void PaddedBytes::IncreaseCapacityTo(size_t capacity) {
+  PIK_ASSERT(capacity > capacity_);
 
-void PaddedBytes::resize(const size_t size) {
-  const size_t new_padded_size = PaddedSize(size);
-
-  // Shrinking, no copy needed.
-  if (new_padded_size <= padded_size_) {
-    size_ = size;
+  // write_bits.h writes up to 7 bytes past the end.
+  CacheAlignedUniquePtr new_data = AllocateArray(capacity + 7);
+  if (new_data == nullptr) {
+    // Allocation failed, discard all data to ensure this is noticed.
+    size_ = capacity_ = 0;
     return;
   }
 
-  CacheAlignedUniquePtr new_data = AllocateArray(new_padded_size);
-  memcpy(new_data.get(), data_.get(), size_);  // old size
-  memset(new_data.get() + size_, 0, new_padded_size - size_);
+  if (data_ == nullptr) {
+    // First allocation: ensure first byte is initialized (won't be copied).
+    new_data[0] = 0;
+  } else {
+    // Subsequent resize: copy existing data to new location.
+    memcpy(new_data.get(), data_.get(), size_);
+    // Ensure that the first new byte is initialized, to allow write_bits to
+    // safely append to the newly-resized PaddedBytes.
+    new_data[size_] = 0;
+  }
 
-  size_ = size;  // update after copying!
-  padded_size_ = new_padded_size;
+  capacity_ = capacity;
   std::swap(new_data, data_);
 }
 

@@ -1,16 +1,10 @@
 #ifndef RATIONAL_POLYNOMIAL_H_
 #define RATIONAL_POLYNOMIAL_H_
 
-// WARNING: this is a "restricted" header because it is included from
-// translation units compiled with different flags. This header and its
-// dependencies must not define any function unless it is static inline and/or
-// within namespace SIMD_NAMESPACE. See arch_specific.h for details.
-
 #include "compiler_specific.h"
-#include "simd_helpers.h"
+#include "simd/simd.h"
 
 namespace pik {
-namespace SIMD_NAMESPACE {
 
 // Approximates smooth functions via rational polynomials (i.e. dividing two
 // polynomials). Supports V = SIMD or Scalar<T> inputs.
@@ -29,7 +23,8 @@ class RationalPolynomial {
 
  public:
   template <typename U>
-  void SetCoefficients(const U (&p)[kDegP + 1], const U (&q)[kDegQ + 1]) {
+  SIMD_ATTR void SetCoefficients(const U (&p)[kDegP + 1],
+                                 const U (&q)[kDegQ + 1]) {
     for (int i = 0; i <= kDegP; ++i) {
       p_[i] = set1(D(), static_cast<T>(p[i]));
     }
@@ -38,8 +33,8 @@ class RationalPolynomial {
     }
   }
 
-  void GetCoefficients(T (*p)[kDegP + 1], T (*q)[kDegQ + 1]) const {
-    const Part<T, 1> d;
+  SIMD_ATTR void GetCoefficients(T (*p)[kDegP + 1], T (*q)[kDegQ + 1]) const {
+    const SIMD_PART(T, 1) d;
     for (int i = 0; i <= kDegP; ++i) {
       store(any_part(d, p_[i]), d, (*p) + i);
     }
@@ -49,12 +44,13 @@ class RationalPolynomial {
   }
 
   template <typename U>
-  RationalPolynomial(const U (&p)[kDegP + 1], const U (&q)[kDegQ + 1]) {
+  SIMD_ATTR RationalPolynomial(const U (&p)[kDegP + 1],
+                               const U (&q)[kDegQ + 1]) {
     SetCoefficients(p, q);
   }
 
   // Evaluates the polynomial at x.
-  PIK_INLINE V operator()(const V x) const {
+  SIMD_ATTR PIK_INLINE V operator()(const V x) const {
     V yp = p_[kDegP];
     V yq = q_[kDegQ];
     PIK_COMPILER_FENCE;
@@ -97,9 +93,9 @@ class RationalPolynomial {
 // can result in copying them from RIP+x to stack frame. load_dup128 allows us
 // to specify constants (replicated 4x) independently of the lane count.
 template <int NP, int NQ, class V, typename T>
-PIK_INLINE V EvalRationalPolynomial(const V x, const T (&p)[NP],
-                                    const T (&q)[NQ]) {
-  const Full<T> d;
+SIMD_ATTR PIK_INLINE V EvalRationalPolynomial(const V x, const T (&p)[NP],
+                                              const T (&q)[NQ]) {
+  const SIMD_FULL(T) d;
   constexpr int kDegP = NP / 4 - 1;
   constexpr int kDegQ = NQ / 4 - 1;
   auto yp = load_dup128(d, &p[kDegP * 4]);
@@ -131,13 +127,14 @@ PIK_INLINE V EvalRationalPolynomial(const V x, const T (&p)[NP],
 
 // Evaluates three at once for better FMA utilization and fewer loads.
 template <int NP, int NQ, class V, typename T>
-void EvalRationalPolynomialTriple(const V x0, const V x1, const V x2,
-                                  const T (&p)[NP], const T (&q)[NQ],
-                                  V* PIK_RESTRICT y0, V* PIK_RESTRICT y1,
-                                  V* PIK_RESTRICT y2) {
+SIMD_ATTR void EvalRationalPolynomialTriple(const V x0, const V x1, const V x2,
+                                            const T (&p)[NP], const T (&q)[NQ],
+                                            V* PIK_RESTRICT y0,
+                                            V* PIK_RESTRICT y1,
+                                            V* PIK_RESTRICT y2) {
   // Computing both polynomials in parallel is slightly faster than sequential
   // (better utilization of FMA slots despite higher register pressure).
-  const Full<T> d;
+  const SIMD_FULL(T) d;
   constexpr int kDegP = NP / 4 - 1;
   constexpr int kDegQ = NQ / 4 - 1;
   V yp0 = load_dup128(d, &p[kDegP * 4]);
@@ -238,7 +235,6 @@ void EvalRationalPolynomialTriple(const V x0, const V x1, const V x2,
   *y2 = FastDivision<T, V>()(yp2, yq2);
 }
 
-}  // namespace SIMD_NAMESPACE
 }  // namespace pik
 
 #endif  // RATIONAL_POLYNOMIAL_H_

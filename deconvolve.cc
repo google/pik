@@ -51,6 +51,17 @@ struct LossFunction {
     for (int i = 0; i < w.size(); i++) {
       (*df)[i] = -2 * derivs[i + filter_length - 1];
     }
+    {
+      // Outside of midpoint, regularize the sharpening kernel towards zero.
+      static const double kRegularizationWeight = 0.00001;
+      for (int i = 0; i < w.size(); ++i) {
+        if (i == w.size() / 2) {
+          continue;
+        }
+        sumsq += kRegularizationWeight * w[i] * w[i];
+        (*df)[i] += -2 * kRegularizationWeight * w[i];
+      }
+    }
     return sumsq;
   }
   const float* filter;

@@ -6,14 +6,13 @@
 #include <utility>
 #include <vector>
 
+#include "common.h"
 #include "status.h"
 
 namespace pik {
 
-const double kPi = 3.1415926535897932;
-
 void AssertSymmetric(const ImageD& A) {
-#if defined(PIK_ENABLE_ASSERT)
+#if PIK_ENABLE_ASSERT
   PIK_ASSERT(A.xsize() == A.ysize());
   for (size_t i = 0; i < A.xsize(); ++i) {
     for (size_t j = i + 1; j < A.xsize(); ++j) {
@@ -31,7 +30,7 @@ void Diagonalize2x2(const double a0, const double a1, const double b, double* c,
     return;
   }
   double phi = std::atan2(2 * b, a1 - a0);
-  double theta = b > 0.0 ? 0.5 * phi : 0.5 * phi + kPi;
+  double theta = b > 0.0 ? 0.5 * phi : 0.5 * phi + Pi(1.0);
   *c = std::cos(theta);
   *s = std::sin(theta);
 }

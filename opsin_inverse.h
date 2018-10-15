@@ -24,24 +24,23 @@
 #include "data_parallel.h"
 #include "image.h"
 #include "opsin_params.h"
-#include "simd_helpers.h"
+#include "simd/simd.h"
 
 namespace pik {
 
 // Inverts the pixel-wise RGB->XYB conversion in OpsinDynamicsImage() (including
-// the gamma mixing and simple gamma), without clamping. "inverse_matrix" points
-// to 9 broadcasted vectors, which are the 3x3 entries of the (row-major)
-// opsin absorbance matrix inverse. Pre-multiplying its entries by c is
-// equivalent to multiplying linear_* by c afterwards.
+// the gamma mixing and simple gamma). Avoids clamping to [0, 255] - out of
+// (sRGB) gamut values may be in-gamut after transforming to a wider space.
+// "inverse_matrix" points to 9 broadcasted vectors, which are the 3x3 entries
+// of the (row-major) opsin absorbance matrix inverse. Pre-multiplying its
+// entries by c is equivalent to multiplying linear_* by c afterwards.
 template <class D, class V>
-PIK_INLINE void XybToRgbWithoutClamp(D d, const V opsin_x, const V opsin_y,
-                                     const V opsin_b,
-                                     const V* PIK_RESTRICT inverse_matrix,
-                                     V* const PIK_RESTRICT linear_r,
-                                     V* const PIK_RESTRICT linear_g,
-                                     V* const PIK_RESTRICT linear_b) {
-  using namespace SIMD_NAMESPACE;
-
+SIMD_ATTR PIK_INLINE void XybToRgb(D d, const V opsin_x, const V opsin_y,
+                                   const V opsin_b,
+                                   const V* PIK_RESTRICT inverse_matrix,
+                                   V* const PIK_RESTRICT linear_r,
+                                   V* const PIK_RESTRICT linear_g,
+                                   V* const PIK_RESTRICT linear_b) {
 #if SIMD_TARGET_VALUE == SIMD_NONE
   const auto inv_scale_x = set1(d, kInvScaleR);
   const auto inv_scale_y = set1(d, kInvScaleG);
@@ -87,31 +86,14 @@ PIK_INLINE void XybToRgbWithoutClamp(D d, const V opsin_x, const V opsin_y,
   *linear_b += tmp_b;
 }
 
-// Also clamps the resulting pixel values to [0.0, 255.0].
-template <class D, class V>
-PIK_INLINE void XybToRgb(D d, const V opsin_x, const V opsin_y, const V opsin_b,
-                         const V* PIK_RESTRICT inverse_matrix,
-                         V* const PIK_RESTRICT linear_r,
-                         V* const PIK_RESTRICT linear_g,
-                         V* const PIK_RESTRICT linear_b) {
-  XybToRgbWithoutClamp(d, opsin_x, opsin_y, opsin_b, inverse_matrix, linear_r,
-                       linear_g, linear_b);
-  *linear_r = Clamp0To255(d, *linear_r);
-  *linear_g = Clamp0To255(d, *linear_g);
-  *linear_b = Clamp0To255(d, *linear_b);
-}
-
-// "dither" enables 2x2 dithering, but only if SIMD_TARGET_VALUE != SIMD_NONE
-// and the output is U8 (first overload).
-void CenteredOpsinToSrgb(const Image3F& opsin, const bool dither,
-                         ThreadPool* pool, Image3B* srgb);
-void CenteredOpsinToSrgb(const Image3F& opsin, const bool dither,
-                         ThreadPool* pool, Image3U* srgb);
-void CenteredOpsinToSrgb(const Image3F& opsin, const bool dither,
-                         ThreadPool* pool, Image3F* srgb);
-
-Image3B OpsinDynamicsInverse(const Image3F& opsin);
-Image3F LinearFromOpsin(const Image3F& opsin);
+// Produces same colorspace as original linear input.
+// "linear" is preallocated by caller.
+void CenteredOpsinToLinear(const Image3F& opsin, ThreadPool* pool,
+                           Image3F* PIK_RESTRICT linear);
+void CenteredOpsinToOpsin(const Image3F& centered_opsin, ThreadPool* pool,
+                          Image3F* PIK_RESTRICT opsin);
+void OpsinToLinear(const Image3F& opsin, ThreadPool* pool,
+                   Image3F* PIK_RESTRICT linear);
 
 }  // namespace pik
 

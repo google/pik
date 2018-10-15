@@ -1,44 +1,49 @@
 #include <stdio.h>
 
-#include "image.h"
-#include "image_io.h"
 #include "butteraugli_distance.h"
+#include "codec.h"
+#include "image.h"
+#include "status.h"
 
-static const float kHfAsymmetry = 3.14;
+namespace pik {
+namespace {
 
-int PrintArgHelp(int argc, char** argv) {
-  fprintf(stderr, "Usage: %s <image a> <image b>\n", argv[0]);
-  return 1;
+Status Run(const char* pathname1, const char* pathname2) {
+  CodecContext codec_context(/*num_threads=*/4);
+  CodecInOut io1(&codec_context);
+  if (!io1.SetFromFile(pathname1)) {
+    fprintf(stderr, "Failed to read image from %s\n", pathname1);
+    return false;
+  }
+
+  CodecInOut io2(&codec_context);
+  if (!io2.SetFromFile(pathname2)) {
+    fprintf(stderr, "Failed to read image from %s\n", pathname2);
+    return false;
+  }
+
+  if (io1.xsize() != io2.xsize()) {
+    fprintf(stderr, "Width mismatch: %zu %zu\n", io1.xsize(), io2.xsize());
+    return false;
+  }
+  if (io1.ysize() != io2.ysize()) {
+    fprintf(stderr, "Height mismatch: %zu %zu\n", io1.ysize(), io2.ysize());
+    return false;
+  }
+
+  const float kHfAsymmetry = 0.8;
+  const float distance = ButteraugliDistance(&io1, &io2, kHfAsymmetry);
+  printf("%.10f\n", distance);
+  return true;
 }
+
+}  // namespace
+}  // namespace pik
 
 int main(int argc, char** argv) {
   if (argc != 3) {
-    return PrintArgHelp(argc, argv);
-  }
-
-  pik::MetaImageF a = pik::ReadMetaImageLinear(argv[1]);
-  if (a.xsize() == 0) {
-    fprintf(stderr, "Failed to read image from %s\n", argv[1]);
+    fprintf(stderr, "Usage: %s <reference> <distorted>\n", argv[0]);
     return 1;
   }
-
-  pik::MetaImageF b = pik::ReadMetaImageLinear(argv[2]);
-  if (b.xsize() == 0) {
-    fprintf(stderr, "Failed to read image from %s\n", argv[2]);
-    return 1;
-  }
-
-  if (a.xsize() != b.xsize()) {
-    fprintf(stderr, "%s and %s have different widths\n", argv[1], argv[2]);
-    return 1;
-  }
-  if (a.ysize() != b.ysize()) {
-    fprintf(stderr, "%s and %s have different heights\n", argv[1], argv[2]);
-    return 1;
-  }
-
-  float distance = pik::ButteraugliDistance(a, b, kHfAsymmetry, nullptr);
-  printf("%.10f\n", distance);
-
-  return 0;
+  return pik::Run(argv[1], argv[2]) ? 0 : 1;
 }

@@ -34,7 +34,7 @@ matrix:
 addons:
   apt:
     packages:
-      - libpng-dev
+      - liblcms2-dev
 
 before_install:
 - if [ -n "${C_COMPILER}" ]; then export CC="${C_COMPILER}"; fi

@@ -12,8 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#ifndef SIMD_SCALAR_H_
+#define SIMD_SCALAR_H_
+
 // Single-element vectors and operations.
-// (No include guard nor namespace: this is included from the middle of simd.h.)
+
+#include "simd/compiler_specific.h"
+#include "simd/shared.h"
+#include "simd/targets.h"
+#include "simd/util.h"
+
+namespace pik {
+
+// Never override NONE.
+template <>
+struct PartTargetT<1, NONE> {
+  using type = NONE;
+};
+
+// Shorthand for a scalar; note that scalar<T> is the actual data class.
+template <typename T>
+using Scalar = Desc<T, 1, NONE>;
 
 // Returned by set_shift_*_count; do not use directly.
 struct scalar_shift_left_count {
@@ -90,7 +109,7 @@ SIMD_INLINE scalar<T> iota(Scalar<T>, const T2 first) {
 
 template <typename T>
 SIMD_INLINE scalar<T> undefined(Scalar<T>) {
-  return scalar<T>();
+  return scalar<T>(0);
 }
 
 // ================================================== SHIFTS
@@ -459,6 +478,25 @@ template <typename T>
 SIMD_INLINE scalar<T> nmul_add(const scalar<T> mul, const scalar<T> x,
                                const scalar<T> add) {
   return add - mul * x;
+}
+
+template <typename T>
+SIMD_INLINE scalar<T> fadd(const scalar<T> x, const scalar<T> k1,
+                           const scalar<T> add) {
+  return x + add;
+}
+
+template <typename T>
+SIMD_INLINE scalar<T> fsub(const scalar<T> x, const scalar<T> k1,
+                           const scalar<T> sub) {
+  return x - sub;
+}
+
+// (parameter order swapped)
+template <typename T>
+SIMD_INLINE scalar<T> fnadd(const scalar<T> sub, const scalar<T> k1,
+                                   const scalar<T> x) {
+  return x - sub;
 }
 
 // Slightly more expensive on ARM (extra negate)
@@ -839,3 +877,6 @@ SIMD_INLINE scalar<T> sum_of_lanes(const scalar<T> v0) {
 }
 
 }  // namespace ext
+}  // namespace pik
+
+#endif  // SIMD_SCALAR_H_

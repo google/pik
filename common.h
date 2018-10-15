@@ -17,8 +17,6 @@
 
 #include <stddef.h>
 
-#include "image.h"
-
 namespace pik {
 
 constexpr size_t kBitsPerByte = 8;  // more clear than CHAR_BIT
@@ -28,28 +26,24 @@ inline T DivCeil(T a, T b) {
   return (a + b - 1) / b;
 }
 
-// The suffix "InBlocks" indicates the measuring unit. If blank, it is pixels.
+template <typename T>
+constexpr T Pi(T multiplier) {
+  return static_cast<T>(multiplier * 3.1415926535897932);
+}
 
-// Block is the rectangular grid of pixels to which an "energy compaction"
+// Block is the square grid of pixels to which an "energy compaction"
 // transformation (e.g. DCT) is applied. Each block has its own AC quantizer.
-constexpr size_t kBlockWidth = 8;
-constexpr size_t kBlockHeight = 8;
-// "size" is the number of coefficients required to describe transformed block.
-// It matches the number of pixels because the transform is not overcomplete.
-constexpr size_t kBlockSize = kBlockWidth * kBlockHeight;
+constexpr size_t kBlockDim = 8;
 
-// Tile is the rectangular grid of blocks that share a "color transform".
-constexpr size_t kTileWidthInBlocks = 8;
-constexpr size_t kTileHeightInBlocks = 8;
-constexpr size_t kTileWidth = kTileWidthInBlocks * kBlockWidth;
-constexpr size_t kTileHeight = kTileHeightInBlocks * kBlockHeight;
-
-// Group is the rectangular grid of tiles that can be decoded in parallel.
-constexpr size_t kGroupWidthInTiles = 8;
-constexpr size_t kGroupHeightInTiles = 8;
-constexpr size_t kGroupWidthInBlocks = kGroupWidthInTiles * kTileWidthInBlocks;
-constexpr size_t kGroupHeightInBlocks =
-    kGroupHeightInTiles * kTileHeightInBlocks;
+// Group is the rectangular grid of blocks that can be decoded in parallel.
+constexpr size_t kGroupWidth = 512;
+constexpr size_t kGroupHeight = 512;
+static_assert(kGroupWidth % kBlockDim == 0,
+              "Group width should be divisible by block dim");
+static_assert(kGroupHeight % kBlockDim == 0,
+              "Group height should be divisible by block dim");
+constexpr size_t kGroupWidthInBlocks = kGroupWidth / kBlockDim;
+constexpr size_t kGroupHeightInBlocks = kGroupHeight / kBlockDim;
 
 }  // namespace pik
 

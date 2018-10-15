@@ -22,53 +22,82 @@
 #include <stdio.h>
 #include <array>
 #include <memory>
-#include <vector>
 
 #include "bit_reader.h"
 #include "bits.h"
+#include "brotli.h"
 #include "compiler_specific.h"
+#include "field_encodings.h"
 #include "status.h"
 #include "write_bits.h"
 
 namespace pik {
 
-// Chooses one of three encodings based on an a-priori "distribution":
+// Chooses one of four encodings based on an a-priori "distribution":
 // - raw: if IsRaw(distribution), send RawBits(distribution) = 1..32 raw bits;
-// - direct: send a 2-bit "selector" to choose a 7-bit value from distribution;
-// - extra: send a 2-bit selector to choose the number of extra bits (1..32)
-//   from distribution, then send that many bits.
+//   This are values larger than ~32u, use kU32RawBits + #bits.
+// - non-raw: send a 2-bit selector to choose byte b from "distribution",
+//   least significant byte first. Then the value is encoded according to b:
+//   -- direct: if b & 0x80, the value is b & 0x7F
+//   -- offset: else if b & 0x40, the value is derived from (b & 7) + 1
+//              extra bits plus an offset ((b >> 3) & 7) + 1.
+//   -- extra: otherwise, the value is derived from b extra bits
+//             (must be 1-32 extra bits)
 // This is faster to decode and denser than Exp-Golomb or Gamma codes when both
 // small and large values occur.
-//
-// If !IsRaw(distribution), it is interpreted as an array of four bytes
-// (least-significant first). Let b = Lookup(distribution, selector).
-// If b & 0x80, then the value is b & 0x7F; otherwise, b indicates the number of
-// extra bits (1 to 32) encoding the value.
 //
 // Examples:
 // Raw:    distribution 0xFFFFFFEF, value 32768 => 1000000000000000
 // Direct: distribution 0x06A09088, value 32 => 10 (selector 2, b=0xA0).
 // Extra:  distribution 0x08060402, value 7 => 01 0111 (selector 1, b=4).
+// Offset: distribution 0x68584801, value 7 => 11 1 (selector 3, offset 5 + 1).
+//
+// Bit for bit example:
+// An encoding mapping the following prefix code:
+// 00 -> 0
+// 01x -> 1..2
+// 10xx -> 3..7
+// 11xxxxxxxx -> 8..263
+// Can be made with distrubition 0x7F514080. Dissecting this from hex digits
+// left to right:
+// 7: 0x40 flag for this byte and 2 bits of offset 8 for 8..263
+// F: final bit of offset 8 and 3 bits setting extra to 7+1 for 8..263.
+// 5: 0x40 flag for this byte and 2 bits of offset 3 for 3..7
+// 1: One bit indicating window size 2 set for 3..7
+// 4: 0x40 flag for this byte, no offset bits set, offset 0+1 for 1..2
+// 0: no bits set in this flag, offset and extra bits set to 0 indicating an
+//    offset 1 and extra 1 for 1..2
+// 8: 0x80 flag set to indicate direct value for 0
+// 0: bits of the direct value 0
 class U32Coder {
  public:
+  // Byte flag indicating direct value.
+  static const uint32_t kDirect = 0x80;
+  // Byte flag indicating extra bits with offset rather than pure extra bits.
+  static const uint32_t kOffset = 0x40;
+
   static size_t MaxEncodedBits(const uint32_t distribution) {
     ValidateDistribution(distribution);
     if (IsRaw(distribution)) return RawBits(distribution);
     size_t extra_bits = 0;
     for (int selector = 0; selector < 4; ++selector) {
       const size_t b = Lookup(distribution, selector);
-      if (b & 0x80) continue;
-      extra_bits = std::max(extra_bits, b);
+      if (b & kDirect) {
+        continue;
+      } else {
+        extra_bits = std::max<size_t>(extra_bits, GetExtraBits(b));
+      }
     }
     return 2 + extra_bits;
   }
 
-  static bool CanEncode(const uint32_t distribution, const uint32_t value,
-                        size_t* PIK_RESTRICT encoded_bits) {
+  static Status CanEncode(const uint32_t distribution, const uint32_t value,
+                          size_t* PIK_RESTRICT encoded_bits) {
     ValidateDistribution(distribution);
     int selector;
     size_t total_bits;
-    const bool ok = ChooseEncoding(distribution, value, &selector, &total_bits);
+    const Status ok =
+        ChooseEncoding(distribution, value, &selector, &total_bits);
     *encoded_bits = ok ? total_bits : 0;
     return ok;
   }
@@ -81,43 +110,47 @@ class U32Coder {
     }
     const int selector = reader->ReadFixedBits<2>();
     const size_t b = Lookup(distribution, selector);
-    if (b & 0x80) return b & 0x7F;  // direct
-    return reader->ReadBits(b);     // extra
+    if (b & kDirect) {
+      return b & 0x7F;
+    } else {
+      uint32_t offset = GetOffset(b);
+      uint32_t extra_bits = GetExtraBits(b);
+      return reader->ReadBits(extra_bits) + offset;
+    }
   }
 
   // Returns false if the value is too large to encode.
-  static bool Store(const uint32_t distribution, const uint32_t value,
-                    size_t* pos, uint8_t* storage) {
+  static Status Store(const uint32_t distribution, const uint32_t value,
+                      size_t* pos, uint8_t* storage) {
     int selector;
     size_t total_bits;
-    if (!ChooseEncoding(distribution, value, &selector, &total_bits)) {
-      return false;
-    }
+    PIK_RETURN_IF_ERROR(
+        ChooseEncoding(distribution, value, &selector, &total_bits));
 
     if (IsRaw(distribution)) {
       WriteBits(RawBits(distribution), value, pos, storage);
       return true;
     }
-
     WriteBits(2, selector, pos, storage);
-    if (total_bits > 2) {
-      WriteBits(total_bits - 2, value, pos, storage);
+
+    const size_t b = Lookup(distribution, selector);
+    if ((b & kDirect) == 0) {  // Nothing more to write for direct encoding
+      uint32_t offset = GetOffset(b);
+      PIK_ASSERT(value >= offset);
+      WriteBits(total_bits - 2, value - offset, pos, storage);
     }
+
     return true;
   }
 
  private:
-  // Note: to avoid dependencies on this header, we allow users to hard-code
-  // ~32u. This value is convenient because the maximum number of raw bits is 32
-  // and ~32u + 32 == ~0u, which ensures RawBits can never exceed 32 and also
-  // allows "distribution" to be sign-extended from an 8-bit immediate.
   static PIK_INLINE bool IsRaw(const uint32_t distribution) {
-    return distribution > ~32u;
+    return distribution > kU32RawBits;
   }
 
   static PIK_INLINE size_t RawBits(const uint32_t distribution) {
     PIK_ASSERT(IsRaw(distribution));
-    return distribution - ~32u;
+    return distribution - kU32RawBits;
   }
 
   // Returns one byte from "distribution" at index "selector".
@@ -127,26 +160,44 @@ class U32Coder {
     return (distribution >> (selector * 8)) & 0xFF;
   }
 
+  static PIK_INLINE uint32_t GetOffset(const uint8_t b) {
+    PIK_ASSERT(!(b & kDirect));
+    if (b & kOffset) return ((b >> 3) & 7) + 1;
+    return 0;
+  }
+
+  static PIK_INLINE uint32_t GetExtraBits(const uint8_t b) {
+    PIK_ASSERT(!(b & kDirect));
+    if (b & kOffset) return (b & 7) + 1;
+    PIK_ASSERT(b != 0 && b <= 32);
+    return b;
+  }
+
   static void ValidateDistribution(const uint32_t distribution) {
-#if defined(PIK_ENABLE_ASSERT)
+#if PIK_ENABLE_ASSERT
     if (IsRaw(distribution)) return;  // raw 1..32: OK
     for (int selector = 0; selector < 4; ++selector) {
       const size_t b = Lookup(distribution, selector);
-      if (b & 0x80) continue;  // direct: OK
-      // Forbid b = 0 because it requires an extra call to read/write 0 bits;
-      // to encode a zero value, use b = 0x80 instead.
-      if (b == 0 || b > 32) {
-        printf("Invalid distribution %8x[%d] == %zu\n", distribution, selector,
-               b);
-        PIK_ASSERT(false);
+      if (b & kDirect) {
+        continue;  // direct: OK
+      } else if (b & kOffset) {
+        continue;  // extra with offset: OK
+      } else {
+        // Forbid b = 0 because it requires an extra call to read/write 0 bits;
+        // to encode a zero value, use b = kDirect instead.
+        if (b == 0 || b > 32) {
+          printf("Invalid distribution %8x[%d] == %zu\n", distribution,
+                 selector, b);
+          PIK_ASSERT(false);
+        }
       }
     }
 #endif
   }
 
-  static bool ChooseEncoding(const uint32_t distribution, const uint32_t value,
-                             int* PIK_RESTRICT selector,
-                             size_t* PIK_RESTRICT total_bits) {
+  static Status ChooseEncoding(const uint32_t distribution,
+                               const uint32_t value, int* PIK_RESTRICT selector,
+                               size_t* PIK_RESTRICT total_bits) {
     const size_t bits_required = 32 - NumZeroBitsAboveMSB(value);
     PIK_ASSERT(bits_required <= 32);
 
@@ -167,21 +218,27 @@ class U32Coder {
     *total_bits = 64;  // more than any valid encoding
     for (int s = 0; s < 4; ++s) {
       const size_t b = Lookup(distribution, s);
-      if (b & 0x80) {
+      if (b & kDirect) {
         if ((b & 0x7F) == value) {
           *selector = s;
           *total_bits = 2;
           return true;  // Done, can't improve upon a direct encoding.
         }
         continue;
-      }  // Else not direct, try extra:
+      }
 
-      if (bits_required > b) continue;
+      uint32_t extra_bits = GetExtraBits(b);
+      if (b & kOffset) {
+        uint32_t offset = GetOffset(b);
+        if (value < offset || value >= offset + (1u << extra_bits)) continue;
+      } else {
+        if (bits_required > extra_bits) continue;
+      }
 
       // Better than prior encoding, remember it:
-      if (2 + b < *total_bits) {
+      if (2 + extra_bits < *total_bits) {
         *selector = s;
-        *total_bits = 2 + b;
+        *total_bits = 2 + extra_bits;
       }
     }
 
@@ -191,21 +248,54 @@ class U32Coder {
   }
 };
 
-// Coder for byte arrays: stores #bytes via U32Coder, then raw bytes.
+// Coder for byte arrays: stores encoding and #bytes via U32Coder, then raw or
+// Brotli-compressed bytes.
 class BytesCoder {
+  static constexpr uint32_t kDistSize = 0x20181008;
+  static const int kBrotliQuality = 6;
+
  public:
-  static bool CanEncode(const std::vector<uint8_t>& value,
-                        size_t* PIK_RESTRICT encoded_bits) {
-    if (!U32Coder::CanEncode(kDistribution, value.size(), encoded_bits)) {
-      return false;
+  static Status CanEncode(Bytes encoding, const PaddedBytes& value,
+                          size_t* PIK_RESTRICT encoded_bits) {
+    PIK_ASSERT(encoding == Bytes::kRaw || encoding == Bytes::kBrotli);
+    if (value.empty()) {
+      return U32Coder::CanEncode(kU32Direct3Plus8, Bytes::kNone, encoded_bits);
     }
-    *encoded_bits += value.size() * 8;
+
+    PaddedBytes compressed;
+    const PaddedBytes* store_what = &value;
+
+    // Note: we will compress a second time when Store is called.
+    if (encoding == Bytes::kBrotli) {
+      PIK_RETURN_IF_ERROR(BrotliCompress(kBrotliQuality, value, &compressed));
+      if (compressed.size() < value.size()) {
+        store_what = &compressed;
+      } else {
+        encoding = Bytes::kRaw;
+      }
+    }
+
+    size_t bits_encoding, bits_size;
+    PIK_RETURN_IF_ERROR(
+        U32Coder::CanEncode(kU32Direct3Plus8, encoding, &bits_encoding) &&
+        U32Coder::CanEncode(kDistSize, store_what->size(), &bits_size));
+    *encoded_bits = bits_encoding + bits_size + store_what->size() * 8;
     return true;
   }
 
-  static void Load(BitReader* PIK_RESTRICT reader,
-                   std::vector<uint8_t>* PIK_RESTRICT value) {
-    const uint32_t num_bytes = U32Coder::Load(kDistribution, reader);
+  static Status Load(BitReader* PIK_RESTRICT reader,
+                     PaddedBytes* PIK_RESTRICT value) {
+    const Bytes encoding =
+        static_cast<Bytes>(U32Coder::Load(kU32Direct3Plus8, reader));
+    if (encoding == Bytes::kNone) {
+      value->clear();
+      return true;
+    }
+    if (encoding != Bytes::kRaw && encoding != Bytes::kBrotli) {
+      return PIK_FAILURE("Unrecognized Bytes encoding");
+    }
+
+    const uint32_t num_bytes = U32Coder::Load(kDistSize, reader);
     value->resize(num_bytes);
 
     // Read groups of bytes without calling FillBitBuffer every time.
@@ -230,32 +320,62 @@ class BytesCoder {
       value->data()[i] = reader->PeekFixedBits<8>();
       reader->Advance(8);
     }
+
+    if (encoding == Bytes::kBrotli) {
+      const size_t kMaxOutput = 1ULL << 32;
+      size_t bytes_read = 0;
+      PaddedBytes decompressed;
+      if (PIK_UNLIKELY(!BrotliDecompress(*value, kMaxOutput, &bytes_read,
+                                         &decompressed))) {
+        return false;
+      }
+      if (bytes_read != value->size()) {
+        PIK_NOTIFY_ERROR("Read too few");
+      }
+      value->swap(decompressed);
+    }
+    return true;
   }
 
-  static bool Store(const std::vector<uint8_t>& value, size_t* PIK_RESTRICT pos,
-                    uint8_t* storage) {
-    if (!U32Coder::Store(kDistribution, value.size(), pos, storage))
-      return false;
+  static Status Store(Bytes encoding, const PaddedBytes& value,
+                      size_t* PIK_RESTRICT pos, uint8_t* storage) {
+    PIK_ASSERT(encoding == Bytes::kRaw || encoding == Bytes::kBrotli);
+    if (value.empty()) {
+      return U32Coder::Store(kU32Direct3Plus8, Bytes::kNone, pos, storage);
+    }
+
+    PaddedBytes compressed;
+    const PaddedBytes* store_what = &value;
+
+    if (encoding == Bytes::kBrotli) {
+      PIK_RETURN_IF_ERROR(BrotliCompress(kBrotliQuality, value, &compressed));
+      if (compressed.size() < value.size()) {
+        store_what = &compressed;
+      } else {
+        encoding = Bytes::kRaw;
+      }
+    }
+
+    PIK_RETURN_IF_ERROR(
+        U32Coder::Store(kU32Direct3Plus8, encoding, pos, storage) &&
+        U32Coder::Store(kDistSize, store_what->size(), pos, storage));
 
     size_t i = 0;
 #if PIK_BYTE_ORDER_LITTLE
     // Write 4 bytes at a time
     uint32_t buf;
-    for (; i + 4 <= value.size(); i += 4) {
-      memcpy(&buf, value.data() + i, 4);
+    for (; i + 4 <= store_what->size(); i += 4) {
+      memcpy(&buf, store_what->data() + i, 4);
       WriteBits(32, buf, pos, storage);
     }
 #endif
 
     // Write remaining bytes
-    for (; i < value.size(); ++i) {
-      WriteBits(8, value.data()[i], pos, storage);
+    for (; i < store_what->size(); ++i) {
+      WriteBits(8, store_what->data()[i], pos, storage);
     }
     return true;
   }
-
- private:
-  static constexpr uint32_t kDistribution = 0x20181008;  // for #bytes
 };
 
 // Visitors for generating encoders/decoders for headers/sections with an
@@ -271,30 +391,59 @@ class ReadFieldsVisitor {
     *value = U32Coder::Load(distribution, reader_);
   }
 
-  void Bytes(std::vector<uint8_t>* PIK_RESTRICT value) {
-    BytesCoder::Load(reader_, value);
+  template <typename T>
+  void Enum(const uint32_t distribution, T* PIK_RESTRICT value) {
+    uint32_t bits;
+    U32(distribution, &bits);
+    *value = static_cast<T>(bits);
   }
 
+  void Bytes(const Bytes unused_encoding, PaddedBytes* PIK_RESTRICT value) {
+    ok_ &= BytesCoder::Load(reader_, value);
+  }
+
+  template <typename T>
+  void EnsureContainerSize(uint32_t size, T* container) {
+    // Sets the container size to the given size in case of reading. The size
+    // must have been read from a previously visited field.
+    container->resize(size);
+  }
+
+  Status OK() const { return ok_; }
+
  private:
+  bool ok_ = true;
   BitReader* const reader_;
 };
 
 class CanEncodeFieldsVisitor {
  public:
   void U32(const uint32_t distribution,
-                  const uint32_t* PIK_RESTRICT value) {
+           const uint32_t* PIK_RESTRICT value) {
     size_t encoded_bits;
     ok_ &= U32Coder::CanEncode(distribution, *value, &encoded_bits);
     encoded_bits_ += encoded_bits;
   }
 
-  void Bytes(const std::vector<uint8_t>* PIK_RESTRICT value) {
-    size_t encoded_bits;
-    ok_ &= BytesCoder::CanEncode(*value, &encoded_bits);
+  template <typename T>
+  void Enum(const uint32_t distribution, T* PIK_RESTRICT value) {
+    uint32_t bits = static_cast<uint32_t>(*value);
+    U32(distribution, &bits);
+  }
+
+  void Bytes(const Bytes encoding, const PaddedBytes* PIK_RESTRICT value) {
+    size_t encoded_bits = 0;
+    ok_ &= BytesCoder::CanEncode(encoding, *value, &encoded_bits);
     encoded_bits_ += encoded_bits;
   }
 
-  bool OK() const { return ok_; }
+  template <typename T>
+  void EnsureContainerSize(uint32_t size, const T* container) {
+    // Nothing to do: This only has an effect for reading.
+    PIK_ASSERT(container->size() == size);
+  }
+
+  Status OK() const { return ok_; }
   size_t EncodedBits() const { return encoded_bits_; }
 
  private:
@@ -308,15 +457,27 @@ class WriteFieldsVisitor {
       : pos_(pos), storage_(storage) {}
 
   void U32(const uint32_t distribution,
-                  const uint32_t* PIK_RESTRICT value) {
+           const uint32_t* PIK_RESTRICT value) {
     ok_ &= U32Coder::Store(distribution, *value, pos_, storage_);
   }
 
-  void Bytes(const std::vector<uint8_t>* PIK_RESTRICT value) {
-    ok_ &= BytesCoder::Store(*value, pos_, storage_);
+  template <typename T>
+  void Enum(const uint32_t distribution, T* PIK_RESTRICT value) {
+    const uint32_t bits = static_cast<uint32_t>(*value);
+    U32(distribution, &bits);
   }
 
-  bool OK() const { return ok_; }
+  void Bytes(const Bytes encoding, const PaddedBytes* PIK_RESTRICT value) {
+    ok_ &= BytesCoder::Store(encoding, *value, pos_, storage_);
+  }
+
+  template <typename T>
+  void EnsureContainerSize(uint32_t size, const T* container) {
+    // Nothing to do: This only has an effect for reading.
+    PIK_ASSERT(container->size() == size);
+  }
+
+  Status OK() const { return ok_; }
 
  private:
   size_t* pos_;
@@ -328,30 +489,31 @@ class WriteFieldsVisitor {
 // so we need to cast const T to non-const for visitors that don't actually need
 // non-const (e.g. WriteFieldsVisitor).
 template <class Visitor, class T>
-void VisitFieldsConst(Visitor* visitor, const T& t) {
+Status VisitFieldsConst(Visitor* visitor, const T& t) {
   // Note: only called for Visitor that don't actually change T.
-  VisitFields(visitor, const_cast<T*>(&t));
+  return VisitFields(visitor, const_cast<T*>(&t));
 }
 
 template <class T>
-bool CanEncodeFields(const T& t, size_t* PIK_RESTRICT encoded_bits) {
+Status CanEncodeFields(const T& t, size_t* PIK_RESTRICT encoded_bits) {
   CanEncodeFieldsVisitor visitor;
-  VisitFieldsConst(&visitor, t);
-  const bool ok = visitor.OK();
+  PIK_RETURN_IF_ERROR(VisitFieldsConst(&visitor, t));
+  const Status ok = visitor.OK();
   *encoded_bits = ok ? visitor.EncodedBits() : 0;
   return ok;
 }
 
 template <class T>
-void LoadFields(BitReader* reader, T* PIK_RESTRICT t) {
+Status LoadFields(BitReader* reader, T* PIK_RESTRICT t) {
   ReadFieldsVisitor visitor(reader);
-  VisitFields(&visitor, t);
+  PIK_RETURN_IF_ERROR(VisitFields(&visitor, t));
+  return visitor.OK();
 }
 
 template <class T>
-bool StoreFields(const T& t, size_t* pos, uint8_t* storage) {
+Status StoreFields(const T& t, size_t* pos, uint8_t* storage) {
   WriteFieldsVisitor visitor(pos, storage);
-  VisitFieldsConst(&visitor, t);
+  PIK_RETURN_IF_ERROR(VisitFieldsConst(&visitor, t));
   return visitor.OK();
 }
 
@@ -400,7 +562,7 @@ class SectionBits {
     return true;
   }
 
-  bool CanEncode(size_t* PIK_RESTRICT encoded_bits) const {
+  Status CanEncode(size_t* PIK_RESTRICT encoded_bits) const {
     return U32Coder::CanEncode(kDistribution, bits_, encoded_bits);
   }
 
@@ -408,7 +570,7 @@ class SectionBits {
     bits_ = U32Coder::Load(kDistribution, reader);
   }
 
-  bool Store(size_t* PIK_RESTRICT pos, uint8_t* storage) const {
+  Status Store(size_t* PIK_RESTRICT pos, uint8_t* storage) const {
     return U32Coder::Store(kDistribution, bits_, pos, storage);
   }
 
@@ -433,8 +595,8 @@ class SectionSizes {
     sizes_[idx_section] = size;
   }
 
-  bool CanEncode(const SectionBits& bits,
-                 size_t* PIK_RESTRICT encoded_bits) const {
+  Status CanEncode(const SectionBits& bits,
+                   size_t* PIK_RESTRICT encoded_bits) const {
     bool ok = true;
     *encoded_bits = 0;
     bits.Foreach([this, &ok, encoded_bits](const int idx) {
@@ -445,7 +607,7 @@ class SectionSizes {
     });
     if (!ok) *encoded_bits = 0;
     return ok;
-  };
+  }
 
   void Load(const SectionBits& bits, BitReader* reader) {
     std::fill(sizes_.begin(), sizes_.end(), 0);
@@ -455,7 +617,7 @@ class SectionSizes {
     });
   }
 
-  bool Store(const SectionBits& bits, size_t* pos, uint8_t* storage) const {
+  Status Store(const SectionBits& bits, size_t* pos, uint8_t* storage) const {
     bool ok = true;
     bits.Foreach([this, &ok, pos, storage](const int idx) {
       if (idx < kNumKnown) return;
@@ -481,14 +643,14 @@ class CanEncodeSectionVisitor {
     section_bits_.Set(idx_section_);
 
     CanEncodeFieldsVisitor field_visitor;
-    VisitFields(&field_visitor, ptr->get());
+    ok_ &= VisitFields(&field_visitor, ptr->get());
     ok_ &= field_visitor.OK();
     const size_t encoded_bits = field_visitor.EncodedBits();
     section_sizes_.Set(idx_section_, encoded_bits);
     field_bits_ += encoded_bits;
   }
 
-  bool CanEncode(size_t* PIK_RESTRICT encoded_bits) {
+  Status CanEncode(size_t* PIK_RESTRICT encoded_bits) {
     size_t bits_bits, sizes_bits;
     ok_ &= section_bits_.CanEncode(&bits_bits);
     ok_ &= section_sizes_.CanEncode(section_bits_, &sizes_bits);
@@ -532,7 +694,7 @@ class ReadSectionVisitor {
 
     ptr->reset(new T);
     ReadFieldsVisitor field_reader(reader_);
-    VisitFields(&field_reader, ptr->get());
+    ok_ &= VisitFields(&field_reader, ptr->get());
   }
 
   void SkipUnknown() {
@@ -544,11 +706,14 @@ class ReadSectionVisitor {
     });
   }
 
+  Status OK() const { return ok_; }
+
  private:
   int idx_section_ = -1;      // pre-incremented
   SectionBits section_bits_;  // Cleared after loading/skipping each section.
   SectionSizes<kNumKnown> section_sizes_;
   BitReader* PIK_RESTRICT reader_;  // not owned
+  bool ok_ = true;
 };
 
 // Writes fields.
@@ -560,39 +725,40 @@ class WriteSectionVisitor {
   void operator()(const std::unique_ptr<T>* PIK_RESTRICT ptr) {
     ++idx_section_;
     if (*ptr != nullptr) {
-      VisitFields(&writer_, ptr->get());
+      ok_ &= VisitFields(&writer_, ptr->get());
     }
   }
 
-  bool OK() const { return writer_.OK(); }
+  Status OK() const { return ok_ && writer_.OK(); }
 
  private:
   int idx_section_ = -1;  // pre-incremented
   WriteFieldsVisitor writer_;
+  bool ok_ = true;
 };
 
 template <class T>
-bool CanEncodeSectionsT(const T& t, size_t* PIK_RESTRICT encoded_bits) {
+Status CanEncodeSectionsT(const T& t, size_t* PIK_RESTRICT encoded_bits) {
   CanEncodeSectionVisitor<T::kNumKnown> section_visitor;
   VisitSectionsConst(&section_visitor, t);
   return section_visitor.CanEncode(encoded_bits);
 }
 
 template <class T>
-bool LoadSectionsT(BitReader* reader, T* PIK_RESTRICT t) {
+Status LoadSectionsT(BitReader* reader, T* PIK_RESTRICT t) {
   ReadSectionVisitor<T::kNumKnown> section_reader(reader);
   VisitSections(&section_reader, t);
   section_reader.SkipUnknown();
-  return true;
+  return section_reader.OK() && reader->Healthy();
 }
 
 template <class T>
-bool StoreSectionsT(const T& t, size_t* PIK_RESTRICT pos, uint8_t* storage) {
+Status StoreSectionsT(const T& t, size_t* PIK_RESTRICT pos, uint8_t* storage) {
   CanEncodeSectionVisitor<T::kNumKnown> can_encode;
   VisitSectionsConst(&can_encode, t);
   const SectionBits& section_bits = can_encode.GetBits();
-  if (!section_bits.Store(pos, storage)) return false;
-  if (!can_encode.GetSizes().Store(section_bits, pos, storage)) return false;
+  PIK_RETURN_IF_ERROR(section_bits.Store(pos, storage));
+  PIK_RETURN_IF_ERROR(can_encode.GetSizes().Store(section_bits, pos, storage));
 
   WriteSectionVisitor section_writer(pos, storage);
   VisitSectionsConst(&section_writer, t);

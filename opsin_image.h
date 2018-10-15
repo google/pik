@@ -19,27 +19,31 @@
 #include <cstdlib>
 #include <vector>
 
+#include "codec.h"
 #include "compiler_specific.h"
-#include "image.h"
 #include "opsin_params.h"
 
 namespace pik {
 
-PIK_INLINE void OpsinAbsorbance(const float in[3], float out[3]) {
+// r, g, b are linear.
+static PIK_INLINE void OpsinAbsorbance(const float r, const float g,
+                                       const float b, float out[3]) {
   const float* mix = &kOpsinAbsorbanceMatrix[0];
   const float* bias = &kOpsinAbsorbanceBias[0];
-  out[0] = mix[0] * in[0] + mix[1] * in[1] + mix[2] * in[2] + bias[0];
-  out[1] = mix[3] * in[0] + mix[4] * in[1] + mix[5] * in[2] + bias[1];
-  out[2] = mix[6] * in[0] + mix[7] * in[1] + mix[8] * in[2] + bias[2];
+  out[0] = mix[0] * r + mix[1] * g + mix[2] * b + bias[0];
+  out[1] = mix[3] * r + mix[4] * g + mix[5] * b + bias[1];
+  out[2] = mix[6] * r + mix[7] * g + mix[8] * b + bias[2];
 }
 
-// Returns the opsin dynamics image corresponding to the given SRGB input image.
+void LinearToXyb(const float r, const float g, const float b,
+                 float* PIK_RESTRICT valx, float* PIK_RESTRICT valy,
+                 float* PIK_RESTRICT valz);
+
+// Returns the opsin XYB. Parallelized.
+Image3F OpsinDynamicsImage(const CodecInOut* in);
+
+// DEPRECATED, used by opsin_image_wrapper.
 Image3F OpsinDynamicsImage(const Image3B& srgb);
-
-Image3F OpsinDynamicsImage(const Image3F& linear);
-
-void RgbToXyb(uint8_t r, uint8_t g, uint8_t b, float *valx, float *valy,
-              float *valz);
 
 }  // namespace pik
 
