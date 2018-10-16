@@ -43,6 +43,8 @@ struct CompressArgs {
         const std::string arg = argv[i];
         if (arg == "--fast") {
           params.fast_mode = true;
+        } else if (arg == "--guetzli") {
+          params.guetzli_mode = true;
         } else if (arg == "--noise") {
           PIK_RETURN_IF_ERROR(ParseOverride(argc, argv, &i, &params.noise));
         } else if (arg == "--smooth") {
@@ -161,8 +163,8 @@ struct CompressArgs {
            " --gradient: force enable/disable extra gradient map.\n"
            " --adaptive_reconstruction: force enable/disable decoder filter.\n"
            " --gaborish 0..7 chooses deblocking strength (4=normal).\n"
-           " --intensity_target: Intensity target of monitor in nits, higher"
-           "   results in higher quality image. Supported range: 250 .. 6000,"
+           " --intensity_target: Intensity target of monitor in nits, higher\n"
+           "   results in higher quality image. Supported range: 250..6000,\n"
            "   default is 250.\n"
            " --num_threads: number of worker threads (zero = none).\n"
            " --print_profile 1: print timing information before exiting.\n"
