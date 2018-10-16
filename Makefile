@@ -2,8 +2,12 @@ SIMD_FLAGS := -march=haswell
 ROI_DETECTOR_FLAGS := -DROI_DETECTOR_OPENCV=1
 OPENCVDIR = ${OPENCV_STATIC_INSTALL_DIR}
 
-CXX ?= clang++
-CC ?= clang
+ifeq ($(origin CXX),default)
+  CXX = clang++
+endif
+ifeq ($(origin CC),default)
+  CC = clang
+endif
 
 INC_FLAGS = -I. -I../ -Ithird_party/brotli/c/include/
 
@@ -161,8 +165,8 @@ bin/%: obj/%.o
 deps.mk: $(wildcard *.cc) $(wildcard *.h) Makefile
 	set -eu; for file in *.cc; do \
 		if [ "$$file" = roi_detector_opencv.cc -a -z "$(OPENCVDIR)" ]; then \
-			continue \
-		fi \
+			continue; \
+		fi; \
 		target=obj/$${file##*/}; target=$${target%.*}.o; \
 		$(CXX) -c $(CPPFLAGS) $(CXXFLAGS) -MM -MT \
 		"$$target" "$$file"; \
