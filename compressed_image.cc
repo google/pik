@@ -2505,6 +2505,7 @@ void AddPredictions_Smooth(const Image3F& dc, const ImageB& block_type_map,
   };
   TransformBlocks(pool, xsize_blocks, ysize_blocks, inverse_integral_transform);
 
+  // TODO(janwas): skip if none will be upsampled (global flag)
   for (size_t by = 0; by < ysize_blocks; by += tile_dim_blocks) {
     for (size_t bx = 0; bx < xsize_blocks; bx += tile_dim_blocks) {
       const uint8_t strategy = block_type_map.ConstRow(by)[bx];
