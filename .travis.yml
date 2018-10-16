@@ -22,14 +22,14 @@ matrix:
           - clang-6.0
 
     - os: linux
-      env: C_COMPILER=clang-7.0 CXX_COMPILER=clang++-7.0
+      env: C_COMPILER=clang-7 CXX_COMPILER=clang++-7
       addons:
         apt:
           sources:
-          - llvm-toolchain-trusty-7.0
+          - llvm-toolchain-trusty-7
           - ubuntu-toolchain-r-test
           packages:
-          - clang-7.0
+          - clang-7
 
 addons:
   apt:
