@@ -334,19 +334,21 @@ void DumpHeatmaps(const PikInfo* info, float ba_target,
   DumpHeatmap(info, "tile_heatmap", tile_heatmap, ba_target, 1.5f * ba_target);
 }
 
-SIMD_ATTR void FindBestAcStrategy(ThreadPool* pool, EncCache* cache) {
+SIMD_ATTR void FindBestAcStrategy(float butteraugli_target, ThreadPool* pool,
+                                  EncCache* cache) {
   cache->ac_strategy.layers = ImageB(cache->xsize_blocks, cache->ysize_blocks);
   if (kChooseAcStrategy) {
-    const auto find_block_strategy = [cache](int bx, int by) {
-      // TODO(user): parameter optimization when ID/DCT16 compression
-      // improves. Another option would be to compute the number of nonzeros, or
-      // the Shannon entropy, of the final values before encoding.
+    const auto find_block_strategy = [butteraugli_target, cache](int bx,
+                                                                 int by) {
+      // TODO(user): parameter/function optimization. Consider other choice
+      // strategies.
       constexpr float kIdWeight = 1.5e-1;
-      constexpr float k16x16Weight = 6;
+      const float k16x16Weight = 4 / std::sqrt(butteraugli_target);
       constexpr float kWeights[3] = {1. / kXybRange[0], 1. / kXybRange[1],
                                      1. / kXybRange[2]};
       constexpr float kL2Weight = 1.0;
       constexpr float kL4Weight = -1.0;
+      constexpr float kDiscretizationFactor = 256;
       const auto estimate_entropy = [kWeights](const Image3F* img,
                                                size_t block_width,
                                                size_t block_height, int bx,
@@ -380,17 +382,18 @@ SIMD_ATTR void FindBestAcStrategy(ThreadPool* pool, EncCache* cache) {
       }
       if (bx + 1 < cache->xsize_blocks && by + 1 < cache->ysize_blocks &&
           bx % 2 == 0 && by % 2 == 0) {
-        float dct8x8_entropy =
-            estimate_entropy(&cache->coeffs_init, kBlockDim * kBlockDim, 1, bx,
-                             by, kQuant64Dct) +
-            estimate_entropy(&cache->coeffs_init, kBlockDim * kBlockDim, 1,
-                             bx + 1, by, kQuant64Dct) +
-            estimate_entropy(&cache->coeffs_init, kBlockDim * kBlockDim, 1, bx,
-                             by + 1, kQuant64Dct) +
-            estimate_entropy(&cache->coeffs_init, kBlockDim * kBlockDim, 1,
-                             bx + 1, by + 1, kQuant64Dct);
-        float l2 = 0;
-        float l4 = 0;
+        float dct8x8_entropy = 0;
+        for (size_t c = 0; c < cache->coeffs_init.kNumPlanes; c++) {
+          for (size_t iy = 0; iy < 2; iy++) {
+            const float* row = cache->coeffs_init.ConstPlaneRow(c, by + iy);
+            for (size_t ix = 0; ix < kBlockDim * kBlockDim * 2; ix++) {
+              float val = row[bx * kBlockDim * kBlockDim + ix] * kWeights[c];
+              int v = fabsf(val) * kDiscretizationFactor;
+              if (v) dct8x8_entropy += log2(v);
+            }
+          }
+        }
+        float dct16x16_entropy = 0;
         for (size_t c = 0; c < cache->src->kNumPlanes; c++) {
           SIMD_ALIGN float dct16x16[4 * kBlockDim * kBlockDim] = {};
           ComputeTransposedScaledDCT<2 * kBlockDim>(
@@ -400,16 +403,37 @@ SIMD_ATTR void FindBestAcStrategy(ThreadPool* pool, EncCache* cache) {
               ScaleToBlock<2 * kBlockDim>(dct16x16));
           for (size_t k = 0; k < 4 * kBlockDim * kBlockDim; k++) {
             // TODO(user): meaningful kQuant estimate.
-            float val = dct16x16[k] * kWeights[c] * kQuant64Dct[k / 4];
-            val *= val;
-            l2 += val;
-            val *= val;
-            l4 += val;
+            float val = dct16x16[k] * kWeights[c];
+            int v = fabsf(val) * kDiscretizationFactor;
+            if (v) dct16x16_entropy += log2(v);
           }
+          /*for (size_t iy = 0; iy < 2 * kBlockDim; iy++) {
+            for (size_t ix = 0; ix < 2 * kBlockDim; ix++) {
+              float val = dct16x16[iy * 2 * kBlockDim + ix];
+              val = fabsf(val);
+              fprintf(stderr, "%02x ", int(val / 0.02 * 16));
+            }
+            fprintf(stderr, "\n");
+          }
+          fprintf(stderr, "vs dct8:\n");
+          for (size_t iy = 0; iy < 2 * kBlockDim; iy++) {
+            for (size_t ix = 0; ix < 2 * kBlockDim; ix++) {
+              size_t byp = by + iy / kBlockDim;
+              size_t bxp = bx + ix / kBlockDim;
+              size_t oy = iy % kBlockDim;
+              size_t ox = ix % kBlockDim;
+              float val = cache->coeffs_init.PlaneRow(
+                  c, byp)[bxp * kBlockDim * kBlockDim + oy * kBlockDim + ox];
+              val = fabsf(val);
+              fprintf(stderr, "%02x ", int(val / 0.02 * 16));
+            }
+            fprintf(stderr, "\n");
+          }
+          fprintf(stderr, "\n");*/
         }
-        l2 = std::sqrt(l2);
-        l4 = std::pow(l4, 0.25);
-        float dct16x16_entropy = kL2Weight * l2 + kL4Weight * l4;
+        // fprintf(stderr, "e16: %f e8: %f\n", dct16x16_entropy,
+        // dct8x8_entropy); fprintf(stderr, "\n");
+
         if (k16x16Weight * dct16x16_entropy < dct8x8_entropy)
           return AcStrategyType::DCT16X16;
       }
@@ -488,7 +512,7 @@ void FindBestQuantization(const Image3F& opsin_orig, const Image3F& opsin_arg,
 
   EncCache cache;
   ComputeInitialCoefficients(header, opsin_arg, pool, &cache);
-  FindBestAcStrategy(pool, &cache);
+  FindBestAcStrategy(cparams.butteraugli_distance, pool, &cache);
   for (int i = 0; i < cparams.max_butteraugli_iters; ++i) {
     if (FLAGS_dump_quant_state) {
       printf("\nQuantization field:\n");
@@ -658,7 +682,7 @@ void FindBestQuantizationHQ(const Image3F& opsin_orig, const Image3F& opsin,
                        : cparams.max_butteraugli_iters;
   EncCache cache;
   ComputeInitialCoefficients(header, opsin, pool, &cache);
-  FindBestAcStrategy(pool, &cache);
+  FindBestAcStrategy(butteraugli_target, pool, &cache);
   for (;;) {
     if (FLAGS_dump_quant_state) {
       printf("\nQuantization field:\n");
@@ -930,7 +954,7 @@ void CompressToTargetSize(const Image3F& opsin_orig, const Image3F& opsin,
   for (int i = 0; i < 12; ++i) {
     FindBestQuantization(opsin_orig, opsin, cparams, header, dist, cmap, pool,
                          quantizer, aux_out, transform, rescale);
-    FindBestAcStrategy(pool, &cache);
+    FindBestAcStrategy(dist, pool, &cache);
     ComputeCoefficients(*quantizer, cmap, pool, &cache);
     PaddedBytes candidate = EncodeToBitstream(
         cache, *quantizer, cache.gradient, noise_params, cmap, false, nullptr);
@@ -1255,7 +1279,7 @@ Status PixelsToPikFrame(
                     noise_params, header, cmap, pool, aux_out, transform);
   EncCache cache;
   ComputeInitialCoefficients(header, opsin, pool, &cache);
-  FindBestAcStrategy(pool, &cache);
+  FindBestAcStrategy(params.butteraugli_distance, pool, &cache);
   ComputeCoefficients(*quantizer, cmap, pool, &cache, aux_out);
   PaddedBytes compressed_data =
       EncodeToBitstream(cache, *quantizer, cache.gradient, noise_params, cmap,

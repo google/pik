@@ -1520,13 +1520,20 @@ SIMD_ATTR void ComputeCoefficients(const Quantizer& quantizer,
           FromLines(cache->src->ConstPlaneRow(c, N * by) + N * bx,
                     cache->src->PixelsPerRow()),
           ScaleToBlock<2 * N>(output));
-      for (size_t iy = 0; iy < 2; iy++) {
-        const float* PIK_RESTRICT data = output + iy * 2 * N * N;
-        float* PIK_RESTRICT row =
-            cache->coeffs_init.PlaneRow(c, by + iy) + bx * N * N;
-        for (size_t ix = 0; ix < 2 * N * N; ix++) {
-          row[ix] = data[ix] * kDct16Scale;
-        }
+      // Permute block so that applying zig-zag order to each sub-block
+      // will result in the zig-zag order of the whole DCT16 block.
+      // TODO(user): also consider putting coefficients in blocks by
+      // alternating blocks, i.e. according to pos%4.
+      for (size_t k = 0; k < 4 * N * N; k++) {
+        size_t zigzag_pos = kNaturalCoeffOrderLut16[k];
+        size_t dest_block = zigzag_pos / (N * N);
+        size_t block_pos = zigzag_pos - dest_block * N * N;
+        size_t block_pos_unzigzag = kNaturalCoeffOrder8[block_pos];
+        size_t dest_block_y = by + dest_block / 2;
+        size_t dest_block_x = bx + dest_block % 2;
+        cache->coeffs_init.PlaneRow(
+            c, dest_block_y)[dest_block_x * N * N + block_pos_unzigzag] =
+            output[k] * kDct16Scale;
       }
     }
   };
@@ -2433,12 +2440,16 @@ SIMD_ATTR void InverseIntegralBlockTransform(size_t bx, size_t by,
     }
   } else if (AcStrategyType::IsDct16x16(block_type)) {
     SIMD_ALIGN float input[4 * N * N] = {};
-    for (size_t iy = 0; iy < 2; iy++) {
-      float* PIK_RESTRICT data = input + iy * 2 * N * N;
-      const float* PIK_RESTRICT row = coeffs.Row(by + iy) + bx * N * N;
-      for (size_t ix = 0; ix < 2 * N * N; ix++) {
-        data[ix] = row[ix] * kDct16ScaleInv;
-      }
+    for (size_t k = 0; k < 4 * N * N; k++) {
+      size_t zigzag_pos = kNaturalCoeffOrderLut16[k];
+      size_t dest_block = zigzag_pos / (N * N);
+      size_t block_pos = zigzag_pos - dest_block * N * N;
+      size_t block_pos_unzigzag = kNaturalCoeffOrder8[block_pos];
+      size_t dest_block_y = by + dest_block / 2;
+      size_t dest_block_x = bx + dest_block % 2;
+      input[k] = coeffs.ConstRow(
+                     dest_block_y)[dest_block_x * N * N + block_pos_unzigzag] *
+                 kDct16ScaleInv;
     }
     ComputeTransposedScaledIDCT<2 * N>(FromBlock<2 * N>(input),
                                        ToLines(row_out, stride));
