@@ -20,6 +20,7 @@ matrix:
           - ubuntu-toolchain-r-test
           packages:
           - clang-6.0
+          - libstdc++-8-dev
 
     - os: linux
       env: C_COMPILER=clang-7 CXX_COMPILER=clang++-7
@@ -30,6 +31,7 @@ matrix:
           - ubuntu-toolchain-r-test
           packages:
           - clang-7
+          - libstdc++-8-dev
 
 addons:
   apt:
