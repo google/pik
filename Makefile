@@ -1,6 +1,4 @@
 SIMD_FLAGS := -march=haswell
-ROI_DETECTOR_FLAGS := -DROI_DETECTOR_OPENCV=1
-OPENCVDIR = ${OPENCV_STATIC_INSTALL_DIR}
 
 ifeq ($(origin CXX),default)
   CXX = clang++
@@ -9,10 +7,12 @@ ifeq ($(origin CC),default)
   CC = clang
 endif
 
-INC_FLAGS = -I. -I../ -Ithird_party/brotli/c/include/
+INC_FLAGS = -I. -I../ -Ithird_party/brotli/c/include/ $(shell pkg-config --cflags eigen3)
 
 # Clang-specific flags, tested with 6.0.1
-M_FLAGS = -mrelax-all -Xclang -mrelocation-model -Xclang pic -Xclang -pic-level -Xclang 2 -pthread -mthread-model posix -Xclang -mdisable-fp-elim -Xclang -mconstructor-aliases -mpie-copy-relocations -Xclang -munwind-tables -Xclang -mprefer-vector-width=128
+# -Xclang -mprefer-vector-width=128 would decrease likelihood of undesired and
+# unsafe autovectorization, but it requires Clang6.
+M_FLAGS = -mrelax-all -Xclang -mrelocation-model -Xclang pic -Xclang -pic-level -Xclang 2 -pthread -mthread-model posix -Xclang -mdisable-fp-elim -Xclang -mconstructor-aliases -mpie-copy-relocations -Xclang -munwind-tables
 
 LANG_FLAGS = -x c++ -std=c++11 -disable-free -disable-llvm-verifier -discard-value-names -Xclang -relaxed-aliasing -fmath-errno
 
@@ -37,56 +37,55 @@ override LDFLAGS += -s -Wl,--whole-archive -lpthread -Wl,--no-whole-archive -sta
 
 PIK_OBJS := $(addprefix obj/, \
 	simd/targets.o \
-	guetzli/dct_double.o \
-	guetzli/idct.o \
-	guetzli/jpeg_data.o \
-	guetzli/jpeg_data_decoder.o \
-	guetzli/jpeg_data_reader.o \
-	guetzli/jpeg_huffman_decode.o \
-	guetzli/output_image.o \
-	guetzli/quantize.o \
 	third_party/lodepng/lodepng.o \
+	ac_predictions.o \
+	ac_strategy.o \
 	adaptive_quantization.o \
 	adaptive_reconstruction.o \
-	af_edge_preserving_filter.o \
-	af_stats.o \
+	epf.o \
+	alpha.o \
 	ans_common.o \
 	ans_decode.o \
 	ans_encode.o \
 	arch_specific.o \
 	brotli.o \
-	brunsli_v2_decode.o \
-	brunsli_v2_encode.o \
 	butteraugli/butteraugli.o \
 	butteraugli_comparator.o \
 	butteraugli_distance.o \
 	codec_impl.o \
 	codec_png.o \
 	codec_pnm.o \
+	color_correlation.o \
 	color_encoding.o \
 	color_management.o \
 	compressed_image.o \
-	container.o \
-	context.o \
 	context_map_encode.o \
 	context_map_decode.o \
+	data_parallel.o \
 	dct.o \
 	dct_util.o \
 	dc_predictor.o \
 	deconvolve.o \
+	descriptive_statistics.o \
 	external_image.o \
 	gauss_blur.o \
-	header.o \
-  image.o \
+	gaborish.o \
+	gradient_map.o \
+	headers.o \
+	image.o \
 	linalg.o \
+	lossless16.o \
+	lossless8.o \
 	pik.o \
-	pik_alpha.o \
 	pik_info.o \
+	pik_pass.o \
+	pik_multipass.o \
 	huffman_decode.o \
 	huffman_encode.o \
 	image_io.o \
 	jpeg_quant_tables.o \
 	lehmer_code.o \
+	metadata.o \
 	noise.o \
 	entropy_coder.o \
 	opsin_inverse.o \
@@ -95,12 +94,15 @@ PIK_OBJS := $(addprefix obj/, \
 	os_specific.o \
 	padded_bytes.o \
 	quantizer.o \
+	quant_weights.o \
+	single_image_handler.o \
 	tile_flow.o \
 	upscaler.o \
 	yuv_convert.o \
+	saliency_map.o \
 )
 
-all: $(addprefix bin/, cpik dpik cpik_roi butteraugli_main decode_and_encode)
+all: $(addprefix bin/, cpik dpik butteraugli_main)
 
 # print an error message with helpful instructions if the brotli git submodule
 # is not checked out
@@ -122,37 +124,6 @@ bin/dpik: obj/dpik.o $(PIK_OBJS) $(THIRD_PARTY)
 bin/butteraugli_main: obj/butteraugli_main.o $(PIK_OBJS) $(THIRD_PARTY)
 bin/decode_and_encode: obj/decode_and_encode.o $(PIK_OBJS) $(THIRD_PARTY)
 
-ifeq ($(OPENCVDIR),)
-bin/cpik_roi:
-	@echo "Not building cpik_roi, since OpenCV is not available."
-	@echo "Please set ENV variable OPENCV_STATIC_INSTALL_DIR"
-	@echo "to build the OpenCV-enabled encoder."
-else
-obj/libroi_detector_opencv.o:
-	@mkdir -p obj
-	# Using -std=c++14 for modern std::make_unique, but only for the opencv-enabled code.
-	$(CXX) -o $@ -c $(CPPFLAGS) $(CXXFLAGS) -std=c++14 roi_detector_opencv.cc \
-	-I $(OPENCVDIR)/include \
-	-I $(OPENCVDIR)/include/opencv \
-	-I $(OPENCVDIR)/include/opencv2 \
-
-bin/cpik_roi: $(PIK_OBJS) obj/adaptive_quantization_roi.o obj/libroi_detector_opencv.o obj/cpik.o $(THIRD_PARTY)
-	$(CXX) $^  -o $@ $(LDFLAGS) \
-        $(OPENCVDIR)/lib/libopencv_imgcodecs.a \
-	$(OPENCVDIR)/lib/libopencv_objdetect.a \
-	$(OPENCVDIR)/lib/libopencv_imgproc.a \
-	$(OPENCVDIR)/lib/libopencv_core.a \
-	$(OPENCVDIR)/share/OpenCV/3rdparty/lib/libippiw.a \
-	$(OPENCVDIR)/share/OpenCV/3rdparty/lib/libippicv.a \
-	$(OPENCVDIR)/share/OpenCV/3rdparty/lib/libittnotify.a \
-	-latomic -lz -lpthread -ldl
-endif
-
-
-obj/adaptive_quantization_roi.o: adaptive_quantization.cc
-	@mkdir -p -- $(dir $@)
-	$(CXX) -c $(CPPFLAGS) $(CXXFLAGS) $(SIMD_FLAGS) $(ROI_DETECTOR_FLAGS) $< -o obj/adaptive_quantization_roi.o
-
 obj/%.o: %.cc
 	@mkdir -p -- $(dir $@)
 	$(CXX) -c $(CPPFLAGS) $(CXXFLAGS) $(SIMD_FLAGS) $< -o $@
@@ -164,13 +135,10 @@ bin/%: obj/%.o
 .DELETE_ON_ERROR:
 deps.mk: $(wildcard *.cc) $(wildcard *.h) Makefile
 	set -eu; for file in *.cc; do \
-		if [ "$$file" = roi_detector_opencv.cc -a -z "$(OPENCVDIR)" ]; then \
-			continue; \
-		fi; \
 		target=obj/$${file##*/}; target=$${target%.*}.o; \
 		$(CXX) -c $(CPPFLAGS) $(CXXFLAGS) -MM -MT \
 		"$$target" "$$file"; \
-	done | sed -e ':b' -e 's-\.\./[^\./]*/--' -e 'tb' >$@
+	done >$@
 -include deps.mk
 
 clean:

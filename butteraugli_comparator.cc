@@ -21,9 +21,8 @@ namespace pik {
 namespace {
 
 Image3F LinearFromOpsin(const Image3F& opsin) {
-  ThreadPool null_pool(0);
   Image3F linear(opsin.xsize(), opsin.ysize());
-  OpsinToLinear(opsin, &null_pool, &linear);
+  OpsinToLinear(opsin, Rect(opsin), &linear);
   return linear;
 }
 

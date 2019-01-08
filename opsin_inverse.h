@@ -15,85 +15,21 @@
 #ifndef OPSIN_INVERSE_H_
 #define OPSIN_INVERSE_H_
 
-#include <stdint.h>
-#include <algorithm>
-#include <cstdlib>
-#include <vector>
-
-#include "compiler_specific.h"
 #include "data_parallel.h"
 #include "image.h"
-#include "opsin_params.h"
 #include "simd/simd.h"
 
 namespace pik {
 
-// Inverts the pixel-wise RGB->XYB conversion in OpsinDynamicsImage() (including
-// the gamma mixing and simple gamma). Avoids clamping to [0, 255] - out of
-// (sRGB) gamut values may be in-gamut after transforming to a wider space.
-// "inverse_matrix" points to 9 broadcasted vectors, which are the 3x3 entries
-// of the (row-major) opsin absorbance matrix inverse. Pre-multiplying its
-// entries by c is equivalent to multiplying linear_* by c afterwards.
-template <class D, class V>
-SIMD_ATTR PIK_INLINE void XybToRgb(D d, const V opsin_x, const V opsin_y,
-                                   const V opsin_b,
-                                   const V* PIK_RESTRICT inverse_matrix,
-                                   V* const PIK_RESTRICT linear_r,
-                                   V* const PIK_RESTRICT linear_g,
-                                   V* const PIK_RESTRICT linear_b) {
-#if SIMD_TARGET_VALUE == SIMD_NONE
-  const auto inv_scale_x = set1(d, kInvScaleR);
-  const auto inv_scale_y = set1(d, kInvScaleG);
-  const auto neg_bias_r = set1(d, kNegOpsinAbsorbanceBiasRGB[0]);
-  const auto neg_bias_g = set1(d, kNegOpsinAbsorbanceBiasRGB[1]);
-  const auto neg_bias_b = set1(d, kNegOpsinAbsorbanceBiasRGB[2]);
-#else
-  const auto neg_bias_rgb = load_dup128(d, kNegOpsinAbsorbanceBiasRGB);
-  SIMD_ALIGN const float inv_scale_lanes[4] = {kInvScaleR, kInvScaleG};
-  const auto inv_scale = load_dup128(d, inv_scale_lanes);
-  const auto inv_scale_x = broadcast<0>(inv_scale);
-  const auto inv_scale_y = broadcast<1>(inv_scale);
-  const auto neg_bias_r = broadcast<0>(neg_bias_rgb);
-  const auto neg_bias_g = broadcast<1>(neg_bias_rgb);
-  const auto neg_bias_b = broadcast<2>(neg_bias_rgb);
-#endif
+// Converts to linear sRGB. "linear" may alias "opsin".
+// Prefer to replace this parallelize-across-image version with the one below,
+// which is suitable for parallelize-across-group.
+SIMD_ATTR void OpsinToLinear(const Image3F& opsin, ThreadPool* pool,
+                             Image3F* linear);
 
-  // Color space: XYB -> RGB
-  const auto gamma_r = inv_scale_x * (opsin_y + opsin_x);
-  const auto gamma_g = inv_scale_y * (opsin_y - opsin_x);
-  const auto gamma_b = opsin_b;
-
-  // Undo gamma compression: linear = gamma^3 for efficiency.
-  const auto gamma_r2 = gamma_r * gamma_r;
-  const auto gamma_g2 = gamma_g * gamma_g;
-  const auto gamma_b2 = gamma_b * gamma_b;
-  const auto mixed_r = mul_add(gamma_r2, gamma_r, neg_bias_r);
-  const auto mixed_g = mul_add(gamma_g2, gamma_g, neg_bias_g);
-  const auto mixed_b = mul_add(gamma_b2, gamma_b, neg_bias_b);
-
-  // Unmix (multiply by 3x3 inverse_matrix)
-  *linear_r = inverse_matrix[0] * mixed_r;
-  *linear_g = inverse_matrix[3] * mixed_r;
-  *linear_b = inverse_matrix[6] * mixed_r;
-  const auto tmp_r = inverse_matrix[1] * mixed_g;
-  const auto tmp_g = inverse_matrix[4] * mixed_g;
-  const auto tmp_b = inverse_matrix[7] * mixed_g;
-  *linear_r = mul_add(inverse_matrix[2], mixed_b, *linear_r);
-  *linear_g = mul_add(inverse_matrix[5], mixed_b, *linear_g);
-  *linear_b = mul_add(inverse_matrix[8], mixed_b, *linear_b);
-  *linear_r += tmp_r;
-  *linear_g += tmp_g;
-  *linear_b += tmp_b;
-}
-
-// Produces same colorspace as original linear input.
-// "linear" is preallocated by caller.
-void CenteredOpsinToLinear(const Image3F& opsin, ThreadPool* pool,
-                           Image3F* PIK_RESTRICT linear);
-void CenteredOpsinToOpsin(const Image3F& centered_opsin, ThreadPool* pool,
-                          Image3F* PIK_RESTRICT opsin);
-void OpsinToLinear(const Image3F& opsin, ThreadPool* pool,
-                   Image3F* PIK_RESTRICT linear);
+// Converts to linear sRGB, writing to linear:rect_out.
+SIMD_ATTR void OpsinToLinear(const Image3F& opsin, const Rect& rect_out,
+                             Image3F* PIK_RESTRICT linear);
 
 }  // namespace pik
 

@@ -8,6 +8,10 @@ immediate usability with current compilers.
 
 Implemented for scalar/SSE4/AVX2/ARMv8 targets, each with unit tests.
 
+A [quick-reference page](g3doc/quick_reference.md) briefly lists all operations
+and their parameters.
+
+
 `make -j8 && bin/simd_test`
 
 ## Design philosophy

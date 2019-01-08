@@ -6,6 +6,7 @@
 namespace pik {
 
 static const int kNumStockQuantTables = 8;
+// clang-format off
 static const uint8_t
     kStockQuantizationTables[2][kNumStockQuantTables][64] = {
   {  // LUMA
@@ -160,6 +161,7 @@ static const uint8_t kDefaultQuantMatrix[2][64] = {
     99,  99,  99,  99,  99,  99,  99,  99,
     99,  99,  99,  99,  99,  99,  99,  99 }
 };
+// clang-format on
 
 static const int kMaxQFactor = 64;
 

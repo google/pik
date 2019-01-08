@@ -76,4 +76,16 @@ static inline bool ParseFloat(const int argc, char* argv[], int* i,
   return true;
 }
 
+static inline bool ParseString(const int argc, char* argv[], int* i,
+                               std::string* out) {
+  *i += 1;
+  if (*i >= argc) {
+    fprintf(stderr, "Expected a string argument.\n");
+    return PIK_FAILURE("Args");
+  }
+
+  out->assign(argv[*i]);
+  return true;
+}
+
 }  // namespace pik

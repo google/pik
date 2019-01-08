@@ -59,13 +59,12 @@ PIK_INLINE void WriteBits(const size_t n_bits, uint64_t bits,
   *pos += n_bits;
 #else
   // implicit & 0xff is assumed for uint8_t arithmetics
-  uint8_t *array_pos = &array[*pos >> 3];
+  uint8_t* array_pos = &array[*pos >> 3];
   const size_t bits_reserved_in_first_byte = (*pos & 7);
   bits <<= bits_reserved_in_first_byte;
   *array_pos++ |= static_cast<uint8_t>(bits);
   for (size_t bits_left_to_write = n_bits + bits_reserved_in_first_byte;
-       bits_left_to_write >= 9;
-       bits_left_to_write -= 8) {
+       bits_left_to_write >= 9; bits_left_to_write -= 8) {
     bits >>= 8;
     *array_pos++ = static_cast<uint8_t>(bits);
   }
@@ -81,7 +80,7 @@ PIK_INLINE void WriteZeroesToByteBoundary(size_t* PIK_RESTRICT pos,
   PIK_ASSERT(*pos % 8 == 0);
 }
 
-PIK_INLINE void WriteBitsPrepareStorage(size_t pos, uint8_t *array) {
+PIK_INLINE void WriteBitsPrepareStorage(size_t pos, uint8_t* array) {
   PIK_ASSERT((pos & 7) == 0);
   array[pos >> 3] = 0;
 }
@@ -90,8 +89,8 @@ PIK_INLINE void RewindStorage(const size_t pos0, size_t* PIK_RESTRICT pos,
                               uint8_t* PIK_RESTRICT array) {
   PIK_ASSERT(pos0 <= *pos);
   *pos = pos0;
-  static const uint8_t kRewindMasks[8] = { 0x0, 0x1, 0x3, 0x7,
-                                           0xf, 0x1f, 0x3f, 0x7f };
+  static const uint8_t kRewindMasks[8] = {0x0, 0x1,  0x3,  0x7,
+                                          0xf, 0x1f, 0x3f, 0x7f};
   array[pos0 >> 3] &= kRewindMasks[pos0 & 7];
 }
 

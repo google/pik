@@ -8,16 +8,17 @@
 namespace pik {
 namespace {
 
-Status Run(const char* pathname1, const char* pathname2) {
-  CodecContext codec_context(/*num_threads=*/4);
+Status RunButteraugli(const char* pathname1, const char* pathname2) {
+  CodecContext codec_context;
   CodecInOut io1(&codec_context);
-  if (!io1.SetFromFile(pathname1)) {
+  ThreadPool pool(4);
+  if (!io1.SetFromFile(pathname1, &pool)) {
     fprintf(stderr, "Failed to read image from %s\n", pathname1);
     return false;
   }
 
   CodecInOut io2(&codec_context);
-  if (!io2.SetFromFile(pathname2)) {
+  if (!io2.SetFromFile(pathname2, &pool)) {
     fprintf(stderr, "Failed to read image from %s\n", pathname2);
     return false;
   }
@@ -32,7 +33,8 @@ Status Run(const char* pathname1, const char* pathname2) {
   }
 
   const float kHfAsymmetry = 0.8;
-  const float distance = ButteraugliDistance(&io1, &io2, kHfAsymmetry);
+  const float distance =
+      ButteraugliDistance(&io1, &io2, kHfAsymmetry, /*distmap=*/nullptr, &pool);
   printf("%.10f\n", distance);
   return true;
 }
@@ -45,5 +47,5 @@ int main(int argc, char** argv) {
     fprintf(stderr, "Usage: %s <reference> <distorted>\n", argv[0]);
     return 1;
   }
-  return pik::Run(argv[1], argv[2]) ? 0 : 1;
+  return pik::RunButteraugli(argv[1], argv[2]) ? 0 : 1;
 }

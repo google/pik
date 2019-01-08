@@ -52,21 +52,21 @@ struct Channels4 {};
 // Step 1: interleaved <-> planar and rescale [0, 1] <-> [0, 255]
 struct Interleave {
   static PIK_INLINE void Image3ToTemp(Channels1, const size_t y,
-                                      const Image3F& image,
+                                      const Image3F& image, const Rect& rect,
                                       float* PIK_RESTRICT row_temp) {
-    const float* PIK_RESTRICT row_image1 = image.ConstPlaneRow(1, y);
-    for (size_t x = 0; x < image.xsize(); ++x) {
+    const float* PIK_RESTRICT row_image1 = rect.ConstPlaneRow(image, 1, y);
+    for (size_t x = 0; x < rect.xsize(); ++x) {
       row_temp[x] = row_image1[x] * (1.0f / 255);
     }
   }
 
   static PIK_INLINE void Image3ToTemp(Channels3, const size_t y,
-                                      const Image3F& image,
+                                      const Image3F& image, const Rect& rect,
                                       float* PIK_RESTRICT row_temp) {
-    const float* PIK_RESTRICT row_image0 = image.ConstPlaneRow(0, y);
-    const float* PIK_RESTRICT row_image1 = image.ConstPlaneRow(1, y);
-    const float* PIK_RESTRICT row_image2 = image.ConstPlaneRow(2, y);
-    for (size_t x = 0; x < image.xsize(); ++x) {
+    const float* PIK_RESTRICT row_image0 = rect.ConstPlaneRow(image, 0, y);
+    const float* PIK_RESTRICT row_image1 = rect.ConstPlaneRow(image, 1, y);
+    const float* PIK_RESTRICT row_image2 = rect.ConstPlaneRow(image, 2, y);
+    for (size_t x = 0; x < rect.xsize(); ++x) {
       row_temp[3 * x + 0] = row_image0[x] * (1.0f / 255);
       row_temp[3 * x + 1] = row_image1[x] * (1.0f / 255);
       row_temp[3 * x + 2] = row_image2[x] * (1.0f / 255);
@@ -105,15 +105,15 @@ struct Interleave {
 
   // Same implementation for 2/4 because neither Image3 nor Temp have alpha.
   static PIK_INLINE void Image3ToTemp(Channels2, const size_t y,
-                                      const Image3F& image,
+                                      const Image3F& image, const Rect& rect,
                                       float* PIK_RESTRICT row_temp) {
-    Image3ToTemp(Channels1(), y, image, row_temp);
+    Image3ToTemp(Channels1(), y, image, rect, row_temp);
   }
 
   static PIK_INLINE void Image3ToTemp(Channels4, const size_t y,
-                                      const Image3F& image,
+                                      const Image3F& image, const Rect& rect,
                                       float* PIK_RESTRICT row_temp) {
-    Image3ToTemp(Channels3(), y, image, row_temp);
+    Image3ToTemp(Channels3(), y, image, rect, row_temp);
   }
 
   static PIK_INLINE void TempToImage3(Channels2,
@@ -482,13 +482,13 @@ struct ExtentsStatic {};
 class ExtentsDynamic {
  public:
   ExtentsDynamic(const size_t xsize, const size_t ysize,
-                 const ColorManagement& cms, const ColorEncoding& c_desired)
+                 const size_t num_threads, const ColorEncoding& c_desired)
       : temp_intervals_(c_desired.Channels()) {
     // Store all temp pixels here, convert to external in a second phase after
     // Finalize computes ChannelIntervals from min_max_.
     temp_ = ImageF(xsize * temp_intervals_, ysize);
 
-    min_max_.resize(cms.GetContexts().size());
+    min_max_.resize(num_threads);
   }
 
   float* PIK_RESTRICT RowTemp(const size_t y) { return temp_.Row(y); }
@@ -653,17 +653,17 @@ struct CastFloat {
 // Multithreaded color space transform from IO to ExternalImage.
 class Transformer {
  public:
-  Transformer(CodecContext* codec_context, const Image3F& color,
+  Transformer(ThreadPool* pool, const Image3F& color, const Rect& rect,
               const bool has_alpha, const ImageU* alpha,
               ExternalImage* external)
-      : codec_context_(codec_context),
+      : pool_(pool),
         color_(color),
+        rect_(rect),
         alpha_(alpha),
         external_(external),
-        xsize_(external->xsize()),
-        ysize_(external->ysize()),
         want_alpha_(has_alpha && external->HasAlpha()) {
-    PIK_CHECK(SameSize(color, *external));
+    PIK_ASSERT(rect.IsInside(color));
+    PIK_ASSERT(SameSize(rect, *external));
   }
 
   // Can fail => separate from ctor.
@@ -673,8 +673,7 @@ class Transformer {
            Description(c_dst).c_str());
 #endif
 
-    return transform_.Init(codec_context_->cms.GetContexts(), c_src, c_dst,
-                           xsize_);
+    return transform_.Init(c_src, c_dst, rect_.xsize(), NumThreads(pool_));
   }
 
   // Converts in the specified direction (To*).
@@ -710,7 +709,7 @@ class Transformer {
                         const size_t y, const size_t thread) {
     float* PIK_RESTRICT row_temp = extents->RowTemp(y);
 
-    Interleave::Image3ToTemp(Channels(), y, color_, row_temp);
+    Interleave::Image3ToTemp(Channels(), y, color_, rect_, row_temp);
 
 #if PIK_EXT_VERBOSE
     const float in0 = row_temp[3 * kX + 0], in1 = row_temp[3 * kX + 1];
@@ -734,8 +733,8 @@ class Transformer {
                         const size_t thread) {
     const float* PIK_RESTRICT row_temp = extents->RowTemp(y);
     uint8_t* PIK_RESTRICT row_external = external_->Row(y);
-    Demux::TempToExternal(Type(), Order(), Channels(), xsize_, row_temp, cast,
-                          row_external);
+    Demux::TempToExternal(Type(), Order(), Channels(), rect_.xsize(), row_temp,
+                          cast, row_external);
 
 #if PIK_EXT_VERBOSE
     printf("ToExt2: ext %3d %3d %3d\n", row_external[3 * kX + 0],
@@ -744,8 +743,8 @@ class Transformer {
 
     const uint16_t* PIK_RESTRICT row_alpha =
         want_alpha_ ? alpha_->ConstRow(y) : nullptr;
-    Demux::AlphaToExternal(Type(), Order(), Channels(), xsize_, row_alpha,
-                           row_external);
+    Demux::AlphaToExternal(Type(), Order(), Channels(), rect_.xsize(),
+                           row_alpha, row_external);
   }
 
   // Single-pass: only works for ExtentsStatic.
@@ -753,7 +752,7 @@ class Transformer {
   PIK_INLINE void DoRow(ToExternal, ExtentsStatic*, const Cast& cast,
                         const size_t y, const size_t thread) {
     float* PIK_RESTRICT row_temp = transform_.BufDst(thread);
-    Interleave::Image3ToTemp(Channels(), y, color_, row_temp);
+    Interleave::Image3ToTemp(Channels(), y, color_, rect_, row_temp);
 
     transform_.Run(thread, row_temp, row_temp);
 
@@ -763,8 +762,8 @@ class Transformer {
 #endif
 
     uint8_t* PIK_RESTRICT row_external = external_->Row(y);
-    Demux::TempToExternal(Type(), Order(), Channels(), xsize_, row_temp, cast,
-                          row_external);
+    Demux::TempToExternal(Type(), Order(), Channels(), rect_.xsize(), row_temp,
+                          cast, row_external);
 
 #if PIK_EXT_VERBOSE
     printf("ToExt: tmp %.4f %.4f %.4f; xform %.4f %.4f %.4f  ext %3d %d %3d\n",
@@ -775,8 +774,8 @@ class Transformer {
 
     const uint16_t* PIK_RESTRICT row_alpha =
         want_alpha_ ? alpha_->ConstRow(y) : nullptr;
-    Demux::AlphaToExternal(Type(), Order(), Channels(), xsize_, row_alpha,
-                           row_external);
+    Demux::AlphaToExternal(Type(), Order(), Channels(), rect_.xsize(),
+                           row_alpha, row_external);
   }
 
   // Closure callable by ThreadPool.
@@ -800,8 +799,8 @@ class Transformer {
   template <class To, class Type, class Order, class Channels, class Extent,
             class Cast>
   void DoRows(Extent* extents, const Cast& cast) {
-    codec_context_->pool.Run(
-        0, ysize_,
+    RunOnPool(
+        pool_, 0, rect_.ysize(),
         Bind<To, Type, Order, Channels, Extent, Cast>(this, extents, cast),
         "ExtImg xform");
   }
@@ -824,13 +823,12 @@ class Transformer {
     }
   }
 
-  CodecContext* codec_context_;
+  ThreadPool* pool_;  // not owned
   const Image3F& color_;
+  const Rect rect_;          // whence in color_ to copy, and output size.
   const ImageU* alpha_;      // not owned
   ExternalImage* external_;  // not owned
 
-  size_t xsize_;
-  size_t ysize_;
   bool want_alpha_;
 
   ColorSpaceTransform transform_;
@@ -839,18 +837,18 @@ class Transformer {
 // Multithreaded deinterleaving/conversion from ExternalImage to Image3.
 class Converter {
  public:
-  Converter(CodecContext* codec_context, const ExternalImage& external)
-      : codec_context_(codec_context),
+  Converter(ThreadPool* pool, const ExternalImage& external)
+      : pool_(pool),
         external_(&external),
         xsize_(external.xsize()),
         ysize_(external.ysize()),
         color_(xsize_, ysize_) {
-    const size_t num_contexts = codec_context->cms.GetContexts().size();
-    temp_buf_ = ImageF(xsize_ * external.c_current().Channels(), num_contexts);
+    const size_t num_threads = NumThreads(pool);
+    temp_buf_ = ImageF(xsize_ * external.c_current().Channels(), num_threads);
 
     if (external_->HasAlpha()) {
       alpha_ = ImageU(xsize_, ysize_);
-      alpha_stats_.resize(num_contexts);
+      alpha_stats_.resize(num_threads);
     }
   }
 
@@ -891,7 +889,7 @@ class Converter {
     // Only allow 16 bit alpha. Protects the shift below.
     if (or_bits >= 0x10000) return PIK_FAILURE("Alpha out of range");
     const bool all_transparent = or_bits == 0;
-    const size_t alpha_bits = all_transparent ? 0 : CeilLog2Nonzero(or_bits);
+    const size_t alpha_bits = all_transparent ? 0 : (or_bits <= 255 ? 8 : 16);
     const size_t max_alpha = all_transparent ? 1 : (1U << alpha_bits) - 1;
 
     // Keep alpha if at least one value is (semi)transparent.
@@ -951,8 +949,8 @@ class Converter {
 
   template <class Type, class Order, class Channels, class Cast>
   void DoRows(const Cast& cast) {
-    codec_context_->pool.Run(
-        0, ysize_, Bind<Type, Order, Channels, Cast>(this, cast), "ExtImg cvt");
+    RunOnPool(pool_, 0, ysize_, Bind<Type, Order, Channels, Cast>(this, cast),
+              "ExtImg cvt");
   }
 
   // Calls the instantiation with the matching Type and Order.
@@ -973,7 +971,7 @@ class Converter {
     }
   }
 
-  CodecContext* codec_context_;
+  ThreadPool* pool_;               // not owned
   const ExternalImage* external_;  // not owned
   size_t xsize_;
   size_t ysize_;
@@ -1018,16 +1016,16 @@ ExternalImage::ExternalImage(const size_t xsize, const size_t ysize,
   }
 }
 
-ExternalImage::ExternalImage(CodecContext* codec_context, const Image3F& color,
-                             const ColorEncoding& c_current,
+ExternalImage::ExternalImage(ThreadPool* pool, const Image3F& color,
+                             const Rect& rect, const ColorEncoding& c_current,
                              const ColorEncoding& c_desired,
                              const bool has_alpha, const ImageU* alpha,
                              size_t bits_per_sample, bool big_endian,
                              CodecIntervals* temp_intervals)
-    : ExternalImage(color.xsize(), color.ysize(), c_desired, has_alpha,
+    : ExternalImage(rect.xsize(), rect.ysize(), c_desired, has_alpha,
                     bits_per_sample, big_endian) {
   if (!is_healthy_) return;
-  Transformer transformer(codec_context, color, has_alpha, alpha, this);
+  Transformer transformer(pool, color, rect, has_alpha, alpha, this);
   if (!transformer.Init(c_current, c_desired)) {
     is_healthy_ = false;
     return;
@@ -1041,7 +1039,7 @@ ExternalImage::ExternalImage(CodecContext* codec_context, const Image3F& color,
     is_healthy_ = transformer.Run<ToExternal>(&extents, cast);
   } else if (temp_intervals != nullptr) {
     // Store temp to separate image and obtain per-channel intervals.
-    ExtentsDynamic extents(xsize_, ysize_, codec_context->cms, c_desired);
+    ExtentsDynamic extents(xsize_, ysize_, NumThreads(pool), c_desired);
     const CastUnused unused;
     is_healthy_ = transformer.Run<ToExternal1>(&extents, unused);
     if (!is_healthy_) return;
@@ -1058,10 +1056,10 @@ ExternalImage::ExternalImage(CodecContext* codec_context, const Image3F& color,
 }
 
 Status ExternalImage::CopyTo(const CodecIntervals* temp_intervals,
-                             CodecInOut* io) const {
+                             ThreadPool* pool, CodecInOut* io) const {
   PIK_ASSERT(IsHealthy());  // Caller should have checked beforehand.
 
-  Converter converter(io->Context(), *this);
+  Converter converter(pool, *this);
 
   const CodecInterval ext_interval = GetInterval(bits_per_sample_);
 

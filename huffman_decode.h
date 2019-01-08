@@ -32,14 +32,12 @@ static const int kHuffmanTableMask = 0xff;
 static const int kHuffmanTableBits = 8;
 
 typedef struct {
-  uint8_t bits;     /* number of bits used for this symbol */
-  uint16_t value;   /* symbol value or table offset */
+  uint8_t bits;   /* number of bits used for this symbol */
+  uint16_t value; /* symbol value or table offset */
 } HuffmanCode;
 
 struct HuffmanDecodingData {
-  HuffmanDecodingData() {
-    table_.reserve(2048);
-  }
+  HuffmanDecodingData() { table_.reserve(2048); }
 
   // Decodes the Huffman code lengths from the bit-stream and fills in the
   // pre-allocated table with the corresponding 2-level Huffman decoding table.

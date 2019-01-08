@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <string>
 #include <vector>
+#include "adaptive_reconstruction_fwd.h"
 #include "image.h"
 #include "image_io.h"
 
@@ -53,30 +54,40 @@ struct PikImageSizeInfo {
   double clustered_entropy = 0.0f;
 };
 
-static const int kNumImageLayers = 7;
-static const int kLayerHeader = 0;
-static const int kLayerSections = 1;
-static const int kLayerQuant = 2;
-static const int kLayerOrder = 3;
-static const int kLayerCmap = 4;
-static const int kLayerDC = 5;
-static const int kLayerAC = 6;
-static const char* kImageLayers[kNumImageLayers] = {
-    "header", "sections", "quant", "order", "cmap", "DC", "AC"};
+enum {
+  kLayerHeader = 0,
+  kLayerQuant,
+  kLayerOrder,
+  kLayerCmap,
+  kLayerDC,
+  kLayerAC,
+  kNumImageLayers
+};
+static const char* kImageLayers[kNumImageLayers] = {"header", "quant", "order",
+                                                    "cmap",   "DC",    "AC"};
+
+struct TestingAux {
+  Image3F* ac_prediction = nullptr;
+};
 
 // Metadata and statistics gathered during compression or decompression.
 struct PikInfo {
-  PikInfo() : layers(kNumImageLayers), num_dict_matches(3) {}
+  PikInfo() : layers(kNumImageLayers) {}
+
+  PikInfo(const PikInfo&) = default;
+
   void Assimilate(const PikInfo& victim) {
     for (int i = 0; i < layers.size(); ++i) {
       layers[i].Assimilate(victim.layers[i]);
     }
-    for (int c = 0; c < 3; ++c) {
-      num_dict_matches[c] += victim.num_dict_matches[c];
-    }
     num_blocks += victim.num_blocks;
+    num_dct16_blocks += victim.num_dct16_blocks;
+    num_dct32_blocks += victim.num_dct32_blocks;
+    entropy_estimate += victim.entropy_estimate;
     num_butteraugli_iters += victim.num_butteraugli_iters;
+    adaptive_reconstruction_aux.Assimilate(victim.adaptive_reconstruction_aux);
   }
+
   PikImageSizeInfo TotalImageSize() const {
     PikImageSizeInfo total;
     for (int i = 0; i < layers.size(); ++i) {
@@ -89,12 +100,6 @@ struct PikInfo {
     if (num_inputs == 0) return;
     printf("Average butteraugli iters: %10.2f\n",
            num_butteraugli_iters * 1.0 / num_inputs);
-    if (num_dict_matches[0] + num_dict_matches[1] + num_dict_matches[2] > 0) {
-      printf("Average dictionary matches: %9.2f%% %9.2f%% %9.2f%%\n",
-             num_dict_matches[0] * 100.0f / num_blocks,
-             num_dict_matches[1] * 100.0f / num_blocks,
-             num_dict_matches[2] * 100.0f / num_blocks);
-    }
     for (int i = 0; i < layers.size(); ++i) {
       if (layers[i].total_size > 0) {
         printf("Total layer size %-10s", kImageLayers[i]);
@@ -103,6 +108,7 @@ struct PikInfo {
     }
     printf("Total image size           ");
     TotalImageSize().Print(num_inputs);
+    adaptive_reconstruction_aux.Print();
   }
 
   template <typename Img>
@@ -121,12 +127,19 @@ struct PikInfo {
   void DumpCoeffImage(const char* label, const Image3S& coeff_image) const;
 
   std::vector<PikImageSizeInfo> layers;
-  std::vector<int> num_dict_matches;
-  std::size_t num_blocks = 0;
+  size_t num_blocks = 0;
+  // Number of blocks that use larger DCT. Only set in the encoder.
+  size_t num_dct16_blocks = 0;
+  size_t num_dct32_blocks = 0;
+  // Estimate of compressed size according to entropy-given lower bounds.
+  float entropy_estimate = 0;
   int num_butteraugli_iters = 0;
   // If not empty, additional debugging information (e.g. debug images) is
   // saved in files with this prefix.
   std::string debug_prefix;
+
+  AdaptiveReconstructionAux adaptive_reconstruction_aux;
+  TestingAux testing_aux;
 };
 
 // Used to skip image creation if they won't be written to debug directory.

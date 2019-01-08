@@ -25,10 +25,9 @@ namespace pik {
 
 // Reads the context map from the bit stream. On calling this function,
 // context_map->size() must be the number of possible context ids.
-// Sets *num_histograms to the number of different histogram ids in
+// Sets *num_htrees to the number of different histogram ids in
 // *context_map.
-bool DecodeContextMap(std::vector<uint8_t>* context_map,
-                      size_t* num_histograms,
+bool DecodeContextMap(std::vector<uint8_t>* context_map, size_t* num_htrees,
                       BitReader* input);
 
 }  // namespace pik

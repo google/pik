@@ -21,6 +21,7 @@
 #include <stdint.h>
 
 #include "codec.h"
+#include "data_parallel.h"
 #include "status.h"
 
 namespace pik {
@@ -35,11 +36,11 @@ class ExternalImage {
                 bool has_alpha, size_t bits_per_sample, bool big_endian,
                 const uint8_t* bytes, const uint8_t* end);
 
-  // Converts pixels from c_current to c_desired. Called by encoders and
-  // CodecInOut::CopyTo. alpha is nullptr iff !has_alpha.
+  // Copies pixels from rect and converts from c_current to c_desired. Called by
+  // encoders and CodecInOut::CopyTo. alpha is nullptr iff !has_alpha.
   // If temp_intervals != null, fills them such that CopyTo can rescale to that
   // range. Otherwise, clamps temp to [0, 1].
-  ExternalImage(CodecContext* codec_context, const Image3F& color,
+  ExternalImage(ThreadPool* pool, const Image3F& color, const Rect& rect,
                 const ColorEncoding& c_current, const ColorEncoding& c_desired,
                 bool has_alpha, const ImageU* alpha, size_t bits_per_sample,
                 bool big_endian, CodecIntervals* temp_intervals);
@@ -49,7 +50,8 @@ class ExternalImage {
 
   // Sets "io" to a newly allocated copy with c_current color space.
   // Uses temp_intervals for rescaling if not null.
-  Status CopyTo(const CodecIntervals* temp_intervals, CodecInOut* io) const;
+  Status CopyTo(const CodecIntervals* temp_intervals, ThreadPool* pool,
+                CodecInOut* io) const;
 
   // Packed, interleaved pixels, for passing to encoders.
   const PaddedBytes& Bytes() const { return bytes_; }

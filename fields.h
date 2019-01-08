@@ -15,21 +15,24 @@
 #ifndef FIELDS_H_
 #define FIELDS_H_
 
-// Encodes/decodes uint32_t or byte array fields in header/sections.
+// Forward/backward-compatible 'bundles' with auto-serialized 'fields'.
 
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <array>
-#include <memory>
 
 #include "bit_reader.h"
 #include "bits.h"
 #include "brotli.h"
+#include "common.h"
 #include "compiler_specific.h"
 #include "field_encodings.h"
 #include "status.h"
 #include "write_bits.h"
+
+#ifndef PIK_FIELDS_TRACE
+#define PIK_FIELDS_TRACE 0
+#endif
 
 namespace pik {
 
@@ -58,7 +61,7 @@ namespace pik {
 // 01x -> 1..2
 // 10xx -> 3..7
 // 11xxxxxxxx -> 8..263
-// Can be made with distrubition 0x7F514080. Dissecting this from hex digits
+// Can be made with distribution 0x7F514080. Dissecting this from hex digits
 // left to right:
 // 7: 0x40 flag for this byte and 2 bits of offset 8 for 8..263
 // F: final bit of offset 8 and 3 bits setting extra to 7+1 for 8..263.
@@ -102,7 +105,7 @@ class U32Coder {
     return ok;
   }
 
-  static uint32_t Load(const uint32_t distribution,
+  static uint32_t Read(const uint32_t distribution,
                        BitReader* PIK_RESTRICT reader) {
     ValidateDistribution(distribution);
     if (IsRaw(distribution)) {
@@ -120,7 +123,7 @@ class U32Coder {
   }
 
   // Returns false if the value is too large to encode.
-  static Status Store(const uint32_t distribution, const uint32_t value,
+  static Status Write(const uint32_t distribution, const uint32_t value,
                       size_t* pos, uint8_t* storage) {
     int selector;
     size_t total_bits;
@@ -186,8 +189,8 @@ class U32Coder {
         // Forbid b = 0 because it requires an extra call to read/write 0 bits;
         // to encode a zero value, use b = kDirect instead.
         if (b == 0 || b > 32) {
-          printf("Invalid distribution %8x[%d] == %zu\n", distribution,
-                 selector, b);
+          fprintf(stderr, "Invalid distribution %8x[%d] == %zu\n", distribution,
+                  selector, b);
           PIK_ASSERT(false);
         }
       }
@@ -248,55 +251,171 @@ class U32Coder {
   }
 };
 
+// Encodes 64-bit unsigned integers with a fixed distribution, taking 2 bits
+// to encode 0, 6 bits to encode 1 to 16, 10 bits to encode 17 to 272, 15 bits
+// to encode up to 4095, and in the order of log2(value) * 1.125 bits for higher
+// values.
+class U64Coder {
+ public:
+  static uint64_t Read(BitReader* PIK_RESTRICT reader) {
+    uint64_t selector = reader->ReadFixedBits<2>();
+    if (selector == 0) {
+      return 0;
+    }
+    if (selector == 1) {
+      return 1 + reader->ReadFixedBits<4>();
+    }
+    if (selector == 2) {
+      return 17 + reader->ReadFixedBits<8>();
+    }
+
+    // selector 3, varint, first 12 bits, later groups are 8 bits
+    uint64_t result = reader->ReadFixedBits<12>();
+
+    uint64_t shift = 12;
+    while (reader->ReadFixedBits<1>()) {
+      if (shift == 60) {
+        result |= static_cast<uint64_t>(reader->ReadFixedBits<4>()) << shift;
+        break;
+      }
+      result |= static_cast<uint64_t>(reader->ReadFixedBits<8>()) << shift;
+      shift += 8;
+    }
+
+    return result;
+  }
+
+  // Returns false if the value is too large to encode.
+  static Status Write(uint64_t value, size_t* pos, uint8_t* storage) {
+    if (value == 0) {
+      // Selector: use 0 bits, value 0
+      WriteBits(2, 0, pos, storage);
+    } else if (value <= 16) {
+      // Selector: use 4 bits, value 1..16
+      WriteBits(2, 1, pos, storage);
+      WriteBits(4, value - 1, pos, storage);
+    } else if (value <= 272) {
+      // Selector: use 8 bits, value 17..272
+      WriteBits(2, 2, pos, storage);
+      WriteBits(8, value - 17, pos, storage);
+    } else {
+      // Selector: varint, first a 12-bit group, after that per 8-bit group.
+      WriteBits(2, 3, pos, storage);
+      WriteBits(12, value & 4095, pos, storage);
+      value >>= 12;
+      int shift = 12;
+      while (value > 0 && shift < 60) {
+        // Indicate varint not done
+        WriteBits(1, 1, pos, storage);
+        WriteBits(8, value & 255, pos, storage);
+        value >>= 8;
+        shift += 8;
+      }
+      if (value > 0) {
+        // This only could happen if shift == 60.
+        WriteBits(1, 1, pos, storage);
+        WriteBits(4, value & 15, pos, storage);
+        // Implicitly closed sequence, no extra stop bit is required.
+      } else {
+        // Indicate end of varint
+        WriteBits(1, 0, pos, storage);
+      }
+    }
+
+    return true;
+  }
+
+  // Can always encode, but useful because it also returns bit size.
+  static Status CanEncode(uint64_t value, size_t* PIK_RESTRICT encoded_bits) {
+    if (value == 0) {
+      *encoded_bits = 2;  // 2 selector bits
+    } else if (value <= 16) {
+      *encoded_bits = 2 + 4;  // 2 selector bits + 4 payload bits
+    } else if (value <= 272) {
+      *encoded_bits = 2 + 8;  // 2 selector bits + 8 payload bits
+    } else {
+      *encoded_bits = 2 + 12;  // 2 selector bits + 12 payload bits
+      value >>= 12;
+      int shift = 12;
+      while (value > 0 && shift < 60) {
+        *encoded_bits += 1 + 8;  // 1 continuation bit + 8 payload bits
+        value >>= 8;
+        shift += 8;
+      }
+      if (value > 0) {
+        // This only could happen if shift == 60.
+        *encoded_bits += 1 + 4;  // 1 continuation bit + 4 payload bits
+      } else {
+        *encoded_bits += 1;  // 1 stop bit
+      }
+    }
+
+    return true;
+  }
+};
+
 // Coder for byte arrays: stores encoding and #bytes via U32Coder, then raw or
 // Brotli-compressed bytes.
 class BytesCoder {
-  static constexpr uint32_t kDistSize = 0x20181008;
   static const int kBrotliQuality = 6;
 
  public:
-  static Status CanEncode(Bytes encoding, const PaddedBytes& value,
+  static Status CanEncode(BytesEncoding encoding, const PaddedBytes& value,
                           size_t* PIK_RESTRICT encoded_bits) {
-    PIK_ASSERT(encoding == Bytes::kRaw || encoding == Bytes::kBrotli);
+    PIK_ASSERT(encoding == BytesEncoding::kRaw ||
+               encoding == BytesEncoding::kBrotli);
     if (value.empty()) {
-      return U32Coder::CanEncode(kU32Direct3Plus8, Bytes::kNone, encoded_bits);
+      return U32Coder::CanEncode(kU32Direct3Plus8,
+                                 static_cast<uint32_t>(BytesEncoding::kNone),
+                                 encoded_bits);
     }
 
     PaddedBytes compressed;
     const PaddedBytes* store_what = &value;
 
-    // Note: we will compress a second time when Store is called.
-    if (encoding == Bytes::kBrotli) {
+    // Note: we will compress a second time when Write is called.
+    if (encoding == BytesEncoding::kBrotli) {
       PIK_RETURN_IF_ERROR(BrotliCompress(kBrotliQuality, value, &compressed));
       if (compressed.size() < value.size()) {
         store_what = &compressed;
       } else {
-        encoding = Bytes::kRaw;
+        encoding = BytesEncoding::kRaw;
       }
     }
 
     size_t bits_encoding, bits_size;
-    PIK_RETURN_IF_ERROR(
-        U32Coder::CanEncode(kU32Direct3Plus8, encoding, &bits_encoding) &&
-        U32Coder::CanEncode(kDistSize, store_what->size(), &bits_size));
-    *encoded_bits = bits_encoding + bits_size + store_what->size() * 8;
+    PIK_RETURN_IF_ERROR(U32Coder::CanEncode(kU32Direct3Plus8,
+                                            static_cast<uint32_t>(encoding),
+                                            &bits_encoding) &&
+                        U64Coder::CanEncode(store_what->size(), &bits_size));
+    *encoded_bits =
+        bits_encoding + bits_size + store_what->size() * kBitsPerByte;
     return true;
   }
 
-  static Status Load(BitReader* PIK_RESTRICT reader,
+  static Status Read(BitReader* PIK_RESTRICT reader,
                      PaddedBytes* PIK_RESTRICT value) {
-    const Bytes encoding =
-        static_cast<Bytes>(U32Coder::Load(kU32Direct3Plus8, reader));
-    if (encoding == Bytes::kNone) {
+    const BytesEncoding encoding =
+        static_cast<BytesEncoding>(U32Coder::Read(kU32Direct3Plus8, reader));
+    if (encoding == BytesEncoding::kNone) {
       value->clear();
       return true;
     }
-    if (encoding != Bytes::kRaw && encoding != Bytes::kBrotli) {
-      return PIK_FAILURE("Unrecognized Bytes encoding");
+    if (encoding != BytesEncoding::kRaw && encoding != BytesEncoding::kBrotli) {
+      return PIK_FAILURE("Unrecognized BytesEncoding encoding");
     }
 
-    const uint32_t num_bytes = U32Coder::Load(kDistSize, reader);
+    const uint64_t num_bytes = U64Coder::Read(reader);
+    // Prevent fuzzer from running out of memory.
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+    if (num_bytes > 16 * 1024 * 1024) {
+      return PIK_FAILURE("BytesCoder size too large for fuzzer");
+    }
+#endif
     value->resize(num_bytes);
+    if (num_bytes != 0 && value->size() == 0) {
+      return PIK_FAILURE("Failed to allocate memory for BytesCoder");
+    }
 
     // Read groups of bytes without calling FillBitBuffer every time.
     constexpr size_t kBytesPerGroup = 4;  // guaranteed by FillBitBuffer
@@ -321,7 +440,7 @@ class BytesCoder {
       reader->Advance(8);
     }
 
-    if (encoding == Bytes::kBrotli) {
+    if (encoding == BytesEncoding::kBrotli) {
       const size_t kMaxOutput = 1ULL << 32;
       size_t bytes_read = 0;
       PaddedBytes decompressed;
@@ -337,28 +456,32 @@ class BytesCoder {
     return true;
   }
 
-  static Status Store(Bytes encoding, const PaddedBytes& value,
+  static Status Write(BytesEncoding encoding, const PaddedBytes& value,
                       size_t* PIK_RESTRICT pos, uint8_t* storage) {
-    PIK_ASSERT(encoding == Bytes::kRaw || encoding == Bytes::kBrotli);
+    PIK_ASSERT(encoding == BytesEncoding::kRaw ||
+               encoding == BytesEncoding::kBrotli);
     if (value.empty()) {
-      return U32Coder::Store(kU32Direct3Plus8, Bytes::kNone, pos, storage);
+      return U32Coder::Write(kU32Direct3Plus8,
+                             static_cast<uint32_t>(BytesEncoding::kNone), pos,
+                             storage);
     }
 
     PaddedBytes compressed;
     const PaddedBytes* store_what = &value;
 
-    if (encoding == Bytes::kBrotli) {
+    if (encoding == BytesEncoding::kBrotli) {
       PIK_RETURN_IF_ERROR(BrotliCompress(kBrotliQuality, value, &compressed));
       if (compressed.size() < value.size()) {
         store_what = &compressed;
       } else {
-        encoding = Bytes::kRaw;
+        encoding = BytesEncoding::kRaw;
       }
     }
 
+    PIK_RETURN_IF_ERROR(U32Coder::Write(
+        kU32Direct3Plus8, static_cast<uint32_t>(encoding), pos, storage));
     PIK_RETURN_IF_ERROR(
-        U32Coder::Store(kU32Direct3Plus8, encoding, pos, storage) &&
-        U32Coder::Store(kDistSize, store_what->size(), pos, storage));
+        U64Coder::Write(store_what->size(), pos, storage));
 
     size_t i = 0;
 #if PIK_BYTE_ORDER_LITTLE
@@ -378,392 +501,542 @@ class BytesCoder {
   }
 };
 
-// Visitors for generating encoders/decoders for headers/sections with an
-// associated non-member VisitFields function, which calls either U32 or
-// Bytes. We do not overload operator() because U32 requires an extra parameter
-// and a function name is easier to find by searching.
-
-class ReadFieldsVisitor {
- public:
-  ReadFieldsVisitor(BitReader* reader) : reader_(reader) {}
-
-  void U32(const uint32_t distribution, uint32_t* PIK_RESTRICT value) {
-    *value = U32Coder::Load(distribution, reader_);
-  }
-
-  template <typename T>
-  void Enum(const uint32_t distribution, T* PIK_RESTRICT value) {
-    uint32_t bits;
-    U32(distribution, &bits);
-    *value = static_cast<T>(bits);
-  }
-
-  void Bytes(const Bytes unused_encoding, PaddedBytes* PIK_RESTRICT value) {
-    ok_ &= BytesCoder::Load(reader_, value);
-  }
-
-  template <typename T>
-  void EnsureContainerSize(uint32_t size, T* container) {
-    // Sets the container size to the given size in case of reading. The size
-    // must have been read from a previously visited field.
-    container->resize(size);
-  }
-
-  Status OK() const { return ok_; }
-
- private:
-  bool ok_ = true;
-  BitReader* const reader_;
-};
-
-class CanEncodeFieldsVisitor {
- public:
-  void U32(const uint32_t distribution,
-           const uint32_t* PIK_RESTRICT value) {
-    size_t encoded_bits;
-    ok_ &= U32Coder::CanEncode(distribution, *value, &encoded_bits);
-    encoded_bits_ += encoded_bits;
-  }
-
-  template <typename T>
-  void Enum(const uint32_t distribution, T* PIK_RESTRICT value) {
-    uint32_t bits = static_cast<uint32_t>(*value);
-    U32(distribution, &bits);
-  }
-
-  void Bytes(const Bytes encoding, const PaddedBytes* PIK_RESTRICT value) {
-    size_t encoded_bits = 0;
-    ok_ &= BytesCoder::CanEncode(encoding, *value, &encoded_bits);
-    encoded_bits_ += encoded_bits;
-  }
-
-  template <typename T>
-  void EnsureContainerSize(uint32_t size, const T* container) {
-    // Nothing to do: This only has an effect for reading.
-    PIK_ASSERT(container->size() == size);
-  }
-
-  Status OK() const { return ok_; }
-  size_t EncodedBits() const { return encoded_bits_; }
-
- private:
-  bool ok_ = true;
-  size_t encoded_bits_ = 0;
-};
-
-class WriteFieldsVisitor {
- public:
-  WriteFieldsVisitor(size_t* pos, uint8_t* storage)
-      : pos_(pos), storage_(storage) {}
-
-  void U32(const uint32_t distribution,
-           const uint32_t* PIK_RESTRICT value) {
-    ok_ &= U32Coder::Store(distribution, *value, pos_, storage_);
-  }
-
-  template <typename T>
-  void Enum(const uint32_t distribution, T* PIK_RESTRICT value) {
-    const uint32_t bits = static_cast<uint32_t>(*value);
-    U32(distribution, &bits);
-  }
-
-  void Bytes(const Bytes encoding, const PaddedBytes* PIK_RESTRICT value) {
-    ok_ &= BytesCoder::Store(encoding, *value, pos_, storage_);
-  }
-
-  template <typename T>
-  void EnsureContainerSize(uint32_t size, const T* container) {
-    // Nothing to do: This only has an effect for reading.
-    PIK_ASSERT(container->size() == size);
-  }
-
-  Status OK() const { return ok_; }
-
- private:
-  size_t* pos_;
-  uint8_t* storage_;
-  bool ok_ = true;
-};
-
-// T provides a non-const VisitFields (allows ReadFieldsVisitor to load fields),
-// so we need to cast const T to non-const for visitors that don't actually need
-// non-const (e.g. WriteFieldsVisitor).
-template <class Visitor, class T>
-Status VisitFieldsConst(Visitor* visitor, const T& t) {
-  // Note: only called for Visitor that don't actually change T.
-  return VisitFields(visitor, const_cast<T*>(&t));
-}
-
-template <class T>
-Status CanEncodeFields(const T& t, size_t* PIK_RESTRICT encoded_bits) {
-  CanEncodeFieldsVisitor visitor;
-  PIK_RETURN_IF_ERROR(VisitFieldsConst(&visitor, t));
-  const Status ok = visitor.OK();
-  *encoded_bits = ok ? visitor.EncodedBits() : 0;
-  return ok;
-}
-
-template <class T>
-Status LoadFields(BitReader* reader, T* PIK_RESTRICT t) {
-  ReadFieldsVisitor visitor(reader);
-  PIK_RETURN_IF_ERROR(VisitFields(&visitor, t));
-  return visitor.OK();
-}
-
-template <class T>
-Status StoreFields(const T& t, size_t* pos, uint8_t* storage) {
-  WriteFieldsVisitor visitor(pos, storage);
-  PIK_RETURN_IF_ERROR(VisitFieldsConst(&visitor, t));
-  return visitor.OK();
-}
-
-// A "section" is optional metadata that is only read from/written to the
-// compressed stream if needed. Adding sections is the only way to extend
-// this container format. Old code is forwards compatible because unknown
-// sections can be skipped. Old files are backwards compatible because they
-// indicate future sections are not present using a bit field in the header.
+// A "bundle" is a forward- and backward compatible collection of fields.
+// They are used for FileHeader/PassHeader/GroupHeader. Bundles can be extended
+// by appending(!) fields. Optional fields may be omitted from the bitstream by
+// conditionally visiting them. When reading new bitstreams with old code, we
+// skip unknown fields at the end of the bundle. This requires storing the
+// amount of extra appended bits, and that fields are visited in chronological
+// order of being added to the format, because old decoders cannot skip some
+// future fields and resume reading old fields. Similarly, new readers query
+// bits in an "extensions" field to skip (groups of) fields not present in old
+// bitstreams. Note that each bundle must include an "extensions" field prior to
+// freezing the format, otherwise it cannot be extended.
 //
-// To ensure interoperability, there will be no opaque fields nor proprietary
-// section definitions. To introduce a new section and thereby advance the
-// "version number" of this file format, add a unique_ptr member to Sections and
-// append a call to "visitor" in VisitSections.
+// To ensure interoperability, there will be no opaque fields.
+//
+// HOWTO:
+// - basic usage: define a struct with member variables ("fields") and a
+//   VisitFields(v) member function that calls v->U32/Bool etc. for each field,
+//   specifying their default values. The ctor must call Bundle::Init(this).
+//
+// - print a trace of visitors: ensure each bundle has a Name member function,
+//   and #define PIK_FIELDS_TRACE 1.
+//
+// - optional fields: in VisitFields, add if (v->Conditional(your_condition))
+//   { v->U32(dist, default, &field); }. This prevents reading/writing field
+//   if !your_condition, which is typically computed from a prior field.
+//   WARNING: do not add an else branch; to ensure all fields are initialized,
+//   instead add another if (v->Conditional(!your_condition)).
+//
+// - repeated fields: for dynamic sizes, add a std::vector field and in
+//   VisitFields, call v->SetSizeWhenReading before accessing the field. For
+//   static or bounded sizes, use an array or std::array. In all cases, simply
+//   visit each array element as if it were a normal field.
+//
+// - nested bundles: add a bundle as a normal field and in VisitFields call
+//   PIK_RETURN_IF_ERROR(v->VisitNested(&nested));
+//
+// - allow future extensions: define a "uint64_t extensions" field and call
+//   v->BeginExtensions(&extensions) after visiting all non-extension fields,
+//   and `return v->EndExtensions();` after the last extension field.
+//
+// - encode an entire bundle in one bit if ALL its fields equal their default
+//   values: add a "bool all_default" field and as the first visitor:
+//   if (v->AllDefault(*this, &all_default)) return true;
+//   Note: if extensions are present, AllDefault() == false.
 
-// Indicates which sections are present in the stream. This is required for
-// backward compatibility (reading old files).
-class SectionBits {
+class Bundle {
  public:
-  static constexpr size_t kMaxSections = 32;
+  // These are called from headers.cc.
 
-  void Set(const int idx) {
-    PIK_CHECK(idx < kMaxSections);
-    const uint32_t bit = 1U << idx;
-    PIK_CHECK((bits_ & bit) == 0);  // not already set
-    bits_ |= bit;
-  }
-
-  // Calls visitor(i), i = index of any non-zero (present) sections.
-  template <class Visitor>
-  void Foreach(const Visitor& visitor) const {
-    uint32_t remaining = bits_;
-    while (remaining != 0) {
-      const int idx = NumZeroBitsBelowLSBNonzero(remaining);
-      visitor(idx);
-      remaining &= remaining - 1;  // clear lowest
+  template <class T>
+  static void Init(T* PIK_RESTRICT t) {
+    Trace("Init");
+    InitVisitor visitor;
+    if (!visitor.Visit(t)) {
+      PIK_ASSERT(false);  // Init should never fail.
     }
   }
 
-  bool TestAndReset(const int idx) {
-    PIK_CHECK(idx < kMaxSections);
-    const uint32_t bit = 1U << idx;
-    if ((bits_ & bit) == 0) {
+  // Returns whether ALL fields (including `extensions`, if present) are equal
+  // to their default value.
+  template <class T>
+  static bool AllDefault(const T& t) {
+    Trace("[[AllDefault");
+    AllDefaultVisitor visitor;
+    if (!visitor.VisitConst(t)) {
+      PIK_ASSERT(false);  // AllDefault should never fail.
+    }
+#if PIK_FIELDS_TRACE
+    printf("  %d]]\n", visitor.AllDefault());
+#endif
+    return visitor.AllDefault();
+  }
+
+  // Prepares for Write(): "*total_bits" is the amount of storage required;
+  // "*extension_bits" must be passed to Write().
+  template <class T>
+  static Status CanEncode(const T& t, size_t* PIK_RESTRICT extension_bits,
+                          size_t* PIK_RESTRICT total_bits) {
+    Trace("CanEncode");
+    CanEncodeVisitor visitor;
+    PIK_RETURN_IF_ERROR(visitor.VisitConst(t));
+    return visitor.GetSizes(extension_bits, total_bits);
+  }
+
+  template <class T>
+  static Status Read(BitReader* reader, T* PIK_RESTRICT t) {
+    Trace("Read");
+    ReadVisitor visitor(reader);
+    PIK_RETURN_IF_ERROR(visitor.Visit(t));
+    return visitor.OK();
+  }
+
+  template <class T>
+  static Status Write(const T& t, const size_t extension_bits,
+                      size_t* PIK_RESTRICT pos, uint8_t* storage) {
+    Trace("Write");
+    WriteVisitor visitor(extension_bits, pos, storage);
+    PIK_RETURN_IF_ERROR(visitor.VisitConst(t));
+    return visitor.OK();
+  }
+
+ private:
+  static void Trace(const char* op) {
+#if PIK_FIELDS_TRACE
+    printf("---- %s\n", op);
+#endif
+  }
+
+  // A bundle can be in one of three states concerning extensions: not-begun,
+  // active, ended. Bundles may be nested, so we need a stack of states.
+  class ExtensionStates {
+   public:
+    static constexpr size_t kMaxDepth = 64;
+
+    void Push() {
+      // Initial state = not-begun.
+      begun_ <<= 1;
+      ended_ <<= 1;
+    }
+
+    // Clears current state; caller must check IsEnded beforehand.
+    void Pop() {
+      begun_ >>= 1;
+      ended_ >>= 1;
+    }
+
+    // Returns true if state == active || state == ended.
+    Status IsBegun() const { return (begun_ & 1) != 0; }
+    // Returns true if state != not-begun && state != active.
+    Status IsEnded() const { return (ended_ & 1) != 0; }
+
+    void Begin() {
+      PIK_ASSERT(!IsBegun());
+      PIK_ASSERT(!IsEnded());
+      begun_ += 1;
+    }
+
+    void End() {
+      PIK_ASSERT(IsBegun());
+      PIK_ASSERT(!IsEnded());
+      ended_ += 1;
+    }
+
+   private:
+    // Current state := least-significant bit of begun_ and ended_.
+    uint64_t begun_ = 0;
+    uint64_t ended_ = 0;
+  };
+
+  // Visitors generate Init/AllDefault/Read/Write logic for all fields. Each
+  // bundle's VisitFields member function calls visitor->U32/Bytes/etc. We do
+  // not overload operator() because a function name is easier to search for.
+
+  template <class Derived>
+  class VisitorBase {
+   public:
+    ~VisitorBase() { PIK_ASSERT(depth_ == 0); }
+
+    // This is the only call site of T::VisitFields. Adds tracing and ensures
+    // EndExtensions was called.
+    template <class T>
+    Status Visit(T* t) {
+#if PIK_FIELDS_TRACE
+      char format[10];
+      snprintf(format, sizeof(format), "%%%zus%%s\n", depth_ * 2);
+      printf(format, "", t->Name());
+#endif
+
+      depth_ += 1;
+      PIK_ASSERT(depth_ <= ExtensionStates::kMaxDepth);
+      extension_states_.Push();
+
+      Derived* self = static_cast<Derived*>(this);
+      const Status ok = t->VisitFields(self);
+
+      if (ok) {
+        // If VisitFields called BeginExtensions, must also call EndExtensions.
+        PIK_ASSERT(!extension_states_.IsBegun() || extension_states_.IsEnded());
+      } else {
+        // Failed, undefined state: don't care whether EndExtensions was called.
+      }
+
+      extension_states_.Pop();
+      PIK_ASSERT(depth_ != 0);
+      depth_ -= 1;
+
+      return ok;
+    }
+
+    // For visitors accepting a const T, need to const-cast so we can call the
+    // non-const T::VisitFields. NOTE: T is not modified.
+    template <class T>
+    Status VisitConst(const T& t) {
+      return Visit(const_cast<T*>(&t));
+    }
+
+    // Returns whether VisitFields should visit some subsequent fields.
+    // "condition" is typically from prior fields, e.g. flags.
+    // Overridden by InitVisitor.
+    Status Conditional(bool condition) { return condition; }
+
+    // Overridden by InitVisitor, AllDefaultVisitor and CanEncodeVisitor.
+    template <class Fields>
+    Status AllDefault(const Fields& fields, bool* PIK_RESTRICT all_default) {
+      Derived* self = static_cast<Derived*>(this);
+      self->Bool(true, all_default);
+      return *all_default;
+    }
+
+    // Returns the result of visiting a nested Bundle.
+    // Overridden by InitVisitor.
+    template <class Fields>
+    Status VisitNested(Fields* fields) {
+      Derived* self = static_cast<Derived*>(this);
+      return self->Visit(fields);
+    }
+
+    // Overridden by ReadVisitor.
+    template <typename T>
+    void SetSizeWhenReading(uint32_t size, const T* container) {
+      PIK_ASSERT(container->size() == size);
+    }
+
+    // Called before any conditional visit based on "extensions".
+    // Overridden by ReadVisitor, CanEncodeVisitor and WriteVisitor.
+    void BeginExtensions(uint64_t* PIK_RESTRICT extensions) {
+      Derived* self = static_cast<Derived*>(this);
+      self->U64(0, extensions);
+
+      extension_states_.Begin();
+    }
+
+    // Called after all extension fields (if any). Although non-extension fields
+    // could be visited afterward, we prefer the convention that extension
+    // fields are always the last to be visited.
+    // Overridden by ReadVisitor.
+    Status EndExtensions() {
+      extension_states_.End();
+      return true;
+    }
+
+   private:
+    size_t depth_ = 0;  // for indentation.
+    ExtensionStates extension_states_;
+  };
+
+  struct InitVisitor : public VisitorBase<InitVisitor> {
+    void U32(const uint32_t distribution, const uint32_t default_value,
+             uint32_t* PIK_RESTRICT value) {
+      *value = default_value;
+    }
+
+    void U64(const uint64_t default_value, uint64_t* PIK_RESTRICT value) {
+      *value = default_value;
+    }
+
+    template <typename T>
+    void Enum(const uint32_t distribution, const T default_value,
+              T* PIK_RESTRICT value) {
+      *value = default_value;
+    }
+
+    void Bool(bool default_value, bool* PIK_RESTRICT value) {
+      *value = default_value;
+    }
+
+    void Bytes(const BytesEncoding unused_encoding,
+               PaddedBytes* PIK_RESTRICT value) {
+      value->clear();
+    }
+
+    // Always visit conditional fields to ensure they are initialized.
+    Status Conditional(bool condition) { return true; }
+
+    template <class Fields>
+    Status AllDefault(const Fields& fields, bool* PIK_RESTRICT all_default) {
+      // Just initialize this field and don't skip initializing others.
+      Bool(true, all_default);
       return false;
     }
-    bits_ &= ~bit;  // clear lowest
-    return true;
-  }
 
-  Status CanEncode(size_t* PIK_RESTRICT encoded_bits) const {
-    return U32Coder::CanEncode(kDistribution, bits_, encoded_bits);
-  }
+    template <class Fields>
+    Status VisitNested(Fields* fields) {
+      // Avoid re-initializing nested bundles (their ctors already called
+      // Bundle::Init for their fields).
+      return true;
+    }
+  };
 
-  void Load(BitReader* reader) {
-    bits_ = U32Coder::Load(kDistribution, reader);
-  }
-
-  Status Store(size_t* PIK_RESTRICT pos, uint8_t* storage) const {
-    return U32Coder::Store(kDistribution, bits_, pos, storage);
-  }
-
- private:
-  static constexpr uint32_t kDistribution = 0x200C0480;
-
-  uint32_t bits_ = 0;
-};
-
-// Stores size [bits] of all sections indicated by SectionBits. This is
-// required for forward compatibility (skipping unknown sections).
-template <size_t kNumKnown>
-class SectionSizes {
- public:
-  uint32_t Get(const int idx_section) const {
-    PIK_CHECK(idx_section < SectionBits::kMaxSections);
-    return sizes_[idx_section];
-  }
-
-  void Set(const int idx_section, const uint32_t size) {
-    PIK_CHECK(idx_section < SectionBits::kMaxSections);
-    sizes_[idx_section] = size;
-  }
-
-  Status CanEncode(const SectionBits& bits,
-                   size_t* PIK_RESTRICT encoded_bits) const {
-    bool ok = true;
-    *encoded_bits = 0;
-    bits.Foreach([this, &ok, encoded_bits](const int idx) {
-      if (idx < kNumKnown) return;
-      size_t size_bits;
-      ok &= U32Coder::CanEncode(kDistribution, sizes_[idx], &size_bits);
-      *encoded_bits += size_bits;
-    });
-    if (!ok) *encoded_bits = 0;
-    return ok;
-  }
-
-  void Load(const SectionBits& bits, BitReader* reader) {
-    std::fill(sizes_.begin(), sizes_.end(), 0);
-    bits.Foreach([this, reader](const int idx) {
-      if (idx < kNumKnown) return;
-      sizes_[idx] = U32Coder::Load(kDistribution, reader);
-    });
-  }
-
-  Status Store(const SectionBits& bits, size_t* pos, uint8_t* storage) const {
-    bool ok = true;
-    bits.Foreach([this, &ok, pos, storage](const int idx) {
-      if (idx < kNumKnown) return;
-      ok &= U32Coder::Store(kDistribution, sizes_[idx], pos, storage);
-    });
-    return ok;
-  }
-
- private:
-  // Up to 32 bit, EXIF limited to 64K bytes, palettes < 512 bytes.
-  static constexpr uint32_t kDistribution = 0x20130F0C;
-
-  std::array<uint32_t, SectionBits::kMaxSections> sizes_;  // [bits]
-};
-
-template <size_t kNumKnown>
-class CanEncodeSectionVisitor {
- public:
-  template <class T>
-  void operator()(const std::unique_ptr<T>* PIK_RESTRICT ptr) {
-    ++idx_section_;
-    if (*ptr == nullptr) return;
-    section_bits_.Set(idx_section_);
-
-    CanEncodeFieldsVisitor field_visitor;
-    ok_ &= VisitFields(&field_visitor, ptr->get());
-    ok_ &= field_visitor.OK();
-    const size_t encoded_bits = field_visitor.EncodedBits();
-    section_sizes_.Set(idx_section_, encoded_bits);
-    field_bits_ += encoded_bits;
-  }
-
-  Status CanEncode(size_t* PIK_RESTRICT encoded_bits) {
-    size_t bits_bits, sizes_bits;
-    ok_ &= section_bits_.CanEncode(&bits_bits);
-    ok_ &= section_sizes_.CanEncode(section_bits_, &sizes_bits);
-    *encoded_bits = ok_ ? bits_bits + sizes_bits + field_bits_ : 0;
-    return ok_;
-  }
-
-  const SectionBits& GetBits() const { return section_bits_; }
-  SectionSizes<kNumKnown>& GetSizes() { return section_sizes_; }
-
- private:
-  int idx_section_ = -1;  // pre-incremented
-  SectionBits section_bits_;
-  SectionSizes<kNumKnown> section_sizes_;
-  bool ok_ = true;
-  size_t field_bits_ = 0;
-};
-
-// Analogous to VisitFieldsConst.
-template <class Visitor, class T>
-void VisitSectionsConst(Visitor* visitor, const T& t) {
-  // Note: only called for Visitor that don't actually change T.
-  VisitSections(visitor, const_cast<T*>(&t));
-}
-
-// Reads bits, sizes, and fields.
-template <size_t kNumKnown>
-class ReadSectionVisitor {
- public:
-  explicit ReadSectionVisitor(BitReader* reader) : reader_(reader) {
-    section_bits_.Load(reader_);
-    section_sizes_.Load(section_bits_, reader_);
-  }
-
-  template <class T>
-  void operator()(std::unique_ptr<T>* PIK_RESTRICT ptr) {
-    ++idx_section_;
-    if (!section_bits_.TestAndReset(idx_section_)) {
-      return;
+  class AllDefaultVisitor : public VisitorBase<AllDefaultVisitor> {
+   public:
+    void U32(const uint32_t distribution, const uint32_t default_value,
+             const uint32_t* PIK_RESTRICT value) {
+      all_default_ &= *value == default_value;
     }
 
-    ptr->reset(new T);
-    ReadFieldsVisitor field_reader(reader_);
-    ok_ &= VisitFields(&field_reader, ptr->get());
-  }
-
-  void SkipUnknown() {
-    // Not visited => unknown; skip past them in the bitstream.
-    section_bits_.Foreach([this](const int idx) {
-      printf("Warning: skipping unknown section %d (size %u)\n", idx,
-             section_sizes_.Get(idx));
-      reader_->SkipBits(section_sizes_.Get(idx));
-    });
-  }
-
-  Status OK() const { return ok_; }
-
- private:
-  int idx_section_ = -1;      // pre-incremented
-  SectionBits section_bits_;  // Cleared after loading/skipping each section.
-  SectionSizes<kNumKnown> section_sizes_;
-  BitReader* PIK_RESTRICT reader_;  // not owned
-  bool ok_ = true;
-};
-
-// Writes fields.
-class WriteSectionVisitor {
- public:
-  WriteSectionVisitor(size_t* pos, uint8_t* storage) : writer_(pos, storage) {}
-
-  template <class T>
-  void operator()(const std::unique_ptr<T>* PIK_RESTRICT ptr) {
-    ++idx_section_;
-    if (*ptr != nullptr) {
-      ok_ &= VisitFields(&writer_, ptr->get());
+    void U64(const uint64_t default_value, const uint64_t* PIK_RESTRICT value) {
+      all_default_ &= *value == default_value;
     }
-  }
 
-  Status OK() const { return ok_ && writer_.OK(); }
+    template <typename T>
+    void Enum(const uint32_t distribution, const T default_value,
+              const T* PIK_RESTRICT value) {
+      all_default_ &= *value == default_value;
+    }
 
- private:
-  int idx_section_ = -1;  // pre-incremented
-  WriteFieldsVisitor writer_;
-  bool ok_ = true;
+    void Bool(bool default_value, const bool* PIK_RESTRICT value) {
+      all_default_ &= *value == default_value;
+    }
+
+    void Bytes(const BytesEncoding unused_encoding,
+               const PaddedBytes* PIK_RESTRICT value) {
+      all_default_ &= value->empty();
+    }
+
+    template <class Fields>
+    Status AllDefault(const Fields& fields, bool* PIK_RESTRICT all_default) {
+      PIK_ASSERT(*all_default == true);
+      // Visit all fields so we can compute the actual all_default_ value.
+      return false;
+    }
+
+    bool AllDefault() const { return all_default_; }
+
+   private:
+    bool all_default_ = true;
+  };
+
+  class ReadVisitor : public VisitorBase<ReadVisitor> {
+   public:
+    ReadVisitor(BitReader* reader) : reader_(reader) {}
+
+    void U32(const uint32_t distribution, const uint32_t default_value,
+             uint32_t* PIK_RESTRICT value) {
+      *value = U32Coder::Read(distribution, reader_);
+    }
+
+    void U64(const uint64_t default_value, uint64_t* PIK_RESTRICT value) {
+      *value = U64Coder::Read(reader_);
+    }
+
+    template <typename T>
+    void Enum(const uint32_t distribution, const T default_value,
+              T* PIK_RESTRICT value) {
+      uint32_t bits;
+      U32(distribution, static_cast<uint32_t>(default_value), &bits);
+      *value = static_cast<T>(bits);
+    }
+
+    void Bool(bool default_value, bool* PIK_RESTRICT value) {
+      uint32_t bits;
+      U32(kU32RawBits + 1, default_value, &bits);
+      PIK_ASSERT(bits <= 1);
+      *value = bits == 1;
+    }
+
+    void Bytes(const BytesEncoding unused_encoding,
+               PaddedBytes* PIK_RESTRICT value) {
+      ok_ &= BytesCoder::Read(reader_, value);
+    }
+
+    template <typename T>
+    void SetSizeWhenReading(uint32_t size, T* container) {
+      // Sets the container size to the given size in case of reading. The size
+      // must have been read from a previously visited field.
+      container->resize(size);
+    }
+
+    void BeginExtensions(uint64_t* PIK_RESTRICT extensions) {
+      VisitorBase<ReadVisitor>::BeginExtensions(extensions);
+      if (*extensions != 0) {
+        // Read the additional U64 indicating the number of extension bits
+        // (more compact than sending the total size).
+        extension_bits_ = U64Coder::Read(reader_);  // >= 0
+        // Used by EndExtensions to skip past any _remaining_ extensions.
+        pos_after_ext_size_ = reader_->BitsRead();
+        PIK_ASSERT(pos_after_ext_size_ != 0);
+      }
+    }
+
+    Status EndExtensions() {
+      PIK_RETURN_IF_ERROR(VisitorBase<ReadVisitor>::EndExtensions());
+      // Happens if extensions == 0: don't read size, done.
+      if (pos_after_ext_size_ == 0) return true;
+
+      // Skip new fields this (old?) decoder didn't know about, if any.
+      const size_t bits_read = reader_->BitsRead();
+      const uint64_t end = pos_after_ext_size_ + extension_bits_;
+      if (bits_read > end) {
+        return PIK_FAILURE("Read more extension bits than budgeted");
+      }
+      const size_t remaining_bits = end - bits_read;
+      if (remaining_bits != 0) {
+        fprintf(stderr, "Skipping %zu-bit extension(s)\n", remaining_bits);
+        reader_->SkipBits(remaining_bits);
+      }
+      return true;
+    }
+
+    Status OK() const { return ok_; }
+
+   private:
+    bool ok_ = true;
+    BitReader* const reader_;
+    uint64_t extension_bits_ = 0;    // May be 0 even if extensions present.
+    size_t pos_after_ext_size_ = 0;  // 0 iff extensions == 0.
+  };
+
+  class CanEncodeVisitor : public VisitorBase<CanEncodeVisitor> {
+   public:
+    void U32(const uint32_t distribution, const uint32_t default_value,
+             const uint32_t* PIK_RESTRICT value) {
+      size_t encoded_bits = 0;
+      ok_ &= U32Coder::CanEncode(distribution, *value, &encoded_bits);
+      encoded_bits_ += encoded_bits;
+    }
+
+    void U64(const uint64_t default_value, const uint64_t* PIK_RESTRICT value) {
+      size_t encoded_bits = 0;
+      ok_ &= U64Coder::CanEncode(*value, &encoded_bits);
+      encoded_bits_ += encoded_bits;
+    }
+
+    template <typename T>
+    void Enum(const uint32_t distribution, const T default_value,
+              T* PIK_RESTRICT value) {
+      uint32_t bits = static_cast<uint32_t>(*value);
+      U32(distribution, static_cast<uint32_t>(default_value), &bits);
+    }
+
+    void Bool(const bool default_value, bool* PIK_RESTRICT value) {
+      uint32_t bits = static_cast<uint32_t>(*value);
+      U32(kU32RawBits + 1, default_value, &bits);
+    }
+
+    void Bytes(const BytesEncoding encoding,
+               const PaddedBytes* PIK_RESTRICT value) {
+      size_t encoded_bits = 0;
+      ok_ &= BytesCoder::CanEncode(encoding, *value, &encoded_bits);
+      encoded_bits_ += encoded_bits;
+    }
+
+    template <class Fields>
+    Status AllDefault(const Fields& fields, bool* PIK_RESTRICT all_default) {
+      *all_default = Bundle::AllDefault(fields);
+      Bool(true, all_default);
+      return *all_default;
+    }
+
+    void BeginExtensions(uint64_t* PIK_RESTRICT extensions) {
+      VisitorBase<CanEncodeVisitor>::BeginExtensions(extensions);
+      if (*extensions != 0) {
+        PIK_ASSERT(pos_after_ext_ == 0);
+        pos_after_ext_ = encoded_bits_;
+        PIK_ASSERT(pos_after_ext_ != 0);  // visited "extensions"
+      }
+    }
+    // EndExtensions = default.
+
+    Status GetSizes(size_t* PIK_RESTRICT extension_bits,
+                    size_t* PIK_RESTRICT total_bits) {
+      PIK_RETURN_IF_ERROR(ok_);
+      *extension_bits = 0;
+      *total_bits = encoded_bits_;
+      // Only if extension field was nonzero will we encode the size.
+      if (pos_after_ext_ != 0) {
+        PIK_ASSERT(encoded_bits_ >= pos_after_ext_);
+        *extension_bits = encoded_bits_ - pos_after_ext_;
+        // Also need to encode *extension_bits and bill it to *total_bits.
+        size_t encoded_bits = 0;
+        ok_ &= U64Coder::CanEncode(*extension_bits, &encoded_bits);
+        *total_bits += encoded_bits;
+      }
+      return true;
+    }
+
+   private:
+    bool ok_ = true;
+    size_t encoded_bits_ = 0;
+    // Snapshot of encoded_bits_ after visiting the extension field, but NOT
+    // including the hidden "extension_bits" u64.
+    uint64_t pos_after_ext_ = 0;
+  };
+
+  class WriteVisitor : public VisitorBase<WriteVisitor> {
+   public:
+    WriteVisitor(const size_t extension_bits, size_t* pos, uint8_t* storage)
+        : extension_bits_(extension_bits), pos_(pos), storage_(storage) {}
+
+    void U32(const uint32_t distribution, const uint32_t default_value,
+             const uint32_t* PIK_RESTRICT value) {
+      ok_ &= U32Coder::Write(distribution, *value, pos_, storage_);
+    }
+
+    void U64(const uint64_t default_value, const uint64_t* PIK_RESTRICT value) {
+      ok_ &= U64Coder::Write(*value, pos_, storage_);
+    }
+
+    template <typename T>
+    void Enum(const uint32_t distribution, const T default_value,
+              T* PIK_RESTRICT value) {
+      const uint32_t bits = static_cast<uint32_t>(*value);
+      U32(distribution, static_cast<uint32_t>(default_value), &bits);
+    }
+
+    void Bool(const bool default_value, bool* PIK_RESTRICT value) {
+      const uint32_t bits = static_cast<uint32_t>(*value);
+      U32(kU32RawBits + 1, default_value, &bits);
+    }
+
+    void Bytes(const BytesEncoding encoding,
+               const PaddedBytes* PIK_RESTRICT value) {
+      ok_ &= BytesCoder::Write(encoding, *value, pos_, storage_);
+    }
+
+    void BeginExtensions(uint64_t* PIK_RESTRICT extensions) {
+      VisitorBase<WriteVisitor>::BeginExtensions(extensions);
+      if (*extensions == 0) {
+        PIK_ASSERT(extension_bits_ == 0);
+      } else {
+        // NOTE: extension_bits_ can be zero if the extensions do not require
+        // any additional fields.
+        ok_ &= U64Coder::Write(extension_bits_, pos_, storage_);
+      }
+    }
+    // EndExtensions = default.
+
+    Status OK() const { return ok_; }
+
+   private:
+    const size_t extension_bits_;
+    size_t* PIK_RESTRICT pos_;
+    uint8_t* storage_;
+    bool ok_ = true;
+  };
 };
-
-template <class T>
-Status CanEncodeSectionsT(const T& t, size_t* PIK_RESTRICT encoded_bits) {
-  CanEncodeSectionVisitor<T::kNumKnown> section_visitor;
-  VisitSectionsConst(&section_visitor, t);
-  return section_visitor.CanEncode(encoded_bits);
-}
-
-template <class T>
-Status LoadSectionsT(BitReader* reader, T* PIK_RESTRICT t) {
-  ReadSectionVisitor<T::kNumKnown> section_reader(reader);
-  VisitSections(&section_reader, t);
-  section_reader.SkipUnknown();
-  return section_reader.OK() && reader->Healthy();
-}
-
-template <class T>
-Status StoreSectionsT(const T& t, size_t* PIK_RESTRICT pos, uint8_t* storage) {
-  CanEncodeSectionVisitor<T::kNumKnown> can_encode;
-  VisitSectionsConst(&can_encode, t);
-  const SectionBits& section_bits = can_encode.GetBits();
-  PIK_RETURN_IF_ERROR(section_bits.Store(pos, storage));
-  PIK_RETURN_IF_ERROR(can_encode.GetSizes().Store(section_bits, pos, storage));
-
-  WriteSectionVisitor section_writer(pos, storage);
-  VisitSectionsConst(&section_writer, t);
-  return section_writer.OK();
-}
 
 }  // namespace pik
 

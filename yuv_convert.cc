@@ -35,38 +35,39 @@ constexpr double kWeightRc = 1.0 - kWeightR;
 constexpr double kScaleY = 219.0 / 255.0;
 constexpr double kScaleUV = 112.0 / 255.0;
 
+// clang-format off
 constexpr double RGBtoYUVMatrix[9] = {
-  kWeightR * kScaleY,
-  kWeightG * kScaleY,
-  kWeightB * kScaleY,
-  (-kWeightR / kWeightBc) * kScaleUV,
-  (-kWeightG / kWeightBc) * kScaleUV,
-  kScaleUV,
-  kScaleUV,
-  (-kWeightG / kWeightRc) * kScaleUV,
-  (-kWeightB / kWeightRc) * kScaleUV,
+    kWeightR * kScaleY,
+    kWeightG * kScaleY,
+    kWeightB * kScaleY,
+    (-kWeightR / kWeightBc) * kScaleUV,
+    (-kWeightG / kWeightBc) * kScaleUV,
+    kScaleUV,
+    kScaleUV,
+    (-kWeightG / kWeightRc) * kScaleUV,
+    (-kWeightB / kWeightRc) * kScaleUV,
 };
 
-constexpr double RGBtoYUVMatrixAdd[3] = { .0625, .5, .5 };
+constexpr double RGBtoYUVMatrixAdd[3] = {.0625, .5, .5};
 
 constexpr double YUVtoRGBMatrix[9] = {
-  1.0 / kScaleY,
-  0.0,
-  kWeightRc / kScaleUV,
-  1.0 / kScaleY,
-  -kWeightBc * kWeightB / kWeightG / kScaleUV,
-  -kWeightRc * kWeightR / kWeightG / kScaleUV,
-  1.0 / kScaleY,
-  kWeightBc / kScaleUV,
-  0.0
-};
+    1.0 / kScaleY,
+    0.0,
+    kWeightRc / kScaleUV,
+    1.0 / kScaleY,
+    -kWeightBc * kWeightB / kWeightG / kScaleUV,
+    -kWeightRc * kWeightR / kWeightG / kScaleUV,
+    1.0 / kScaleY,
+    kWeightBc / kScaleUV,
+    0.0};
+// clang-format on
 
 #define clamp(V, M) (uint16_t)((V) < 0 ? 0 : ((V) > (M) ? (M) : V))
 
 // Input range:  [0 .. (1<<bits)-1]
 // Output range: [0.0 .. 1.0]
-void YUVPixelToRGB(uint16_t yv, uint16_t uv, uint16_t vv, int bits,
-                   double* r, double* g, double* b) {
+void YUVPixelToRGB(uint16_t yv, uint16_t uv, uint16_t vv, int bits, double* r,
+                   double* g, double* b) {
   const double norm = 1. / ((1 << bits) - 1);
   const double y = yv * norm - RGBtoYUVMatrixAdd[0];
   const double u = uv * norm - RGBtoYUVMatrixAdd[1];
@@ -78,8 +79,8 @@ void YUVPixelToRGB(uint16_t yv, uint16_t uv, uint16_t vv, int bits,
 
 // Input range:  [0 .. (1<<bits)-1]
 template <typename T>
-void YUVPixelToRGB(uint16_t yv, uint16_t uv, uint16_t vv, int bits,
-                   T *r, T *g, T *b) {
+void YUVPixelToRGB(uint16_t yv, uint16_t uv, uint16_t vv, int bits, T* r, T* g,
+                   T* b) {
   const int maxv_out = (1 << (8 * sizeof(T))) - 1;
   double rd, gd, bd;
   YUVPixelToRGB(yv, uv, vv, bits, &rd, &gd, &bd);
@@ -90,21 +91,15 @@ void YUVPixelToRGB(uint16_t yv, uint16_t uv, uint16_t vv, int bits,
 
 // Input range:  [0.0 .. 1.0]
 // Output range: [0 .. (1<<bits)-1]
-void RGBPixelToYUV(double r, double g, double b, int bits,
-                   uint16_t *y, uint16_t *u, uint16_t *v) {
+void RGBPixelToYUV(double r, double g, double b, int bits, uint16_t* y,
+                   uint16_t* u, uint16_t* v) {
   const double maxv = (1 << bits) - 1;
-  const double Y = RGBtoYUVMatrixAdd[0] +
-                     RGBtoYUVMatrix[0] * r +
-                     RGBtoYUVMatrix[1] * g +
-                     RGBtoYUVMatrix[2] * b;
-  const double U = RGBtoYUVMatrixAdd[1] +
-                     RGBtoYUVMatrix[3] * r +
-                     RGBtoYUVMatrix[4] * g +
-                     RGBtoYUVMatrix[5] * b;
-  const double V = RGBtoYUVMatrixAdd[2] +
-                     RGBtoYUVMatrix[6] * r +
-                     RGBtoYUVMatrix[7] * g +
-                     RGBtoYUVMatrix[8] * b;
+  const double Y = RGBtoYUVMatrixAdd[0] + RGBtoYUVMatrix[0] * r +
+                   RGBtoYUVMatrix[1] * g + RGBtoYUVMatrix[2] * b;
+  const double U = RGBtoYUVMatrixAdd[1] + RGBtoYUVMatrix[3] * r +
+                   RGBtoYUVMatrix[4] * g + RGBtoYUVMatrix[5] * b;
+  const double V = RGBtoYUVMatrixAdd[2] + RGBtoYUVMatrix[6] * r +
+                   RGBtoYUVMatrix[7] * g + RGBtoYUVMatrix[8] * b;
   *y = clamp(.5 + maxv * Y, maxv);
   *u = clamp(.5 + maxv * U, maxv);
   *v = clamp(.5 + maxv * V, maxv);
@@ -112,8 +107,8 @@ void RGBPixelToYUV(double r, double g, double b, int bits,
 
 // Output range: [0 .. (1<<bits)-1]
 template <typename T>
-void RGBPixelToYUV(T r, T g, T b, int bits,
-                   uint16_t *y, uint16_t *u, uint16_t *v) {
+void RGBPixelToYUV(T r, T g, T b, int bits, uint16_t* y, uint16_t* u,
+                   uint16_t* v) {
   const double norm = 1. / ((1 << (8 * sizeof(T))) - 1);
   const double rd = r * norm;
   const double gd = g * norm;
@@ -225,11 +220,8 @@ Image3U YUVRec709ImageFromRGBLinear(const Image3F& rgb, int out_bit_depth) {
   return yuv;
 }
 
-void SubSampleChroma(const Image3U& yuv,
-                     int bit_depth,
-                     ImageU* yplane,
-                     ImageU* uplane,
-                     ImageU* vplane) {
+void SubSampleChroma(const Image3U& yuv, int bit_depth, ImageU* yplane,
+                     ImageU* uplane, ImageU* vplane) {
   const int xsize = yuv.xsize();
   const int ysize = yuv.ysize();
   const int c_xsize = (xsize + 1) / 2;
@@ -255,8 +247,8 @@ void SubSampleChroma(const Image3U& yuv,
   }
 }
 
-ImageU SuperSamplePlane(const ImageU& in, int bit_depth,
-                        int out_xsize, int out_ysize) {
+ImageU SuperSamplePlane(const ImageU& in, int bit_depth, int out_xsize,
+                        int out_ysize) {
   const int c_xsize = in.xsize();
   const int c_ysize = in.ysize();
   ImageU out(2 * c_xsize, 2 * c_ysize);
@@ -273,24 +265,22 @@ ImageU SuperSamplePlane(const ImageU& in, int bit_depth,
       const int x0 = x > 0 ? x - 1 : x;
       const int x1 = x;
       const int x2 = x + 1 < c_xsize ? x + 1 : x;
-      row_out0[2 * x + 0] = (9 * row1[x1] + 3 * row1[x0] +
-                             3 * row0[x1] + 1 * row0[x0] + 8) / 16;
-      row_out0[2 * x + 1] = (9 * row1[x1] + 3 * row1[x2] +
-                             3 * row0[x1] + 1 * row0[x2] + 8) / 16;
-      row_out1[2 * x + 0] = (9 * row1[x1] + 3 * row1[x0] +
-                             3 * row2[x1] + 1 * row2[x0] + 8) / 16;
-      row_out1[2 * x + 1] = (9 * row1[x1] + 3 * row1[x2] +
-                             3 * row2[x1] + 1 * row2[x2] + 8) / 16;
+      row_out0[2 * x + 0] =
+          (9 * row1[x1] + 3 * row1[x0] + 3 * row0[x1] + 1 * row0[x0] + 8) / 16;
+      row_out0[2 * x + 1] =
+          (9 * row1[x1] + 3 * row1[x2] + 3 * row0[x1] + 1 * row0[x2] + 8) / 16;
+      row_out1[2 * x + 0] =
+          (9 * row1[x1] + 3 * row1[x0] + 3 * row2[x1] + 1 * row2[x0] + 8) / 16;
+      row_out1[2 * x + 1] =
+          (9 * row1[x1] + 3 * row1[x2] + 3 * row2[x1] + 1 * row2[x2] + 8) / 16;
     }
   }
   out.ShrinkTo(out_xsize, out_ysize);
   return out;
 }
 
-Image3U SuperSampleChroma(const ImageU& yplane,
-                          const ImageU& uplane,
-                          const ImageU& vplane,
-                          int bit_depth) {
+Image3U SuperSampleChroma(const ImageU& yplane, const ImageU& uplane,
+                          const ImageU& vplane, int bit_depth) {
   const int xsize = yplane.xsize();
   const int ysize = yplane.ysize();
   return Image3U(CopyImage(yplane),

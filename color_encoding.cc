@@ -14,6 +14,8 @@
 
 #include "color_encoding.h"
 
+#include "fields.h"
+
 namespace pik {
 
 // These strings are baked into Description - do not change. Fixed-length
@@ -436,17 +438,23 @@ Status ParseDescription(const std::string& description,
   return true;
 }
 
-ProfileParams ParamsFromColorEncoding(const ColorEncoding& c) {
-  ProfileParams pp;
-  pp.color_space = c.color_space;
+Status ColorEncodingToParams(const ColorEncoding& c,
+                             ProfileParams* PIK_RESTRICT pp) {
+  pp->color_space = c.color_space;
+  pp->gamma = GammaFromTransferFunction(c.transfer_function);
+  pp->rendering_intent = c.rendering_intent;
 
-  // Don't care about return value - if false, CIExy are {0, 0}.
-  (void)WhitePointToCIExy(c.white_point, &pp.white_point);
-  (void)PrimariesToCIExy(c.primaries, &pp.primaries);
+  // Avoid unnecessary failure by skipping white point/primaries if they are
+  // undefined anyway.
+  if (c.color_space != ColorSpace::kXYZ) {
+    PIK_RETURN_IF_ERROR(WhitePointToCIExy(c.white_point, &pp->white_point));
+  }
 
-  pp.gamma = GammaFromTransferFunction(c.transfer_function);
-  pp.rendering_intent = c.rendering_intent;
-  return pp;
+  if (c.color_space != ColorSpace::kGray && c.color_space != ColorSpace::kXYZ) {
+    PIK_RETURN_IF_ERROR(PrimariesToCIExy(c.primaries, &pp->primaries));
+  }
+
+  return true;
 }
 
 void SetFieldsFromParams(const ProfileParams& pp,
@@ -494,5 +502,7 @@ std::vector<ColorEncoding> AllEncodings() {
 
   return all_encodings;
 }
+
+ColorEncoding::ColorEncoding() { Bundle::Init(this); }
 
 }  // namespace pik

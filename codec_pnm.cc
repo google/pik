@@ -21,6 +21,7 @@
 #include "bits.h"
 #include "byte_order.h"
 #include "external_image.h"
+#include "fields.h"
 
 namespace pik {
 namespace {
@@ -213,7 +214,7 @@ Status ApplyHints(const bool is_gray, CodecInOut* io) {
     if (key == "color_space") {
       ProfileParams pp;
       if (!ParseDescription(value, &pp) ||
-          !io->Context()->cms.SetFromParams(pp, &io->dec_c_original)) {
+          !ColorManagement::SetFromParams(pp, &io->dec_c_original)) {
         fprintf(stderr, "PNM: Failed to apply color_space.\n");
         ok = false;
       }
@@ -233,7 +234,7 @@ Status ApplyHints(const bool is_gray, CodecInOut* io) {
     fprintf(stderr, "PNM: no color_space hint given, assuming sRGB.\n");
     io->dec_c_original.SetSRGB(is_gray ? ColorSpace::kGray : ColorSpace::kRGB);
     PIK_RETURN_IF_ERROR(
-        io->Context()->cms.SetProfileFromFields(&io->dec_c_original));
+        ColorManagement::SetProfileFromFields(&io->dec_c_original));
   }
 
   if (!ok) return PIK_FAILURE("PNM ApplyHints failed");
@@ -242,7 +243,8 @@ Status ApplyHints(const bool is_gray, CodecInOut* io) {
 
 }  // namespace
 
-Status DecodeImagePNM(const PaddedBytes& bytes, CodecInOut* io) {
+Status DecodeImagePNM(const PaddedBytes& bytes, ThreadPool* pool,
+                      CodecInOut* io) {
   io->enc_size = bytes.size();
 
   Parser parser(bytes);
@@ -260,16 +262,17 @@ Status DecodeImagePNM(const PaddedBytes& bytes, CodecInOut* io) {
                                has_alpha, header.bits_per_sample,
                                header.big_endian, pos, end);
   const CodecIntervals* temp_intervals = nullptr;  // Don't know min/max.
-  return external.CopyTo(temp_intervals, io);
+  return external.CopyTo(temp_intervals, pool, io);
 }
 
 Status EncodeImagePNM(const CodecInOut* io, const ColorEncoding& c_desired,
-                      size_t bits_per_sample, PaddedBytes* bytes) {
+                      size_t bits_per_sample, ThreadPool* pool,
+                      PaddedBytes* bytes) {
   io->enc_bits_per_sample = bits_per_sample <= 16 ? bits_per_sample : 32;
   // Choose native for PFM; PGM/PPM require big-endian.
   const bool big_endian = (bits_per_sample == 32) ? !IsLittleEndian() : true;
 
-  if (io->metadata.HasAny()) {
+  if (!Bundle::AllDefault(io->metadata)) {
     fprintf(stderr, "PNM encoder ignoring metadata - use a different codec.\n");
   }
   if (!c_desired.IsSRGB()) {
@@ -280,9 +283,9 @@ Status EncodeImagePNM(const CodecInOut* io, const ColorEncoding& c_desired,
 
   const ImageU* alpha = io->HasAlpha() ? &io->alpha() : nullptr;
   CodecIntervals* temp_intervals = nullptr;  // Can't store min/max.
-  ExternalImage external(io->Context(), io->color(), io->c_current(), c_desired,
-                         io->HasAlpha(), alpha, io->enc_bits_per_sample,
-                         big_endian, temp_intervals);
+  ExternalImage external(pool, io->color(), Rect(io->color()), io->c_current(),
+                         c_desired, io->HasAlpha(), alpha,
+                         io->enc_bits_per_sample, big_endian, temp_intervals);
   PIK_RETURN_IF_ERROR(external.IsHealthy());
 
   char header[kMaxHeaderSize];

@@ -41,7 +41,8 @@ namespace pik {
 //
 // To entirely disable an instruction set (e.g. if not supported by the
 // compiler), comment it out below. Specifying this in source code simplifies
-// the build system and avoids custom compiler options.
+// the build system and avoids needing custom compiler options.
+#ifndef SIMD_ENABLE
 #if SIMD_ARCH == SIMD_ARCH_X86
 #define SIMD_ENABLE (SIMD_SSE4 | SIMD_AVX2)
 #elif SIMD_ARCH == SIMD_ARCH_PPC
@@ -49,7 +50,8 @@ namespace pik {
 #elif SIMD_ARCH == SIMD_ARCH_ARM
 #define SIMD_ENABLE SIMD_ARM8
 #error "Unsupported platform"
-#endif
+#endif  // #if SIMD_ARCH
+#endif  // #ifndef SIMD_ENABLE
 
 // Sets SIMD_TARGET to the 'best' target in SIMD_ENABLE. This is only useful for
 // single-target code; for runtime dispatch, use foreach_target.h to generate

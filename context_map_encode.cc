@@ -85,7 +85,8 @@ void RunLengthCodeZeros(const std::vector<uint8_t>& v_in,
                         std::vector<uint32_t>* extra_bits) {
   uint32_t max_reps = 0;
   for (size_t i = 0; i < v_in.size();) {
-    for (; i < v_in.size() && v_in[i] != 0; ++i) ;
+    for (; i < v_in.size() && v_in[i] != 0; ++i) {
+    }
     uint32_t reps = 0;
     for (; i < v_in.size() && v_in[i] == 0; ++i) {
       ++reps;
@@ -125,8 +126,8 @@ void RunLengthCodeZeros(const std::vector<uint8_t>& v_in,
 }  // namespace
 
 void EncodeContextMap(const std::vector<uint8_t>& context_map,
-                      size_t num_histograms,
-                      size_t* storage_ix, uint8_t* storage) {
+                      size_t num_histograms, size_t* storage_ix,
+                      uint8_t* storage) {
   StoreVarLenUint8(num_histograms - 1, storage_ix, storage);
 
   if (num_histograms == 1) {
@@ -140,8 +141,8 @@ void EncodeContextMap(const std::vector<uint8_t>& context_map,
   std::vector<uint32_t> rle_symbols;
   std::vector<uint32_t> extra_bits;
   uint32_t max_run_length_prefix = 6;
-  RunLengthCodeZeros(transformed_symbols, &max_run_length_prefix,
-                     &rle_symbols, &extra_bits);
+  RunLengthCodeZeros(transformed_symbols, &max_run_length_prefix, &rle_symbols,
+                     &extra_bits);
   uint32_t symbol_histogram[kAlphabetSize];
   memset(symbol_histogram, 0, sizeof(symbol_histogram));
   for (size_t i = 0; i < rle_symbols.size(); ++i) {
@@ -157,13 +158,11 @@ void EncodeContextMap(const std::vector<uint8_t>& context_map,
   memset(bit_depths, 0, sizeof(bit_depths));
   memset(bit_codes, 0, sizeof(bit_codes));
   BuildAndStoreHuffmanTree(symbol_histogram,
-                           num_histograms + max_run_length_prefix,
-                           bit_depths, bit_codes,
-                           storage_ix, storage);
+                           num_histograms + max_run_length_prefix, bit_depths,
+                           bit_codes, storage_ix, storage);
   for (size_t i = 0; i < rle_symbols.size(); ++i) {
-    WriteBits(bit_depths[rle_symbols[i]],
-              bit_codes[rle_symbols[i]],
-              storage_ix, storage);
+    WriteBits(bit_depths[rle_symbols[i]], bit_codes[rle_symbols[i]], storage_ix,
+              storage);
     if (rle_symbols[i] > 0 && rle_symbols[i] <= max_run_length_prefix) {
       WriteBits(rle_symbols[i], extra_bits[i], storage_ix, storage);
     }

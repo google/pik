@@ -13,292 +13,330 @@
 // limitations under the License.
 
 #include "adaptive_reconstruction.h"
+#include <cstdint>
+#include <cstring>
 
-#include "af_edge_preserving_filter.h"
+#include "ac_strategy.h"
 #include "block.h"
 #include "common.h"
-#include "context.h"  // kDCTBlockSize
 #include "dct.h"
+#include "dct_util.h"
+#include "entropy_coder.h"
+#include "epf.h"
+#include "profiler.h"
+#include "quantizer.h"
 #include "simd/simd.h"
+
+#ifndef PIK_AR_PRINT_STATS
+#define PIK_AR_PRINT_STATS 0
+#endif
 
 namespace pik {
 namespace {
 
-const float kEpfMulScale = 10000.0f;
-// Multiplier for filter parameter (/kEpfMulScale)
-const int32_t FLAGS_epf_mul = 256;
+Image3F DoDenoise(const Image3F& opsin, const Image3F& opsin_sharp,
+                  const Quantizer& quantizer, const ImageI& raw_quant_field,
+                  const AcStrategyImage& ac_strategy,
+                  const EpfParams& epf_params, AdaptiveReconstructionAux* aux) {
+  if (aux != nullptr) {
+    aux->quant_scale = quantizer.Scale();
+  }
 
-Image3F DoDenoise(const Quantizer& quantizer, ThreadPool* pool,
-                  const Image3F& opsin) {
-  const float scale = quantizer.Scale() * kEpfMulScale;
-  const float sigma_mul =
-      scale / (FLAGS_epf_mul << EdgePreservingFilter::kSigmaShift);
   Image3F smoothed(opsin.xsize(), opsin.ysize());
-  Dispatch(TargetBitfield().Best(), EdgePreservingFilter(), opsin,
-           &quantizer.RawQuantField(), sigma_mul, pool, &smoothed);
+
+  const float quant_scale = quantizer.Scale();
+  if (epf_params.enable_adaptive) {
+    Dispatch(TargetBitfield().Best(), EdgePreservingFilter(), opsin,
+             opsin_sharp, &raw_quant_field, quant_scale, ac_strategy,
+             epf_params, &smoothed, aux ? &aux->epf_stats : nullptr);
+  } else {
+    float stretch;
+    Dispatch(TargetBitfield().Best(), EdgePreservingFilter(), opsin,
+             opsin_sharp, epf_params, aux ? &aux->stretch : &stretch,
+             &smoothed);
+  }
   return smoothed;
 }
 
 using DF = SIMD_FULL(float);
 using DI = SIMD_FULL(int32_t);
+using DU = SIMD_FULL(uint32_t);
 using VF = DF::V;
 using VI = DI::V;
+using VU = DU::V;
 
-// Clamp around the original coefficients: less for zeros,
-// asymmetric clamping for non-zeros.
-SIMD_ATTR PIK_INLINE VF AsymmetricClamp(const VF original, const VF smoothed) {
+struct AdaptiveReconstructionStats {
+  VU low_clamp_count;
+  VU high_clamp_count;
+  SIMD_ATTR AdaptiveReconstructionStats() {
+    low_clamp_count = setzero(DU());
+    high_clamp_count = setzero(DU());
+  }
+  SIMD_ATTR void Assimilate(const AdaptiveReconstructionStats& other) {
+    high_clamp_count += other.high_clamp_count;
+    low_clamp_count += other.low_clamp_count;
+  }
+};
+
+// Clamp the difference between the coefficients of the filtered image and the
+// coefficients of the original image (i.e. `correction`) to an interval whose
+// size depends on the values in the non-smoothed image. The interval is
+// scaled according to `interval_scale`.
+SIMD_ATTR PIK_INLINE VF
+AsymmetricClamp(const VF correction, const VF interval_scale, const VF bias,
+                const VF values, const size_t c, const float asym,
+                AdaptiveReconstructionStats* PIK_RESTRICT stats) {
   const DF df;
   const auto half = set1(df, 0.5f);
-  const auto small = set1(df, 0.2f);
-  const auto is_neg = original < set1(df, -0.5f);
-  const auto is_pos = original > half;
-  const auto add = select(half, small, is_neg);
-  const auto sub = select(half, small, is_pos);
-  return min(max(original - sub, smoothed), original + add);
+  const auto small = set1(df, asym);
+  const auto is_neg = values < set1(df, -0.5f) * interval_scale;
+  const auto upper_bound = select(half, small, is_neg) * interval_scale;
+
+  const auto is_pos = values > half * interval_scale;
+  const auto neghalf = set1(df, -0.5f);
+  const auto negsmall = set1(df, -asym);
+  const auto lower_bound = select(neghalf, negsmall, is_pos) * interval_scale;
+
+  const auto clamped = min(max(lower_bound + bias * interval_scale, correction),
+                           upper_bound + bias * interval_scale);
+
+#if PIK_AR_PRINT_STATS
+  const DU du;
+  const auto one = set1(du, uint32_t(1));
+  const auto is_low = correction < clamped;
+  stats->low_clamp_count += cast_to(du, is_low) & one;
+  const auto is_high = correction > clamped;
+  stats->high_clamp_count += cast_to(du, is_high) & one;
+#endif
+  return clamped;
 }
 
-SIMD_ATTR VF YtoX(VF y, VI x_factor) {
-  const auto scale = set1(DF(), kColorScaleX);
-  const auto biased = convert_to(DF(), x_factor - set1(DI(), kColorOffsetX));
-  return y * biased * scale;
-}
-SIMD_ATTR VF YtoB(VF y, VI b_factor) {
-  const auto scale = set1(DF(), kColorScaleB);
-  const auto biased = convert_to(DF(), b_factor - set1(DI(), kColorOffsetB));
-  return y * biased * scale;
-}
-SIMD_ATTR VF YtoTag(TagX, VF y, VI factor) { return YtoX(y, factor); }
-SIMD_ATTR VF YtoTag(TagB, VF y, VI factor) { return YtoB(y, factor); }
-
-// quant_matrix[] = 1/dequant_matrix[]. quant_ac = raw*scale.
-SIMD_ATTR PIK_INLINE void ScaledBlockDCT_Y(
-    const float* PIK_RESTRICT opsin, size_t stride,
-    const float* const PIK_RESTRICT quant_matrix, const float quant_ac,
-    const float inv_dc_mul, float* PIK_RESTRICT block,
-    float* PIK_RESTRICT block_unscaled) {
-  ComputeTransposedScaledDCT<kBlockDim>(
-      FromLines(opsin, stride), ScaleToBlock<kBlockDim>(block_unscaled));
-
+// Clamps a block of the filtered image, pointed to by `opsin`, ensuring that it
+// does not get too far away from the values in the corresponding block of the
+// original image, pointed to by `original`. Instead of computing the difference
+// of the DCT of the two images, we compute the DCT of the difference as DCT is
+// a linear operator and this saves some work. `biases` contains the
+// dequantization bias that was used for the current block.
+SIMD_ATTR PIK_INLINE void ClampBlockToOriginalDCT(
+    const float* PIK_RESTRICT original, size_t stride,
+    const float* PIK_RESTRICT biases, const size_t biases_stride,
+    const float* PIK_RESTRICT dequant_matrices, const float inv_quant_ac,
+    const float dc_mul, const size_t c, AcStrategy acs,
+    float* PIK_RESTRICT filt, AdaptiveReconstructionStats* PIK_RESTRICT stats) {
+  SIMD_ALIGN float block[AcStrategy::kMaxCoeffArea];
   const SIMD_FULL(float) df;
+  const SIMD_PART(float, 1) d1;
   const SIMD_FULL(uint32_t) du;
-  const auto qac = set1(df, quant_ac);
 
-  // Merge DC into first vector - important because caller will load a vector
-  // from "block", which leads to a stall if we write block[0] here.
-  const auto unscaled = load(df, block_unscaled);
-  const auto scaled_dc = unscaled * set1(df, inv_dc_mul);
-  const auto scaled = unscaled * load(df, quant_matrix) * qac;
-  SIMD_ALIGN const uint32_t mask_lanes[df.N] = {~0u};
-  const auto mask_dc = cast_to(df, load(du, mask_lanes));
-  const auto merged = select(scaled, scaled_dc, mask_dc);
-  store(merged, df, block);
+  const float* dequant_matrix =
+      dequant_matrices +
+      kBlockDim * kBlockDim * DequantMatrixOffset(0, acs.GetQuantKind(), c);
 
-  for (size_t k = df.N; k < kDCTBlockSize; k += df.N) {
-    const auto unscaled = load(df, block_unscaled + k);
-    const auto scaled = unscaled * load(df, quant_matrix + k) * qac;
-    store(scaled, df, block + k);
-  }
-}
+  const size_t block_height = kBlockDim * acs.covered_blocks_y();
+  const size_t block_width = kBlockDim * acs.covered_blocks_x();
 
-// y_block_unscaled is a copy from BEFORE calling ScaledBlockDCT_Y.
-template <class TagXB>
-SIMD_ATTR PIK_INLINE void ScaledBlockDCT_XB(
-    const float* PIK_RESTRICT opsin, size_t stride,
-    const float* PIK_RESTRICT y_block_unscaled, const int32_t correlation,
-    const float dc_color_factor, const float* const PIK_RESTRICT quant_matrix,
-    const float quant_ac, const float inv_dc_mul, float* PIK_RESTRICT block) {
-  ComputeTransposedScaledDCT<kBlockDim>(FromLines(opsin, stride),
-                                        ScaleToBlock<kBlockDim>(block));
-  const SIMD_FULL(float) df;
-  const SIMD_FULL(int32_t) di;
-  const auto qac = set1(df, quant_ac);
-  const auto cmap = set1(di, correlation);
-
-  auto scaled = load(df, block);
-  const auto y_unscaled = load(df, y_block_unscaled);
-  auto scaled_dc = nmul_add(set1(df, dc_color_factor), y_unscaled, scaled);
-  scaled_dc *= set1(df, inv_dc_mul);
-  scaled -= YtoTag(TagXB(), y_unscaled, cmap);
-  scaled *= load(df, quant_matrix) * qac;
-
-  // Merge DC into first vector - important because caller will load a vector
-  // from "block", which leads to a stall if we write block[0] here.
-  SIMD_ALIGN const int32_t mask_lanes[df.N] = {-1};
-  const auto mask_dc = cast_to(df, load(di, mask_lanes));
-  const auto merged = select(scaled, scaled_dc, mask_dc);
-  store(merged, df, block);
-
-  for (size_t k = df.N; k < kDCTBlockSize; k += df.N) {
-    auto scaled = load(df, block + k);
-    const auto y_unscaled = load(df, y_block_unscaled + k);
-    scaled -= YtoTag(TagXB(), y_unscaled, cmap);
-    scaled *= load(df, quant_matrix + k) * qac;
-    store(scaled, df, block + k);
-  }
-}
-
-SIMD_ATTR PIK_INLINE void ClampBlockToOriginalDCT_Y(
-    const float* PIK_RESTRICT original, size_t stride,
-    const float* PIK_RESTRICT dequant_matrix,
-    const float* PIK_RESTRICT quant_matrix, const float quant_ac,
-    const float inv_quant_ac, const float dc_mul, const float inv_dc_mul,
-    float* PIK_RESTRICT opsin, float* PIK_RESTRICT original_block_unscaled,
-    float* PIK_RESTRICT block, float* PIK_RESTRICT y_block_unscaled) {
-  SIMD_ALIGN float original_block[kDCTBlockSize];
-  ScaledBlockDCT_Y(original, stride, quant_matrix, quant_ac, inv_dc_mul,
-                   original_block, original_block_unscaled);
-
-  ScaledBlockDCT_Y(opsin, stride, quant_matrix, quant_ac, inv_dc_mul, block,
-                   y_block_unscaled);
-
-  const SIMD_FULL(float) df;
-  for (size_t k = 0; k < kDCTBlockSize; k += df.N) {
-    const auto original = load(df, original_block + k);
-    const auto smoothed = load(df, block + k);
-    auto clamped = AsymmetricClamp(original, smoothed);
-
-    // Scale back to original range.
-    clamped *= load(df, dequant_matrix + k) * set1(df, inv_quant_ac);
-    store(clamped, df, block + k);
+  for (size_t iy = 0; iy < block_height; iy++) {
+    for (size_t ix = 0; ix < block_width; ix += df.N) {
+      const auto filt_v = load(df, filt + stride * iy + ix);
+      const auto original_v = load(df, original + stride * iy + ix);
+      store(filt_v - original_v, df, block + block_width * iy + ix);
+    }
   }
 
-  block[0] = original_block[0] * dc_mul;
+  // Every "block row" contains covered_blocks_x blocks - thus, the next block
+  // row starts after covered_block_x times the number of coefficients per
+  // block floats.
+  acs.TransformFromPixels(block, block_width, block,
+                          acs.covered_blocks_x() * kBlockDim * kBlockDim);
+
+  SIMD_ALIGN const constexpr uint32_t only_lane0_bits[df.N] = {~0u};
+  const auto only_lane0 = cast_to(df, load(du, only_lane0_bits));
+
+  // The higher the kAsymClampLimit, the more blurred image.
+  const float kAsymClampLimit = 0.18644350819576438;
+  float asym = kAsymClampLimit;
+  SIMD_ALIGN float block2[AcStrategy::kMaxCoeffArea];
+  {
+    const SIMD_FULL(float) df;
+    // Unnecessary to compute them here as we already know these values,
+    // as they are available for ac in the decoded stream.
+    // But for simplicity of getting this done, I'm recomputing for now.
+    acs.TransformFromPixels(original, stride, block2, block_width * kBlockDim);
+
+    auto sums = setzero(df);
+    for (size_t by = 0; by < acs.covered_blocks_y(); by++) {
+      for (size_t bx = 0; bx < acs.covered_blocks_x(); bx++) {
+        const size_t block_offset =
+            (by * acs.covered_blocks_x() + bx) * kBlockDim * kBlockDim;
+        // First iteration: skip lowest-frequency coefficient.
+        const auto interval_scale =
+            set1(df, inv_quant_ac) * load(df, dequant_matrix + block_offset);
+        const auto v = andnot(only_lane0, load(df, block2)) / interval_scale;
+        sums += v * v;
+
+        for (size_t k = df.N; k < kBlockDim * kBlockDim; k += df.N) {
+          const auto interval_scale =
+              set1(df, inv_quant_ac) *
+              load(df, dequant_matrix + block_offset + k);
+          const auto v = load(df, block2 + block_offset + k) / interval_scale;
+          sums += v * v;
+        }
+      }
+    }
+    float sum = get_part(d1, ext::sum_of_lanes(sums));
+    sum *= acs.InverseNumACCoefficients();
+    sum = std::sqrt(sum);
+    sum *= 0.054307033953246348f;
+    sum += 0.044037713396095239f;
+    // Smaller sum -> sharper image.
+    asym = std::min<float>(sum, asym);
+  }
+
+  // TODO(janwas): template, make covered_blocks* constants
+  for (size_t by = 0; by < acs.covered_blocks_y(); by++) {
+    for (size_t bx = 0; bx < acs.covered_blocks_x(); bx++) {
+      const size_t block_offset =
+          (by * acs.covered_blocks_x() + bx) * kBlockDim * kBlockDim;
+      const size_t biases_offset =
+          by * biases_stride + bx * kBlockDim * kBlockDim;
+      // First iteration: skip lowest-frequency coefficient.
+      const auto correction = load(df, block + block_offset);
+      const auto bias = load(df, biases + biases_offset);
+      const auto values = load(df, block2 + block_offset);
+      const auto ac_mul =
+          load(df, dequant_matrix + block_offset) * set1(df, inv_quant_ac);
+      const float cur_dc_mul = acs.ARLowestFrequencyScale(bx, by) * dc_mul;
+      const auto interval_scale =
+          select(ac_mul, set1(df, cur_dc_mul), only_lane0);
+      auto clamped = AsymmetricClamp(correction, interval_scale, bias, values,
+                                     c, asym, stats);
+      store(clamped, df, block + block_offset);
+
+      for (size_t k = df.N; k < kBlockDim * kBlockDim; k += df.N) {
+        const auto correction = load(df, block + block_offset + k);
+        const auto bias = load(df, biases + biases_offset + k);
+        const auto values = load(df, block2 + block_offset + k);
+        const auto interval_scale =
+            load(df, dequant_matrix + block_offset + k) *
+            set1(df, inv_quant_ac);
+        auto clamped = AsymmetricClamp(correction, interval_scale, bias, values,
+                                       c, asym, stats);
+        store(clamped, df, block + block_offset + k);
+      }
+    }
+  }
 
   // IDCT
-  ComputeTransposedScaledIDCT<kBlockDim>(FromBlock<kBlockDim>(block),
-                                         ToLines(opsin, stride));
+  acs.TransformToPixels(block, block_width * kBlockDim, block, block_width);
+  for (size_t iy = 0; iy < block_height; iy++) {
+    for (size_t ix = 0; ix < block_width; ix += df.N) {
+      const auto block_v = load(df, block + block_width * iy + ix);
+      const auto original_v = load(df, original + stride * iy + ix);
+      store(block_v + original_v, df, filt + stride * iy + ix);
+    }
+  }
 }
 
-// y_block[_unscaled] are for ColorCorrelationMap.
-template <class TagXB>
-SIMD_ATTR PIK_INLINE void ClampBlockToOriginalDCT_XB(
-    const float* PIK_RESTRICT original, size_t stride,
-    const float* PIK_RESTRICT original_y_block_unscaled,
-    const float* PIK_RESTRICT y_block,
-    const float* PIK_RESTRICT y_block_unscaled, const int32_t cmap,
-    const float dc_color_factor, const float* PIK_RESTRICT dequant_matrix,
-    const float* PIK_RESTRICT quant_matrix, const float quant_ac,
-    const float inv_quant_ac, const float dc_mul, const float inv_dc_mul,
-    float* PIK_RESTRICT opsin) {
-  SIMD_ALIGN float original_block[kDCTBlockSize];
-  ScaledBlockDCT_XB<TagXB>(original, stride, original_y_block_unscaled, cmap,
-                           dc_color_factor, quant_matrix, quant_ac, inv_dc_mul,
-                           original_block);
-
-  SIMD_ALIGN float block[kDCTBlockSize];
-  ScaledBlockDCT_XB<TagXB>(opsin, stride, y_block_unscaled, cmap,
-                           dc_color_factor, quant_matrix, quant_ac, inv_dc_mul,
-                           block);
-
-  const SIMD_FULL(float) df;
-  const SIMD_FULL(int32_t) di;
-  for (size_t k = 0; k < kDCTBlockSize; k += df.N) {
-    const auto original = load(df, original_block + k);
-    const auto smoothed = load(df, block + k);
-    auto clamped = AsymmetricClamp(original, smoothed);
-
-    // Scale back to original range.
-    clamped *= load(df, dequant_matrix + k) * set1(df, inv_quant_ac);
-    clamped += YtoTag(TagXB(), load(df, y_block + k), set1(di, cmap));
-    store(clamped, df, block + k);
+void ComputeResidualSlow(const Image3F& in, const Image3F& smoothed,
+                         Image3F* PIK_RESTRICT residual) {
+  for (int c = 0; c < in.kNumPlanes; ++c) {
+    for (size_t y = 0; y < in.ysize(); ++y) {
+      const float* row_in = in.PlaneRow(c, y);
+      const float* row_smoothed = smoothed.PlaneRow(c, y);
+      float* PIK_RESTRICT row_out = residual->PlaneRow(c, y);
+      for (size_t x = 0; x < in.xsize(); ++x) {
+        row_out[x] = std::abs(row_in[x] - row_smoothed[x]);
+      }
+    }
   }
-
-  block[0] = original_block[0] * dc_mul + dc_color_factor * y_block[0];
-
-  // IDCT
-  ComputeTransposedScaledIDCT<kBlockDim>(FromBlock<kBlockDim>(block),
-                                         ToLines(opsin, stride));
 }
 
 }  // namespace
 
-SIMD_ATTR Image3F AdaptiveReconstruction(const Quantizer& quantizer,
-                                         const ColorCorrelationMap& cmap,
-                                         ThreadPool* pool, const Image3F& in,
-                                         const ImageB& ac_strategy,
-                                         OpsinIntraTransform* transform) {
-  const size_t xsize_blocks = in.xsize() / kBlockDim;
-  const size_t ysize_blocks = in.ysize() / kBlockDim;
+SIMD_ATTR Image3F AdaptiveReconstruction(
+    Image3F* in, const Image3F& non_smoothed, const Quantizer& quantizer,
+    const ImageI& raw_quant_field, const AcStrategyImage& ac_strategy,
+    const Image3F& biases, const EpfParams& epf_params,
+    AdaptiveReconstructionAux* aux) {
+  PROFILER_FUNC;
+  // Input image should have an integer number of blocks.
+  PIK_ASSERT(in->xsize() % kBlockDim == 0 && in->ysize() % kBlockDim == 0);
+  const size_t xsize_blocks = in->xsize() / kBlockDim;
+  const size_t ysize_blocks = in->ysize() / kBlockDim;
 
-  Rect full(in);
-  const Image3F& opsin = transform->IntraToOpsin(in, full, pool);
+  for (size_t c = 0; c < 3; c++) {
+    size_t base = DequantMatrixOffset(0, kQuantKindDCT16Start, c);
+    (void)base;  // Unused variable in release build.
+    PIK_ASSERT(DequantMatrixOffset(0, kQuantKindDCT16Start + 1, c) == base + 1);
+    PIK_ASSERT(DequantMatrixOffset(0, kQuantKindDCT16Start + 2, c) == base + 2);
+    PIK_ASSERT(DequantMatrixOffset(0, kQuantKindDCT16Start + 3, c) == base + 3);
+  }
+
   // Modified below (clamped).
-  Image3F filt = DoDenoise(quantizer, pool, opsin);
-  transform->OpsinToIntraInPlace(&filt, full, pool);
+  Image3F filt = DoDenoise(*in, non_smoothed, quantizer, raw_quant_field,
+                           ac_strategy, epf_params, aux);
 
   const size_t stride = filt.PlaneRow(0, 1) - filt.PlaneRow(0, 0);
-  PIK_ASSERT(stride == in.PlaneRow(0, 1) - in.PlaneRow(0, 0));
-  const float dc_color_factor_x = ColorCorrelationMap::YtoX(1, cmap.ytox_dc);
-  const float dc_color_factor_b = ColorCorrelationMap::YtoB(1, cmap.ytob_dc);
+  const size_t biases_stride = biases.PixelsPerRow();
+  PIK_ASSERT(stride == in->PlaneRow(0, 1) - in->PlaneRow(0, 0));
 
+  // Dequantization matrices.
   const float* PIK_RESTRICT dequant_matrices =
       quantizer.DequantMatrix(0, kQuantKindDCT8);
 
-  SIMD_ALIGN float quant_matrices[kDCTBlockSize * 3 * kNumQuantKinds];
-  for (size_t i = 0; i < kDCTBlockSize * 3 * kNumQuantKinds; ++i) {
-    quant_matrices[i] = 1.0f / dequant_matrices[i];
+  AdaptiveReconstructionStats stats;
+
+  {
+    PROFILER_ZONE("AR loop");
+    for (size_t c = 0; c < 3; c++) {
+      const float dc_mul =
+          dequant_matrices[DequantMatrixOffset(0, kQuantKindDCT8, c) *
+                           kDCTBlockSize] *
+          quantizer.inv_quant_dc();
+
+      for (size_t by = 0; by < ysize_blocks; ++by) {
+        const float* PIK_RESTRICT row_original =
+            non_smoothed.ConstPlaneRow(c, by * kBlockDim);
+        const float* PIK_RESTRICT row_biases = biases.ConstPlaneRow(c, by);
+        const int32_t* PIK_RESTRICT row_quant = raw_quant_field.ConstRow(by);
+        const AcStrategyRow ac_strategy_row = ac_strategy.ConstRow(by);
+        float* PIK_RESTRICT row_filt = filt.PlaneRow(c, by * kBlockDim);
+
+        for (size_t bx = 0; bx < xsize_blocks; ++bx) {
+          const int32_t qac = row_quant[bx];
+          const float inv_quant_ac = quantizer.inv_quant_ac(qac);
+          AcStrategy acs = ac_strategy_row[bx];
+          if (!acs.IsFirstBlock()) continue;
+          ClampBlockToOriginalDCT(row_original + bx * kBlockDim, stride,
+                                  row_biases + bx * kBlockDim * kBlockDim,
+                                  biases_stride, dequant_matrices, inv_quant_ac,
+                                  dc_mul, c, acs, row_filt + bx * kBlockDim,
+                                  &stats);
+        }
+      }
+    }
   }
 
-  // DC quantization always uses DCT8 values.
-  const float dc_mul_x = dequant_matrices[0] * quantizer.inv_quant_dc();
-  const float dc_mul_y =
-      dequant_matrices[kDCTBlockSize] * quantizer.inv_quant_dc();
-  const float dc_mul_b =
-      dequant_matrices[2 * kDCTBlockSize] * quantizer.inv_quant_dc();
-  const float inv_dc_mul_x = 1.0f / dc_mul_x;
-  const float inv_dc_mul_y = 1.0f / dc_mul_y;
-  const float inv_dc_mul_b = 1.0f / dc_mul_b;
+#if PIK_AR_PRINT_STATS
+  fprintf(
+      stderr,
+      "Number of low-clamped, high-clamped, and total values: %8u %8u %8lu\n",
+      get_part(DU(), ext::sum_of_lanes(stats.low_clamp_count)),
+      get_part(DU(), ext::sum_of_lanes(stats.high_clamp_count)),
+      in->xsize() * in->ysize());
+#endif
 
-  pool->Run(0, ysize_blocks, [&](const int task, const int thread) {
-    const size_t by = task;
-
-    SIMD_ALIGN float original_y_block_unscaled[kDCTBlockSize];
-    SIMD_ALIGN float y_block[kDCTBlockSize];
-    // Copy before ClampBlockToOriginalDCT_Y rescales y_block.
-    SIMD_ALIGN float y_block_unscaled[kDCTBlockSize];
-
-    const int32_t* PIK_RESTRICT row_cmap_x =
-        cmap.ytox_map.ConstRow(by / kColorTileDimInBlocks);
-    const int32_t* PIK_RESTRICT row_cmap_b =
-        cmap.ytob_map.ConstRow(by / kColorTileDimInBlocks);
-
-    const float* PIK_RESTRICT row_in_x = in.PlaneRow(0, by * kBlockDim);
-    const float* PIK_RESTRICT row_in_y = in.PlaneRow(1, by * kBlockDim);
-    const float* PIK_RESTRICT row_in_b = in.PlaneRow(2, by * kBlockDim);
-    float* PIK_RESTRICT row_filt_x = filt.PlaneRow(0, by * kBlockDim);
-    float* PIK_RESTRICT row_filt_y = filt.PlaneRow(1, by * kBlockDim);
-    float* PIK_RESTRICT row_filt_b = filt.PlaneRow(2, by * kBlockDim);
-
-    const int32_t* PIK_RESTRICT row_quant = quantizer.RawQuantField().Row(by);
-
-    for (size_t bx = 0; bx < xsize_blocks; ++bx) {
-      const size_t kind = GetQuantKindFromAcStrategy(ac_strategy, bx, by);
-      const int32_t qac = row_quant[bx];
-      const float quant_ac = quantizer.Scale() * qac;
-      const float inv_quant_ac = quantizer.inv_quant_ac(qac);
-
-      ClampBlockToOriginalDCT_Y(
-          row_in_y + bx * kBlockDim, stride,
-          &dequant_matrices[(3 * kind + 1) * kDCTBlockSize],
-          &quant_matrices[(3 * kind + 1) * kDCTBlockSize], quant_ac,
-          inv_quant_ac, dc_mul_y, inv_dc_mul_y, row_filt_y + bx * kBlockDim,
-          original_y_block_unscaled, y_block, y_block_unscaled);
-
-      ClampBlockToOriginalDCT_XB<TagX>(
-          row_in_x + bx * kBlockDim, stride, original_y_block_unscaled, y_block,
-          y_block_unscaled, row_cmap_x[bx / kColorTileDimInBlocks],
-          dc_color_factor_x, &dequant_matrices[3 * kind * kDCTBlockSize],
-          &quant_matrices[3 * kind * kDCTBlockSize], quant_ac, inv_quant_ac,
-          dc_mul_x, inv_dc_mul_x, row_filt_x + bx * kBlockDim);
-
-      ClampBlockToOriginalDCT_XB<TagB>(
-          row_in_b + bx * kBlockDim, stride, original_y_block_unscaled, y_block,
-          y_block_unscaled, row_cmap_b[bx / kColorTileDimInBlocks],
-          dc_color_factor_b, &dequant_matrices[(3 * kind + 2) * kDCTBlockSize],
-          &quant_matrices[(3 * kind + 2) * kDCTBlockSize], quant_ac,
-          inv_quant_ac, dc_mul_b, inv_dc_mul_b, row_filt_b + bx * kBlockDim);
+  if (aux != nullptr) {
+    if (aux->residual != nullptr) {
+      ComputeResidualSlow(*in, filt, aux->residual);
     }
-  });
+    if (aux->ac_quant != nullptr) {
+      CopyImageTo(quantizer.RawQuantField(), aux->ac_quant);
+    }
+    if (aux->ac_quant != nullptr) {
+      CopyImageTo(ac_strategy.ConstRaw(), aux->ac_strategy);
+    }
+  }
   return filt;
 }
 

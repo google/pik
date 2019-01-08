@@ -10,7 +10,6 @@
 
 #include "ans_params.h"
 #include "bit_reader.h"
-#include "brunsli_v2_input.h"
 #include "byte_order.h"
 
 namespace pik {
@@ -19,39 +18,6 @@ struct ANSSymbolInfo {
   uint16_t offset_;
   uint16_t freq_;
   uint8_t symbol_;
-};
-
-struct ANSDecodingData {
-  ANSDecodingData() {}
-
-  Status ReadFromBitStream(BitReader* input);
-
-  ANSSymbolInfo map_[ANS_TAB_SIZE];
-};
-
-class ANSDecoder {
- public:
-  ANSDecoder() : state_(0) {}
-
-  void Init(BrunsliV2Input* in) {
-    state_ = in->GetNextWord();
-    state_ = (state_ << 16) | in->GetNextWord();
-  }
-
-  int ReadSymbol(const ANSDecodingData& code, BrunsliV2Input* in) {
-    const uint32_t res = state_ & (ANS_TAB_SIZE - 1);
-    const ANSSymbolInfo& s = code.map_[res];
-    state_ = s.freq_ * (state_ >> ANS_LOG_TAB_SIZE) + s.offset_;
-    if (state_ < (1u << 16)) {
-      state_ = (state_ << 16) | in->GetNextWord();
-    }
-    return s.symbol_;
-  }
-  uint32_t GetState() const { return state_; }
-  bool CheckCRC() const { return state_ == (ANS_SIGNATURE << 16); }
-
- private:
-  uint32_t state_;
 };
 
 struct ANSCode {

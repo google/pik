@@ -26,9 +26,7 @@ class EntropySource {
     histograms_.resize(num_bands * num_contexts_);
   }
 
-  void AddCode(int code, int histo_ix) {
-    histograms_[histo_ix].Add(code);
-  }
+  void AddCode(int code, int histo_ix) { histograms_[histo_ix].Add(code); }
 
   void ClusterHistograms(const std::vector<int>& offsets) {
     std::vector<uint32_t> context_map32;
@@ -47,10 +45,9 @@ class EntropySource {
   void BuildAndStoreEntropyCodes(size_t* storage_ix, uint8_t* storage) {
     ans_tables_.resize(clustered_.size() * kAlphabetSize);
     for (int i = 0; i < clustered_.size(); ++i) {
-      BuildAndStoreANSEncodingData(&clustered_[i].data_[0],
-                                   kAlphabetSize,
-                                   &ans_tables_[i * kAlphabetSize],
-                                   storage_ix, storage);
+      BuildAndStoreANSEncodingData(&clustered_[i].data_[0], kAlphabetSize,
+                                   &ans_tables_[i * kAlphabetSize], storage_ix,
+                                   storage);
     }
   }
 

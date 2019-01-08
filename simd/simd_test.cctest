@@ -1935,6 +1935,7 @@ SIMD_ATTR void TestConvert() {
   ASSERT_VEC_EQ(p8, iota(p8, 0x7F), u8_from_u32(iota(d32, 0x7F)));
 
   // Promote: no u64,i64
+  TestPromoteT<float, double>();
   TestPromoteT<uint8_t, int16_t>();
   TestPromoteT<uint8_t, int32_t>();
   TestPromoteT<uint16_t, int32_t>();

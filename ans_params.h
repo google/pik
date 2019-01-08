@@ -28,7 +28,7 @@ static const int kANSBufferSize = 1 << 16;
 #define ANS_LOG_TAB_SIZE 10
 #define ANS_TAB_SIZE (1 << ANS_LOG_TAB_SIZE)
 #define ANS_TAB_MASK (ANS_TAB_SIZE - 1)
-#define ANS_SIGNATURE 0x13    // Initial state, used as CRC.
+#define ANS_SIGNATURE 0x13  // Initial state, used as CRC.
 
 }  // namespace pik
 

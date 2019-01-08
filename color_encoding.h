@@ -104,8 +104,8 @@ std::vector<Enum> AllValues() {
 
 // Chromaticity (Y is omitted because it is 1 for primaries/white points)
 struct CIExy {
-  double x;
-  double y;
+  double x = 0.0;
+  double y = 0.0;
 };
 
 struct PrimariesCIExy {
@@ -140,10 +140,10 @@ static inline bool Is2100(const TransferFunction tf) {
 
 // All data required to interpret and translate pixels to a known color space.
 // For most images (i.e. those with a known ICC profile), the encoded size is
-// only 10 bits. Stored in Header to enable separate color spaces for main and
-// preview images.
+// only 10 bits. Stored in Metadata.
 struct ColorEncoding {
-  ColorEncoding() { SetSRGB(ColorSpace::kRGB); }
+  ColorEncoding();
+  constexpr const char* Name() const { return "ColorEncoding"; }
 
   bool IsGray() const { return color_space == ColorSpace::kGray; }
   size_t Channels() const { return IsGray() ? 1 : 3; }
@@ -161,6 +161,21 @@ struct ColorEncoding {
     primaries = Primaries::kSRGB;
     transfer_function = TransferFunction::kSRGB;
     rendering_intent = RenderingIntent::kPerceptual;
+  }
+
+  template <class Visitor>
+  bool VisitFields(Visitor* PIK_RESTRICT visitor) {
+    visitor->Bytes(BytesEncoding::kBrotli, &icc);
+
+    visitor->Enum(kU32Direct3Plus8, ColorSpace::kRGB, &color_space);
+    visitor->Enum(kU32Direct3Plus8, WhitePoint::kD65, &white_point);
+    visitor->Enum(kU32Direct3Plus8, Primaries::kSRGB, &primaries);
+    visitor->Enum(kU32Direct3Plus8, TransferFunction::kSRGB,
+                  &transfer_function);
+    visitor->Enum(kU32Direct3Plus8, RenderingIntent::kPerceptual,
+                  &rendering_intent);
+
+    return true;
   }
 
   // The enum fields should always describe attributes of "icc" except:
@@ -182,19 +197,6 @@ struct ColorEncoding {
     return primaries == other.primaries;
   }
 };
-
-template <class Visitor>
-bool VisitFields(Visitor* PIK_RESTRICT visitor, ColorEncoding* PIK_RESTRICT c) {
-  visitor->Bytes(Bytes::kBrotli, &c->icc);
-
-  visitor->Enum(kU32Direct3Plus8, &c->color_space);
-  visitor->Enum(kU32Direct3Plus8, &c->white_point);
-  visitor->Enum(kU32Direct3Plus8, &c->primaries);
-  visitor->Enum(kU32Direct3Plus8, &c->transfer_function);
-  visitor->Enum(kU32Direct3Plus8, &c->rendering_intent);
-
-  return true;
-}
 
 // Returns whether the two inputs are approximately equal.
 static inline bool ApproxEq(const double a, const double b) {
@@ -239,12 +241,13 @@ std::string Description(const ProfileParams& pp);
 Status ParseDescription(const std::string& description,
                         ProfileParams* PIK_RESTRICT pp);
 
-ProfileParams ParamsFromColorEncoding(const ColorEncoding& c);
+Status ColorEncodingToParams(const ColorEncoding& c,
+                             ProfileParams* PIK_RESTRICT pp);
 void SetFieldsFromParams(const ProfileParams& pp,
                          ColorEncoding* PIK_RESTRICT c);
 
 // Returns ColorEncoding with empty ICC profile. Caller must use
-// cms.SetProfileFromFields() to generate a profile.
+// ColorEncoding::SetProfileFromFields() to generate a profile.
 std::vector<ColorEncoding> AllEncodings();
 
 }  // namespace pik

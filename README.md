@@ -13,9 +13,9 @@ purpose.
 Pik is to have roughly the same performance requirements space that
 JPEG is holding today. We aim to have roughly similar decoding speed,
 i.e., no more than 50 % slower in decoding, but adding more modern
-compression and prediction methods, giving 55 % more density. We plan to
-improve to 65 % before freezing the format. Some of these new advances may
-come with a moderate drop in decoding speed (possibly 40 % of jpeg speed).
+compression and prediction methods, such that the compressed size is about
+one third of JPEG. Some of these new advances may come with a moderate drop in
+decoding speed (possibly 40 % of jpeg speed).
 
 The bitstream supports tiles so that multi-core decoding can decode a single
 image faster (up to 1 GB/s).
@@ -26,6 +26,7 @@ for non-integral-transform-based direct mode blocks (or overlay blocks).
 ### Build instructions
 
 The software currently requires an AVX2 and FMA capable CPU, e.g. Haswell.
+Building currently requires clang 6 or newer.
 
 Please run `git submodule init && git submodule update`, then `make -j8`, which
 creates cpik and dpik binaries in bin/.

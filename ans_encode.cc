@@ -75,12 +75,13 @@ int EstimateDataBitsFlat(const int* histogram, size_t len) {
   return static_cast<int>(total_histogram * flat_bits + 1.0);
 }
 
-// Static Huffman code for encoding logcounts.
-static const  uint8_t kLogCountBitLengths[ANS_LOG_TAB_SIZE + 1] = {
-  5, 4, 4, 4, 3, 3, 2, 3, 3, 6, 6,
+// Static Huffman code for encoding logcounts. The last symbol is used as RLE
+// sequence.
+static const uint8_t kLogCountBitLengths[ANS_LOG_TAB_SIZE + 2] = {
+    5, 4, 4, 4, 3, 3, 2, 3, 3, 6, 7, 7,
 };
-static const uint16_t kLogCountSymbols[ANS_LOG_TAB_SIZE + 1] = {
-  15, 3, 11, 7, 2, 6, 0, 1, 5, 31, 63,
+static const uint16_t kLogCountSymbols[ANS_LOG_TAB_SIZE + 2] = {
+    15, 3, 11, 7, 2, 6, 0, 1, 5, 31, 63, 127,
 };
 
 // Returns the difference between largest count that can be represented and is
@@ -91,9 +92,9 @@ static int SmallestIncrement(int count) {
   return (1 << drop_bits);
 }
 
-template<bool minimize_error_of_sum> bool RebalanceHistogram(
-    const float* targets, int max_symbol, int table_size, int* omit_pos,
-    int* counts) {
+template <bool minimize_error_of_sum>
+bool RebalanceHistogram(const float* targets, int max_symbol, int table_size,
+                        int* omit_pos, int* counts) {
   int sum = 0;
   float sum_nonrounded = 0.0;
   int remainder_pos = 0;  // if all of them are handled in first loop
@@ -127,8 +128,8 @@ template<bool minimize_error_of_sum> bool RebalanceHistogram(
       // TODO(user): Should we rescale targets[n]?
       const float target =
           minimize_error_of_sum ? (sum_nonrounded - sum) : targets[n];
-      if (counts[n] == 0 || (target > counts[n] + inc / 2 &&
-                             counts[n] + inc < table_size)) {
+      if (counts[n] == 0 ||
+          (target > counts[n] + inc / 2 && counts[n] + inc < table_size)) {
         counts[n] += inc;
       }
       sum += counts[n];
@@ -144,7 +145,6 @@ template<bool minimize_error_of_sum> bool RebalanceHistogram(
   *omit_pos = remainder_pos;
   return counts[remainder_pos] > 0;
 }
-
 
 bool NormalizeCounts(int* counts, int* omit_pos, const int length,
                      const int precision_bits, int* num_symbols, int* symbols) {
@@ -182,8 +182,8 @@ bool NormalizeCounts(int* counts, int* omit_pos, const int length,
                                  counts)) {
     // Use an alternative rebalancing mechanism if the one above failed
     // to create a histogram that is positive wherever the original one was.
-    if (!RebalanceHistogram<true>(&targets[0], max_symbol, table_size,
-                                  omit_pos, counts)) {
+    if (!RebalanceHistogram<true>(&targets[0], max_symbol, table_size, omit_pos,
+                                  counts)) {
       return PIK_FAILURE("Logic error: couldn't rebalance a histogram");
     }
   }
@@ -201,13 +201,9 @@ void StoreVarLenUint16(size_t n, size_t* storage_ix, uint8_t* storage) {
   }
 }
 
-void EncodeCounts(const int* counts,
-                  const int alphabet_size,
-                  const int omit_pos,
-                  const int num_symbols,
-                  const int* symbols,
-                  size_t* storage_ix,
-                  uint8_t* storage) {
+void EncodeCounts(const int* counts, const int alphabet_size,
+                  const int omit_pos, const int num_symbols, const int* symbols,
+                  size_t* storage_ix, uint8_t* storage) {
   if (num_symbols <= 2) {
     // Small tree marker to encode 1-2 symbols.
     WriteBits(1, 1, storage_ix, storage);
@@ -228,6 +224,24 @@ void EncodeCounts(const int* counts,
     WriteBits(1, 0, storage_ix, storage);
     // Mark non-flat histogram.
     WriteBits(1, 0, storage_ix, storage);
+
+    // Precompute sequences for RLE encoding. Contains the number of identical
+    // values starting at a given index. Only contains the value at the first
+    // element of the series.
+    std::vector<int> same(alphabet_size, 0);
+    int last = 0;
+    for (int i = 1; i < alphabet_size; i++) {
+      // Store the sequence length once different symbol reached, or we're at
+      // the end, or the length is longer than we can encode, or we are at
+      // the omit_pos. We don't support including the omit_pos in an RLE
+      // sequence because this value may use a different amoung of log2 bits
+      // than standard, it is too complex to handle in the decoder.
+      if (counts[i] != counts[last] || i + 1 == alphabet_size ||
+          (i - last) >= 255 || i == omit_pos || i == omit_pos + 1) {
+        same[last] = (i - last);
+        last = i + 1;
+      }
+    }
 
     int length = 0;
     std::vector<int> logcounts(alphabet_size);
@@ -253,26 +267,38 @@ void EncodeCounts(const int* counts,
     StoreVarLenUint16(length - 3, storage_ix, storage);
 
     // The logcount values are encoded with a static Huffman code.
+    static const size_t kMinReps = 4;
+    size_t rep = ANS_LOG_TAB_SIZE + 1;
     for (int i = 0; i < length; ++i) {
+      if (i > 0 && same[i - 1] > kMinReps) {
+        // Encode the RLE symbol and skip the repeated ones.
+        WriteBits(kLogCountBitLengths[rep], kLogCountSymbols[rep], storage_ix,
+                  storage);
+        WriteBits(8, same[i - 1], storage_ix, storage);
+        i += same[i - 1] - 2;
+        continue;
+      }
       WriteBits(kLogCountBitLengths[logcounts[i]],
-                kLogCountSymbols[logcounts[i]],
-                storage_ix, storage);
+                kLogCountSymbols[logcounts[i]], storage_ix, storage);
     }
     for (int i = 0; i < length; ++i) {
+      if (i > 0 && same[i - 1] > kMinReps) {
+        // Skip symbols encoded by RLE.
+        i += same[i - 1] - 2;
+        continue;
+      }
       if (logcounts[i] > 1 && i != omit_pos) {
         int bitcount = GetPopulationCountPrecision(logcounts[i] - 1);
         int drop_bits = logcounts[i] - 1 - bitcount;
         PIK_CHECK((counts[i] & ((1 << drop_bits) - 1)) == 0);
-        WriteBits(bitcount,
-                  (counts[i] >> drop_bits) - (1 << bitcount),
+        WriteBits(bitcount, (counts[i] >> drop_bits) - (1 << bitcount),
                   storage_ix, storage);
       }
     }
   }
 }
 
-void EncodeFlatHistogram(const int alphabet_size,
-                         size_t* storage_ix,
+void EncodeFlatHistogram(const int alphabet_size, size_t* storage_ix,
                          uint8_t* storage) {
   // Mark non-small tree.
   WriteBits(1, 0, storage_ix, storage);
@@ -284,13 +310,12 @@ void EncodeFlatHistogram(const int alphabet_size,
 
 }  // namespace
 
-void BuildAndStoreANSEncodingData(const int* histogram,
-                                  int alphabet_size,
-                                  ANSEncSymbolInfo* info,
-                                  size_t* storage_ix, uint8_t* storage) {
+void BuildAndStoreANSEncodingData(const int* histogram, int alphabet_size,
+                                  ANSEncSymbolInfo* info, size_t* storage_ix,
+                                  uint8_t* storage) {
   PIK_ASSERT(alphabet_size <= ANS_TAB_SIZE);
   int num_symbols;
-  int symbols[kMaxNumSymbolsForSmallCode] = { 0 };
+  int symbols[kMaxNumSymbolsForSmallCode] = {0};
   std::vector<int> counts(histogram, histogram + alphabet_size);
   int omit_pos = 0;
   PIK_CHECK(NormalizeCounts(counts.data(), &omit_pos, alphabet_size,
@@ -298,15 +323,15 @@ void BuildAndStoreANSEncodingData(const int* histogram,
   ANSBuildInfoTable(counts.data(), alphabet_size, info);
   if (storage_ix != nullptr && storage != nullptr) {
     const int storage_ix0 = *storage_ix;
-    EncodeCounts(counts.data(), alphabet_size,
-                 omit_pos, num_symbols, symbols, storage_ix, storage);
+    EncodeCounts(counts.data(), alphabet_size, omit_pos, num_symbols, symbols,
+                 storage_ix, storage);
     if (alphabet_size <= kMaxNumSymbolsForSmallCode) {
       return;
     }
     // Let's see if we can do better in terms of histogram size + data size.
     const int histo_bits = *storage_ix - storage_ix0;
-    const int data_bits = EstimateDataBits(histogram, counts.data(),
-                                           alphabet_size);
+    const int data_bits =
+        EstimateDataBits(histogram, counts.data(), alphabet_size);
     const int histo_bits_flat = ANS_LOG_TAB_SIZE + 2;
     const int data_bits_flat = EstimateDataBitsFlat(histogram, alphabet_size);
     if (histo_bits_flat + data_bits_flat < histo_bits + data_bits) {

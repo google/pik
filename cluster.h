@@ -51,16 +51,14 @@ inline bool operator<(const HistogramPair& p1, const HistogramPair& p2) {
 inline float ClusterCostDiff(int size_a, int size_b) {
   int size_c = size_a + size_b;
   return size_a * FastLog2(size_a) + size_b * FastLog2(size_b) -
-      size_c * FastLog2(size_c);
+         size_c * FastLog2(size_c);
 }
 
 // Computes the bit cost reduction by combining out[idx1] and out[idx2] and if
 // it is below a threshold, stores the pair (idx1, idx2) in the *pairs queue.
-template<typename HistogramType>
-void CompareAndPushToQueue(const HistogramType* out,
-                           const int* cluster_size,
-                           const float* bit_cost,
-                           int idx1, int idx2,
+template <typename HistogramType>
+void CompareAndPushToQueue(const HistogramType* out, const int* cluster_size,
+                           const float* bit_cost, int idx1, int idx2,
                            std::vector<HistogramPair>* pairs) {
   if (idx1 == idx2) {
     return;
@@ -85,8 +83,9 @@ void CompareAndPushToQueue(const HistogramType* out,
     p.cost_combo = bit_cost[idx1];
     store_pair = true;
   } else {
-    const float threshold = pairs->empty() ? std::numeric_limits<float>::max() :
-        std::max(0.0f, (*pairs)[0].cost_diff);
+    const float threshold = pairs->empty()
+                                ? std::numeric_limits<float>::max()
+                                : std::max(0.0f, (*pairs)[0].cost_diff);
     HistogramType combo = out[idx1];
     combo.AddHistogram(out[idx2]);
     float cost_combo = combo.PopulationCost();
@@ -107,13 +106,9 @@ void CompareAndPushToQueue(const HistogramType* out,
   }
 }
 
-template<typename HistogramType>
-int HistogramCombine(HistogramType* out,
-                     int* cluster_size,
-                     float* bit_cost,
-                     uint32_t* symbols,
-                     int symbols_size,
-                     int max_clusters) {
+template <typename HistogramType>
+int HistogramCombine(HistogramType* out, int* cluster_size, float* bit_cost,
+                     uint32_t* symbols, int symbols_size, int max_clusters) {
   float cost_diff_threshold = 0.0f;
   int min_cluster_size = 1;
 
@@ -164,8 +159,8 @@ int HistogramCombine(HistogramType* out,
   std::vector<HistogramPair> pairs;
   for (int idx1 = 0; idx1 < clusters.size(); ++idx1) {
     for (int idx2 = idx1 + 1; idx2 < clusters.size(); ++idx2) {
-      CompareAndPushToQueue(out, cluster_size, bit_cost,
-                            clusters[idx1], clusters[idx2], &pairs);
+      CompareAndPushToQueue(out, cluster_size, bit_cost, clusters[idx1],
+                            clusters[idx2], &pairs);
     }
   }
 
@@ -199,8 +194,8 @@ int HistogramCombine(HistogramType* out,
     auto copy_to = pairs.begin();
     for (int i = 0; i < pairs.size(); ++i) {
       HistogramPair& p = pairs[i];
-      if (p.idx1 == best_idx1 || p.idx2 == best_idx1 ||
-          p.idx1 == best_idx2 || p.idx2 == best_idx2) {
+      if (p.idx1 == best_idx1 || p.idx2 == best_idx1 || p.idx1 == best_idx2 ||
+          p.idx2 == best_idx2) {
         // Remove invalid pair from the queue.
         continue;
       }
@@ -218,8 +213,8 @@ int HistogramCombine(HistogramType* out,
 
     // Push new pairs formed with the combined histogram to the queue.
     for (int i = 0; i < clusters.size(); ++i) {
-      CompareAndPushToQueue(out, cluster_size, bit_cost,
-                            best_idx1, clusters[i], &pairs);
+      CompareAndPushToQueue(out, cluster_size, bit_cost, best_idx1, clusters[i],
+                            &pairs);
     }
   }
   return clusters.size();
@@ -229,7 +224,7 @@ int HistogramCombine(HistogramType* out,
 // Histogram refinement
 
 // What is the bit cost of moving histogram from cur_symbol to candidate.
-template<typename HistogramType>
+template <typename HistogramType>
 float HistogramBitCostDistance(const HistogramType& histogram,
                                const HistogramType& candidate,
                                const float candidate_bit_cost) {
@@ -243,9 +238,9 @@ float HistogramBitCostDistance(const HistogramType& histogram,
 
 // Find the best 'out' histogram for each of the 'in' histograms.
 // Note: we assume that out[]->bit_cost_ is already up-to-date.
-template<typename HistogramType>
-void HistogramRemap(const HistogramType* in, int in_size,
-                    HistogramType* out, float* bit_cost, uint32_t* symbols) {
+template <typename HistogramType>
+void HistogramRemap(const HistogramType* in, int in_size, HistogramType* out,
+                    float* bit_cost, uint32_t* symbols) {
   // Uniquify the list of symbols.
   std::vector<int> all_symbols(symbols, symbols + in_size);
   std::sort(all_symbols.begin(), all_symbols.end());
@@ -254,11 +249,11 @@ void HistogramRemap(const HistogramType* in, int in_size,
 
   for (int i = 0; i < in_size; ++i) {
     int best_out = i == 0 ? symbols[0] : symbols[i - 1];
-    float best_bits = HistogramBitCostDistance(in[i], out[best_out],
-                                               bit_cost[best_out]);
+    float best_bits =
+        HistogramBitCostDistance(in[i], out[best_out], bit_cost[best_out]);
     for (auto k : all_symbols) {
-      const float cur_bits = HistogramBitCostDistance(in[i], out[k],
-                                                      bit_cost[k]);
+      const float cur_bits =
+          HistogramBitCostDistance(in[i], out[k], bit_cost[k]);
       if (cur_bits < best_bits) {
         best_bits = cur_bits;
         best_out = k;
@@ -278,7 +273,7 @@ void HistogramRemap(const HistogramType* in, int in_size,
 
 // Reorder histograms in *out so that the new symbols in *symbols come in
 // increasing order.
-template<typename HistogramType>
+template <typename HistogramType>
 void HistogramReindex(std::vector<HistogramType>* out,
                       std::vector<uint32_t>* symbols) {
   std::vector<HistogramType> tmp(*out);
@@ -302,12 +297,11 @@ void HistogramReindex(std::vector<HistogramType>* out,
 // indicate which of the 'out' histograms is the best approximation.
 // The template parameter HistogramType needs to have Clear(), AddHistogram(),
 // and PopulationCost() methods.
-template<typename HistogramType>
-void ClusterHistograms(const std::vector<HistogramType>& in,
-                       int num_contexts, int num_blocks,
+template <typename HistogramType>
+void ClusterHistograms(const std::vector<HistogramType>& in, int num_contexts,
+                       int num_blocks,
                        const std::vector<int> block_group_offsets,
-                       int max_histograms,
-                       std::vector<HistogramType>* out,
+                       int max_histograms, std::vector<HistogramType>* out,
                        std::vector<uint32_t>* histogram_symbols) {
   const int in_size = num_contexts * num_blocks;
   std::vector<int> cluster_size(in_size, 1);
@@ -336,13 +330,13 @@ void ClusterHistograms(const std::vector<HistogramType>& in,
     // Collapse similar histograms within block groups.
     for (int i = 0; i < block_group_offsets.size(); ++i) {
       int offset = block_group_offsets[i] * num_contexts;
-      int length = ((i + 1 < block_group_offsets.size() ?
-                     block_group_offsets[i + 1] * num_contexts : in_size) -
+      int length = ((i + 1 < block_group_offsets.size()
+                         ? block_group_offsets[i + 1] * num_contexts
+                         : in_size) -
                     offset);
-      int nclusters =
-          HistogramCombine(&(*out)[0], &cluster_size[0], &bit_cost[0],
-                           &(*histogram_symbols)[offset], length,
-                           max_histograms);
+      int nclusters = HistogramCombine(
+          &(*out)[0], &cluster_size[0], &bit_cost[0],
+          &(*histogram_symbols)[offset], length, max_histograms);
       // Find the optimal map from original histograms to the final ones.
       if (nclusters >= 2 && nclusters < kMinClustersForHistogramRemap) {
         HistogramRemap(&in[offset], length, &(*out)[0], &bit_cost[0],
@@ -357,8 +351,7 @@ void ClusterHistograms(const std::vector<HistogramType>& in,
     // with too many histograms, we have to do one final round of clustering.
     num_clusters =
         HistogramCombine(&(*out)[0], &cluster_size[0], &bit_cost[0],
-                         &(*histogram_symbols)[0], in_size,
-                         max_histograms);
+                         &(*histogram_symbols)[0], in_size, max_histograms);
     // Find the optimal map from original histograms to the final ones.
     if (num_clusters >= 2 && num_clusters < kMinClustersForHistogramRemap) {
       HistogramRemap(&in[0], in_size, &(*out)[0], &bit_cost[0],

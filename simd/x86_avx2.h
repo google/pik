@@ -2157,6 +2157,11 @@ SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<T, N> table_lookup_bytes(
 
 // ------------------------------ Promotions (part w/ narrow lanes -> full)
 
+SIMD_ATTR_AVX2 SIMD_INLINE vec_avx2<double> convert_to(
+    Full<double, AVX2>, const vec_sse4<float, 4> v) {
+  return vec_avx2<double>(_mm256_cvtps_pd(v.raw));
+}
+
 // Unsigned: zero-extend.
 // Note: these have 3 cycle latency; if inputs are already split across the
 // 128 bit blocks (in their upper/lower halves), then zip_hi/lo would be faster.

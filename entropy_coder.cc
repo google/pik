@@ -19,18 +19,22 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <utility>
 #include <vector>
 
+#include "ac_strategy.h"
+#include "ans_decode.h"
 #include "ans_params.h"
 #include "bit_reader.h"
 #include "common.h"
 #include "compiler_specific.h"
 #include "context_map_decode.h"
 #include "dc_predictor.h"
-#include "dc_predictor_slow.h"
 #include "fast_log.h"
+#include "image.h"
 #include "status.h"
 #include "write_bits.h"
 
@@ -203,37 +207,23 @@ void ExpandDC(const Rect& rect_dc, Image3S* PIK_RESTRICT dc,
   }
 }
 
-template <int N>
-void ComputeCoeffOrderFast(int32_t* PIK_RESTRICT order) {
-  constexpr int block_size = N * N;
-  for (size_t i = 0; i < kOrderContexts; ++i) {
-    memcpy(&order[i * block_size], NaturalCoeffOrder<N>(),
-           block_size * sizeof(order[0]));
-  }
-}
-template void ComputeCoeffOrderFast<8>(int32_t* PIK_RESTRICT order);
-template void ComputeCoeffOrderFast<16>(int32_t* PIK_RESTRICT order);
-
-template <int N>
-void ComputeCoeffOrder(const Image3S& ac, const Image3B& block_ctx,
+void ComputeCoeffOrder(const Image3S& ac, const Rect& rect,
                        int32_t* PIK_RESTRICT order) {
+  constexpr int N = kBlockDim;
   constexpr int block_size = N * N;
-  size_t xsize_blocks = ac.xsize() / block_size;
-  size_t ysize_blocks = ac.ysize();
-  const int32_t* natural_coeff_order = NaturalCoeffOrder<N>();
+  size_t xsize_blocks = rect.xsize() / block_size;
+  size_t ysize_blocks = rect.ysize();
+  const int32_t* natural_coeff_order = NaturalCoeffOrder();
 
   // Count number of zero coefficients, separately for each DCT band.
   int32_t num_zeros[block_size * kOrderContexts] = {0};
   for (int c = 0; c < 3; ++c) {
     for (size_t by = 0; by < ysize_blocks; ++by) {
-      const int16_t* PIK_RESTRICT row = ac.PlaneRow(c, by);
-      const uint8_t* PIK_RESTRICT row_ctx = block_ctx.PlaneRow(c, by);
+      const int16_t* PIK_RESTRICT row = rect.ConstPlaneRow(ac, c, by);
       for (size_t bx = 0; bx < xsize_blocks; ++bx) {
         size_t x = bx * block_size;
-        size_t offset = row_ctx[bx] * block_size;
-        size_t start = 1;
-        if (row_ctx[bx] >= kIdentityOrderContextStart) start = 0;
-        for (size_t k = start; k < block_size; ++k) {
+        size_t offset = c * block_size;
+        for (size_t k = 1; k < block_size; ++k) {
           if (row[x + k] == 0) ++num_zeros[offset + k];
         }
       }
@@ -270,17 +260,13 @@ void ComputeCoeffOrder(const Image3S& ac, const Image3B& block_ctx,
     }
   }
 }
-template void ComputeCoeffOrder<8>(const Image3S&, const Image3B&,
-                                   int32_t* PIK_RESTRICT);
-template void ComputeCoeffOrder<16>(const Image3S&, const Image3B&,
-                                    int32_t* PIK_RESTRICT);
 
-template <int N>
-void EncodeCoeffOrder(const int32_t* PIK_RESTRICT order, bool encode_first,
+void EncodeCoeffOrder(const int32_t* PIK_RESTRICT order,
                       size_t* PIK_RESTRICT storage_ix, uint8_t* storage) {
+  constexpr int N = kBlockDim;
   constexpr int block_size = N * N;
   int32_t order_zigzag[block_size];
-  const int32_t* natural_coeff_order_lut = NaturalCoeffOrderLut<N>();
+  const int32_t* natural_coeff_order_lut = NaturalCoeffOrderLut();
   for (size_t i = 0; i < block_size; ++i) {
     order_zigzag[i] = natural_coeff_order_lut[order[i]];
   }
@@ -294,7 +280,7 @@ void EncodeCoeffOrder(const int32_t* PIK_RESTRICT order, bool encode_first,
     ++lehmer[i];
   }
   for (int32_t i = 0; i < block_size; i += kCoeffOrderCodeSpan) {
-    const int32_t start = (i > 0) ? i : (encode_first ? 0 : 1);
+    const int32_t start = (i > 0) ? i : 1;
     const int32_t end = i + kCoeffOrderCodeSpan;
     int32_t has_non_zero = 0;
     for (int32_t j = start; j < end; ++j) has_non_zero |= lehmer[j];
@@ -317,10 +303,9 @@ void EncodeCoeffOrder(const int32_t* PIK_RESTRICT order, bool encode_first,
 
 // Fills "tmp_num_nzeros" with per-block count of non-zero coefficients in
 // "coeffs" within "rect".
-template <int N>
 void ExtractNumNZeroes(const Rect& rect, const ImageS& coeffs,
-                       const ImageB& ac_strategy,
                        ImageI* PIK_RESTRICT tmp_num_nzeros) {
+  constexpr int N = kBlockDim;
   constexpr int block_size = N * N;
   PIK_CHECK(coeffs.xsize() % block_size == 0);
   const size_t xsize_blocks = rect.xsize() / block_size;
@@ -328,13 +313,9 @@ void ExtractNumNZeroes(const Rect& rect, const ImageS& coeffs,
   for (size_t by = 0; by < ysize_blocks; ++by) {
     const int16_t* PIK_RESTRICT coeffs_row = rect.ConstRow(coeffs, by);
     int32_t* PIK_RESTRICT output_row = tmp_num_nzeros->Row(by);
-    const uint8_t* ac_strategy_row =
-        ac_strategy.ConstRow(rect.y0() + by) + rect.x0() / block_size;
     for (size_t bx = 0; bx < xsize_blocks; ++bx) {
       size_t num_nzeros = 0;
-      size_t start_value = 1;
-      if (!AcStrategyType::IsDct(ac_strategy_row[bx])) start_value = 0;
-      for (size_t i = start_value; i < block_size; ++i) {
+      for (size_t i = 1; i < block_size; ++i) {
         num_nzeros += (coeffs_row[bx * block_size + i] != 0);
       }
       output_row[bx] = static_cast<int32_t>(num_nzeros);
@@ -342,16 +323,14 @@ void ExtractNumNZeroes(const Rect& rect, const ImageS& coeffs,
   }
 }
 
-template <int N>
 std::string EncodeCoeffOrders(const int32_t* order, PikInfo* pik_info) {
+  constexpr int N = kBlockDim;
   constexpr int block_size = N * N;
   std::string encoded_coeff_order(kOrderContexts * 1024, 0);
   uint8_t* storage = reinterpret_cast<uint8_t*>(&encoded_coeff_order[0]);
   size_t storage_ix = 0;
   for (size_t c = 0; c < kOrderContexts; c++) {
-    EncodeCoeffOrder<N>(&order[c * block_size],
-                        /*encode_first=*/c >= kIdentityOrderContextStart,
-                        &storage_ix, storage);
+    EncodeCoeffOrder(&order[c * block_size], &storage_ix, storage);
   }
   PIK_CHECK(storage_ix < encoded_coeff_order.size() * kBitsPerByte);
   encoded_coeff_order.resize((storage_ix + 7) / kBitsPerByte);
@@ -360,7 +339,6 @@ std::string EncodeCoeffOrders(const int32_t* order, PikInfo* pik_info) {
   }
   return encoded_coeff_order;
 }
-template std::string EncodeCoeffOrders<8>(const int32_t*, PikInfo*);
 
 // Number of clusters is encoded with VarLenUint8 - see EncodeContextMap and
 // DecodeContextMap.
@@ -372,11 +350,13 @@ constexpr size_t kMaxClusters = 256;
 // TODO(user): revise this number when non-DCT-8x8 contexts are added / used.
 static const size_t kClustersLimit = 64;
 static const size_t kNumStaticZdensContexts = 7;
+static const size_t kNumStaticOrderFreeContexts = 5;
 // Should depend on N.
-static const size_t kNumStaticContexts = 12 + 4 * kNumStaticZdensContexts;
+static const size_t kNumStaticContexts =
+    kNumStaticOrderFreeContexts + 3 * kNumStaticZdensContexts;
 
-template <int N>
 std::vector<uint8_t> StaticContextMap() {
+  constexpr int N = kBlockDim;
   constexpr int block_size = N * N;
   static const int32_t kStaticZdensContextMap[kZeroDensityContextCount] = {
       0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 4, 4, 4, 4, 1,
@@ -385,27 +365,23 @@ std::vector<uint8_t> StaticContextMap() {
       3, 6, 6, 6, 6, 5, 5, 2, 2, 2, 2, 2, 3, 3, 3, 3, 6, 6, 6, 6, 5,
       5, 2, 2, 2, 2, 2, 3, 3, 3, 6, 6, 6, 6, 5, 5, 2, 2, 2, 2, 2,
   };
-  static const uint8_t kStaticQuantContextMap[kQuantFieldContexts] = {
-      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 3, 4, 4, 4, 4, 5, 5,
-      5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
-      6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
-      7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
-      7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
-      7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
-  };
+  static const uint8_t kStaticQuantContextMap[kQuantFieldContexts] = {0};
   PIK_ASSERT(kNumStaticContexts <= kMaxClusters);
   std::vector<uint8_t> context_map(kNumContexts);
-  memcpy(&context_map[0], kStaticQuantContextMap,
-         sizeof(kStaticQuantContextMap));  // [0..7]
+  memcpy(&context_map[kAcStrategyContexts], kStaticQuantContextMap,
+         sizeof(kStaticQuantContextMap));                              // [0]
+  context_map[AcStrategyContext()] = kNumStaticOrderFreeContexts - 1;  // [4]
+  static_assert(kOrderContexts == 3,
+                "The static context map only works with 3 order contexts");
   for (size_t c = 0; c < kOrderContexts; ++c) {
-    const size_t ctx = std::min<size_t>(c, 3);
     for (size_t i = 0; i < block_size - 1; ++i) {
-      context_map[NonZeroContext<N>(i, c)] = 8 + ctx;  // [8..11]
+      context_map[NonZeroContext(i, c)] = 1 + c;  // [1..3]
     }
-    uint32_t zero_density_context_base = ZeroDensityContextsOffset<N>(c);
+    uint32_t zero_density_context_base = ZeroDensityContextsOffset(c);
     for (size_t i = 0; i < kZeroDensityContextCount; ++i) {
-      context_map[zero_density_context_base + i] =
-          12 + ctx * kNumStaticZdensContexts + kStaticZdensContextMap[i];
+      context_map[zero_density_context_base + i] = kNumStaticOrderFreeContexts +
+                                                   c * kNumStaticZdensContexts +
+                                                   kStaticZdensContextMap[i];
     }
   }
   return context_map;
@@ -424,7 +400,7 @@ PIK_INLINE int32_t PredictFromTopAndLeft(
 }
 
 void TokenizeQuantField(const Rect& rect, const ImageI& quant_field,
-                        const ImageB& ac_strategy,
+                        const ImageI* hint, const AcStrategyImage& ac_strategy,
                         std::vector<Token>* PIK_RESTRICT output) {
   const size_t xsize = rect.xsize();
   const size_t ysize = rect.ysize();
@@ -436,26 +412,53 @@ void TokenizeQuantField(const Rect& rect, const ImageI& quant_field,
   output->reserve(output->size() + xsize * ysize);
 
   // Compute actual quant values from prediction residuals.
-  for (size_t by = 0; by < ysize; ++by) {
-    const int32_t* PIK_RESTRICT row_src = rect.ConstRow(quant_field, by);
-    int32_t* PIK_RESTRICT row_fixed = current.data();
-    const int32_t* PIK_RESTRICT row_last = (by == 0) ? nullptr : last.data();
-    for (size_t bx = 0; bx < xsize; ++bx) {
-      int32_t quant = row_src[bx];
-      int32_t predicted_quant =
-          PredictFromTopAndLeft(row_last, row_fixed, bx, 32);
-      row_fixed[bx] = quant;
-      output->emplace_back(QuantContext(predicted_quant), quant - 1, 0, 0);
+  if (hint == nullptr) {
+    for (size_t by = 0; by < ysize; ++by) {
+      const int32_t* PIK_RESTRICT row_src = rect.ConstRow(quant_field, by);
+      int32_t* PIK_RESTRICT row_fixed = current.data();
+      const int32_t* PIK_RESTRICT row_last = (by == 0) ? nullptr : last.data();
+      AcStrategyRow ac_strategy_row = ac_strategy.ConstRow(rect, by);
+      for (size_t bx = 0; bx < xsize; ++bx) {
+        int32_t quant = row_src[bx];
+        int32_t predicted_quant =
+            PredictFromTopAndLeft(row_last, row_fixed, bx, 32);
+        row_fixed[bx] = quant;
+        if (!ac_strategy_row[bx].IsFirstBlock()) continue;
+        size_t q = PackSigned(quant - predicted_quant);
+        if (q >= 255) {
+          output->emplace_back(QuantContext(), 255, 0, 0);
+          output->emplace_back(QuantContext(), quant - 1, 0, 0);
+        } else {
+          output->emplace_back(QuantContext(), q, 0, 0);
+        }
+      }
+      last.swap(current);
     }
-    last.swap(current);
+  } else {
+    for (size_t by = 0; by < ysize; ++by) {
+      const int32_t* PIK_RESTRICT row_src = rect.ConstRow(quant_field, by);
+      const int32_t* PIK_RESTRICT row_hint = rect.ConstRow(*hint, by);
+      AcStrategyRow ac_strategy_row = ac_strategy.ConstRow(rect, by);
+      for (size_t bx = 0; bx < xsize; ++bx) {
+        int32_t quant = row_src[bx];
+        int32_t predicted_quant = row_hint[bx];
+        if (!ac_strategy_row[bx].IsFirstBlock()) continue;
+        size_t q = PackSigned(quant - predicted_quant);
+        if (q >= 255) {
+          output->emplace_back(QuantContext(), 255, 0, 0);
+          output->emplace_back(QuantContext(), quant - 1, 0, 0);
+        } else {
+          output->emplace_back(QuantContext(), q, 0, 0);
+        }
+      }
+    }
   }
 }
 
-template <int N>
 void TokenizeCoefficients(const int32_t* orders, const Rect& rect,
-                          const Image3S& coeffs, const Image3B& block_ctx,
-                          const ImageB& ac_strategy,
+                          const Image3S& coeffs,
                           std::vector<Token>* PIK_RESTRICT output) {
+  constexpr int N = kBlockDim;
   constexpr int block_size = N * N;
   const size_t xsize_blocks = rect.xsize();
   const size_t ysize_blocks = rect.ysize();
@@ -469,33 +472,27 @@ void TokenizeCoefficients(const int32_t* orders, const Rect& rect,
 
   ImageI tmp_num_nzeros(xsize_blocks, ysize_blocks);
   for (int c = 0; c < 3; ++c) {
-    ExtractNumNZeroes<N>(literal_rect_ac, coeffs.Plane(c), ac_strategy,
-                         &tmp_num_nzeros);
+    ExtractNumNZeroes(literal_rect_ac, coeffs.Plane(c), &tmp_num_nzeros);
     for (size_t by = 0; by < ysize_blocks; ++by) {
       const int16_t* PIK_RESTRICT row =
           literal_rect_ac.ConstPlaneRow(coeffs, c, by);
-      const uint8_t* PIK_RESTRICT ctx_row =
-          rect.ConstRow(block_ctx.Plane(c), by);
       int32_t* PIK_RESTRICT row_nzeros = tmp_num_nzeros.Row(by);
       const int32_t* PIK_RESTRICT row_nzeros_top =
           (by == 0) ? nullptr : tmp_num_nzeros.ConstRow(by - 1);
-      const uint8_t* PIK_RESTRICT ac_strategy_row =
-          rect.ConstRow(ac_strategy, by);
       for (size_t bx = 0; bx < xsize_blocks; ++bx) {
         int32_t predicted_nzeros =
             PredictFromTopAndLeft(row_nzeros_top, row_nzeros, bx, 32);
-        const int bctx = ctx_row[bx];
+        const int bctx = c;
         const int32_t* order = &orders[bctx * block_size];
-        int32_t nzero_ctx = NonZeroContext<N>(predicted_nzeros, bctx);
+        int32_t nzero_ctx = NonZeroContext(predicted_nzeros, bctx);
         size_t num_nzeros = row_nzeros[bx];
         output->emplace_back(nzero_ctx, num_nzeros, 0, 0);
         if (num_nzeros == 0) continue;
         const int16_t* PIK_RESTRICT block = row + bx * block_size;
-        bool is_dct = AcStrategyType::IsDct(ac_strategy_row[bx]);
         int r = 0;
-        const int histo_offset = ZeroDensityContextsOffset<N>(bctx);
+        const int histo_offset = ZeroDensityContextsOffset(bctx);
         size_t last_k = 0;
-        for (size_t k = is_dct; k < block_size; ++k) {
+        for (size_t k = 1; k < block_size; ++k) {
           PIK_ASSERT(num_nzeros > 0);
           int16_t coeff = block[order[k]];
           if (coeff == 0) {
@@ -505,7 +502,7 @@ void TokenizeCoefficients(const int32_t* orders, const Rect& rect,
                   SkipAndBitsSymbol(15, 0), 0, 0);
               // Skip 15, encode 0-bit coefficient -> 16 zeros in total.
               r = 0;
-              last_k = k + !is_dct;
+              last_k = k;
             }
             continue;
           }
@@ -518,7 +515,7 @@ void TokenizeCoefficients(const int32_t* orders, const Rect& rect,
               histo_offset + ZeroDensityContext(num_nzeros, last_k), symbol,
               nbits, bits);
           r = 0;
-          last_k = k + !is_dct;
+          last_k = k;
           if (--num_nzeros == 0) break;
         }
         PIK_ASSERT(num_nzeros == 0);
@@ -526,10 +523,6 @@ void TokenizeCoefficients(const int32_t* orders, const Rect& rect,
     }
   }
 }
-template void TokenizeCoefficients<8>(const int32_t*, const Rect&,
-                                      const Image3S&, const Image3B&,
-                                      const ImageB&,
-                                      std::vector<Token>* PIK_RESTRICT);
 
 namespace {
 
@@ -647,7 +640,7 @@ class HistogramBuilder {
 }  // namespace
 
 std::string BuildAndEncodeHistograms(
-    size_t num_contexts, const std::vector<std::vector<Token> >& tokens,
+    size_t num_contexts, const std::vector<std::vector<Token>>& tokens,
     std::vector<ANSEncodingData>* codes, std::vector<uint8_t>* context_map,
     PikImageSizeInfo* info) {
   // Build histograms.
@@ -681,12 +674,11 @@ std::string BuildAndEncodeHistograms(
   return output;
 }
 
-template <int N>
 std::string BuildAndEncodeHistogramsFast(
-    const std::vector<std::vector<Token> >& tokens,
+    const std::vector<std::vector<Token>>& tokens,
     std::vector<ANSEncodingData>* codes, std::vector<uint8_t>* context_map,
     PikImageSizeInfo* info) {
-  *context_map = StaticContextMap<N>();
+  *context_map = StaticContextMap();
   // Build histograms from tokens.
   std::vector<uint32_t> histograms(kNumStaticContexts << 8);
   for (size_t i = 0; i < tokens.size(); ++i) {
@@ -724,9 +716,6 @@ std::string BuildAndEncodeHistogramsFast(
   }
   return output;
 }
-template std::string BuildAndEncodeHistogramsFast<8>(
-    const std::vector<std::vector<Token> >&, std::vector<ANSEncodingData>*,
-    std::vector<uint8_t>*, PikImageSizeInfo*);
 
 std::string WriteTokens(const std::vector<Token>& tokens,
                         const std::vector<ANSEncodingData>& codes,
@@ -781,29 +770,66 @@ std::string WriteTokens(const std::vector<Token>& tokens,
   return output;
 }
 
+namespace {
+// TODO(user): check if this upper bound can be improved.
+const constexpr int kRleSymStart = 18;
+}  // namespace
+
 std::string EncodeImageData(const Rect& rect, const Image3S& img,
                             PikImageSizeInfo* info) {
   const size_t xsize = rect.xsize();
   const size_t ysize = rect.ysize();
 
-  std::vector<std::vector<Token> > tokens(1);
-  tokens[0].reserve(3 * ysize * xsize);
-  for (int c = 0; c < 3; ++c) {
-    for (size_t y = 0; y < ysize; ++y) {
-      const int16_t* const PIK_RESTRICT row = rect.ConstRow(img.Plane(c), y);
-      for (size_t x = 0; x < xsize; ++x) {
+  std::string best;
+  PikImageSizeInfo best_info;
+
+  for (bool rle : {true, false}) {
+    std::vector<std::vector<Token>> tokens(1);
+    tokens[0].reserve(3 * ysize * xsize);
+
+    size_t cnt = 0;
+
+    auto encode_cnt = [&](size_t c) {
+      if (cnt > 0) {
         int nbits, bits;
-        EncodeVarLenInt(row[x], &nbits, &bits);
-        tokens[0].emplace_back(Token(c, nbits, nbits, bits));
+        EncodeVarLenUint(cnt - 1, &nbits, &bits);
+        tokens[0].emplace_back(Token(c, kRleSymStart + nbits, nbits, bits));
+        cnt = 0;
       }
+    };
+    for (size_t c = 0; c < 3; c++) {
+      for (size_t y = 0; y < img.ysize(); y++) {
+        const int16_t* PIK_RESTRICT row = img.ConstPlaneRow(c, y);
+        for (size_t x = 0; x < img.xsize(); x++) {
+          if (!rle || row[x]) {
+            encode_cnt(c);
+            int nbits, bits;
+            EncodeVarLenInt(row[x], &nbits, &bits);
+            PIK_ASSERT(nbits < kRleSymStart);
+            tokens[0].emplace_back(Token(c, nbits, nbits, bits));
+          } else {
+            cnt++;
+          }
+        }
+      }
+      encode_cnt(c);
+    }
+
+    std::vector<ANSEncodingData> codes;
+    std::vector<uint8_t> context_map;
+    PikImageSizeInfo info;
+    std::string enc =
+        BuildAndEncodeHistograms(3, tokens, &codes, &context_map, &info);
+    enc += WriteTokens(tokens[0], codes, context_map, &info);
+    if (best.empty() || best.size() > enc.size()) {
+      best = std::move(enc);
+      best_info = info;
     }
   }
-  std::vector<ANSEncodingData> codes;
-  std::vector<uint8_t> context_map;
-  const std::string enc_hist =
-      BuildAndEncodeHistograms(3, tokens, &codes, &context_map, info);
-  const std::string enc_img = WriteTokens(tokens[0], codes, context_map, info);
-  return enc_hist + enc_img;
+  if (info) {
+    info->Assimilate(best_info);
+  }
+  return best;
 }
 
 bool DecodeHistograms(BitReader* br, const size_t num_contexts,
@@ -817,7 +843,7 @@ bool DecodeHistograms(BitReader* br, const size_t num_contexts,
   if (!DecodeANSCodes(num_histograms, max_alphabet_size, br, code)) {
     return PIK_FAILURE("Histo DecodeANSCodes");
   }
-  br->JumpToByteBoundary();
+  PIK_RETURN_IF_ERROR(br->JumpToByteBoundary());
   return true;
 }
 
@@ -831,35 +857,49 @@ bool DecodeImageData(BitReader* PIK_RESTRICT br,
   PIK_ASSERT(xsize <= img->xsize() && ysize <= img->ysize());
   for (int c = 0; c < 3; ++c) {
     const int histo_idx = context_map[c];
-
-    for (size_t y = 0; y < ysize; ++y) {
-      int16_t* PIK_RESTRICT row = rect.Row(img->MutablePlane(c), y);
-
-      for (size_t x = 0; x < xsize; ++x) {
+    size_t skip = 0;
+    for (size_t y = 0; y < ysize; y++) {
+      int16_t* PIK_RESTRICT row = img->PlaneRow(c, y);
+      for (size_t x = 0; x < xsize; x++) {
+        if (skip) {
+          row[x] = 0;
+          skip--;
+          continue;
+        }
         br->FillBitBuffer();
         int s = decoder->ReadSymbol(histo_idx, br);
         if (s > 0) {
-          int bits = br->PeekBits(s);
-          br->Advance(s);
+          if (s >= kRleSymStart) {
+            s -= kRleSymStart;
+            int bits = br->ReadBits(s);
+            s = DecodeVarLenUint(s, bits);
+            skip = s;
+            row[x] = 0;
+            continue;
+          }
+          int bits = br->ReadBits(s);
           s = DecodeVarLenInt(s, bits);
         }
         row[x] = s;
       }
     }
+    if (skip != 0) {
+      return PIK_FAILURE("Invalid DC");
+    }
   }
-  br->JumpToByteBoundary();
+  PIK_RETURN_IF_ERROR(br->JumpToByteBoundary());
   return true;
 }
 
-template <int N>
-bool DecodeCoeffOrder(int32_t* order, bool decode_first, BitReader* br) {
+bool DecodeCoeffOrder(int32_t* order, BitReader* br) {
+  constexpr int N = kBlockDim;
   constexpr int block_size = N * N;
   int32_t lehmer[block_size] = {0};
   for (int32_t i = 0; i < block_size; i += kCoeffOrderCodeSpan) {
     br->FillBitBuffer();
     const int32_t has_non_zero = br->ReadBits(1);
     if (!has_non_zero) continue;
-    const int32_t start = (i > 0) ? i : (decode_first ? 0 : 1);
+    const int32_t start = (i > 0) ? i : 1;
     const int32_t end = i + kCoeffOrderCodeSpan;
     for (int32_t j = start; j < end; ++j) {
       int32_t v = 0;
@@ -881,13 +921,12 @@ bool DecodeCoeffOrder(int32_t* order, bool decode_first, BitReader* br) {
     --lehmer[i];
   }
   DecodeLehmerCode(lehmer, block_size, order);
-  const int32_t* natural_coeff_order = NaturalCoeffOrder<N>();
+  const int32_t* natural_coeff_order = NaturalCoeffOrder();
   for (size_t k = 0; k < block_size; ++k) {
     order[k] = natural_coeff_order[order[k]];
   }
   return true;
 }
-template bool DecodeCoeffOrder<8>(int32_t*, bool, BitReader*);
 
 bool DecodeImage(BitReader* PIK_RESTRICT br, const Rect& rect,
                  Image3S* PIK_RESTRICT img) {
@@ -902,50 +941,188 @@ bool DecodeImage(BitReader* PIK_RESTRICT br, const Rect& rect,
   return true;
 }
 
+// The `rect_qf` argument specifies, in block units, the location we should
+// decode to inside the `quant_field` image, and the location we should read the
+// AC strategy from inside `ac_strategy`. It does *not* apply to the `hint`
+// argument.
 bool DecodeQuantField(BitReader* PIK_RESTRICT br,
                       ANSSymbolReader* PIK_RESTRICT decoder,
                       const std::vector<uint8_t>& context_map,
                       const Rect& rect_qf,
-                      const ImageB& PIK_RESTRICT ac_strategy,
-                      ImageI* PIK_RESTRICT quant_field) {
+                      const AcStrategyImage& PIK_RESTRICT ac_strategy,
+                      ImageI* PIK_RESTRICT quant_field,
+                      const ImageI* PIK_RESTRICT hint) {
   const size_t xsize = rect_qf.xsize();
   const size_t ysize = rect_qf.ysize();
+  const size_t stride = quant_field->PixelsPerRow();
 
-  for (size_t by = 0; by < ysize; ++by) {
-    int32_t* PIK_RESTRICT row_quant = rect_qf.Row(quant_field, by);
-    const int32_t* PIK_RESTRICT row_quant_top =
-        (by == 0) ? nullptr : rect_qf.ConstRow(*quant_field, by - 1);
-    for (size_t bx = 0; bx < xsize; ++bx) {
-      int32_t predicted_quant =
-          PredictFromTopAndLeft(row_quant_top, row_quant, bx, 32);
-      br->FillBitBuffer();
-      int32_t quant_ctx = QuantContext(predicted_quant);
-      row_quant[bx] = decoder->ReadSymbol(context_map[quant_ctx], br) + 1;
+  if (hint == nullptr) {
+    for (size_t by = 0; by < ysize; ++by) {
+      int32_t* PIK_RESTRICT row_quant = rect_qf.Row(quant_field, by);
+      const int32_t* PIK_RESTRICT row_quant_top =
+          (by == 0) ? nullptr : rect_qf.ConstRow(*quant_field, by - 1);
+      AcStrategyRow ac_strategy_row = ac_strategy.ConstRow(rect_qf, by);
+      for (size_t bx = 0; bx < xsize; ++bx) {
+        AcStrategy acs = ac_strategy_row[bx];
+        if (!acs.IsFirstBlock()) continue;
+        int32_t predicted_quant =
+            PredictFromTopAndLeft(row_quant_top, row_quant, bx, 32);
+        br->FillBitBuffer();
+        int32_t quant_ctx = QuantContext();
+        size_t q = decoder->ReadSymbol(context_map[quant_ctx], br);
+        if (q == 255) {
+          br->FillBitBuffer();
+          row_quant[bx] = decoder->ReadSymbol(context_map[quant_ctx], br) + 1;
+        } else {
+          row_quant[bx] = UnpackSigned(q) + predicted_quant;
+        }
+        for (size_t iy = 0; iy < acs.covered_blocks_y(); iy++) {
+          for (size_t ix = 0; ix < acs.covered_blocks_x(); ix++) {
+            row_quant[bx + iy * stride + ix] = row_quant[bx];
+          }
+        }
+      }
+    }
+  } else {
+    for (size_t by = 0; by < ysize; ++by) {
+      int32_t* PIK_RESTRICT row_quant = rect_qf.Row(quant_field, by);
+      const int32_t* PIK_RESTRICT row_hint = hint->ConstRow(by);
+      AcStrategyRow ac_strategy_row = ac_strategy.ConstRow(rect_qf, by);
+      for (size_t bx = 0; bx < xsize; ++bx) {
+        AcStrategy acs = ac_strategy_row[bx];
+        if (!acs.IsFirstBlock()) continue;
+        int32_t predicted_quant = row_hint[bx];
+        br->FillBitBuffer();
+        int32_t quant_ctx = QuantContext();
+        size_t q = decoder->ReadSymbol(context_map[quant_ctx], br);
+        if (q == 255) {
+          br->FillBitBuffer();
+          row_quant[bx] = decoder->ReadSymbol(context_map[quant_ctx], br) + 1;
+        } else {
+          row_quant[bx] = UnpackSigned(q) + predicted_quant;
+        }
+        for (size_t iy = 0; iy < acs.covered_blocks_y(); iy++) {
+          for (size_t ix = 0; ix < acs.covered_blocks_x(); ix++) {
+            row_quant[bx + iy * stride + ix] = row_quant[bx];
+          }
+        }
+      }
     }
   }
   return true;
 }
 
-template <int N>
-bool DecodeCoefficients(BitReader* PIK_RESTRICT br,
-                        ANSSymbolReader* PIK_RESTRICT decoder,
-                        const Image3B& tmp_block_ctx,
-                        const std::vector<uint8_t>& context_map,
-                        const int32_t* PIK_RESTRICT coeff_order,
-                        const Rect& rect_ac, Image3S* PIK_RESTRICT ac,
-                        const Rect& rect_bm,
-                        const ImageB& PIK_RESTRICT ac_strategy,
-                        Image3I* PIK_RESTRICT tmp_num_nzeroes) {
+void TokenizeAcStrategy(const Rect& rect, const AcStrategyImage& ac_strategy,
+                        const AcStrategyImage* hint,
+                        std::vector<Token>* PIK_RESTRICT output) {
+  const size_t xsize = rect.xsize();
+  const size_t ysize = rect.ysize();
+
+  output->reserve(output->size() + xsize * ysize);
+
+  if (hint == nullptr) {
+    for (size_t by = 0; by < ysize; by++) {
+      AcStrategyRow row_src = ac_strategy.ConstRow(rect, by);
+      for (size_t bx = 0; bx < xsize; bx++) {
+        AcStrategy ac_strategy = row_src[bx];
+        if (!ac_strategy.IsFirstBlock()) continue;
+        output->emplace_back(AcStrategyContext(), ac_strategy.RawStrategy(), 0,
+                             0);
+      }
+    }
+  } else {
+    for (size_t by = 0; by < ysize; by++) {
+      AcStrategyRow row_src = ac_strategy.ConstRow(rect, by);
+      AcStrategyRow row_hint = hint->ConstRow(rect, by);
+      for (size_t bx = 0; bx < xsize; bx++) {
+        AcStrategy ac_strategy = row_src[bx];
+        if (!ac_strategy.IsFirstBlock()) continue;
+        uint8_t raw = ac_strategy.RawStrategy();
+        raw -= row_hint[bx].RawStrategy();
+        output->emplace_back(AcStrategyContext(), raw, 0, 0);
+      }
+    }
+  }
+}
+
+bool DecodeAcStrategy(BitReader* PIK_RESTRICT br,
+                      ANSSymbolReader* PIK_RESTRICT decoder,
+                      const std::vector<uint8_t>& context_map, const Rect& rect,
+                      AcStrategyImage* PIK_RESTRICT ac_strategy,
+                      const AcStrategyImage* PIK_RESTRICT hint) {
+  const size_t ctx = context_map[AcStrategyContext()];
+
+  const size_t xsize = rect.xsize();
+  const size_t ysize = rect.ysize();
+  ImageB ac_strategy_raw(xsize, ysize);
+  FillImage(AcStrategyImage::INVALID, &ac_strategy_raw);
+  const size_t stride = ac_strategy_raw.PixelsPerRow();
+
+  if (hint == nullptr) {
+    for (size_t by = 0; by < ysize; by++) {
+      uint8_t* PIK_RESTRICT row_ac = ac_strategy_raw.Row(by);
+      for (size_t bx = 0; bx < xsize; bx++) {
+        if (row_ac[bx] != AcStrategyImage::INVALID) continue;
+        br->FillBitBuffer();
+        uint8_t raw_strategy = decoder->ReadSymbol(ctx, br);
+        if (!AcStrategy::IsRawStrategyValid(raw_strategy)) {
+          return PIK_FAILURE("Invalid AC strategy");
+        }
+        AcStrategy acs = AcStrategy::FromRawStrategy(raw_strategy);
+        if (by + acs.covered_blocks_y() > ysize)
+          return PIK_FAILURE("Invalid AC strategy: y overflow");
+        if (bx + acs.covered_blocks_x() > xsize)
+          return PIK_FAILURE("Invalid AC strategy: x overflow");
+        for (size_t iy = 0; iy < acs.covered_blocks_y(); iy++) {
+          for (size_t ix = 0; ix < acs.covered_blocks_x(); ix++) {
+            row_ac[bx + ix + iy * stride] = raw_strategy;
+          }
+        }
+      }
+    }
+  } else {
+    for (size_t by = 0; by < ysize; by++) {
+      uint8_t* PIK_RESTRICT row_ac = ac_strategy_raw.Row(by);
+      AcStrategyRow row_hint = hint->ConstRow(by);
+      for (size_t bx = 0; bx < xsize; bx++) {
+        if (row_ac[bx] != AcStrategyImage::INVALID) continue;
+        br->FillBitBuffer();
+        uint8_t raw_strategy = decoder->ReadSymbol(ctx, br);
+        raw_strategy += row_hint[bx].RawStrategy();
+        if (!AcStrategy::IsRawStrategyValid(raw_strategy)) {
+          return PIK_FAILURE("Invalid AC strategy");
+        }
+        AcStrategy acs = AcStrategy::FromRawStrategy(raw_strategy);
+        if (by + acs.covered_blocks_y() > ysize)
+          return PIK_FAILURE("Invalid AC strategy: y overflow");
+        if (bx + acs.covered_blocks_x() > xsize)
+          return PIK_FAILURE("Invalid AC strategy: x overflow");
+        for (size_t iy = 0; iy < acs.covered_blocks_y(); iy++) {
+          for (size_t ix = 0; ix < acs.covered_blocks_x(); ix++) {
+            row_ac[bx + ix + iy * stride] = raw_strategy;
+          }
+        }
+      }
+    }
+  }
+  ac_strategy->SetFromRaw(rect, ac_strategy_raw);
+  return true;
+}
+
+bool DecodeAC(const std::vector<uint8_t>& context_map,
+              const int32_t* PIK_RESTRICT coeff_order,
+              BitReader* PIK_RESTRICT br, ANSSymbolReader* decoder,
+              Image3S* PIK_RESTRICT ac, const Rect& rect,
+              Image3I* PIK_RESTRICT tmp_num_nzeroes) {
+  constexpr int N = kBlockDim;
   constexpr int block_size = N * N;
-  const size_t xsize_blocks = rect_bm.xsize();
-  const size_t ysize_blocks = rect_bm.ysize();
+
+  const size_t xsize_blocks = rect.xsize();
+  const size_t ysize_blocks = rect.ysize();
 
   for (int c = 0; c < 3; ++c) {
     for (size_t by = 0; by < ysize_blocks; ++by) {
-      const uint8_t* PIK_RESTRICT ac_strategy_row =
-          rect_bm.ConstRow(ac_strategy, by);
-      const uint8_t* PIK_RESTRICT row_bctx = tmp_block_ctx.ConstPlaneRow(c, by);
-      int16_t* PIK_RESTRICT row_ac = rect_ac.PlaneRow(ac, c, by);
+      int16_t* PIK_RESTRICT row_ac = ac->PlaneRow(c, by);
       int32_t* PIK_RESTRICT row_nzeros = tmp_num_nzeroes->PlaneRow(c, by);
       const int32_t* PIK_RESTRICT row_nzeros_top =
           (by == 0) ? nullptr : tmp_num_nzeroes->ConstPlaneRow(c, by - 1);
@@ -955,8 +1132,8 @@ bool DecodeCoefficients(BitReader* PIK_RESTRICT br,
         memset(block_ac, 0, block_size * sizeof(row_ac[0]));
         int32_t predicted_nzeros =
             PredictFromTopAndLeft(row_nzeros_top, row_nzeros, bx, 32);
-        const size_t block_ctx = row_bctx[bx];
-        const size_t nzero_ctx = NonZeroContext<N>(predicted_nzeros, block_ctx);
+        const size_t block_ctx = c;
+        const size_t nzero_ctx = NonZeroContext(predicted_nzeros, block_ctx);
         br->FillBitBuffer();
         row_nzeros[bx] = decoder->ReadSymbol(context_map[nzero_ctx], br);
         size_t num_nzeros = row_nzeros[bx];
@@ -964,14 +1141,12 @@ bool DecodeCoefficients(BitReader* PIK_RESTRICT br,
           return PIK_FAILURE("Invalid AC: nzeros too large");
         }
         if (num_nzeros == 0) continue;
-        const int histo_offset = ZeroDensityContextsOffset<N>(block_ctx);
+        const int histo_offset = ZeroDensityContextsOffset(block_ctx);
         const size_t order_offset = block_ctx * block_size;
         const int* PIK_RESTRICT block_order = &coeff_order[order_offset];
         PIK_ASSERT(block_ctx < kOrderContexts);
-        bool is_dct = AcStrategyType::IsDct(ac_strategy_row[bx]);
-        for (size_t k = is_dct; k < block_size && num_nzeros > 0; ++k) {
-          int context =
-              histo_offset + ZeroDensityContext(num_nzeros, k - is_dct);
+        for (size_t k = 1; k < block_size && num_nzeros > 0; ++k) {
+          int context = histo_offset + ZeroDensityContext(num_nzeros, k - 1);
           br->FillBitBuffer();
           int symbol = decoder->ReadSymbol(context_map[context], br);
           int nbits = kBitsLut[symbol];
@@ -999,45 +1174,5 @@ bool DecodeCoefficients(BitReader* PIK_RESTRICT br,
   }
   return true;
 }
-
-template <int N>
-bool DecodeAC(const Image3B& tmp_block_ctx, const ANSCode& code,
-              const std::vector<uint8_t>& context_map,
-              const int32_t* PIK_RESTRICT coeff_order,
-              BitReader* PIK_RESTRICT br, const Rect& rect_ac,
-              Image3S* PIK_RESTRICT ac, const Rect& rect_qf,
-              ImageI* PIK_RESTRICT quant_field,
-              const ImageB& PIK_RESTRICT ac_strategy,
-              Image3I* PIK_RESTRICT tmp_num_nzeroes) {
-  constexpr int block_size = N * N;
-  PIK_ASSERT(SameSize(rect_qf, rect_ac));
-  // Transform block coordinates to coefficient layout coordinates.
-  Rect literal_rect_ac(rect_ac.x0() * block_size, rect_ac.y0(),
-                       rect_ac.xsize() * block_size, rect_ac.ysize());
-
-  PIK_ASSERT(literal_rect_ac.IsInside(*ac));
-  PIK_ASSERT(rect_qf.IsInside(*quant_field));
-
-  PIK_ASSERT(SameSize(tmp_block_ctx, *tmp_num_nzeroes));
-
-  ANSSymbolReader decoder(&code);
-  PIK_RETURN_IF_ERROR(DecodeQuantField(br, &decoder, context_map, rect_qf,
-                                       ac_strategy, quant_field));
-  PIK_RETURN_IF_ERROR(DecodeCoefficients<N>(
-      br, &decoder, tmp_block_ctx, context_map, coeff_order, literal_rect_ac,
-      ac, rect_qf, ac_strategy, tmp_num_nzeroes));
-
-  br->JumpToByteBoundary();
-  if (!decoder.CheckANSFinalState()) {
-    return PIK_FAILURE("ANS checksum failure.");
-  }
-  return true;
-}
-template bool DecodeAC<8>(const Image3B&, const ANSCode&,
-                          const std::vector<uint8_t>&,
-                          const int32_t* PIK_RESTRICT, BitReader* PIK_RESTRICT,
-                          const Rect&, Image3S* PIK_RESTRICT, const Rect&,
-                          ImageI* PIK_RESTRICT, const ImageB& PIK_RESTRICT,
-                          Image3I* PIK_RESTRICT);
 
 }  // namespace pik

@@ -63,47 +63,24 @@ class ThreadPool {
   static constexpr int kMaxThreads = 256;
 
   // Starts the given number of worker threads and blocks until they are ready.
-  // "num_threads" defaults to one per hyperthread. If zero, all tasks run on
-  // the main thread.
+  // "num_worker_threads" defaults to one per hyperthread. If zero, all tasks
+  // run on the main thread.
   explicit ThreadPool(
-      const int num_threads = std::thread::hardware_concurrency())
-      : num_threads_(num_threads) {
-    PIK_CHECK(num_threads >= 0);
-    PIK_CHECK(num_threads <= kMaxThreads);
-    threads_.reserve(num_threads);
-
-    // Suppress "unused-private-field" warning.
-    (void)padding;
-
-    // Safely handle spurious worker wakeups.
-    worker_start_command_ = kWorkerWait;
-
-    for (int i = 0; i < num_threads; ++i) {
-      threads_.emplace_back(ThreadFunc, this, i);
-    }
-
-    if (num_threads_ != 0) {
-      WorkersReadyBarrier();
-    }
-  }
+      const int num_worker_threads = std::thread::hardware_concurrency());
 
   ThreadPool(const ThreadPool&) = delete;
   ThreadPool& operator&(const ThreadPool&) = delete;
 
   // Waits for all threads to exit.
-  ~ThreadPool() {
-    if (num_threads_ != 0) {
-      StartWorkers(kWorkerExit);
-    }
-
-    for (std::thread& thread : threads_) {
-      PIK_ASSERT(thread.joinable());
-      thread.join();
-    }
-  }
+  ~ThreadPool();
 
   // Returns number of worker threads created (some may be sleeping and never
-  // wake up in time to participate in Run).
+  // wake up in time to participate in Run). Useful for characterizing
+  // performance; 0 means "run on main thread".
+  size_t NumWorkerThreads() const { return num_worker_threads_; }
+
+  // Returns maximum number of main/worker threads that may call Func. Useful
+  // for allocating per-thread storage.
   size_t NumThreads() const { return num_threads_; }
 
   // Runs func(task, thread) on worker thread(s) for every task in [begin, end).
@@ -120,12 +97,17 @@ class ThreadPool {
     if (begin == end) {
       return;
     }
-    if (num_threads_ == 0) {
+
+    if (num_worker_threads_ == 0) {
       const int thread = 0;
       for (int task = begin; task < end; ++task) {
         func(task, thread);
       }
       return;
+    }
+
+    if (depth_.fetch_add(1, std::memory_order_acq_rel) != 0) {
+      PIK_ASSERT(false);  // Must not re-enter.
     }
 
     const WorkerCommand worker_command = (WorkerCommand(end) << 32) + begin;
@@ -140,6 +122,10 @@ class ThreadPool {
 
     StartWorkers(worker_command);
     WorkersReadyBarrier();
+
+    if (depth_.fetch_add(-1, std::memory_order_acq_rel) != 1) {
+      PIK_ASSERT(false);
+    }
   }
 
   // Runs func(thread, thread) on all thread(s) that may participate in Run.
@@ -147,7 +133,7 @@ class ThreadPool {
   // concurrently called by each worker thread in [0, NumThreads()).
   template <class Func>
   void RunOnEachThread(const Func& func) {
-    if (num_threads_ == 0) {
+    if (num_worker_threads_ == 0) {
       const int thread = 0;
       func(thread, thread);
       return;
@@ -181,6 +167,7 @@ class ThreadPool {
 
   void WorkersReadyBarrier() {
     std::unique_lock<std::mutex> lock(mutex_);
+    // Typically only a single iteration.
     while (workers_ready_ != threads_.size()) {
       workers_ready_cv_.wait(lock);
     }
@@ -206,7 +193,7 @@ class ThreadPool {
     const int begin = command & 0xFFFFFFFF;
     const int end = command >> 32;
     const int num_tasks = end - begin;
-    const int num_threads = static_cast<int>(self->num_threads_);
+    const int num_worker_threads = static_cast<int>(self->num_worker_threads_);
 
     // OpenMP introduced several "schedule" strategies:
     // "single" (static assignment of exactly one chunk per thread): slower.
@@ -218,14 +205,16 @@ class ThreadPool {
     for (;;) {
 #if 0
       // dynamic
-      const int my_size = std::max(num_tasks / (num_threads * 4), 1);
+      const int my_size = std::max(num_tasks / (num_worker_threads * 4), 1);
 #else
       // guided
-      const int num_reserved = self->num_reserved_.load();
+      const int num_reserved =
+          self->num_reserved_.load(std::memory_order_relaxed);
       const int num_remaining = num_tasks - num_reserved;
-      const int my_size = std::max(num_remaining / (num_threads * 4), 1);
+      const int my_size = std::max(num_remaining / (num_worker_threads * 4), 1);
 #endif
-      const int my_begin = begin + self->num_reserved_.fetch_add(my_size);
+      const int my_begin = begin + self->num_reserved_.fetch_add(
+                                       my_size, std::memory_order_relaxed);
       const int my_end = std::min(my_begin + my_size, begin + num_tasks);
       // Another thread already reserved the last task.
       if (my_begin >= my_end) {
@@ -241,39 +230,15 @@ class ThreadPool {
   // CallClosure. Arguments are arg_ (points to the lambda), task, thread.
   using TypeErasedFunc = void (*)(const void*, int, int);
 
-  static void ThreadFunc(ThreadPool* self, const int thread) {
-    // Until kWorkerExit command received:
-    for (;;) {
-      std::unique_lock<std::mutex> lock(self->mutex_);
-      // Notify main thread that this thread is ready.
-      if (++self->workers_ready_ == self->NumThreads()) {
-        self->workers_ready_cv_.notify_one();
-      }
-    RESUME_WAIT:
-      // Wait for a command.
-      self->worker_start_cv_.wait(lock);
-      const WorkerCommand command = self->worker_start_command_;
-      switch (command) {
-        case kWorkerWait:    // spurious wakeup:
-          goto RESUME_WAIT;  // lock still held, avoid incrementing ready.
-        case kWorkerOnce:
-          lock.unlock();
-          self->func_(self->arg_, thread, thread);
-          break;
-        case kWorkerExit:
-          return;  // exits thread
-        default:
-          lock.unlock();
-          RunRange(self, command, thread);
-          break;
-      }
-    }
-  }
+  static void ThreadFunc(ThreadPool* self, const int thread);
 
   // Unmodified after ctor, but cannot be const because we call thread::join().
   std::vector<std::thread> threads_;
 
+  const size_t num_worker_threads_;  // == threads_.size()
   const size_t num_threads_;
+
+  std::atomic<int> depth_{0};  // detects if Run is re-entered (not supported).
 
   std::mutex mutex_;  // guards both cv and their variables.
   std::condition_variable workers_ready_cv_;
@@ -289,6 +254,40 @@ class ThreadPool {
   alignas(64) std::atomic<int> num_reserved_{0};
   int padding[15];
 };
+
+// Wrappers to enable ThreadPool* == nullptr (cheaper than constructing a
+// ThreadPool(0)). Do not call pool->* directly.
+
+static inline size_t NumWorkerThreads(ThreadPool* pool) {
+  return pool == nullptr ? 0 : pool->NumWorkerThreads();
+}
+
+static inline size_t NumThreads(ThreadPool* pool) {
+  return pool == nullptr ? 1 : pool->NumThreads();
+}
+
+template <class Func>
+void RunOnPool(ThreadPool* pool, const int begin, const int end,
+               const Func& func, const char* caller = "") {
+  if (pool == nullptr) {
+    const int thread = 0;
+    for (int task = begin; task < end; ++task) {
+      func(task, thread);
+    }
+    return;
+  }
+  pool->Run(begin, end, func, caller);
+}
+
+template <class Func>
+void RunOnEachThread(ThreadPool* pool, const Func& func) {
+  if (pool == nullptr) {
+    const int thread = 0;
+    func(thread, thread);
+    return;
+  }
+  pool->RunOnEachThread(func);
+}
 
 // Adapters for zero-cost switching between ThreadPool and non-threaded loop.
 
@@ -310,7 +309,7 @@ struct ExecutorPool {
   template <class Lambda>
   void Run(const int begin, const int end, const Lambda& lambda,
            const char* caller) const {
-    pool->Run(begin, end, lambda, caller);
+    RunOnPool(pool, begin, end, lambda, caller);
   }
 
   ThreadPool* pool;  // not owned

@@ -373,7 +373,7 @@ class GeneralUpsamplerFromSeparable {
 };
 
 // Supports any kernel size. Requires known kScale and Kernel::Weights2D.
-template<int64_t kScale>
+template <int64_t kScale>
 class GeneralUpsampler {
  public:
   // TODO(janwas): add ExecutorPool overload
@@ -577,12 +577,13 @@ class Upsampler8Base {
     for (size_t out_y = 0; out_y < kBorder; ++out_y) {
       ProduceRow(horz, out_y, in, WrapMirror(), weights, out);
     }
-    executor.Run(kBorder, out_ysize - kBorder,
-                 [horz, &in, weights, out](const int task, const int thread) {
-                   const int64_t out_y = task;
-                   ProduceRow(horz, out_y, in, WrapUnchanged(), weights, out);
-                 },
-                 "Resample");
+    executor.Run(
+        kBorder, out_ysize - kBorder,
+        [horz, &in, weights, out](const int task, const int thread) {
+          const int64_t out_y = task;
+          ProduceRow(horz, out_y, in, WrapUnchanged(), weights, out);
+        },
+        "Resample");
     for (size_t out_y = out_ysize - kBorder; out_y < out_ysize; ++out_y) {
       ProduceRow(horz, out_y, in, WrapMirror(), weights, out);
     }
@@ -613,15 +614,16 @@ class Upsampler8Base {
                    out->MutablePlane(c));
       }
     }
-    executor.Run(kBorder, out_ysize - kBorder,
-                 [horz, &in, weights, out](const int task, const int thread) {
-                   const int64_t out_y = task;
-                   for (int c = 0; c < 3; ++c) {
-                     ProduceRow(horz, out_y, in.Plane(c), WrapUnchanged(),
-                                weights, out->MutablePlane(c));
-                   }
-                 },
-                 "Resample3");
+    executor.Run(
+        kBorder, out_ysize - kBorder,
+        [horz, &in, weights, out](const int task, const int thread) {
+          const int64_t out_y = task;
+          for (int c = 0; c < 3; ++c) {
+            ProduceRow(horz, out_y, in.Plane(c), WrapUnchanged(), weights,
+                       out->MutablePlane(c));
+          }
+        },
+        "Resample3");
     for (int c = 0; c < 3; ++c) {
       for (size_t out_y = out_ysize - kBorder; out_y < out_ysize; ++out_y) {
         ProduceRow(horz, out_y, in.Plane(c), WrapMirror(), weights,

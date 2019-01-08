@@ -265,7 +265,7 @@ class TFGraph {
   const uint32_t num_tiles_;
 
   ThreadPool* const pool_;                       // not owned.
-  uint32_t num_instances_;                       // = pool_->NumThreads() or 1.
+  uint32_t num_instances_;                       // = NumThreads(pool_).
   uint8_t* instances_[ThreadPool::kMaxThreads];  // owned.
 };
 
@@ -424,7 +424,8 @@ class TFBuilder {
   // Type-erased implementations avoid multiple overloads.
   void BindSource(TFNode* node, TFPortIndex port, const ImageF* source,
                   TFType type);
-  void BindSink(TFNode* node, TFPortIndex port, const ImageF* sink, TFType type);
+  void BindSink(TFNode* node, TFPortIndex port, const ImageF* sink,
+                TFType type);
 
   // Calls operator() of the closure (lambda function) "arg", which is a copy of
   // the original closure to improve locality. &CallClosure will be stored in a

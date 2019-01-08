@@ -46,10 +46,9 @@ struct ANSEncSymbolInfo {
 #endif
 };
 
-void BuildAndStoreANSEncodingData(const int* histogram,
-                                  int alphabet_size,
-                                  ANSEncSymbolInfo* info,
-                                  size_t* storage_ix, uint8_t* storage);
+void BuildAndStoreANSEncodingData(const int* histogram, int alphabet_size,
+                                  ANSEncSymbolInfo* info, size_t* storage_ix,
+                                  uint8_t* storage);
 
 struct ANSEncodingData {
   void BuildAndStore(const int* histogram, size_t histo_size,
@@ -93,8 +92,8 @@ class ANSCoder {
     const uint32_t offset = state_ - v * t.freq_ + t.start_;
     state_ = (v << ANS_LOG_TAB_SIZE) + offset;
 #else
-    state_ = ((state_ / t.freq_) << ANS_LOG_TAB_SIZE)
-           + (state_ % t.freq_) + t.start_;
+    state_ = ((state_ / t.freq_) << ANS_LOG_TAB_SIZE) + (state_ % t.freq_) +
+             t.start_;
 #endif
     return bits;
   }
@@ -104,7 +103,6 @@ class ANSCoder {
  private:
   uint32_t state_;
 };
-
 
 // Symbol visitor that collects symbols and raw bits to be encoded.
 class ANSSymbolWriter {

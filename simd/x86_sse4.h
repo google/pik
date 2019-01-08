@@ -2296,6 +2296,11 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double> odd_even<double>(
 
 // ------------------------------ Promotions (part w/ narrow lanes -> full)
 
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<double> convert_to(
+    Full<double, SSE4>, const vec_sse4<float, 2> v) {
+  return vec_sse4<double>(_mm_cvtps_pd(v.raw));
+}
+
 // Unsigned: zero-extend.
 SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<uint16_t> convert_to(
     Full<uint16_t, SSE4>, const vec_sse4<uint8_t, 8> v) {

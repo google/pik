@@ -28,11 +28,9 @@ namespace {
 
 float ButteraugliDistanceLinearSRGB(const Image3F& rgb0, const Image3F& rgb1,
                                     float hf_asymmetry, ImageF* distmap_out) {
-  ImageF distmap;
+  ImageF distmap_tmp;
+  ImageF& distmap = distmap_out == nullptr ? distmap_tmp : *distmap_out;
   PIK_CHECK(butteraugli::ButteraugliDiffmap(rgb0, rgb1, hf_asymmetry, distmap));
-  if (distmap_out != nullptr) {
-    *distmap_out = CopyImage(distmap);
-  }
   return butteraugli::ButteraugliScoreFromDiffmap(distmap);
 }
 
@@ -84,28 +82,29 @@ const Image3F* AlphaBlend(const CodecInOut& io, const Image3F& linear,
 }  // namespace
 
 float ButteraugliDistance(const CodecInOut* rgb0, const CodecInOut* rgb1,
-                          float hf_asymmetry, ImageF* distmap_out) {
+                          float hf_asymmetry, ImageF* distmap,
+                          ThreadPool* pool) {
   PROFILER_FUNC;
   // Convert to linear sRGB (unless already in that space)
   const Image3F* linear_srgb0 = &rgb0->color();
   Image3F linear_srgb_copy0;
   if (!rgb0->IsLinearSRGB()) {
     const ColorEncoding& c = rgb0->Context()->c_linear_srgb[rgb0->IsGray()];
-    PIK_CHECK(rgb0->CopyTo(c, &linear_srgb_copy0));
+    PIK_CHECK(rgb0->CopyTo(Rect(rgb0->color()), c, &linear_srgb_copy0, pool));
     linear_srgb0 = &linear_srgb_copy0;
   }
   const Image3F* linear_srgb1 = &rgb1->color();
   Image3F linear_srgb_copy1;
   if (!rgb1->IsLinearSRGB()) {
     const ColorEncoding& c = rgb1->Context()->c_linear_srgb[rgb1->IsGray()];
-    PIK_CHECK(rgb1->CopyTo(c, &linear_srgb_copy1));
+    PIK_CHECK(rgb1->CopyTo(Rect(rgb1->color()), c, &linear_srgb_copy1, pool));
     linear_srgb1 = &linear_srgb_copy1;
   }
 
   // No alpha: skip blending, only need a single call to Butteraugli.
   if (!rgb0->HasAlpha() && !rgb1->HasAlpha()) {
     return ButteraugliDistanceLinearSRGB(*linear_srgb0, *linear_srgb1,
-                                         hf_asymmetry, distmap_out);
+                                         hf_asymmetry, distmap);
   }
 
   // Blend on black and white backgrounds
@@ -131,14 +130,14 @@ float ButteraugliDistance(const CodecInOut* rgb0, const CodecInOut* rgb1,
       *blended_white0, *blended_white1, hf_asymmetry, &distmap_white);
 
   // distmap and return values are the max of distmap_black/white.
-  if (distmap_out != nullptr) {
+  if (distmap != nullptr) {
     const size_t xsize = rgb0->xsize();
     const size_t ysize = rgb0->ysize();
-    *distmap_out = ImageF(xsize, ysize);
+    *distmap = ImageF(xsize, ysize);
     for (size_t y = 0; y < ysize; ++y) {
       const float* PIK_RESTRICT row_black = distmap_black.ConstRow(y);
       const float* PIK_RESTRICT row_white = distmap_white.ConstRow(y);
-      float* PIK_RESTRICT row_out = distmap_out->Row(y);
+      float* PIK_RESTRICT row_out = distmap->Row(y);
       for (size_t x = 0; x < xsize; ++x) {
         row_out[x] = std::max(row_black[x], row_white[x]);
       }

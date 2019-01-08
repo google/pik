@@ -26,7 +26,7 @@ static PIK_INLINE double Srgb8ToLinearDirect(double srgb8) {
   if (srgb8 <= 0.0) return 0.0;
   if (srgb8 <= 10.31475) return srgb8 / 12.92;
   if (srgb8 >= 255.0) return 255.0;
-  const double srgb01 =srgb8 / 255.0;
+  const double srgb01 = srgb8 / 255.0;
   const double linear01 = std::pow((srgb01 + 0.055) / 1.055, 2.4);
   return linear01 * 255.0;
 }

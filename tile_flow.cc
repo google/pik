@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstring>
 
+#undef PROFILER_ENABLED
 #define PROFILER_ENABLED 1
 #include "arch_specific.h"
 #include "cache_aligned.h"
@@ -648,7 +649,7 @@ class TFNode {
   // "const", only set by ctor:
 
   uint32_t index_;
-  NodeName name_;       // For ToString.
+  NodeName name_;  // For ToString.
 
   Borders in_borders_;  // For InitR.
   Scale out_scale_;     // For InitR.
@@ -1395,7 +1396,7 @@ TFGraph::TFGraph(const ImageSize sink_size, const ImageSize tile_size,
       num_tiles_y_(CeilDiv(sink_size.ysize, tile_size.ysize)),
       num_tiles_(num_tiles_x_ * num_tiles_y_),
       pool_(pool),
-      num_instances_(std::max<size_t>(pool->NumThreads(), 1)) {
+      num_instances_(NumThreads(pool)) {
   for (int i = 0; i < num_instances_; ++i) {
     instances_[i] = builder->CreateInstance(i);
   }
@@ -1416,52 +1417,55 @@ void TFGraph::Run() {
   const int mask = num_tiles_x_ - 1;
 
   // Preferred: enough strips to keep threads busy (better locality).
-  if (num_tiles_y_ >= pool_->NumThreads() * 2) {
-    pool_->Run(0, num_tiles_y_,
-               [self](const int task, const int thread) {
-                 const TileIndex tile_iy = task;
-                 RunArg arg(0, tile_iy, self->num_tiles_x_, self->num_tiles_y_);
-                 for (TileIndex tile_ix = 0; tile_ix < self->num_tiles_x_ - 1;
-                      ++tile_ix) {
-                   arg.tile_ix = tile_ix;
-                   RunGraph(self->instances_[thread], arg);
-                 }
+  if (num_tiles_y_ >= NumThreads(pool_) * 2) {
+    RunOnPool(
+        pool_, 0, num_tiles_y_,
+        [self](const int task, const int thread) {
+          const TileIndex tile_iy = task;
+          RunArg arg(0, tile_iy, self->num_tiles_x_, self->num_tiles_y_);
+          for (TileIndex tile_ix = 0; tile_ix < self->num_tiles_x_ - 1;
+               ++tile_ix) {
+            arg.tile_ix = tile_ix;
+            RunGraph(self->instances_[thread], arg);
+          }
 
-                 arg.tile_ix = self->num_tiles_x_ - 1;
-                 arg.is_partial_x = 1;
-                 RunGraph(self->instances_[thread], arg);
-               },
-               "tf strips");
+          arg.tile_ix = self->num_tiles_x_ - 1;
+          arg.is_partial_x = 1;
+          RunGraph(self->instances_[thread], arg);
+        },
+        "tf strips");
     return;
   }
 
   // Second-best: scatter tiles but avoid Divider.
   if ((num_tiles_x_ & mask) == 0) {  // Power of two (including 1)
     const int shift = FloorLog2Nonzero(num_tiles_x_);
-    pool_->Run(0, num_tiles_,
-               [mask, shift, self](const int task, const int thread) {
-                 const TileIndex tile_ix = task & mask;
-                 const TileIndex tile_iy = task >> shift;
-                 const RunArg arg(tile_ix, tile_iy, self->num_tiles_x_,
-                                  self->num_tiles_y_);
-                 RunGraph(self->instances_[thread], arg);
-               },
-               "tf scatter");
+    RunOnPool(
+        pool_, 0, num_tiles_,
+        [mask, shift, self](const int task, const int thread) {
+          const TileIndex tile_ix = task & mask;
+          const TileIndex tile_iy = task >> shift;
+          const RunArg arg(tile_ix, tile_iy, self->num_tiles_x_,
+                           self->num_tiles_y_);
+          RunGraph(self->instances_[thread], arg);
+        },
+        "tf scatter");
     return;
   }
 
   // Fallback: expand task into x,y via 'division'.
   const Divider divide(num_tiles_x_);
-  pool_->Run(0, num_tiles_,
-             [&divide, self](const int task, const int thread) {
-               const TileIndex tile_iy = divide(task);
-               // Remainder - subtracting after mul is faster than modulo.
-               const TileIndex tile_ix = task - tile_iy * self->num_tiles_x_;
-               const RunArg arg(tile_ix, tile_iy, self->num_tiles_x_,
-                                self->num_tiles_y_);
-               RunGraph(self->instances_[thread], arg);
-             },
-             "tf div");
+  RunOnPool(
+      pool_, 0, num_tiles_,
+      [&divide, self](const int task, const int thread) {
+        const TileIndex tile_iy = divide(task);
+        // Remainder - subtracting after mul is faster than modulo.
+        const TileIndex tile_ix = task - tile_iy * self->num_tiles_x_;
+        const RunArg arg(tile_ix, tile_iy, self->num_tiles_x_,
+                         self->num_tiles_y_);
+        RunGraph(self->instances_[thread], arg);
+      },
+      "tf div");
 }
 
 TFBuilder::TFBuilder() : impl_(new TFBuilderImpl) {}

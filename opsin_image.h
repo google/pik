@@ -39,8 +39,8 @@ void LinearToXyb(const float r, const float g, const float b,
                  float* PIK_RESTRICT valx, float* PIK_RESTRICT valy,
                  float* PIK_RESTRICT valz);
 
-// Returns the opsin XYB. Parallelized.
-Image3F OpsinDynamicsImage(const CodecInOut* in);
+// Returns the opsin XYB for the part of the image bounded by rect.
+Image3F OpsinDynamicsImage(const CodecInOut* in, const Rect& rect);
 
 // DEPRECATED, used by opsin_image_wrapper.
 Image3F OpsinDynamicsImage(const Image3B& srgb);

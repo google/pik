@@ -31,9 +31,12 @@ namespace pik {
 // FromXXX should implement Read and Load (Read vector).
 // ToXXX should implement Write and Store (Write vector).
 
-// The AVX2 8x8 column DCT cannot process more than 8 independent lanes.
-using BlockDesc = SIMD_PART(float, SIMD_MIN(8, SIMD_FULL(float)::N));
+template <size_t N>
+using BlockDesc = SIMD_PART(float, SIMD_MIN(N, SIMD_FULL(float)::N));
 
+// Here and in the following, the SZ template parameter specifies the number of
+// values to load/store. Needed because we want to handle 4x4 sub-blocks of
+// 16x16 blocks.
 template <size_t N>
 class FromBlock {
  public:
@@ -43,8 +46,15 @@ class FromBlock {
     return FromBlock<N>(Address(dx, dy));
   }
 
-  SIMD_ATTR PIK_INLINE BlockDesc::V Load(const size_t row, size_t i) const {
-    return load(BlockDesc(), block_ + row * N + i);
+  template <size_t SZ>
+  SIMD_ATTR PIK_INLINE typename BlockDesc<SZ>::V LoadPart(const size_t row,
+                                                          size_t i) const {
+    return load(BlockDesc<SZ>(), block_ + row * N + i);
+  }
+
+  SIMD_ATTR PIK_INLINE typename BlockDesc<N>::V Load(const size_t row,
+                                                     size_t i) const {
+    return LoadPart<N>(row, i);
   }
 
   SIMD_ATTR PIK_INLINE float Read(const size_t row, const size_t i) const {
@@ -69,9 +79,15 @@ class ToBlock {
     return ToBlock<N>(Address(dx, dy));
   }
 
-  SIMD_ATTR PIK_INLINE void Store(const BlockDesc::V& v, const size_t row,
-                                  const size_t i) const {
-    store(v, BlockDesc(), Address(row, i));
+  template <size_t SZ>
+  SIMD_ATTR PIK_INLINE void StorePart(const typename BlockDesc<SZ>::V& v,
+                                      const size_t row, const size_t i) const {
+    store(v, BlockDesc<SZ>(), Address(row, i));
+  }
+
+  SIMD_ATTR PIK_INLINE void Store(const typename BlockDesc<N>::V& v,
+                                  const size_t row, size_t i) const {
+    return StorePart<N>(v, row, i);
   }
 
   SIMD_ATTR PIK_INLINE void Write(float v, const size_t row,
@@ -92,17 +108,25 @@ class ToBlock {
 template <size_t N>
 class ScaleToBlock {
  public:
-  explicit SIMD_ATTR ScaleToBlock(float* block)
-      : block_(block), mul_(set1(BlockDesc(), 1.0f / (N * N))) {}
+  explicit SIMD_ATTR ScaleToBlock(float* block) : block_(block) {}
 
-  SIMD_ATTR PIK_INLINE void Store(const BlockDesc::V& v, const size_t row,
-                                  const size_t i) const {
+  template <size_t SZ>
+  SIMD_ATTR PIK_INLINE void StorePart(const typename BlockDesc<SZ>::V& v,
+                                      const size_t row, const size_t i) const {
+    using BlockDesc = pik::BlockDesc<SZ>;
+    static const typename BlockDesc::V mul_ = set1(BlockDesc(), 1.0f / (N * N));
     store(v * mul_, BlockDesc(), Address(row, i));
+  }
+
+  SIMD_ATTR PIK_INLINE void Store(const typename BlockDesc<N>::V& v,
+                                  const size_t row, size_t i) const {
+    return StorePart<N>(v, row, i);
   }
 
   SIMD_ATTR PIK_INLINE void Write(float v, const size_t row,
                                   const size_t i) const {
-    *Address(row, i) = v;
+    static const float mul_ = 1.0f / (N * N);
+    *Address(row, i) = v * mul_;
   }
 
   constexpr PIK_INLINE float* Address(const size_t row, const size_t i) const {
@@ -111,9 +135,9 @@ class ScaleToBlock {
 
  private:
   float* block_;
-  BlockDesc::V mul_;
 };
 
+template <size_t N>
 class FromLines {
  public:
   FromLines(const float* top_left, size_t stride)
@@ -123,9 +147,15 @@ class FromLines {
     return FromLines(Address(dx, dy), stride_);
   }
 
-  SIMD_ATTR PIK_INLINE BlockDesc::V Load(const size_t row,
-                                         const size_t i) const {
-    return load(BlockDesc(), Address(row, i));
+  template <size_t SZ>
+  SIMD_ATTR PIK_INLINE typename BlockDesc<SZ>::V LoadPart(
+      const size_t row, const size_t i) const {
+    return load(BlockDesc<SZ>(), Address(row, i));
+  }
+
+  SIMD_ATTR PIK_INLINE typename BlockDesc<N>::V Load(const size_t row,
+                                                     size_t i) const {
+    return LoadPart<N>(row, i);
   }
 
   SIMD_ATTR PIK_INLINE float Read(const size_t row, const size_t i) const {
@@ -144,6 +174,7 @@ class FromLines {
 
 // Pointers are restrict-qualified: assumes we don't use both FromLines and
 // ToLines in the same DCT. NOTE: Transpose uses From/ToBlock, not *Lines.
+template <size_t N>
 class ToLines {
  public:
   ToLines(float* top_left, size_t stride)
@@ -153,9 +184,15 @@ class ToLines {
     return ToLines(Address(dx, dy), stride_);
   }
 
-  SIMD_ATTR PIK_INLINE void Store(const BlockDesc::V& v, const size_t row,
-                                  const size_t i) const {
-    store(v, BlockDesc(), Address(row, i));
+  template <size_t SZ>
+  SIMD_ATTR PIK_INLINE void StorePart(const typename BlockDesc<SZ>::V& v,
+                                      const size_t row, const size_t i) const {
+    store(v, BlockDesc<SZ>(), Address(row, i));
+  }
+
+  SIMD_ATTR PIK_INLINE void Store(const typename BlockDesc<N>::V& v,
+                                  const size_t row, size_t i) const {
+    return StorePart<N>(v, row, i);
   }
 
   SIMD_ATTR PIK_INLINE void Write(float v, const size_t row,

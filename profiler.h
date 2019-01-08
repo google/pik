@@ -49,7 +49,7 @@
 #include <atomic>
 #include <cassert>
 #include <cinttypes>  // PRIu64
-#include <cstddef>  // ptrdiff_t
+#include <cstddef>    // ptrdiff_t
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -421,7 +421,7 @@ class Results {
   size_t num_zones_ = 0;  // Number of retired zones.
 
   alignas(64) ProfilerNode nodes_[kMaxDepth];  // Stack
-  alignas(64) Accumulator zones_[kMaxZones];  // Self-organizing list
+  alignas(64) Accumulator zones_[kMaxZones];   // Self-organizing list
 };
 
 // Per-thread packet storage, allocated via CacheAligned.
@@ -532,14 +532,14 @@ class ThreadList {
  public:
   // Thread-safe.
   void Add(ThreadSpecific* const ts) {
-    const uint32_t index = num_threads_.fetch_add(1);
+    const uint32_t index = num_threads_.fetch_add(1, std::memory_order_relaxed);
     PIK_CHECK(index < kMaxThreads);
     threads_[index] = ts;
   }
 
   // Single-threaded.
   void PrintResults() {
-    const uint32_t num_threads = num_threads_.load();
+    const uint32_t num_threads = num_threads_.load(std::memory_order_relaxed);
     for (uint32_t i = 0; i < num_threads; ++i) {
       threads_[i]->AnalyzeRemainingPackets();
     }
@@ -643,7 +643,9 @@ inline void ThreadSpecific::ComputeOverhead() {
 
       for (size_t idx_duration = 0; idx_duration < kNumDurations;
            ++idx_duration) {
-        { PROFILER_ZONE("Dummy Zone (never shown)"); }
+        {
+          PROFILER_ZONE("Dummy Zone (never shown)");
+        }
 #if PIK_ARCH_X64
         const uint64_t duration = results_.ZoneDuration(buffer_);
         buffer_size_ = 0;
@@ -655,7 +657,7 @@ inline void ThreadSpecific::ComputeOverhead() {
         PIK_CHECK(num_packets_ == 0);
       }
       CountingSort(durations, durations + kNumDurations);
-      samples[idx_sample] = Mode(durations, kNumDurations);
+      samples[idx_sample] = HalfSampleMode()(durations, kNumDurations);
     }
     // Median.
     CountingSort(samples, samples + kNumSamples);
@@ -700,7 +702,7 @@ inline void ThreadSpecific::ComputeOverhead() {
           static_cast<uint32_t>(ClampedSubtract(avg_duration, self_overhead));
     }
     CountingSort(durations, durations + kNumDurations);
-    samples[idx_sample] = Mode(durations, kNumDurations);
+    samples[idx_sample] = HalfSampleMode()(durations, kNumDurations);
   }
   CountingSort(samples, samples + kNumSamples);
   const uint64_t child_overhead = samples[9 * kNumSamples / 10];

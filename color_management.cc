@@ -25,13 +25,17 @@ namespace {
 
 #define PIK_CMS_VERBOSE 0
 
-// Protects non-thread-safe functions.
+// cms functions (even *THR) are not thread-safe, except cmsDoTransform.
+// To ensure all functions are covered without frequent lock-taking nor risk of
+// recursive lock, we lock in the top-level APIs.
 std::mutex lcms_mutex;
 
 // (LCMS interface requires xyY but we omit the Y for white points/primaries.)
 
 PIK_MUST_USE_RESULT CIExy CIExyFromxyY(const cmsCIExyY& xyY) {
-  const CIExy xy = {xyY.x, xyY.y};
+  CIExy xy;
+  xy.x = xyY.x;
+  xy.y = xyY.y;
   return xy;
 }
 
@@ -58,12 +62,14 @@ struct ProfileDeleter {
 };
 using Profile = std::unique_ptr<void, ProfileDeleter>;
 
+struct TransformDeleter {
+  void operator()(void* p) { cmsDeleteTransform(p); }
+};
+using Transform = std::unique_ptr<void, TransformDeleter>;
+
 Status CreateProfileXYZ(const cmsContext context,
                         Profile* PIK_RESTRICT profile) {
-  // Data-race in cmsD50_xyY (modifies static variable).
-  lcms_mutex.lock();
   profile->reset(cmsCreateXYZProfileTHR(context));
-  lcms_mutex.unlock();
   if (profile->get() == nullptr) return PIK_FAILURE("Failed to create XYZ");
   return true;
 }
@@ -122,23 +128,23 @@ Status EncodeProfile(const cmsContext context, const Profile& profile,
                      const std::string& description, PaddedBytes* icc) {
   PIK_RETURN_IF_ERROR(SetTags(context, profile, description));
 
-  cmsUInt32Number size;
+  cmsUInt32Number size = 0;
   if (!cmsSaveProfileToMem(profile.get(), nullptr, &size)) {
     return PIK_FAILURE("Failed to get profile size");
   }
+  PIK_ASSERT(size != 0);
 
   icc->resize(size);
   if (!cmsSaveProfileToMem(profile.get(), icc->data(), &size)) {
     return PIK_FAILURE("Failed to encode profile");
   }
+  PIK_ASSERT(size == icc->size());
   return true;
 }
 
 Status DecodeProfile(const cmsContext context, const PaddedBytes& icc,
                      Profile* profile) {
-  lcms_mutex.lock();  // gmtime in cmsCreateProfilePlaceholder
   profile->reset(cmsOpenProfileFromMemTHR(context, icc.data(), icc.size()));
-  lcms_mutex.unlock();
   if (profile->get() == nullptr) {
     return PIK_FAILURE("Failed to decode profile");
   }
@@ -408,15 +414,11 @@ Status MaybeCreateProfile(const cmsContext context, const ProfileParams& pp,
                                            xyYFromCIExy(pp.primaries.g),
                                            xyYFromCIExy(pp.primaries.b)};
     cmsToneCurve* curves[3] = {curve.get(), curve.get(), curve.get()};
-    lcms_mutex.lock();  // gmtime in cmsCreateProfilePlaceholder
     profile.reset(
         cmsCreateRGBProfileTHR(context, &wp_xyY, &primaries_xyY, curves));
-    lcms_mutex.unlock();
     if (profile.get() == nullptr) return PIK_FAILURE("Failed to create RGB");
   } else if (pp.color_space == ColorSpace::kGray) {
-    lcms_mutex.lock();  // gmtime in cmsCreateProfilePlaceholder
     profile.reset(cmsCreateGrayProfileTHR(context, &wp_xyY, curve.get()));
-    lcms_mutex.unlock();
     if (profile.get() == nullptr) return PIK_FAILURE("Failed to create Gray");
   } else if (pp.color_space == ColorSpace::kXYZ) {
     PIK_RETURN_IF_ERROR(CreateProfileXYZ(context, &profile));  // takes lock
@@ -472,14 +474,12 @@ Status ProfileEquivalentToICC(const cmsContext context, const Profile& profile1,
   const uint32_t intent = INTENT_RELATIVE_COLORIMETRIC;
   const uint32_t flags = cmsFLAGS_NOOPTIMIZE | cmsFLAGS_BLACKPOINTCOMPENSATION |
                          cmsFLAGS_HIGHRESPRECALC;
-  lcms_mutex.lock();  // cmsD50_xyY race
-  ColorManagement::Transform xform1(
-      cmsCreateTransformTHR(context, profile1.get(), type_src,
-                            profile_xyz.get(), TYPE_XYZ_DBL, intent, flags));
-  ColorManagement::Transform xform2(
-      cmsCreateTransformTHR(context, profile2.get(), type_src,
-                            profile_xyz.get(), TYPE_XYZ_DBL, intent, flags));
-  lcms_mutex.unlock();
+  Transform xform1(cmsCreateTransformTHR(context, profile1.get(), type_src,
+                                         profile_xyz.get(), TYPE_XYZ_DBL,
+                                         intent, flags));
+  Transform xform2(cmsCreateTransformTHR(context, profile2.get(), type_src,
+                                         profile_xyz.get(), TYPE_XYZ_DBL,
+                                         intent, flags));
   if (xform1 == nullptr || xform2 == nullptr) {
     return PIK_FAILURE("Failed to create transform");
   }
@@ -539,11 +539,9 @@ PIK_MUST_USE_RESULT cmsCIEXYZ UnadaptedWhitePoint(const cmsContext context,
   cmsFloat64Number adaption[2] = {0.0, 0.0};
   // Only transforming a single pixel, so skip expensive optimizations.
   cmsUInt32Number flags = cmsFLAGS_NOOPTIMIZE | cmsFLAGS_HIGHRESPRECALC;
-  lcms_mutex.lock();  // cmsD50_xyY race
-  ColorManagement::Transform xform(cmsCreateExtendedTransform(
+  Transform xform(cmsCreateExtendedTransform(
       context, 2, profiles, black_compensation, intents, adaption, nullptr, 0,
       Type64(c), TYPE_XYZ_DBL, flags));
-  lcms_mutex.unlock();
 
   // xy are relative, so magnitude does not matter if we ignore output Y.
   const cmsFloat64Number in[3] = {1.0, 1.0, 1.0};
@@ -581,7 +579,9 @@ PIK_MUST_USE_RESULT Primaries IdentifyPrimaries(const Profile& profile,
 
 PIK_MUST_USE_RESULT TransferFunction DetectTransferFunction(
     const cmsContext context, ColorEncoding* PIK_RESTRICT c) {
-  ProfileParams pp = ParamsFromColorEncoding(*c);
+  ProfileParams pp;
+  // If any fields are unknown, we can't synthesize a matching profile.
+  if (!ColorEncodingToParams(*c, &pp)) return TransferFunction::kUnknown;
 
   Profile profile;
   if (!DecodeProfile(context, c->icc, &profile)) {
@@ -601,38 +601,32 @@ PIK_MUST_USE_RESULT TransferFunction DetectTransferFunction(
   return TransferFunction::kUnknown;
 }
 
+void ErrorHandler(cmsContext context, cmsUInt32Number code, const char* text) {
+  fprintf(stderr, "LCMS error %u: %s\n", code, text);
+}
+
+// Returns a context for the current thread, creating it if necessary.
+cmsContext GetContext() {
+  static thread_local void* context_;
+  if (context_ == nullptr) {
+    PIK_CHECK(LCMS_VERSION == cmsGetEncodedCMMversion());
+
+    context_ = cmsCreateContext(nullptr, nullptr);
+    PIK_ASSERT(context_ != nullptr);
+
+    cmsSetLogErrorHandlerTHR(static_cast<cmsContext>(context_), &ErrorHandler);
+  }
+  return static_cast<cmsContext>(context_);
+}
+
 }  // namespace
 
-void ColorManagement::ContextDeleter::operator()(void* p) {
-  cmsDeleteContext(static_cast<cmsContext>(p));
-}
-
-void ColorManagement::TransformDeleter::operator()(void* p) {
-  cmsDeleteTransform(p);
-}
-
-ColorManagement::ColorManagement(size_t num_threads) {
-  PIK_CHECK(LCMS_VERSION == cmsGetEncodedCMMversion());
-
-  struct ErrorHandler {
-    static void Run(cmsContext context, cmsUInt32Number code,
-                    const char* text) {
-      fprintf(stderr, "LCMS error %u: %s\n", code, text);
-    }
-  };
-
-  const size_t num_contexts = std::max<size_t>(num_threads, 1);
-  contexts_.reserve(num_contexts);
-  for (size_t i = 0; i < num_contexts; ++i) {
-    const cmsContext context = cmsCreateContext(nullptr, nullptr);
-    contexts_.emplace_back(context);
-    cmsSetLogErrorHandlerTHR(context, &ErrorHandler::Run);
-  }
-}
+// All functions (except ColorSpaceTransform::Run) must lock lcms_mutex.
 
 Status ColorManagement::SetFromParams(const ProfileParams& pp,
-                                      ColorEncoding* PIK_RESTRICT c) const {
-  const auto context = static_cast<cmsContext>(contexts_[0].get());
+                                      ColorEncoding* PIK_RESTRICT c) {
+  std::unique_lock<std::mutex> lock(lcms_mutex);
+  const cmsContext context = GetContext();
   if (!MaybeCreateProfile(context, pp, &c->icc)) {
     return PIK_FAILURE("Failed to create profile");
   }
@@ -641,9 +635,11 @@ Status ColorManagement::SetFromParams(const ProfileParams& pp,
 }
 
 Status ColorManagement::SetFromProfile(PaddedBytes&& icc,
-                                       ColorEncoding* PIK_RESTRICT c) const {
+                                       ColorEncoding* PIK_RESTRICT c) {
   if (icc.empty()) return false;
-  const auto context = static_cast<cmsContext>(contexts_[0].get());
+
+  std::unique_lock<std::mutex> lock(lcms_mutex);
+  const cmsContext context = GetContext();
 
   Profile profile;
   PIK_RETURN_IF_ERROR(DecodeProfile(context, icc, &profile));
@@ -676,27 +672,33 @@ Status ColorManagement::SetFromProfile(PaddedBytes&& icc,
   return true;
 }
 
-Status ColorManagement::SetProfileFromFields(
-    ColorEncoding* PIK_RESTRICT c) const {
+Status ColorManagement::SetProfileFromFields(ColorEncoding* PIK_RESTRICT c) {
+  std::unique_lock<std::mutex> lock(lcms_mutex);
   c->icc.clear();
-  const auto context = static_cast<cmsContext>(contexts_[0].get());
-  const ProfileParams pp = ParamsFromColorEncoding(*c);
+  const cmsContext context = GetContext();
+
+  ProfileParams pp;
+  if (!ColorEncodingToParams(*c, &pp)) {
+    return PIK_FAILURE("Cannot create profile from unknown fields");
+  }
   if (!MaybeCreateProfile(context, pp, &c->icc)) {
     return PIK_FAILURE("Failed to create profile from fields");
   }
   return true;
 }
 
-Status ColorManagement::MaybeRemoveProfile(
-    ColorEncoding* PIK_RESTRICT c) const {
+Status ColorManagement::MaybeRemoveProfile(ColorEncoding* PIK_RESTRICT c) {
   // Avoid printing an error message when there is no ICC profile.
   if (c->icc.empty()) return true;
-  const auto context = static_cast<cmsContext>(contexts_[0].get());
+
+  std::unique_lock<std::mutex> lock(lcms_mutex);
+  const cmsContext context = GetContext();
 
   Profile profile_old;
   PIK_RETURN_IF_ERROR(DecodeProfile(context, c->icc, &profile_old));
 
-  const ProfileParams pp = ParamsFromColorEncoding(*c);
+  ProfileParams pp;
+  PIK_RETURN_IF_ERROR(ColorEncodingToParams(*c, &pp));
   PaddedBytes icc_new;
   PIK_RETURN_IF_ERROR(MaybeCreateProfile(context, pp, &icc_new));
 
@@ -708,11 +710,19 @@ Status ColorManagement::MaybeRemoveProfile(
   return true;
 }
 
-Status ColorSpaceTransform::Init(
-    const std::vector<ColorManagement::Context>& contexts,
-    const ColorEncoding& c_src, const ColorEncoding& c_dst, size_t xsize) {
+ColorSpaceTransform::~ColorSpaceTransform() {
+  std::unique_lock<std::mutex> lock(lcms_mutex);
+  for (void* p : transforms_) {
+    TransformDeleter()(p);
+  }
+}
+
+Status ColorSpaceTransform::Init(const ColorEncoding& c_src,
+                                 const ColorEncoding& c_dst, size_t xsize,
+                                 const size_t num_threads) {
+  std::unique_lock<std::mutex> lock(lcms_mutex);
   Profile profile_src, profile_dst;
-  const auto context = static_cast<cmsContext>(contexts.front().get());
+  const cmsContext context = GetContext();
   PIK_RETURN_IF_ERROR(DecodeProfile(context, c_src.icc, &profile_src));
   PIK_RETURN_IF_ERROR(DecodeProfile(context, c_dst.icc, &profile_dst));
   skip_lcms_ = false;
@@ -727,13 +737,14 @@ Status ColorSpaceTransform::Init(
       (IsSRGB(c_src.transfer_function) && IsLinear(c_dst.transfer_function)) ||
       (IsSRGB(c_dst.transfer_function) && IsLinear(c_src.transfer_function))) {
     // Construct new profiles as if the data were already/still linear.
-    ProfileParams pp_src = ParamsFromColorEncoding(c_src);
-    ProfileParams pp_dst = ParamsFromColorEncoding(c_dst);
-    pp_src.gamma = pp_dst.gamma = GammaLinear();
+    ProfileParams pp_src, pp_dst;
     PaddedBytes icc_src, icc_dst;
     Profile new_src, new_dst;
     // Only enable ExtraTF if profile creation succeeded.
-    if (MaybeCreateProfile(context, pp_src, &icc_src) &&
+    if (ColorEncodingToParams(c_src, &pp_src) &&
+        ColorEncodingToParams(c_dst, &pp_dst) &&
+        (pp_src.gamma = pp_dst.gamma = GammaLinear()) && /* assign */
+        MaybeCreateProfile(context, pp_src, &icc_src) &&
         MaybeCreateProfile(context, pp_dst, &icc_dst) &&
         DecodeProfile(context, icc_src, &new_src) &&
         DecodeProfile(context, icc_dst, &new_dst)) {
@@ -768,16 +779,15 @@ Status ColorSpaceTransform::Init(
   PIK_CHECK(channels_src == channels_dst);
 
   transforms_.clear();
-  for (size_t i = 0; i < contexts.size(); ++i) {
-    const auto context = static_cast<cmsContext>(contexts[i].get());
+  for (size_t i = 0; i < num_threads; ++i) {
     const uint32_t intent = static_cast<uint32_t>(c_dst.rendering_intent);
     const uint32_t flags =
         cmsFLAGS_BLACKPOINTCOMPENSATION | cmsFLAGS_HIGHRESPRECALC;
-    lcms_mutex.lock();  // cmsD50_xyY race
+    // NOTE: we're using the current thread's context and assuming all state
+    // modified by cmsDoTransform resides in the transform, not the context.
     transforms_.emplace_back(cmsCreateTransformTHR(context, profile_src.get(),
                                                    type_src, profile_dst.get(),
                                                    type_dst, intent, flags));
-    lcms_mutex.unlock();
     if (transforms_.back() == nullptr) {
       return PIK_FAILURE("Failed to create transform");
     }
@@ -791,14 +801,16 @@ Status ColorSpaceTransform::Init(
   // buffers. To avoid separate allocations, we use the rows of an image.
   // Because LCMS apparently also cannot handle <= 16 bit inputs and 32-bit
   // outputs (or vice versa), we use floating point input/output.
-  buf_src_ = ImageF(xsize * channels_src, contexts.size());
-  buf_dst_ = ImageF(xsize * channels_dst, contexts.size());
+  buf_src_ = ImageF(xsize * channels_src, num_threads);
+  buf_dst_ = ImageF(xsize * channels_dst, num_threads);
   xsize_ = xsize;
   return true;
 }
 
 SIMD_ATTR void ColorSpaceTransform::Run(const size_t thread,
                                         const float* buf_src, float* buf_dst) {
+  // No lock needed.
+
 #if PIK_CMS_VERBOSE
   const size_t kX = 0;
 #endif
@@ -840,8 +852,10 @@ SIMD_ATTR void ColorSpaceTransform::Run(const size_t thread,
   }
 
   if (!skip_lcms_) {
+#ifdef ADDRESS_SANITIZER
     PIK_ASSERT(thread < transforms_.size());
-    cmsHTRANSFORM xform = transforms_[thread].get();
+#endif
+    cmsHTRANSFORM xform = transforms_[thread];
     cmsDoTransform(xform, xform_src, buf_dst, xsize_);
   } else {
     memcpy(buf_dst, xform_src, buf_dst_.xsize() * sizeof(*buf_dst));

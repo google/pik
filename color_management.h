@@ -30,54 +30,42 @@
 
 namespace pik {
 
-class ColorManagement {
-  struct ContextDeleter {
-    void operator()(void* p);
-  };
-  struct TransformDeleter {
-    void operator()(void* p);
-  };
-
- public:
-  explicit ColorManagement(size_t num_threads);
-
-  using Context = std::unique_ptr<void, ContextDeleter>;
-  using Transform = std::unique_ptr<void, TransformDeleter>;
-
-  // For ColorSpaceTransform.
-  const std::vector<Context>& GetContexts() const { return contexts_; }
-
+// Thread-safe monostate.
+struct ColorManagement {
   // Returns false without changing "c" if pp.color_space is unsupported or
   // pp.gamma is outside (0, 1]. Otherwise, sets fields AND c->icc. Used by
   // codecs that provide their own non-ICC metadata.
-  Status SetFromParams(const ProfileParams& pp, ColorEncoding* c) const;
+  static Status SetFromParams(const ProfileParams& pp, ColorEncoding* c);
 
   // Returns false without changing "c" if "icc" is invalid. Otherwise, sets
   // fields AND c->icc. Used by image codecs that read embedded ICC profiles.
-  Status SetFromProfile(PaddedBytes&& icc, ColorEncoding* c) const;
+  static Status SetFromProfile(PaddedBytes&& icc, ColorEncoding* c);
 
   // Returns true and clears c->icc if a subsequent SetProfileFromFields
   // will generate an equivalent profile. If so, there is no need to send the
   // (large) profile in the bitstream.
-  Status MaybeRemoveProfile(ColorEncoding* c) const;
+  static Status MaybeRemoveProfile(ColorEncoding* c);
 
   // Returns true if c->icc was successfully reconstructed from other fields.
   // This re-establishes the invariant (broken by MaybeRemoveProfile or changing
   // fields) that fields and c->icc are equivalent. Returning false indicates
   // the profile is lost/empty, which means ColorSpaceTransform will fail.
-  Status SetProfileFromFields(ColorEncoding* c) const;
-
- private:
-  std::vector<Context> contexts_;
+  static Status SetProfileFromFields(ColorEncoding* c);
 };
 
-// Per-thread state for a color transform.
+// Run is thread-safe.
 class ColorSpaceTransform {
  public:
-  // Allocates one for every Context, or returns false.
-  Status Init(const std::vector<ColorManagement::Context>& contexts,
-              const ColorEncoding& c_src, const ColorEncoding& c_dst,
-              size_t xsize);
+  ColorSpaceTransform() {}
+  ~ColorSpaceTransform();
+
+  // Cannot copy (transforms_ holds pointers).
+  ColorSpaceTransform(const ColorSpaceTransform&) = delete;
+  ColorSpaceTransform& operator=(const ColorSpaceTransform&) = delete;
+
+  // "Constructor"; allocates for up to `num_threads`, or returns false.
+  Status Init(const ColorEncoding& c_src, const ColorEncoding& c_dst,
+              size_t xsize, size_t num_threads);
 
   float* PIK_RESTRICT BufSrc(const size_t thread) {
     return buf_src_.Row(thread);
@@ -88,6 +76,7 @@ class ColorSpaceTransform {
   }
 
   // buf_X can either be from BufX() or caller-allocated, interleaved storage.
+  // `thread` must be less than the `num_threads` passed to Init.
   void Run(const size_t thread, const float* buf_src, float* buf_dst);
 
  private:
@@ -98,8 +87,8 @@ class ColorSpaceTransform {
     kSRGB,
   };
 
-  // One per context - cannot share because of caching.
-  std::vector<ColorManagement::Transform> transforms_;
+  // One per thread - cannot share because of caching.
+  std::vector<void*> transforms_;
 
   ImageF buf_src_;
   ImageF buf_dst_;

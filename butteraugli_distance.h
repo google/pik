@@ -22,7 +22,8 @@ namespace pik {
 // Returns the butteraugli distance between rgb0 and rgb1.
 // If distmap is not null, it must be the same size as rgb0 and rgb1.
 float ButteraugliDistance(const CodecInOut* rgb0, const CodecInOut* rgb1,
-                          float hf_asymmetry, ImageF* distmap_out = nullptr);
+                          float hf_asymmetry, ImageF* distmap = nullptr,
+                          ThreadPool* pool = nullptr);
 
 }  // namespace pik
 

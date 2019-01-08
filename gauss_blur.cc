@@ -26,8 +26,7 @@ namespace pik {
 
 inline void ExtrapolateBorders(const float* const PIK_RESTRICT row_in,
                                float* const PIK_RESTRICT row_out,
-                               const int xsize,
-                               const int radius) {
+                               const int xsize, const int radius) {
   const int lastcol = xsize - 1;
   for (int x = 1; x <= radius; ++x) {
     row_out[-x] = row_in[std::min(x, xsize - 1)];
@@ -71,30 +70,25 @@ Image3F ConvolveXSampleAndTranspose(const Image3F& in,
                  ConvolveXSampleAndTranspose(in.Plane(2), kernel, res));
 }
 
-ImageF ConvolveAndSample(const ImageF& in,
-                         const std::vector<float>& kernel_x,
-                         const std::vector<float>& kernel_y,
-                         const size_t res) {
+ImageF ConvolveAndSample(const ImageF& in, const std::vector<float>& kernel_x,
+                         const std::vector<float>& kernel_y, const size_t res) {
   ImageF tmp = ConvolveXSampleAndTranspose(in, kernel_x, res);
   return ConvolveXSampleAndTranspose(tmp, kernel_y, res);
 }
 
-ImageF Convolve(const ImageF& in,
-                const std::vector<float>& kernel_x,
+ImageF Convolve(const ImageF& in, const std::vector<float>& kernel_x,
                 const std::vector<float>& kernel_y) {
   return ConvolveAndSample(in, kernel_x, kernel_y, 1);
 }
 
-Image3F Convolve(const Image3F& in,
-                 const std::vector<float>& kernel_x,
+Image3F Convolve(const Image3F& in, const std::vector<float>& kernel_x,
                  const std::vector<float>& kernel_y) {
   return Image3F(Convolve(in.Plane(0), kernel_x, kernel_y),
                  Convolve(in.Plane(1), kernel_x, kernel_y),
                  Convolve(in.Plane(2), kernel_x, kernel_y));
 }
 
-ImageF ConvolveAndSample(const ImageF& in,
-                         const std::vector<float>& kernel,
+ImageF ConvolveAndSample(const ImageF& in, const std::vector<float>& kernel,
                          const size_t res) {
   return ConvolveAndSample(in, kernel, kernel, res);
 }

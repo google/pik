@@ -23,9 +23,10 @@
 #include <string>
 #include <vector>
 #include "color_management.h"
-#include "container.h"  // Metadata
+#include "common.h"
 #include "data_parallel.h"
 #include "image.h"
+#include "metadata.h"
 
 namespace pik {
 
@@ -42,13 +43,12 @@ struct CodecInterval {
 
 using CodecIntervals = std::array<CodecInterval, 4>;  // RGB[A] or Y[A]
 
-// State required to encode/decode images, including a CMS for color transforms.
+// Shared const data available to each CodecInOut.
+// TODO(janwas): move into ColorManagement, magic static; remove all Context
 struct CodecContext {
-  // "num_threads" is passed to ThreadPool.
-  explicit CodecContext(size_t num_threads);
+  // The parameter used to specify the number of threads to create.
+  CodecContext(size_t ignored = 0);
 
-  ThreadPool pool;
-  const ColorManagement cms;
   // Index with IsGray().
   const std::array<ColorEncoding, 2> c_srgb;
   const std::array<ColorEncoding, 2> c_linear_srgb;
@@ -127,17 +127,18 @@ class CodecInOut {
   void SetFromImage(Image3F&& color, const ColorEncoding& c_current);
 
   Status SetFromSRGB(size_t xsize, size_t ysize, bool is_gray, bool has_alpha,
-                     const uint8_t* pixels, const uint8_t* end = nullptr);
+                     const uint8_t* pixels, const uint8_t* end,
+                     ThreadPool* pool = nullptr);
   Status SetFromSRGB(size_t xsize, size_t ysize, bool is_gray, bool has_alpha,
                      bool big_endian, const uint16_t* pixels,
-                     const uint16_t* end = nullptr);
+                     const uint16_t* end, ThreadPool* pool = nullptr);
 
   // Decodes "bytes". Sets dec_c_original to c_current (for later encoding).
   // dec_hints may specify the "color_space" (otherwise, defaults to sRGB).
-  Status SetFromBytes(const PaddedBytes& bytes);
+  Status SetFromBytes(const PaddedBytes& bytes, ThreadPool* pool = nullptr);
 
   // Reads from file and calls SetFromBytes.
-  Status SetFromFile(const std::string& pathname);
+  Status SetFromFile(const std::string& pathname, ThreadPool* pool = nullptr);
 
   const Image3F& color() const { return color_; }
 
@@ -159,17 +160,21 @@ class CodecInOut {
 
   // Transforms color to c_desired and sets c_current to c_desired. Alpha
   // remains unchanged.
-  Status TransformTo(const ColorEncoding& c_desired);
+  Status TransformTo(const ColorEncoding& c_desired,
+                     ThreadPool* pool = nullptr);
 
-  // Allocates+fills "out" with transformed pixels.
-  Status CopyTo(const ColorEncoding& c_desired, Image3B* out) const;
-  Status CopyTo(const ColorEncoding& c_desired, Image3U* out) const;
-  Status CopyTo(const ColorEncoding& c_desired, Image3F* out) const;
-  Status CopyToSRGB(Image3B* out) const;
+  // Copies this:rect, converts to c_desired, and allocates+fills out.
+  Status CopyTo(const Rect& rect, const ColorEncoding& c_desired, Image3B* out,
+                ThreadPool* pool = nullptr) const;
+  Status CopyTo(const Rect& rect, const ColorEncoding& c_desired, Image3U* out,
+                ThreadPool* pool = nullptr) const;
+  Status CopyTo(const Rect& rect, const ColorEncoding& c_desired, Image3F* out,
+                ThreadPool* pool = nullptr) const;
+  Status CopyToSRGB(const Rect& rect, Image3B* out,
+                    ThreadPool* pool = nullptr) const;
 
-  bool HasOriginalBitsPerSample() const {
-    return has_dec_bits_per_sample_;
-  }
+  // TODO(janwas): remove, use Metadata field instead
+  bool HasOriginalBitsPerSample() const { return has_dec_bits_per_sample_; }
   size_t original_bits_per_sample() const {
     PIK_ASSERT(HasOriginalBitsPerSample());
     return dec_bits_per_sample_;
@@ -196,7 +201,10 @@ class CodecInOut {
     PIK_CHECK(alpha_bits == 8 || alpha_bits == 16);
     alpha_bits_ = alpha_bits;
     alpha_ = std::move(alpha);
-    PIK_CHECK(SameSize(color_, alpha_));
+    PIK_CHECK(DivCeil(alpha_.xsize(), kBlockDim) ==
+                  DivCeil(color_.xsize(), kBlockDim) &&
+              DivCeil(alpha_.ysize(), kBlockDim) ==
+                  DivCeil(color_.ysize(), kBlockDim));
   }
 
   // Called if all alpha values are opaque.
@@ -210,11 +218,13 @@ class CodecInOut {
   // Replaces "bytes" with an encoding of pixels transformed from c_current
   // color space to c_desired.
   Status Encode(const Codec codec, const ColorEncoding& c_desired,
-                size_t bits_per_sample, PaddedBytes* bytes) const;
+                size_t bits_per_sample, PaddedBytes* bytes,
+                ThreadPool* pool = nullptr) const;
 
   // Deduces codec, calls Encode and writes to file.
   Status EncodeToFile(const ColorEncoding& c_desired, size_t bits_per_sample,
-                      const std::string& pathname) const;
+                      const std::string& pathname,
+                      ThreadPool* pool = nullptr) const;
 
   // -- ENCODER OUTPUT:
 
@@ -248,7 +258,7 @@ class CodecInOut {
   CodecContext* context_;  // Not owned, must remain valid throughout lifetime.
 
   // Initialized by Set*:
-  Image3F color_;    // In c_current color space; all planes equal if IsGray().
+  Image3F color_;  // In c_current color space; all planes equal if IsGray().
   ColorEncoding c_current_;  // Encoding the values in color_ are defined in.
 
   // Initialized by SetAlpha; only queried if HasAlpha.

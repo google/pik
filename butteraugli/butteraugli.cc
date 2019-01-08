@@ -39,7 +39,6 @@
 
 #include <algorithm>
 #include <array>
-
 #include <atomic>
 
 #define BUTTERAUGLI_RESTRICT PIK_RESTRICT
@@ -104,11 +103,59 @@ static inline void CheckImage(const ImageF& image, const char* name) {
 
 #endif
 
+// Calculate a 2x2 subsampled image for purposes of recursive butteraugli at
+// multiresolution.
+static Image3F SubSample2x(const Image3F &in) {
+  int xs = (in.xsize() + 1) / 2;
+  int ys = (in.ysize() + 1) / 2;
+  Image3F retval(xs, ys);
+  for (int c = 0; c < 3; ++c) {
+    for (int y = 0; y < ys; ++y) {
+      for (int x = 0; x < xs; ++x) {
+        retval.PlaneRow(c, y)[x] = 0;
+      }
+    }
+  }
+  for (int c = 0; c < 3; ++c) {
+    for (int y = 0; y < in.ysize(); ++y) {
+      for (int x = 0; x < in.xsize(); ++x) {
+        retval.PlaneRow(c, y / 2)[x / 2] += 0.25 * in.PlaneRow(c, y)[x];
+      }
+    }
+    if ((in.xsize() & 1) != 0) {
+      for (int y = 0; y < retval.ysize(); ++y) {
+        int last_column = retval.xsize() - 1;
+        retval.PlaneRow(c, y)[last_column] *= 2.0;
+      }
+    }
+    if ((in.ysize() & 1) != 0) {
+      for (int x = 0; x < retval.xsize(); ++x) {
+        int last_row = retval.ysize() - 1;
+        retval.PlaneRow(c, last_row)[x] *= 2.0;
+      }
+    }
+  }
+  return retval;
+}
+
+// Supersample src by 2x and add it to dest.
+static void AddSupersampled2x(const ImageF &src, float w, ImageF &dest) {
+  for (int y = 0; y < dest.ysize(); ++y) {
+    for (int x = 0; x < dest.xsize(); ++x) {
+      // There will be less errors from the more averaged images.
+      // We take it into account to some extent using a scaler.
+      static const double kHeuristicMixingValue = 0.3;
+      dest.Row(y)[x] *= 1.0 - kHeuristicMixingValue * w;
+      dest.Row(y)[x] += w * src.Row(y / 2)[x / 2];
+    }
+  }
+}
+
 
 // Purpose of kInternalGoodQualityThreshold:
 // Normalize 'ok' image degradation to 1.0 across different versions of
 // butteraugli.
-static const double kInternalGoodQualityThreshold = 42.431683379935045;
+static const double kInternalGoodQualityThreshold = 33.23754765778804;
 static const double kGlobalScale = 1.0 / kInternalGoodQualityThreshold;
 
 inline float DotProduct(const float u[3], const float v[3]) {
@@ -487,10 +534,10 @@ BUTTERAUGLI_INLINE void XybLowFreqToVals(const V& x, const V& y, const V& b_arg,
                                          V* BUTTERAUGLI_RESTRICT valx,
                                          V* BUTTERAUGLI_RESTRICT valy,
                                          V* BUTTERAUGLI_RESTRICT valb) {
-  static const double xmuli = 12.325288902;
-  static const double ymuli = 1.19865965904;
-  static const double bmuli = 10.0898455735;
-  static const double y_to_b_muli = -0.595554912035;
+  static const double xmuli = 9.72240181632;
+  static const double ymuli = 26.2028219456;
+  static const double bmuli = 9.31035596136;
+  static const double y_to_b_muli = -0.415568690394;
 
   const V xmul(xmuli);
   const V ymul(ymuli);
@@ -707,34 +754,6 @@ static void SeparateFrequencies(size_t xsize, size_t ysize,
   }
 }
 
-static void SameNoiseLevels(const ImageF& i0, const ImageF& i1,
-                            const double kSigma, const double w,
-                            const double maxclamp,
-                            ImageF* BUTTERAUGLI_RESTRICT diffmap) {
-  ImageF blurred(i0.xsize(), i0.ysize());
-  for (size_t y = 0; y < i0.ysize(); ++y) {
-    const float* BUTTERAUGLI_RESTRICT row0 = i0.Row(y);
-    const float* BUTTERAUGLI_RESTRICT row1 = i1.Row(y);
-    float* BUTTERAUGLI_RESTRICT to = blurred.Row(y);
-    for (size_t x = 0; x < i0.xsize(); ++x) {
-      double v0 = fabs(row0[x]);
-      double v1 = fabs(row1[x]);
-      if (v0 > maxclamp) v0 = maxclamp;
-      if (v1 > maxclamp) v1 = maxclamp;
-      to[x] = v0 - v1;
-    }
-  }
-  blurred = Blur(blurred, kSigma, 0.0);
-  for (size_t y = 0; y < i0.ysize(); ++y) {
-    const float* BUTTERAUGLI_RESTRICT row = blurred.Row(y);
-    float* BUTTERAUGLI_RESTRICT row_diff = diffmap->Row(y);
-    for (size_t x = 0; x < i0.xsize(); ++x) {
-      double diff = row[x];
-      row_diff[x] += w * diff * diff;
-    }
-  }
-}
-
 static void L2Diff(const ImageF& i0, const ImageF& i1, const float w,
                    ImageF* BUTTERAUGLI_RESTRICT diffmap) {
   if (w == 0) {
@@ -820,7 +839,8 @@ ImageF CalculateDiffmap(const ImageF& diffmap_in) {
 void MaskPsychoImage(const PsychoImage& pi0, const PsychoImage& pi1,
                      const size_t xsize, const size_t ysize,
                      Image3F* BUTTERAUGLI_RESTRICT mask,
-                     Image3F* BUTTERAUGLI_RESTRICT mask_dc) {
+                     Image3F* BUTTERAUGLI_RESTRICT mask_dc,
+                     ImageF* BUTTERAUGLI_RESTRICT diff_ac) {
   Image3F mask_xyb0(xsize, ysize);
   Image3F mask_xyb1(xsize, ysize);
   static const double muls[4] = {
@@ -845,24 +865,35 @@ void MaskPsychoImage(const PsychoImage& pi0, const PsychoImage& pi1,
       }
     }
   }
-  Mask(mask_xyb0, mask_xyb1, mask, mask_dc);
+  Mask(mask_xyb0, mask_xyb1, mask, mask_dc, diff_ac);
 }
 
 ButteraugliComparator::ButteraugliComparator(const Image3F& rgb0,
                                              double hf_asymmetry)
     : xsize_(rgb0.xsize()),
       ysize_(rgb0.ysize()),
-      hf_asymmetry_(hf_asymmetry) {
+      hf_asymmetry_(hf_asymmetry),
+      sub_(nullptr) {
   if (xsize_ < 8 || ysize_ < 8) {
     return;
   }
   Image3F xyb0 = OpsinDynamicsImage(rgb0);
   SeparateFrequencies(xsize_, ysize_, xyb0, pi0_);
+
+  // Awful recursive construction of samples of different resolution.
+  // This is an after-thought and possibly somewhat parallel in
+  // functionality with the PsychoImage multi-resolution approach.
+  sub_ = new ButteraugliComparator(SubSample2x(rgb0), hf_asymmetry);
 }
+
+ButteraugliComparator::~ButteraugliComparator() {
+  delete sub_;
+}
+
 
 void ButteraugliComparator::Mask(Image3F* BUTTERAUGLI_RESTRICT mask,
                                  Image3F* BUTTERAUGLI_RESTRICT mask_dc) const {
-  MaskPsychoImage(pi0_, pi0_, xsize_, ysize_, mask, mask_dc);
+  MaskPsychoImage(pi0_, pi0_, xsize_, ysize_, mask, mask_dc, nullptr);
 }
 
 void ButteraugliComparator::Diffmap(const Image3F& rgb1, ImageF& result) const {
@@ -871,6 +902,15 @@ void ButteraugliComparator::Diffmap(const Image3F& rgb1, ImageF& result) const {
     return;
   }
   DiffmapOpsinDynamicsImage(OpsinDynamicsImage(rgb1), result);
+  if (sub_) {
+    if (sub_->xsize_ < 8 || sub_->ysize_ < 8) {
+      return;
+    }
+    ImageF subresult;
+    sub_->DiffmapOpsinDynamicsImage(
+        OpsinDynamicsImage(SubSample2x(rgb1)), subresult);
+    AddSupersampled2x(subresult, 0.5, result);
+  }
 }
 
 void ButteraugliComparator::DiffmapOpsinDynamicsImage(const Image3F& xyb1,
@@ -895,7 +935,7 @@ void ButteraugliComparator::DiffmapPsychoImage(const PsychoImage& pi1,
   FillImage(0.0f, &block_diff_dc);
   Image3F block_diff_ac(xsize_, ysize_);
   FillImage(0.0f, &block_diff_ac);
-  static const double wUhfMalta = 5.26424469088;
+  static const double wUhfMalta = 6.03816489582;
   static const double norm1Uhf = 59.752242104;
   MaltaDiffMap(pi0_.uhf[1], pi1.uhf[1], wUhfMalta * hf_asymmetry_,
                wUhfMalta / hf_asymmetry_, norm1Uhf,
@@ -907,19 +947,19 @@ void ButteraugliComparator::DiffmapPsychoImage(const PsychoImage& pi1,
                wUhfMaltaX / hf_asymmetry_, norm1UhfX,
                block_diff_ac.MutablePlane(0));
 
-  static const double wHfMalta = 151.814879032;
+  static const double wHfMalta = 127.682120866;
   static const double norm1Hf = 113.151889155;
   MaltaDiffMapLF(pi0_.hf[1], pi1.hf[1], wHfMalta * std::sqrt(hf_asymmetry_),
                  wHfMalta / std::sqrt(hf_asymmetry_), norm1Hf,
                  block_diff_ac.MutablePlane(1));
 
-  static const double wHfMaltaX = 118.298692385;
+  static const double wHfMaltaX = 32.298692385;
   static const double norm1HfX = 0.970464895425;
   MaltaDiffMapLF(pi0_.hf[0], pi1.hf[0], wHfMaltaX * std::sqrt(hf_asymmetry_),
                  wHfMaltaX / std::sqrt(hf_asymmetry_), norm1HfX,
                  block_diff_ac.MutablePlane(0));
 
-  static const double wMfMalta = 99.6215571501;
+  static const double wMfMalta = 31.5919393824;
   static const double norm1Mf = 0.72477821106;
   MaltaDiffMapLF(pi0_.mf.Plane(1), pi1.mf.Plane(1), wMfMalta, wMfMalta, norm1Mf,
                  block_diff_ac.MutablePlane(1));
@@ -929,19 +969,13 @@ void ButteraugliComparator::DiffmapPsychoImage(const PsychoImage& pi1,
   MaltaDiffMapLF(pi0_.mf.Plane(0), pi1.mf.Plane(0), wMfMaltaX, wMfMaltaX,
                  norm1MfX, block_diff_ac.MutablePlane(0));
 
-  static const double maxclamp = 64.2481894113;
-  static const double kSigmaHfX = 10.2220878595;
-  static const double w = 1995.26419042;
-  SameNoiseLevels(pi0_.hf[1], pi1.hf[1], kSigmaHfX, w, maxclamp,
-                  block_diff_ac.MutablePlane(1));
-
   block_diff_ac.CheckSizesSame();
 
   static const double wmul[9] = {
-    32, 15.4131043722, 0, 0, 0, 0, 1.01, 0, 1.745,
+    32, 5.0, 0, 1102.34533394, 100, 100, 1.01, 1, 1.745,
   };
   for (int c = 0; c < 3; ++c) {
-    if (c < 2) {
+    if (c < 2) {  // No blue channel error accumulated at HF.
       L2DiffAsymmetric(pi0_.hf[c], pi1.hf[c],
                        wmul[c] * hf_asymmetry_,
                        wmul[c] / hf_asymmetry_,
@@ -958,7 +992,8 @@ void ButteraugliComparator::DiffmapPsychoImage(const PsychoImage& pi1,
 
   Image3F mask_xyb;
   Image3F mask_xyb_dc;
-  MaskPsychoImage(pi0_, pi1, xsize_, ysize_, &mask_xyb, &mask_xyb_dc);
+  MaskPsychoImage(pi0_, pi1, xsize_, ysize_, &mask_xyb, &mask_xyb_dc,
+                  block_diff_ac.MutablePlane(1));
 
   result = CalculateDiffmap(
       CombineChannels(mask_xyb, mask_xyb_dc, block_diff_dc, block_diff_ac));
@@ -1504,8 +1539,6 @@ double ButteraugliScoreFromDiffmap(const ImageF& diffmap) {
   return retval;
 }
 
-#include <stdio.h>
-
 // ===== Functions used by Mask only =====
 static std::array<double, 512> MakeMask(double extmul, double extoff,
                                         double mul, double offset,
@@ -1524,51 +1557,51 @@ static std::array<double, 512> MakeMask(double extmul, double extoff,
 }
 
 double MaskX(double delta) {
-  static const double extmul = 2.5376822963;
-  static const double extoff = 2.13387290448;
-  static const double offset = 0.294845143562;
-  static const double scaler = 58.7026947175;
-  static const double mul = 5.18233865034;
+  static const double extmul = 1.71276311069;
+  static const double extoff = 1.84833742945;
+  static const double offset = 0.256336172307;
+  static const double scaler = 231.979765086;
+  static const double mul = 5.01393527954;
   static const std::array<double, 512> lut =
                 MakeMask(extmul, extoff, mul, offset, scaler);
   return InterpolateClampNegative(lut.data(), lut.size(), delta);
 }
 
 double MaskY(double delta) {
-  static const double extmul = 1.01536101255;
-  static const double extoff = -0.701574316215;
-  static const double offset = 0.903644175794;
-  static const double scaler = 3.03407997718;
-  static const double mul = 6.92732739492;
+  static const double extmul = 2.00974476653;
+  static const double extoff = -2.62615693295;
+  static const double offset = 1.19855542596;
+  static const double scaler = 2.73845259583;
+  static const double mul = 5.86347021502;
   static const std::array<double, 512> lut =
       MakeMask(extmul, extoff, mul, offset, scaler);
   return InterpolateClampNegative(lut.data(), lut.size(), delta);
 }
 
 double MaskDcX(double delta) {
-  static const double extmul = 8.26576474853;
-  static const double extoff = 4.27459493009;
-  static const double offset = 0.13563743309;
-  static const double scaler = 90.0;
-  static const double mul = 0.436644297587;
+  static const double extmul = 6.65259302165;
+  static const double extoff = 3.09609358929;
+  static const double offset = 0.0867311118933;
+  static const double scaler = 20.6187368059;
+  static const double mul = 0.345897482985;
   static const std::array<double, 512> lut =
       MakeMask(extmul, extoff, mul, offset, scaler);
   return InterpolateClampNegative(lut.data(), lut.size(), delta);
 }
 
 double MaskDcY(double delta) {
-  static const double extmul = 0.0160182318137;
-  static const double extoff = 78.3819337495;
-  static const double offset = 0.026304283298;
+  static const double extmul = 0.00736792857018;
+  static const double extoff = 39.5486204165;
+  static const double offset = 0.0069689717237;
   static const double scaler = 6.0;
-  static const double mul = 4.58643735498;
+  static const double mul = 1.96532671263;
   static const std::array<double, 512> lut =
       MakeMask(extmul, extoff, mul, offset, scaler);
   return InterpolateClampNegative(lut.data(), lut.size(), delta);
 }
 
-ImageF DiffPrecompute(const ImageF& xyb0, const ImageF& xyb1,
-                      float mul, float cutoff) {
+ImageF DiffPrecomputeX(const ImageF& xyb0, const ImageF& xyb1,
+                       float mul, float cutoff) {
   PROFILER_FUNC;
   const size_t xsize = xyb0.xsize();
   const size_t ysize = xyb0.ysize();
@@ -1650,9 +1683,81 @@ ImageF DiffPrecompute(const ImageF& xyb0, const ImageF& xyb1,
   return result;
 }
 
+// Precalculates masking for y channel, giving masks for
+// both images back so that they can be used for similarity comparisons
+// too.
+void DiffPrecomputeY(const ImageF& xyb0, const ImageF& xyb1,
+                     float mul, float mul2,
+                     ImageF *out0, ImageF *out1) {
+  PROFILER_FUNC;
+  const size_t xsize = xyb0.xsize();
+  const size_t ysize = xyb0.ysize();
+  size_t x1, y1;
+  size_t x2, y2;
+  for (size_t y = 0; y < ysize; ++y) {
+    if (y + 1 < ysize) {
+      y2 = y + 1;
+    } else if (y > 0) {
+      y2 = y - 1;
+    } else {
+      y2 = y;
+    }
+    if (y == 0 && ysize >= 2) {
+      y1 = y + 1;
+    } else if (y > 0) {
+      y1 = y - 1;
+    } else {
+      y1 = y;
+    }
+    const float* BUTTERAUGLI_RESTRICT row0_in = xyb0.Row(y);
+    const float* BUTTERAUGLI_RESTRICT row1_in = xyb1.Row(y);
+    const float* BUTTERAUGLI_RESTRICT row0_in1 = xyb0.Row(y1);
+    const float* BUTTERAUGLI_RESTRICT row1_in1 = xyb1.Row(y1);
+    const float* BUTTERAUGLI_RESTRICT row0_in2 = xyb0.Row(y2);
+    const float* BUTTERAUGLI_RESTRICT row1_in2 = xyb1.Row(y2);
+    float* BUTTERAUGLI_RESTRICT row_out0 = out0->Row(y);
+    float* BUTTERAUGLI_RESTRICT row_out1 = out1->Row(y);
+    for (size_t x = 0; x < xsize; ++x) {
+      if (x + 1 < xsize) {
+        x2 = x + 1;
+      } else if (x > 0) {
+        x2 = x - 1;
+      } else {
+        x2 = x;
+      }
+      if (x == 0 && xsize >= 2) {
+        x1 = x + 1;
+      } else if (x > 0) {
+        x1 = x - 1;
+      } else {
+        x1 = x;
+      }
+      double sup0 =
+          (fabs(row0_in[x] - row0_in[x2]) +
+           fabs(row0_in[x] - row0_in2[x]) +
+           fabs(row0_in[x] - row0_in[x1]) +
+           fabs(row0_in[x] - row0_in1[x]) +
+           3 * (fabs(row0_in2[x] - row0_in1[x]) +
+                fabs(row0_in[x1] - row0_in[x2])));
+      double sup1 =
+          (fabs(row1_in[x] - row1_in[x2]) +
+           fabs(row1_in[x] - row1_in2[x]) +
+           fabs(row1_in[x] - row1_in[x1]) +
+           fabs(row1_in[x] - row1_in1[x]) +
+           3 * (fabs(row1_in2[x] - row1_in1[x]) +
+                fabs(row1_in[x1] - row1_in[x2])));
+      // kBias makes log behave more linearly.
+      static const double kBias = 7;
+      row_out0[x] = mul * (log(sup0 * sup0 * mul2 + kBias) - log(kBias));
+      row_out1[x] = mul * (log(sup1 * sup1 * mul2 + kBias) - log(kBias));
+    }
+  }
+}
+
 void Mask(const Image3F& xyb0, const Image3F& xyb1,
           Image3F* BUTTERAUGLI_RESTRICT mask,
-          Image3F* BUTTERAUGLI_RESTRICT mask_dc) {
+          Image3F* BUTTERAUGLI_RESTRICT mask_dc,
+          ImageF* BUTTERAUGLI_RESTRICT diff_ac) {
   PROFILER_FUNC;
   const size_t xsize = xyb0.xsize();
   const size_t ysize = xyb0.ysize();
@@ -1666,15 +1771,15 @@ void Mask(const Image3F& xyb0, const Image3F& xyb1,
     1.0 / (muls[0] + muls[1]),
   };
   static const double r0 = 1.63479141169;
-  static const double r1 = 8.88891728288;
-  static const double r2 = 11.9999222643;
+  static const double r1 = 8.0;
+  static const double r2 = 8.0;
   static const double border_ratio = 0;
 
   {
     // X component
     static const double mul = 0.533043878407;
-    static const double cutoff = 46.2149123333;
-    ImageF diff = DiffPrecompute(xyb0.Plane(0), xyb1.Plane(0), mul, cutoff);
+    static const double cutoff = 0.5;
+    ImageF diff = DiffPrecomputeX(xyb0.Plane(0), xyb1.Plane(0), mul, cutoff);
     ImageF blurred = Blur(diff, r2, border_ratio);
     for (size_t y = 0; y < ysize; ++y) {
       for (size_t x = 0; x < xsize; ++x) {
@@ -1684,37 +1789,45 @@ void Mask(const Image3F& xyb0, const Image3F& xyb1,
   }
   {
     // Y component
-    static const double mul = 0.08401977434;
-    static const double cutoff = 27.3610582181;
-    ImageF diff = DiffPrecompute(xyb0.Plane(1), xyb1.Plane(1), mul, cutoff);
-    ImageF blurred1 = Blur(diff, r0, border_ratio);
-    ImageF blurred2 = Blur(diff, r1, border_ratio);
+    static const double mul = 0.559;
+    static const double mul2 = 1.0;
+    ImageF diff0(xyb0.xsize(), xyb0.ysize());
+    ImageF diff1(xyb0.xsize(), xyb0.ysize());
+    DiffPrecomputeY(xyb0.Plane(1), xyb1.Plane(1), mul, mul2, &diff0, &diff1);
+    ImageF blurred0_a = Blur(diff0, r0, border_ratio);
+    ImageF blurred0_b = Blur(diff0, r1, border_ratio);
+    ImageF blurred1_a = Blur(diff1, r0, border_ratio);
+    ImageF blurred1_b = Blur(diff1, r1, border_ratio);
     for (size_t y = 0; y < ysize; ++y) {
       for (size_t x = 0; x < xsize; ++x) {
         const double val = normalizer * (
-            muls[0] * blurred1.Row(y)[x] +
-            muls[1] * blurred2.Row(y)[x]);
+            muls[0] * blurred1_a.Row(y)[x] +
+            muls[1] * blurred1_b.Row(y)[x]);
         mask->PlaneRow(1, y)[x] = val;
+        if (diff_ac != nullptr) {
+          static const double kMaskToErrorMul = 3.09660544871;
+          double va = blurred0_a.Row(y)[x] - blurred1_a.Row(y)[x];
+          double wa = kMaskToErrorMul * normalizer * muls[0] * va;
+          double vb = blurred0_b.Row(y)[x] - blurred1_b.Row(y)[x];
+          double wb = kMaskToErrorMul * normalizer * muls[1] * vb;
+          diff_ac->Row(y)[x] += wa * wa + wb * wb;
+        }
       }
     }
   }
   // B component
-  static const double mul[2] = {
-    46.0040055979,
-    2.57088399129,
-  };
-  static const double w00 = 15.6656889264;
-  static const double w11 = 2.41930879304;
-  static const double w_ytob_hf = 0.0620563522585;
-  static const double w_ytob_lf = 25.7119489405;
-  static const double p1_to_p0 = 0.0824432147254;
+  static const double w00 = 425.68063445;
+  static const double w11 = 5.99207318771;
+  static const double w_ytob_hf = 0.0513729628327;
+  static const double w_ytob_lf = 30.6362338596;
+  static const double p1_to_p0 = 0.0812601733358;
 
   for (size_t y = 0; y < ysize; ++y) {
     for (size_t x = 0; x < xsize; ++x) {
       const double s0 = mask->PlaneRow(0, y)[x];
       const double s1 = mask->PlaneRow(1, y)[x];
-      const double p1 = mul[1] * w11 * s1;
-      const double p0 = mul[0] * w00 * s0 + p1_to_p0 * p1;
+      const double p1 = w11 * s1;
+      const double p0 = w00 * s0 + p1_to_p0 * p1;
 
       mask->PlaneRow(0, y)[x] = MaskX(p0);
       mask->PlaneRow(1, y)[x] = MaskY(p1);
@@ -1786,10 +1899,10 @@ bool ButteraugliInterface(const Image3F& rgb0, const Image3F& rgb1,
 }
 
 double ButteraugliFuzzyClass(double score) {
-  static const double fuzzy_width_up = 4.99936246262;
-  static const double fuzzy_width_down = 5.46389266506;
+  static const double fuzzy_width_up = 5.10228441116;
+  static const double fuzzy_width_down = 4.96467433842;
   static const double m0 = 2.0;
-  static const double scaler = 0.863499763674;
+  static const double scaler = 0.827108297066;
   double val;
   if (score < 1.0) {
     // val in [scaler .. 2.0]
@@ -1805,6 +1918,8 @@ double ButteraugliFuzzyClass(double score) {
   return val;
 }
 
+// #define PRINT_OUT_NORMALIZATION
+
 double ButteraugliFuzzyInverse(double seek) {
   double pos = 0;
   for (double range = 1.0; range >= 1e-10; range *= 0.5) {
@@ -1815,8 +1930,19 @@ double ButteraugliFuzzyInverse(double seek) {
       pos += range;
     }
   }
+#ifdef PRINT_OUT_NORMALIZATION
+  if (seek == 1.0) {
+    fprintf(stderr, "Fuzzy inverse %g\n", pos);
+  }
+#endif
   return pos;
 }
+
+#ifdef PRINT_OUT_NORMALIZATION
+static double print_out_normalization = ButteraugliFuzzyInverse(1.0);
+#endif
+
+
 
 namespace {
 

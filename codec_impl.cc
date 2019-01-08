@@ -18,11 +18,11 @@
 
 #undef PROFILER_ENABLED
 #define PROFILER_ENABLED 1
-#include "af_edge_preserving_filter.h"
 #include "byte_order.h"
 #include "codec_png.h"
 #include "codec_pnm.h"
 #include "common.h"
+#include "epf.h"
 #include "external_image.h"
 #include "file_io.h"
 #include "profiler.h"
@@ -35,27 +35,26 @@ namespace {
 constexpr size_t kMinBytes = 9;
 
 // Returns RGB/Gray pair of ColorEncoding (indexed by IsGray()).
-std::array<ColorEncoding, 2> MakeC2(const ColorManagement& cms,
-                                    const Primaries pr,
+std::array<ColorEncoding, 2> MakeC2(const Primaries pr,
                                     const TransferFunction tf) {
   std::array<ColorEncoding, 2> c2;
   c2[0].color_space = ColorSpace::kRGB;
   c2[0].white_point = WhitePoint::kD65;
   c2[0].primaries = pr;
   c2[0].transfer_function = tf;
-  PIK_CHECK(cms.SetProfileFromFields(&c2[0]));
+  PIK_CHECK(ColorManagement::SetProfileFromFields(&c2[0]));
 
   // Same as above, but gray.
   c2[1] = c2[0];
   c2[1].color_space = ColorSpace::kGray;
-  PIK_CHECK(cms.SetProfileFromFields(&c2[1]));
+  PIK_CHECK(ColorManagement::SetProfileFromFields(&c2[1]));
   return c2;
 }
 
 template <typename T>
 Status FromSRGB(const size_t xsize, const size_t ysize, const bool is_gray,
                 const bool has_alpha, const bool big_endian, const T* pixels,
-                const T* end, CodecInOut* io) {
+                const T* end, ThreadPool* pool, CodecInOut* io) {
   const ColorEncoding& c = io->Context()->c_srgb[is_gray];
   const size_t bits_per_sample = sizeof(T) * kBitsPerByte;
   const uint8_t* bytes = reinterpret_cast<const uint8_t*>(pixels);
@@ -63,13 +62,13 @@ Status FromSRGB(const size_t xsize, const size_t ysize, const bool is_gray,
   const ExternalImage external(xsize, ysize, c, has_alpha, bits_per_sample,
                                big_endian, bytes, bytes_end);
   const CodecIntervals* temp_intervals = nullptr;  // Don't know min/max.
-  return external.CopyTo(temp_intervals, io);
+  return external.CopyTo(temp_intervals, pool, io);
 }
 
 // Copies interleaved external color; skips any alpha. Caller ensures
 // bits_per_sample matches T, and byte order=native.
 template <typename T>
-void RawCopy(const ExternalImage& external, Image3<T>* out) {
+void AllocateAndFill(const ExternalImage& external, Image3<T>* out) {
   PIK_ASSERT(external.IsHealthy());  // Callers must check beforehand.
 
   // Here we just copy bytes for simplicity; for conversion/byte swapping, use
@@ -140,8 +139,10 @@ void RawCopy(const ExternalImage& external, Image3<T>* out) {
   }
 }
 
+// Copies io:rect, converts, and copies into out.
 template <typename T>
-Status CopyToT(const CodecInOut* io, const ColorEncoding& c_desired,
+Status CopyToT(const CodecInOut* io, const Rect& rect,
+               const ColorEncoding& c_desired, ThreadPool* pool,
                Image3<T>* out) {
   PROFILER_FUNC;
   // Changing IsGray is probably a bug.
@@ -151,11 +152,11 @@ Status CopyToT(const CodecInOut* io, const ColorEncoding& c_desired,
   const size_t bits_per_sample = sizeof(T) * kBitsPerByte;
   const bool big_endian = !IsLittleEndian();
   CodecIntervals* temp_intervals = nullptr;  // Don't need min/max.
-  const ExternalImage external(io->Context(), io->color(), io->c_current(),
+  const ExternalImage external(pool, io->color(), rect, io->c_current(),
                                c_desired, io->HasAlpha(), alpha,
                                bits_per_sample, big_endian, temp_intervals);
   PIK_RETURN_IF_ERROR(external.IsHealthy());
-  RawCopy(external, out);
+  AllocateAndFill(external, out);
   return true;
 }
 
@@ -186,17 +187,9 @@ Codec CodecFromExtension(const std::string& extension) {
   return Codec::kUnknown;
 }
 
-CodecContext::CodecContext(size_t num_threads)
-    : pool(num_threads),
-      cms(num_threads),
-      c_srgb(MakeC2(cms, Primaries::kSRGB, TransferFunction::kSRGB)),
-      c_linear_srgb(MakeC2(cms, Primaries::kSRGB, TransferFunction::kLinear)) {
-  // Warm up profiler on main AND worker threads so its expensive initialization
-  // doesn't count towards the timer measurements below for encode throughput.
-  PROFILER_ZONE("@InitMainThread");
-  pool.RunOnEachThread(
-      [](const int task, const int thread) { PROFILER_ZONE("@InitWorkers"); });
-
+CodecContext::CodecContext(size_t ignored)
+    : c_srgb(MakeC2(Primaries::kSRGB, TransferFunction::kSRGB)),
+      c_linear_srgb(MakeC2(Primaries::kSRGB, TransferFunction::kLinear)) {
   // For all supported targets:
   TargetBitfield supported;
   do {
@@ -213,23 +206,25 @@ void CodecInOut::SetFromImage(Image3F&& color, const ColorEncoding& c_current) {
 
 Status CodecInOut::SetFromSRGB(size_t xsize, size_t ysize, bool is_gray,
                                bool has_alpha, const uint8_t* pixels,
-                               const uint8_t* end) {
+                               const uint8_t* end, ThreadPool* pool) {
   const bool big_endian = false;
   return FromSRGB(xsize, ysize, is_gray, has_alpha, big_endian, pixels, end,
-                  this);
+                  pool, this);
 }
 
 Status CodecInOut::SetFromSRGB(size_t xsize, size_t ysize, bool is_gray,
                                bool has_alpha, bool big_endian,
-                               const uint16_t* pixels, const uint16_t* end) {
+                               const uint16_t* pixels, const uint16_t* end,
+                               ThreadPool* pool) {
   return FromSRGB(xsize, ysize, is_gray, has_alpha, big_endian, pixels, end,
-                  this);
+                  pool, this);
 }
 
-Status CodecInOut::SetFromBytes(const PaddedBytes& bytes) {
+Status CodecInOut::SetFromBytes(const PaddedBytes& bytes, ThreadPool* pool) {
   if (bytes.size() < kMinBytes) return PIK_FAILURE("Too few bytes");
 
-  if (!DecodeImagePNG(bytes, this) && !DecodeImagePNM(bytes, this)) {
+  if (!DecodeImagePNG(bytes, pool, this) &&
+      !DecodeImagePNM(bytes, pool, this)) {
     return PIK_FAILURE("Codecs failed to decode");
   }
 
@@ -238,12 +233,13 @@ Status CodecInOut::SetFromBytes(const PaddedBytes& bytes) {
   return true;
 }
 
-Status CodecInOut::SetFromFile(const std::string& pathname) {
+Status CodecInOut::SetFromFile(const std::string& pathname, ThreadPool* pool) {
   PaddedBytes encoded;
-  return ReadFile(pathname, &encoded) && SetFromBytes(encoded);
+  return ReadFile(pathname, &encoded) && SetFromBytes(encoded, pool);
 }
 
-Status CodecInOut::TransformTo(const ColorEncoding& c_desired) {
+Status CodecInOut::TransformTo(const ColorEncoding& c_desired,
+                               ThreadPool* pool) {
   PROFILER_FUNC;
   // Changing IsGray is probably a bug.
   PIK_CHECK(IsGray() == c_desired.IsGray());
@@ -251,36 +247,41 @@ Status CodecInOut::TransformTo(const ColorEncoding& c_desired) {
   const ImageU* alpha = HasAlpha() ? &alpha_ : nullptr;
   const bool big_endian = !IsLittleEndian();
   CodecIntervals temp_intervals;
-  const ExternalImage external(context_, color_, c_current_, c_desired,
-                               HasAlpha(), alpha, 32, big_endian,
+  const ExternalImage external(pool, color_, Rect(color_), c_current_,
+                               c_desired, HasAlpha(), alpha, 32, big_endian,
                                &temp_intervals);
-  return external.IsHealthy() && external.CopyTo(&temp_intervals, this);
+  return external.IsHealthy() && external.CopyTo(&temp_intervals, pool, this);
 }
 
-Status CodecInOut::CopyTo(const ColorEncoding& c_desired, Image3B* out) const {
-  return CopyToT(this, c_desired, out);
+Status CodecInOut::CopyTo(const Rect& rect, const ColorEncoding& c_desired,
+                          Image3B* out, ThreadPool* pool) const {
+  return CopyToT(this, rect, c_desired, pool, out);
 }
-Status CodecInOut::CopyTo(const ColorEncoding& c_desired, Image3U* out) const {
-  return CopyToT(this, c_desired, out);
+Status CodecInOut::CopyTo(const Rect& rect, const ColorEncoding& c_desired,
+                          Image3U* out, ThreadPool* pool) const {
+  return CopyToT(this, rect, c_desired, pool, out);
 }
-Status CodecInOut::CopyTo(const ColorEncoding& c_desired, Image3F* out) const {
-  return CopyToT(this, c_desired, out);
+Status CodecInOut::CopyTo(const Rect& rect, const ColorEncoding& c_desired,
+                          Image3F* out, ThreadPool* pool) const {
+  return CopyToT(this, rect, c_desired, pool, out);
 }
 
-Status CodecInOut::CopyToSRGB(Image3B* out) const {
-  return CopyTo(context_->c_srgb[IsGray()], out);
+Status CodecInOut::CopyToSRGB(const Rect& rect, Image3B* out,
+                              ThreadPool* pool) const {
+  return CopyTo(rect, context_->c_srgb[IsGray()], out, pool);
 }
 
 Status CodecInOut::Encode(const Codec codec, const ColorEncoding& c_desired,
-                          size_t bits_per_sample, PaddedBytes* bytes) const {
+                          size_t bits_per_sample, PaddedBytes* bytes,
+                          ThreadPool* pool) const {
   PIK_CHECK(!c_current().icc.empty());
   PIK_CHECK(!c_desired.icc.empty());
 
   switch (codec) {
     case Codec::kPNG:
-      return EncodeImagePNG(this, c_desired, bits_per_sample, bytes);
+      return EncodeImagePNG(this, c_desired, bits_per_sample, pool, bytes);
     case Codec::kPNM:
-      return EncodeImagePNM(this, c_desired, bits_per_sample, bytes);
+      return EncodeImagePNM(this, c_desired, bits_per_sample, pool, bytes);
     case Codec::kUnknown:
       return PIK_FAILURE("Cannot encode using Codec::kUnknown");
   }
@@ -290,11 +291,12 @@ Status CodecInOut::Encode(const Codec codec, const ColorEncoding& c_desired,
 
 Status CodecInOut::EncodeToFile(const ColorEncoding& c_desired,
                                 size_t bits_per_sample,
-                                const std::string& pathname) const {
+                                const std::string& pathname,
+                                ThreadPool* pool) const {
   const Codec codec = CodecFromExtension(Extension(pathname));
 
   PaddedBytes encoded;
-  return Encode(codec, c_desired, bits_per_sample, &encoded) &&
+  return Encode(codec, c_desired, bits_per_sample, &encoded, pool) &&
          WriteFile(encoded, pathname);
 }
 

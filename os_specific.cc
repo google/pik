@@ -20,10 +20,11 @@
 #include <cstdlib>
 #include <ctime>
 #include <random>
+#include <sstream>
+#include <iterator>
 
 #include "arch_specific.h"
 #include "compiler_specific.h"
-#include "status.h"
 
 #if defined(_WIN32) || defined(_WIN64)
 #define OS_WIN 1
@@ -37,6 +38,9 @@
 #define OS_LINUX 1
 #include <sched.h>
 #include <sys/time.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #else
 #define OS_LINUX 0
 #endif
@@ -45,6 +49,9 @@
 #define OS_MAC 1
 #include <mach/mach.h>
 #include <mach/mach_time.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #else
 #define OS_MAC 0
 #endif
@@ -53,6 +60,8 @@
 #define OS_FREEBSD 1
 #include <sys/cpuset.h>
 #include <sys/param.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #else
 #define OS_FREEBSD 0
@@ -125,7 +134,7 @@ ThreadAffinity* OriginalThreadAffinity() {
 
 }  // namespace
 
-void SetThreadAffinity(ThreadAffinity* affinity) {
+Status SetThreadAffinity(ThreadAffinity* affinity) {
   // Ensure original is initialized before changing.
   const ThreadAffinity* const original = OriginalThreadAffinity();
   PIK_CHECK(original != nullptr);
@@ -133,19 +142,21 @@ void SetThreadAffinity(ThreadAffinity* affinity) {
 #if OS_WIN
   const HANDLE hThread = GetCurrentThread();
   const DWORD_PTR prev = SetThreadAffinityMask(hThread, affinity->mask);
-  PIK_CHECK(prev != 0);
+  if (prev == 0) return PIK_FAILURE("SetThreadAffinityMask failed");
 #elif OS_LINUX
   const pid_t pid = 0;  // current thread
   const int err = sched_setaffinity(pid, sizeof(cpu_set_t), &affinity->set);
-  PIK_CHECK(err == 0);
+  if (err != 0) return PIK_FAILURE("sched_setaffinity failed");
 #elif OS_FREEBSD
   const pid_t pid = getpid();  // current thread
   const int err = cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_PID, pid,
                                      sizeof(cpuset_t), &affinity->set);
-  PIK_CHECK(err == 0);
+  if (err != 0) return PIK_FAILURE("cpuset_setaffinity failed");
 #else
   printf("Don't know how to SetThreadAffinity on this platform.\n");
+  return false;
 #endif
+  return true;
 }
 
 std::vector<int> AvailableCPUs() {
@@ -176,7 +187,7 @@ std::vector<int> AvailableCPUs() {
   return cpus;
 }
 
-void PinThreadToCPU(const int cpu) {
+Status PinThreadToCPU(const int cpu) {
   ThreadAffinity affinity;
 #if OS_WIN
   affinity.mask = 1ULL << cpu;
@@ -187,10 +198,10 @@ void PinThreadToCPU(const int cpu) {
   CPU_ZERO(&affinity.set);
   CPU_SET(cpu, &affinity.set);
 #endif
-  SetThreadAffinity(&affinity);
+  return SetThreadAffinity(&affinity);
 }
 
-void PinThreadToRandomCPU() {
+Status PinThreadToRandomCPU() {
   std::vector<int> cpus = AvailableCPUs();
 
   // Remove first two CPUs because interrupts are often pinned to them.
@@ -203,13 +214,61 @@ void PinThreadToRandomCPU() {
   std::shuffle(cpus.begin(), cpus.end(), generator);
   const int cpu = cpus.front();
 
-  PinThreadToCPU(cpu);
+  PIK_RETURN_IF_ERROR(PinThreadToCPU(cpu));
 
   // After setting affinity, we should be running on the desired CPU.
 #if PIK_ARCH_X64
   printf("Running on CPU #%d, APIC ID %02x\n", cpu, ApicId());
 #else
   printf("Running on CPU #%d\n", cpu);
+#endif
+  return true;
+}
+
+Status RunCommand(const std::vector<std::string>& args) {
+#if _POSIX_VERSION >= 200112L
+  // Avoid system(), but do not try to be over-zealous about not passing along
+  // some special resources further (such as: inherited-not-marked-FD_CLOEXEC
+  // file descriptors).
+  std::vector<const char*> c_args;
+  c_args.reserve(args.size() + 1);
+  for (size_t i = 0; i < args.size(); ++i) {
+    c_args.push_back(args[i].c_str());
+  }
+  c_args.push_back(nullptr);
+  const pid_t pid = fork();
+  if (pid == -1)  // fork() failed.
+    return false;
+  if (pid != 0) {  // Parent process.
+    int ret_status;
+    if (pid != waitpid(pid, &ret_status, 0)) {
+      return false;  // waitpid() error.
+    }
+    return ret_status == 0;
+  } else {  // Child process.
+    execvp(c_args[0],
+           // Address benign-but-annoying execvp() signature weirdness.
+           const_cast<char * const *>(c_args.data()));
+    fprintf(stderr, "execvp() failed. Exiting child process.\n");
+    exit(EXIT_FAILURE);
+  }
+#elif OS_WIN
+  // Synthesize a string for system(). And warn about it.
+  // TODO(user): Fix this - research the safe way to run a command on Windows.
+  // Likely, the solution is along these lines:
+  // https://docs.microsoft.com/en-us/windows/desktop/ProcThread/creating-processes
+  std::ostringstream cmd;
+  std::copy(args.begin(), args.end(),
+           std::ostream_iterator<std::string>(cmd, " "));
+  printf(stderr, "Warning: Using system() on string: %s\n", cmd.str.c_str());
+  int ret = system(cmd.str.c_str());
+  if (errno != ENOENT &&  // Windows: Command interpreter not found.
+      ret == 0) {
+    return true;
+  }
+  return false;
+#else
+#error Neither a POSIX-1.2001 nor a Windows System.
 #endif
 }
 

@@ -25,7 +25,7 @@
 namespace pik {
 
 // DCT building blocks that require SIMD vector length to be 8, e.g. AVX2.
-static_assert(BlockDesc().N == 8, "Wrong vector size, must be 8");
+static_assert(BlockDesc<8>().N == 8, "Wrong vector size, must be 8");
 
 // Each vector holds one row of the input/output block.
 template <class V>
@@ -109,7 +109,7 @@ SIMD_ATTR PIK_INLINE void TransposeBlock8_V8(const From& from, const To& to) {
 template <class From, class To>
 SIMD_ATTR PIK_INLINE void ComputeTransposedScaledDCT8_V8(const From& from,
                                                          const To& to) {
-  const BlockDesc d;
+  const BlockDesc<8> d;
 
   const float c1234_lanes[4] = {
       0.707106781186548f,  // 1 / sqrt(2)
@@ -120,26 +120,26 @@ SIMD_ATTR PIK_INLINE void ComputeTransposedScaledDCT8_V8(const From& from,
   const auto c1234 = load_dup128(d, c1234_lanes);
   const auto k1 = set1(d, 1.0f);
 
-  auto i0 = from.Load(0, 0);
-  auto i7 = from.Load(7, 0);
+  auto i0 = from.template LoadPart<8>(0, 0);
+  auto i7 = from.template LoadPart<8>(7, 0);
   auto t00 = i0 + i7;           // 2 (faster than fadd)
   auto t01 = fsub(i0, k1, i7);  // 4
   SIMD_FENCE;
 
-  auto i3 = from.Load(3, 0);
-  auto i4 = from.Load(4, 0);
+  auto i3 = from.template LoadPart<8>(3, 0);
+  auto i4 = from.template LoadPart<8>(4, 0);
   auto t02 = i3 + i4;
   auto t03 = fsub(i3, k1, i4);  // 1
   SIMD_FENCE;
 
-  auto i2 = from.Load(2, 0);
-  auto i5 = from.Load(5, 0);
+  auto i2 = from.template LoadPart<8>(2, 0);
+  auto i5 = from.template LoadPart<8>(5, 0);
   auto t04 = i2 + i5;  // 1
   auto t05 = fsub(i2, k1, i5);
   SIMD_FENCE;
 
-  auto i1 = from.Load(1, 0);
-  auto i6 = from.Load(6, 0);
+  auto i1 = from.template LoadPart<8>(1, 0);
+  auto i6 = from.template LoadPart<8>(6, 0);
   auto t06 = i1 + i6;  // !
   SIMD_FENCE;
 
@@ -260,31 +260,31 @@ SIMD_ATTR PIK_INLINE void ComputeTransposedScaledDCT8_V8(const From& from,
   i2 = mul_add(c1, t15, t09);
 
   i6 = nmul_add(c1, t15, t09);
-  to.Store(i0, 0, 0);
+  to.template StorePart<8>(i0, 0, 0);
   SIMD_FENCE;
 
   i1 = t20 + t22;
 
   i7 = t20 - t22;
-  to.Store(i2, 2, 0);
-  to.Store(i4, 4, 0);
+  to.template StorePart<8>(i2, 2, 0);
+  to.template StorePart<8>(i4, 4, 0);
   SIMD_FENCE;
 
   i3 = t21 - t23;
-  to.Store(i1, 1, 0);
+  to.template StorePart<8>(i1, 1, 0);
   SIMD_FENCE;
 
   i5 = t21 + t23;
-  to.Store(i6, 6, 0);
-  to.Store(i7, 7, 0);
-  to.Store(i3, 3, 0);
-  to.Store(i5, 5, 0);
+  to.template StorePart<8>(i6, 6, 0);
+  to.template StorePart<8>(i7, 7, 0);
+  to.template StorePart<8>(i3, 3, 0);
+  to.template StorePart<8>(i5, 5, 0);
 }
 
 template <class From, class To>
 SIMD_ATTR PIK_INLINE void ComputeTransposedScaledIDCT8_V8(const From& from,
                                                           const To& to) {
-  const BlockDesc d;
+  const BlockDesc<8> d;
 
   const float k1_lanes[4] = {SIMD_REP4(1.0f)};
   const auto k1 = load_dup128(d, k1_lanes);

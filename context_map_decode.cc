@@ -79,8 +79,7 @@ bool VerifyContextMap(const std::vector<uint8_t>& context_map,
 
 }  // namespace
 
-bool DecodeContextMap(std::vector<uint8_t>* context_map,
-                      size_t* num_htrees,
+bool DecodeContextMap(std::vector<uint8_t>* context_map, size_t* num_htrees,
                       BitReader* input) {
   *num_htrees = DecodeVarLenUint8(input) + 1;
 

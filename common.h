@@ -16,13 +16,14 @@
 #define COMMON_H_
 
 #include <stddef.h>
+#include <memory>  // unique_ptr
 
 namespace pik {
 
 constexpr size_t kBitsPerByte = 8;  // more clear than CHAR_BIT
 
 template <typename T>
-inline T DivCeil(T a, T b) {
+constexpr inline T DivCeil(T a, T b) {
   return (a + b - 1) / b;
 }
 
@@ -35,6 +36,8 @@ constexpr T Pi(T multiplier) {
 // transformation (e.g. DCT) is applied. Each block has its own AC quantizer.
 constexpr size_t kBlockDim = 8;
 
+constexpr size_t kDCTBlockSize = kBlockDim * kBlockDim;
+
 // Group is the rectangular grid of blocks that can be decoded in parallel.
 constexpr size_t kGroupWidth = 512;
 constexpr size_t kGroupHeight = 512;
@@ -44,6 +47,22 @@ static_assert(kGroupHeight % kBlockDim == 0,
               "Group height should be divisible by block dim");
 constexpr size_t kGroupWidthInBlocks = kGroupWidth / kBlockDim;
 constexpr size_t kGroupHeightInBlocks = kGroupHeight / kBlockDim;
+
+// We split groups into tiles to increase locality and cache hits.
+const constexpr size_t kTileDim = 64;
+
+static_assert(kTileDim % kBlockDim == 0,
+              "Tile dim should be divisible by block dim");
+constexpr size_t kTileDimInBlocks = kTileDim / kBlockDim;
+
+static_assert(kGroupWidthInBlocks % kTileDimInBlocks == 0,
+              "Group dim should be divisible by tile dim");
+
+// Can't rely on C++14 yet.
+template <typename T, typename... Args>
+std::unique_ptr<T> make_unique(Args&&... args) {
+  return std::unique_ptr<T>(new T(std::forward<Args>(args)...));
+}
 
 }  // namespace pik
 

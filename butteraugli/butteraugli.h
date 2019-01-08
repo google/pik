@@ -57,6 +57,9 @@ namespace butteraugli {
 // Butteraugli does not work as intended if the caller does not perform
 // gamma correction.
 //
+// hf_asymmetry is a multiplier for penalizing new HF artifacts more than
+// blurring away features (1.0 -> neutral).
+//
 // diffmap will contain an image of the size xsize * ysize, containing
 // localized differences for values px (indexed with the px the same as rgb0
 // and rgb1). diffvalue will give a global score of similarity.
@@ -70,8 +73,11 @@ namespace butteraugli {
 //
 // Returns true on success.
 
-bool ButteraugliInterface(const Image3F &rgb0, const Image3F &rgb1,
-                          ImageF &diffmap, double &diffvalue);
+bool ButteraugliInterface(const Image3F &rgb0,
+                          const Image3F &rgb1,
+                          float hf_asymmetry,
+                          ImageF &diffmap,
+                          double &diffvalue);
 
 const double kButteraugliQuantLow = 0.26;
 const double kButteraugliQuantHigh = 1.454;
@@ -187,6 +193,7 @@ struct PsychoImage {
 class ButteraugliComparator {
  public:
   ButteraugliComparator(const Image3F &rgb0, double hf_asymmetry);
+  virtual ~ButteraugliComparator();
 
   // Computes the butteraugli map between the original image given in the
   // constructor and the distorted image give here.
@@ -217,6 +224,7 @@ class ButteraugliComparator {
   const size_t ysize_;
   float hf_asymmetry_;
   PsychoImage pi0_;
+  ButteraugliComparator *sub_;
 };
 
 bool ButteraugliDiffmap(const Image3F &rgb0, const Image3F &rgb1,
@@ -231,7 +239,7 @@ Image3B CreateHeatMapImage(const ImageF &distmap, double good_threshold,
 // Compute values of local frequency and dc masking based on the activity
 // in the two images.
 void Mask(const Image3F &xyb0, const Image3F &xyb1, Image3F *PIK_RESTRICT mask,
-          Image3F *PIK_RESTRICT mask_dc);
+          Image3F *PIK_RESTRICT mask_dc, ImageF *diff_ac = nullptr);
 
 template <class V>
 BUTTERAUGLI_INLINE void RgbToXyb(const V &r, const V &g, const V &b,

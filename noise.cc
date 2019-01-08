@@ -2,12 +2,13 @@
 #include <cstdio>
 #include <numeric>
 
-#include "af_stats.h"
 #include "convolve.h"
+#include "descriptive_statistics.h"
 #include "noise.h"
 #include "opsin_params.h"
 #include "optimize.h"
 #include "rational_polynomial.h"
+#include "robust_statistics.h"
 #include "simd/simd.h"
 #include "write_bits.h"
 #include "xorshift128plus.h"
@@ -56,10 +57,10 @@ float GetScoreSumsOfAbsoluteDifferences(const Image3F& opsin, const int x,
       for (int cy = 0; cy < small_bl_size_y; ++cy) {
         for (int cx = 0; cx < small_bl_size_x; ++cx) {
           float wnd = 0.5f * (opsin.PlaneRow(1, y + y_bl + cy)[x + x_bl + cx] +
-                             opsin.PlaneRow(0, y + y_bl + cy)[x + x_bl + cx]);
+                              opsin.PlaneRow(0, y + y_bl + cy)[x + x_bl + cx]);
           float center =
               0.5f * (opsin.PlaneRow(1, y + offset + cy)[x + offset + cx] +
-                     opsin.PlaneRow(0, y + offset + cy)[x + offset + cx]);
+                      opsin.PlaneRow(0, y + offset + cy)[x + offset + cx]);
           sad_sum += std::abs(center - wnd);
         }
       }
@@ -75,6 +76,68 @@ float GetScoreSumsOfAbsoluteDifferences(const Image3F& opsin, const int x,
       std::accumulate(sad.begin(), sad.begin() + kSamples, 0.0f);
   return total_sad_sum / kSamples;
 }
+
+class Histogram {
+ public:
+  static constexpr int kBins = 256;
+
+  Histogram() { std::fill(bins, bins + kBins, 0); }
+
+  void Increment(const float x) { bins[Index(x)] += 1; }
+  int Get(const float x) const { return bins[Index(x)]; }
+  int Bin(const size_t bin) const { return bins[bin]; }
+
+  void Print() const {
+    for (size_t i = 0; i < kBins; ++i) {
+      printf("%d\n", bins[i]);
+    }
+  }
+
+  int Mode() const {
+    uint32_t cdf[kBins];
+    std::partial_sum(bins, bins + kBins, cdf);
+    return HalfRangeMode()(cdf, kBins);
+  }
+
+  double Quantile(double q01) const {
+    const int64_t total = std::accumulate(bins, bins + kBins, 1LL);
+    const int64_t target = static_cast<int64_t>(q01 * total);
+    // Until sum >= target:
+    int64_t sum = 0;
+    size_t i = 0;
+    for (; i < kBins; ++i) {
+      sum += bins[i];
+      // Exact match: assume middle of bin i
+      if (sum == target) {
+        return i + 0.5;
+      }
+      if (sum > target) break;
+    }
+
+    // Next non-empty bin (in case histogram is sparsely filled)
+    size_t next = i + 1;
+    while (next < kBins && bins[next] == 0) {
+      ++next;
+    }
+
+    // Linear interpolation according to how far into next we went
+    const double excess = target - sum;
+    const double weight_next = bins[Index(next)] / excess;
+    return ClampX(next * weight_next + i * (1.0 - weight_next));
+  }
+
+  // Inter-quartile range
+  double IQR() const { return Quantile(0.75) - Quantile(0.25); }
+
+ private:
+  template <typename T>
+  T ClampX(const T x) const {
+    return std::min(std::max(T(0), x), T(kBins - 1));
+  }
+  size_t Index(const float x) const { return ClampX(static_cast<int>(x)); }
+
+  uint32_t bins[kBins];
+};
 
 std::vector<float> GetSADScoresForPatches(const Image3F& opsin,
                                           const int block_s, const int num_bin,
@@ -217,9 +280,9 @@ SIMD_ATTR void AddNoiseToRGB(
   vy += red_noise + green_noise;
   vb += set1(d, 0.9375f) * (red_noise + green_noise);
 
-  vx = clamp(vx, set1(d, -kXybRange[0]), set1(d, kXybRange[0]));
-  vy = clamp(vy, set1(d, -kXybRange[1]), set1(d, kXybRange[1]));
-  vb = clamp(vb, set1(d, -kXybRange[2]), set1(d, kXybRange[2]));
+  vx = clamp(vx, set1(d, -kXybRadius[0]), set1(d, kXybRadius[0]));
+  vy = clamp(vy, set1(d, -kXybRadius[1]), set1(d, kXybRadius[1]));
+  vb = clamp(vb, set1(d, -kXybRadius[2]), set1(d, kXybRadius[2]));
 
   store(vx, d, out_x);
   store(vy, d, out_y);
@@ -259,13 +322,11 @@ SIMD_ATTR void AddNoiseT(const StrengthEval& noise_model, Image3F* opsin) {
       const auto in_g = half * (vy - vx);
       const auto in_r = half * (vy + vx);
       const auto clamped_g =
-          clamp(in_g, set1(d, -kXybRange[1]), set1(d, kXybRange[1]));
+          clamp(in_g, set1(d, -kXybRadius[1]), set1(d, kXybRadius[1]));
       const auto clamped_r =
-          clamp(in_r, set1(d, -kXybRange[1]), set1(d, kXybRange[1]));
-      const auto noise_strength_g =
-          NoiseStrength(noise_model, clamped_g + set1(d, kXybCenter[1]));
-      const auto noise_strength_r =
-          NoiseStrength(noise_model, clamped_r + set1(d, kXybCenter[1]));
+          clamp(in_r, set1(d, -kXybRadius[1]), set1(d, kXybRadius[1]));
+      const auto noise_strength_g = NoiseStrength(noise_model, clamped_g);
+      const auto noise_strength_r = NoiseStrength(noise_model, clamped_r);
       const auto addit_rnd_noise_red = load(d, row_rnd_r + x) * norm_const;
       const auto addit_rnd_noise_green = load(d, row_rnd_g + x) * norm_const;
       const auto addit_rnd_noise_correlated =
@@ -284,8 +345,8 @@ SIMD_ATTR float MaxAbsError(const NoiseParams& noise_params,
   const StrengthEvalPow eval_pow(noise_params);
 
   float max_abs_err = 0.0f;
-  const float x0 = -kXybRange[1] + kXybCenter[1];
-  const float x1 = kXybRange[1] + kXybCenter[1];
+  const float x0 = -kXybRadius[1] + kXybCenter[1];
+  const float x1 = kXybRadius[1] + kXybCenter[1];
   for (float x = x0; x < x1; x += 1E-1f) {
     const Scalar<float> d1;
     const SIMD_FULL(float) d;
@@ -462,8 +523,7 @@ bool DecodeNoise(BitReader* br, NoiseParams* noise_params) {
   } else {
     noise_params->alpha = noise_params->gamma = noise_params->beta = 0.0f;
   }
-  br->JumpToByteBoundary();
-  return true;
+  return br->JumpToByteBoundary();
 }
 
 void OptimizeNoiseParameters(const std::vector<NoiseLevel>& noise_level,
@@ -545,7 +605,7 @@ std::vector<NoiseLevel> GetNoiseLevel(
         for (int y_bl = 0; y_bl < block_s; ++y_bl) {
           for (int x_bl = 0; x_bl < block_s; ++x_bl) {
             mean_int += 0.5f * (opsin.PlaneRow(1, y + y_bl)[x + x_bl] +
-                               opsin.PlaneRow(0, y + y_bl)[x + x_bl]);
+                                opsin.PlaneRow(0, y + y_bl)[x + x_bl]);
           }
         }
         mean_int /= block_s * block_s;

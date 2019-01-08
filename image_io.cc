@@ -544,10 +544,9 @@ Status ReadPNGImage(const std::string& pathname, const int bias,
 
 }  // namespace
 
-// Adds alpha channel to the output image only if a non-opaque pixel is present.
 template <typename T>
-Status ReadPNGMetaImage(const std::string& pathname, const int bias,
-                        MetaImage<T>* image) {
+Status ReadPNGImage3(const std::string& pathname, const int bias,
+                     Image3<T>* image) {
   PngReader reader(pathname);
   size_t xsize, ysize, num_planes, bit_depth;
   PIK_RETURN_IF_ERROR(
@@ -559,7 +558,7 @@ Status ReadPNGMetaImage(const std::string& pathname, const int bias,
     return PIK_FAILURE("Wrong bit-depth");
   }
 
-  image->SetColor(Image3<T>(xsize, ysize));
+  *image = Image3<T>(xsize, ysize);
   const std::vector<uint8_t>& raw = reader.Read(num_planes, bit_depth);
   const size_t stride = bit_depth / kBitsPerByte;
   const size_t bytes_per_row = xsize * num_planes * stride;
@@ -568,9 +567,9 @@ Status ReadPNGMetaImage(const std::string& pathname, const int bias,
   if (num_planes == 1) {
     for (size_t y = 0; y < ysize; ++y) {
       const uint8_t* PIK_RESTRICT row_in = raw.data() + y * bytes_per_row;
-      T* PIK_RESTRICT row0 = image->GetColor().PlaneRow(0, y);
-      T* PIK_RESTRICT row1 = image->GetColor().PlaneRow(1, y);
-      T* PIK_RESTRICT row2 = image->GetColor().PlaneRow(2, y);
+      T* PIK_RESTRICT row0 = image->PlaneRow(0, y);
+      T* PIK_RESTRICT row1 = image->PlaneRow(1, y);
+      T* PIK_RESTRICT row2 = image->PlaneRow(2, y);
       if (stride == 1) {
         for (size_t x = 0; x < xsize; ++x) {
           row0[x] = row1[x] = row2[x] = ReadFromU8<T>(&row_in[x], bias);
@@ -583,47 +582,28 @@ Status ReadPNGMetaImage(const std::string& pathname, const int bias,
       }
     }
   } else if (num_planes == 2) {
-    uint16_t alpha_masked = 65535;
     for (size_t y = 0; y < ysize; ++y) {
       const uint8_t* PIK_RESTRICT row_in = raw.data() + y * bytes_per_row;
-      T* PIK_RESTRICT row0 = image->GetColor().PlaneRow(0, y);
-      T* PIK_RESTRICT row1 = image->GetColor().PlaneRow(1, y);
-      T* PIK_RESTRICT row2 = image->GetColor().PlaneRow(2, y);
+      T* PIK_RESTRICT row0 = image->PlaneRow(0, y);
+      T* PIK_RESTRICT row1 = image->PlaneRow(1, y);
+      T* PIK_RESTRICT row2 = image->PlaneRow(2, y);
       if (stride == 1) {
         for (size_t x = 0; x < xsize; ++x) {
           row0[x] = row1[x] = row2[x] = ReadFromU8<T>(&row_in[2 * x + 0], bias);
-          alpha_masked &= row_in[2 * x + 1];
         }
       } else {
         for (size_t x = 0; x < xsize; ++x) {
           row0[x] = row1[x] = row2[x] =
               ReadFromU16<T>(&row_in[stride * (2 * x + 0)], bias);
-          alpha_masked &= row_in[stride * (2 * x + 1)];
-        }
-      }
-    }
-    if (alpha_masked != (stride == 1 ? 255 : 65535)) {
-      image->AddAlpha(stride * 8);
-      for (size_t y = 0; y < ysize; ++y) {
-        const uint8_t* PIK_RESTRICT row_in = raw.data() + y * bytes_per_row;
-        uint16_t* PIK_RESTRICT row = image->GetAlpha().Row(y);
-        if (stride == 1) {
-          for (size_t x = 0; x < xsize; ++x) {
-            row[x] = row_in[2 * x + 1];
-          }
-        } else {
-          for (size_t x = 0; x < xsize; ++x) {
-            row[x] = ReadFromU16<uint16_t>(&row_in[stride * (2 * x + 1)], 0);
-          }
         }
       }
     }
   } else if (num_planes == 3) {
     for (size_t y = 0; y < ysize; ++y) {
       const uint8_t* PIK_RESTRICT row_in = raw.data() + y * bytes_per_row;
-      T* PIK_RESTRICT row0 = image->GetColor().PlaneRow(0, y);
-      T* PIK_RESTRICT row1 = image->GetColor().PlaneRow(1, y);
-      T* PIK_RESTRICT row2 = image->GetColor().PlaneRow(2, y);
+      T* PIK_RESTRICT row0 = image->PlaneRow(0, y);
+      T* PIK_RESTRICT row1 = image->PlaneRow(1, y);
+      T* PIK_RESTRICT row2 = image->PlaneRow(2, y);
       if (stride == 1) {
         for (size_t x = 0; x < xsize; ++x) {
           row0[x] = ReadFromU8<T>(&row_in[3 * x + 0], bias);
@@ -639,58 +619,27 @@ Status ReadPNGMetaImage(const std::string& pathname, const int bias,
       }
     }
   } else /* if (num_planes == 4) */ {
-    uint16_t alpha_masked = 65535;
     for (size_t y = 0; y < ysize; ++y) {
       const uint8_t* PIK_RESTRICT row_in = raw.data() + y * bytes_per_row;
-      T* PIK_RESTRICT row0 = image->GetColor().PlaneRow(0, y);
-      T* PIK_RESTRICT row1 = image->GetColor().PlaneRow(1, y);
-      T* PIK_RESTRICT row2 = image->GetColor().PlaneRow(2, y);
+      T* PIK_RESTRICT row0 = image->PlaneRow(0, y);
+      T* PIK_RESTRICT row1 = image->PlaneRow(1, y);
+      T* PIK_RESTRICT row2 = image->PlaneRow(2, y);
       if (stride == 1) {
         for (size_t x = 0; x < xsize; ++x) {
           row0[x] = ReadFromU8<T>(&row_in[4 * x + 0], bias);
           row1[x] = ReadFromU8<T>(&row_in[4 * x + 1], bias);
           row2[x] = ReadFromU8<T>(&row_in[4 * x + 2], bias);
-          alpha_masked &= row_in[4 * x + 3];
         }
       } else {
         for (size_t x = 0; x < xsize; ++x) {
           row0[x] = ReadFromU16<T>(&row_in[stride * (4 * x + 0)], bias);
           row1[x] = ReadFromU16<T>(&row_in[stride * (4 * x + 1)], bias);
           row2[x] = ReadFromU16<T>(&row_in[stride * (4 * x + 2)], bias);
-          alpha_masked &= ReadFromU16<T>(&row_in[stride * (4 * x + 3)], bias);
-        }
-      }
-    }
-    if (alpha_masked != (stride == 1 ? 255 : 65535)) {
-      image->AddAlpha(stride * 8);
-      for (size_t y = 0; y < ysize; ++y) {
-        const uint8_t* PIK_RESTRICT row_in = raw.data() + y * bytes_per_row;
-        uint16_t* PIK_RESTRICT row = image->GetAlpha().Row(y);
-        if (stride == 1) {
-          for (size_t x = 0; x < xsize; ++x) {
-            row[x] = row_in[4 * x + 3];
-          }
-        } else {
-          for (size_t x = 0; x < xsize; ++x) {
-            row[x] = ReadFromU16<uint16_t>(&row_in[stride * (4 * x + 3)], 0);
-          }
         }
       }
     }
   }
 
-  return true;
-}
-
-template <typename T>
-bool ReadPNGImage3(const std::string& pathname, const int bias,
-                   Image3<T>* image) {
-  MetaImage<T> meta;
-  PIK_RETURN_IF_ERROR(ReadPNGMetaImage(pathname, bias, &meta));
-  if (meta.HasAlpha()) {
-    return PIK_FAILURE("Translucent PNG not supported");
-  }
-  *image = std::move(meta.GetColor());
   return true;
 }
 
@@ -718,24 +667,11 @@ bool ReadImage(ImageFormatPNG, const std::string& pathname, Image3U* image) {
   return ReadPNGImage3(pathname, 0, image);
 }
 
-bool ReadImage(ImageFormatPNG, const std::string& pathname, MetaImageB* image) {
-  return ReadPNGMetaImage(pathname, 0, image);
-}
-
-bool ReadImage(ImageFormatPNG, const std::string& pathname, MetaImageU* image) {
-  return ReadPNGMetaImage(pathname, 0, image);
-}
-
 namespace {
 
 // Allocates an internal buffer for 16-bit pixels in WriteHeader => not
 // thread-safe, and cannot reuse for multiple images with different sizes.
 class PngWriter {
-  template <typename T>
-  static size_t NumPlanes(const MetaImage<T>& image) {
-    return image.HasAlpha() ? 4 : 3;
-  }
-
   template <typename T>
   static size_t NumPlanes(const Image<T>& image) {
     return 1;
@@ -775,27 +711,6 @@ class PngWriter {
     }
   }
 
-  PIK_INLINE void WriteRow(const MetaImageB& image, const size_t y) {
-    const uint8_t* PIK_RESTRICT row0 = image.GetColor().ConstPlaneRow(0, y);
-    const uint8_t* PIK_RESTRICT row1 = image.GetColor().ConstPlaneRow(1, y);
-    const uint8_t* PIK_RESTRICT row2 = image.GetColor().ConstPlaneRow(2, y);
-    if (num_planes_ == 4) {
-      const uint16_t* PIK_RESTRICT row_alpha = image.GetAlpha().Row(y);
-      for (size_t x = 0; x < xsize_; ++x) {
-        pos_[4 * x + 0] = row0[x];
-        pos_[4 * x + 1] = row1[x];
-        pos_[4 * x + 2] = row2[x];
-        pos_[4 * x + 3] = row_alpha[x] & 255;
-      }
-    } else {
-      for (size_t x = 0; x < xsize_; ++x) {
-        pos_[3 * x + 0] = row0[x];
-        pos_[3 * x + 1] = row1[x];
-        pos_[3 * x + 2] = row2[x];
-      }
-    }
-  }
-
   void WriteRow(const ImageS& image, const size_t y) {
     const int16_t* PIK_RESTRICT row = image.ConstRow(y);
     for (size_t x = 0; x < xsize_; ++x) {
@@ -814,27 +729,6 @@ class PngWriter {
     }
   }
 
-  void WriteRow(const MetaImageS& image, const size_t y) {
-    const int16_t* PIK_RESTRICT row0 = image.GetColor().ConstPlaneRow(0, y);
-    const int16_t* PIK_RESTRICT row1 = image.GetColor().ConstPlaneRow(1, y);
-    const int16_t* PIK_RESTRICT row2 = image.GetColor().ConstPlaneRow(2, y);
-    if (num_planes_ == 4) {
-      const uint16_t* PIK_RESTRICT row_alpha = image.GetAlpha().Row(y);
-      for (size_t x = 0; x < xsize_; ++x) {
-        StoreUnsignedBigEndian(row0[x], pos_ + 8 * x + 0);
-        StoreUnsignedBigEndian(row1[x], pos_ + 8 * x + 2);
-        StoreUnsignedBigEndian(row2[x], pos_ + 8 * x + 4);
-        StoreUnsignedBigEndian(row_alpha[x], pos_ + 8 * x + 6);
-      }
-    } else {
-      for (size_t x = 0; x < xsize_; ++x) {
-        StoreUnsignedBigEndian(row0[x], pos_ + 6 * x + 0);
-        StoreUnsignedBigEndian(row1[x], pos_ + 6 * x + 2);
-        StoreUnsignedBigEndian(row2[x], pos_ + 6 * x + 4);
-      }
-    }
-  }
-
   void WriteRow(const ImageU& image, const size_t y) {
     const uint16_t* PIK_RESTRICT row = image.ConstRow(y);
     for (size_t x = 0; x < xsize_; ++x) {
@@ -850,27 +744,6 @@ class PngWriter {
       StoreUnsignedBigEndian(row0[x], pos_ + 6 * x + 0);
       StoreUnsignedBigEndian(row1[x], pos_ + 6 * x + 2);
       StoreUnsignedBigEndian(row2[x], pos_ + 6 * x + 4);
-    }
-  }
-
-  void WriteRow(const MetaImageU& image, const size_t y) {
-    const uint16_t* PIK_RESTRICT row0 = image.GetColor().ConstPlaneRow(0, y);
-    const uint16_t* PIK_RESTRICT row1 = image.GetColor().ConstPlaneRow(1, y);
-    const uint16_t* PIK_RESTRICT row2 = image.GetColor().ConstPlaneRow(2, y);
-    if (num_planes_ == 4) {
-      const uint16_t* PIK_RESTRICT row_alpha = image.GetAlpha().Row(y);
-      for (size_t x = 0; x < xsize_; ++x) {
-        StoreUnsignedBigEndian(row0[x], pos_ + 8 * x + 0);
-        StoreUnsignedBigEndian(row1[x], pos_ + 8 * x + 2);
-        StoreUnsignedBigEndian(row2[x], pos_ + 8 * x + 4);
-        StoreUnsignedBigEndian(row_alpha[x], pos_ + 8 * x + 6);
-      }
-    } else {
-      for (size_t x = 0; x < xsize_; ++x) {
-        StoreUnsignedBigEndian(row0[x], pos_ + 6 * x + 0);
-        StoreUnsignedBigEndian(row1[x], pos_ + 6 * x + 2);
-        StoreUnsignedBigEndian(row2[x], pos_ + 6 * x + 4);
-      }
     }
   }
 
@@ -947,16 +820,6 @@ bool WriteImage(ImageFormatPNG, const Image3S& image3,
 bool WriteImage(ImageFormatPNG, const Image3U& image3,
                 const std::string& pathname) {
   return WritePNGImage(image3, pathname);
-}
-
-bool WriteImage(ImageFormatPNG, const MetaImageB& image,
-                const std::string& pathname) {
-  return WritePNGImage(image, pathname);
-}
-
-bool WriteImage(ImageFormatPNG, const MetaImageU& image,
-                const std::string& pathname) {
-  return WritePNGImage(image, pathname);
 }
 
 #if ENABLE_JPEG

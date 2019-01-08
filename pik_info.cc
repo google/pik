@@ -3,7 +3,7 @@
 namespace pik {
 
 void PikInfo::DumpCoeffImage(const char* label,
-                    const Image3S& coeff_image) const {
+                             const Image3S& coeff_image) const {
   PIK_ASSERT(coeff_image.xsize() % 64 == 0);
   Image3S reshuffled(coeff_image.xsize() / 8, coeff_image.ysize() * 8);
   for (int c = 0; c < 3; c++) {

@@ -14,102 +14,105 @@
 
 #include "adaptive_quantization.h"
 
-#include <string.h>
 #include <algorithm>
 #include <cmath>
 #include <vector>
-
-#ifdef ROI_DETECTOR_OPENCV
-#include "roi_detector_opencv.h"
-#endif
+#include "ac_strategy.h"
 
 #undef PROFILER_ENABLED
 #define PROFILER_ENABLED 1
 #include "approx_cube_root.h"
+#include "butteraugli_comparator.h"
 #include "common.h"
 #include "compiler_specific.h"
-#include "gauss_blur.h"
-#include "profiler.h"
-#include "status.h"
+#include "compressed_image.h"
 #include "dct.h"
 #include "entropy_coder.h"
+#include "gauss_blur.h"
+#include "opsin_inverse.h"
+#include "profiler.h"
+#include "status.h"
+
+bool FLAGS_log_search_state = false;
+// If true, prints the quantization maps at each iteration.
+bool FLAGS_dump_quant_state = false;
 
 namespace pik {
 namespace {
 
-static const float kQuant64[64] = {
-  0.0,
-  0.7,
-  0.7,
-  0.7,
-  0.7,
-  0.588994181958768,
-  0.637412731903807,
-  0.658265403732354,
-  0.664184545211087,
-  0.489557940162741,
-  0.441809196703547,
-  0.466519636930879,
-  0.508335971631046,
-  0.501624976604618,
-  0.447903166596090,
-  0.487108568611555,
-  0.457498177649116,
-  0.452848682971061,
-  0.490734792977206,
-  0.443057415317534,
-  0.392141167751584,
-  0.358316869050728,
-  0.418207067977596,
-  0.467858769794496,
-  0.443549876397044,
-  0.427476997048851,
-  0.356915568577037,
-  0.303161982522844,
-  0.363256217129902,
-  0.352611929358839,
-  0.418999909922867,
-  0.398691116916629,
-  0.377526872102006,
-  0.352326109479318,
-  0.308206968728254,
-  0.280093699425257,
-  0.304147527622546,
-  0.359202623799680,
-  0.339645164723791,
-  0.349585237941005,
-  0.386203903613304,
-  0.353582036654603,
-  0.305955548639682,
-  0.365259530060446,
-  0.333159510814334,
-  0.363133568767434,
-  0.334161790012618,
-  0.389194124900511,
-  0.349326306148990,
-  0.390310895605386,
-  0.408666924454222,
-  0.335930464190049,
-  0.359313000261458,
-  0.381109877480420,
-  0.392933763109596,
-  0.359529015172913,
-  0.347676628893596,
-  0.370974565818013,
-  0.350361463992334,
-  0.338064798002449,
-  0.336743523710490,
-  0.296631529585931,
-  0.304517245589665,
-  0.302956514467806,
+static const double kQuant64[64] = {
+    0.0,
+    0.81251985351382217,
+    0.81251985351382217,
+    3.460364240025692,
+    3.460364240025692,
+    3.24478652961692,
+    3.2932050795619587,
+    3.2773870962477889,
+    3.2833062377265221,
+    0.86300641731251715,
+    0.81525767385332304,
+    2.509455259261768,
+    2.5512715939619355,
+    1.1009460471286041,
+    1.0472242371200757,
+    1.2132776894507991,
+    1.1836672984883603,
+    2.0934299406343144,
+    2.1313160506404598,
+    0.89190317505002714,
+    0.840986927484077,
+    0.70197816830313797,
+    0.76186836723000584,
+    1.3680171732844342,
+    1.3437082798869822,
+    1.2470683713759048,
+    1.1765069429040906,
+    0.35169288065810422,
+    0.41178711526516226,
+    0.53498575397594228,
+    0.60137373453997023,
+    0.70810156203993546,
+    0.68693731722531248,
+    0.27052366537985795,
+    0.22640452462879396,
+    0.198291255325797,
+    0.22234508352308596,
+    0.30485790798913998,
+    0.28530044891325101,
+    0.29524052213046498,
+    0.33185918780276397,
+    0.353582036654603,
+    0.305955548639682,
+    0.365259530060446,
+    0.333159510814334,
+    0.363133568767434,
+    0.334161790012618,
+    0.389194124900511,
+    0.349326306148990,
+    0.390310895605386,
+    0.408666924454222,
+    0.335930464190049,
+    0.359313000261458,
+    0.381109877480420,
+    0.392933763109596,
+    0.359529015172913,
+    0.347676628893596,
+    0.370974565818013,
+    0.350361463992334,
+    0.338064798002449,
+    0.336743523710490,
+    0.296631529585931,
+    0.304517245589665,
+    0.302956514467806,
 };
 
 // Increase precision in 8x8 blocks that are complicated in DCT space.
 SIMD_ATTR void DctModulation(const ImageF& xyb, ImageF* out) {
   PIK_ASSERT((xyb.xsize() + 7) / 8 == out->xsize());
   PIK_ASSERT((xyb.ysize() + 7) / 8 == out->ysize());
-  const int32_t* natural_coeff_order = NaturalCoeffOrder<8>();
-  float dct_rescale[64] = { 0 };
+  const int32_t* natural_coeff_order = NaturalCoeffOrder();
+  float dct_rescale[64] = {0};
   {
     const float* dct_scale = DCTScales<8>();
     for (int i = 0; i < 64; ++i) {
@@ -119,14 +122,16 @@ SIMD_ATTR void DctModulation(const ImageF& xyb, ImageF* out) {
   for (int y = 0; y < xyb.ysize(); y += 8) {
     float* const PIK_RESTRICT row_out = out->Row(y / 8);
     for (int x = 0; x < xyb.xsize(); x += 8) {
-      SIMD_ALIGN float dct[64] = { 0 };
-      for (int dy = 0; dy < 8 && y + dy < xyb.ysize(); ++dy) {
-        const float* const PIK_RESTRICT row_in = xyb.Row(y + dy);
-        for (int dx = 0; dx < 8 && x + dx < xyb.xsize(); ++dx) {
-          dct[dy * 8 + dx] = row_in[x + dx];
+      SIMD_ALIGN float dct[64] = {0};
+      for (int dy = 0; dy < 8; ++dy) {
+        int yclamp = std::min<int>(y + dy, xyb.ysize() - 1);
+        const float* const PIK_RESTRICT row_in = xyb.Row(yclamp);
+        for (int dx = 0; dx < 8; ++dx) {
+          int xclamp = std::min<int>(x + dx, xyb.xsize() - 1);
+          dct[dy * 8 + dx] = row_in[xclamp];
         }
       }
-      ComputeTransposedScaledDCT<8>(FromBlock<8>(dct), ToBlock<8>(dct));
+      ComputeTransposedScaledDCT<8>()(FromBlock<8>(dct), ToBlock<8>(dct));
       double entropyQL2 = 0;
       double entropyQL4 = 0;
       double entropyQL8 = 0;
@@ -135,71 +140,30 @@ SIMD_ATTR void DctModulation(const ImageF& xyb, ImageF* out) {
         const float scale = dct_rescale[i];
         double v = dct[i] * scale;
         v *= v;
-        entropyQL2 += kQuant64[k] * v;
+        static const double kPow = 2.0342324068208075;
+        double q = pow(kQuant64[k], kPow);
+        entropyQL2 += q * v;
         v *= v;
-        entropyQL4 += kQuant64[k] * v;
+        entropyQL4 += q * v;
         v *= v;
-        entropyQL8 += kQuant64[k] * v;
+        entropyQL8 += q * v;
       }
       entropyQL2 = std::sqrt(entropyQL2);
       entropyQL4 = std::sqrt(std::sqrt(entropyQL4));
       entropyQL8 = std::pow(entropyQL8, 0.125);
-      static const double mulQL2 = 5.1517782096782501;
-      static const double mulQL4 = -13.190159830831263;
-      static const double mulQL8 = 2.128400445818913;
+      static const double mulQL2 = -0.00072185944355851461;
+      static const double mulQL4 = -1.2720066904790563;
+      static const double mulQL8 = 0.67396125167218279;
       double v =
           mulQL2 * entropyQL2 + mulQL4 * entropyQL4 + mulQL8 * entropyQL8;
-      if (v < 0.7) { v = 0.7; }
-      double kMul = -0.86029879634002482;
-      row_out[x / 8] *= exp(kMul * v);
-    }
-  }
-}
-
-void ChessboardModulation(ImageF *out) {
-  static const double kChessMul[4] = {
-    0.93821798758260999,
-    0.94169713626559881,
-    0.89448558048418603,
-    0.90271064414242019,
-  };
-  for (int y = 0; y < out->ysize(); ++y) {
-    float* const PIK_RESTRICT row = out->Row(y);
-    for (int x = 0; x < out->xsize(); ++x) {
-      int index = (y & 1) * 2 + (x & 1);
-      row[x] *= kChessMul[index];
-    }
-  }
-}
-
-void BorderModulation(ImageF *out) {
-  static const float kCornerMul = 0.60403817140618821;
-  static const float kBorderMul = 1.014011300252267;
-  static const int first_column = 0;
-  const int last_column = out->xsize() - 1;
-  {
-    float* const PIK_RESTRICT first_row = out->Row(0);
-    float* const PIK_RESTRICT last_row = out->Row(out->ysize() - 1);
-    for (int x = 1; x + 1 < out->xsize(); ++x) {
-      first_row[x] *= kBorderMul;
-      last_row[x] *= kBorderMul;
-    }
-    first_row[first_column] *= kCornerMul;
-    first_row[last_column] *= kCornerMul;
-    last_row[first_column] *= kCornerMul;
-    last_row[last_column] *= kCornerMul;
-  }
-  {
-    for (int y = 1; y + 1 < out->ysize(); ++y) {
-      float* const PIK_RESTRICT scan_row = out->Row(y);
-      scan_row[first_column] *= kBorderMul;
-      scan_row[last_column] *= kBorderMul;
+      double kMul = 1.2932505590583181;
+      row_out[x / 8] += kMul * v;
     }
   }
 }
 
 // Increase precision in 8x8 blocks that have high dynamic range.
-void RangeModulation(const ImageF& xyb, ImageF *out) {
+void RangeModulation(const ImageF& xyb, ImageF* out) {
   PIK_ASSERT((xyb.xsize() + 7) / 8 == out->xsize());
   PIK_ASSERT((xyb.ysize() + 7) / 8 == out->ysize());
   for (int y = 0; y < xyb.ysize(); y += 8) {
@@ -220,14 +184,14 @@ void RangeModulation(const ImageF& xyb, ImageF *out) {
         }
       }
       float range = maxval - minval;
-      static const double mul = -0.20531261192730726;
-      row_out[x / 8] *= exp(mul * range);
+      static const double mul = 0.29271759124131524;
+      row_out[x / 8] += mul * range;
     }
   }
 }
 
 // Change precision in 8x8 blocks that have high frequency content.
-void HfModulation(const ImageF& xyb, ImageF *out) {
+void HfModulation(const ImageF& xyb, ImageF* out) {
   PIK_ASSERT((xyb.xsize() + 7) / 8 == out->xsize());
   PIK_ASSERT((xyb.ysize() + 7) / 8 == out->ysize());
   for (int y = 0; y < xyb.ysize(); y += 8) {
@@ -255,86 +219,29 @@ void HfModulation(const ImageF& xyb, ImageF *out) {
       if (n != 0) {
         sum /= n;
       }
-      static const double kMul = -0.98595041351593005;
+      static const double kMul = 0.84278727957620747;
       sum *= kMul;
-      row_out[x / 8] *= exp(sum);
+      row_out[x / 8] += sum;
     }
   }
 }
 
-namespace {
-// Change precision in 8x8 blocks that intersect regions-of-interest.
-void ROIModulation(const ImageF& image_y,
-                   const CompressParams &cparams,
-                   ImageF *out) {
-#ifdef ROI_DETECTOR_OPENCV
-  if (cparams.roi_factor == 0.0f) {
-    return;
-  }
-  const size_t out_xsize = out->xsize();
-  const size_t out_ysize = out->ysize();
-  // These are the plane's reported x- and y-size.
-  // Since rows are padded, we also need to know bytes-per-row.
-  const size_t xsize = image_y.xsize();
-  const size_t ysize = image_y.ysize();
-  const auto img_bytes = image_y.bytes();
-  const size_t bytes_per_row = image_y.bytes_per_row();
-  HaarDetector roi_detector(
-      {"haarcascade_frontalface_default.xml",
-       "haarcascade_profileface.xml",
-       "haarcascade_eye.xml",
-      });
-  const auto& rois = roi_detector.Detect(
-      xsize, ysize, bytes_per_row, 2, (void*)(img_bytes));
-  // Using the ROIs.
-  auto roi_blocks = reinterpret_cast<unsigned char*>(
-      // TODO(user): Eliminate calloc() in favor of using ImageB.
-      calloc(out_xsize * out_ysize, sizeof(unsigned char)));
-  if (roi_blocks == nullptr) {
-    fprintf(stderr, "Memory allocation failure, not using ROI-Modulation.");
-    // Make sure this gets reported straightaway even if stderr was set
-    // to buffer.
-    fflush(stderr);
-    return;
-  }
-  int num_roi_blocks = 0;
-  for (const auto& roi: rois) {
-    const size_t ny_max = std::min(
-        out->ysize() - 1,
-        DivCeil<size_t>(roi.ypos + roi.height, kBlockDim));
-    const size_t nx_max = std::min(
-        out->xsize() - 1,
-        DivCeil<size_t>(roi.xpos + roi.width, kBlockDim));
-    for (int ny = roi.ypos / kBlockDim; ny <= ny_max; ++ny) {
-      for (int nx = roi.xpos / kBlockDim; nx <= nx_max; ++nx) {
-        roi_blocks[ny * out_xsize + nx] = 1;
-        num_roi_blocks += 1;
-      }
+// We want multiplicative quantization field, so everything until this
+// point has been modulating the exponent.
+void Exp(ImageF* out) {
+  for (int y = 0; y < out->ysize(); ++y) {
+    float* const PIK_RESTRICT row_out = out->Row(y);
+    for (int x = 0; x < out->xsize(); ++x) {
+      row_out[x] = exp(row_out[x]);
     }
   }
-  for (int ny = 0; ny < out_ysize; ++ny) {
-    float* const PIK_RESTRICT row_out = out->Row(ny);
-    for (int nx = 0; nx < out_xsize; ++nx) {
-      // For regions-of-interest, we actually have to multiply with something
-      // quite large.
-      double v = cparams.roi_factor * roi_blocks[ny * out_xsize + nx];
-      double kMul = -12.507848292533591;  // random guess
-      row_out[nx] *= exp(kMul * v);
-    }
-  }
-  printf("Fine-Tuned %d ROI-blocks (%.1f%%).\n",
-         num_roi_blocks, (100.0 * num_roi_blocks) / (out_xsize * out_ysize));
-  fflush(stdout);
-  free(roi_blocks);
-#endif
 }
-}  // namespace
 
 static double SimpleGamma(double v) {
   // A simple HDR compatible gamma function.
   // mul and mul2 represent a scaling difference between pik and butteraugli.
-  static const double mul = 105.3039258005453;
-  static const double mul2 = 1.0 / (79.565021396458519);
+  static const double mul = 103.21506721352836;
+  static const double mul2 = 1.0 / (67.982768085673044);
 
   v *= mul;
 
@@ -366,15 +273,15 @@ ImageF DiffPrecompute(const ImageF& xyb, float cutoff) {
   PIK_ASSERT(xyb.xsize() > 1);
   PIK_ASSERT(xyb.ysize() > 1);
   ImageF result(xyb.xsize(), xyb.ysize());
-  static const double mul0 = 0.021323897159710007;
+  static const double mul0 = 0.049643371246670773;
 
   // PIK's gamma is 3.0 to be able to decode faster with two muls.
   // Butteraugli's gamma is matching the gamma of human eye, around 2.6.
   // We approximate the gamma difference by adding one cubic root into
   // the adaptive quantization. This gives us a total gamma of 2.6666
   // for quantization uses.
-  static const double match_gamma_offset = 0.33206231924251833;
-  static const float kOverWeightBorders = 1.3;
+  static const double match_gamma_offset = 1.4439853629568109;
+  static const float kOverWeightBorders = 1.4;
   size_t x1, y1;
   size_t x2, y2;
   for (size_t y = 0; y + 1 < xyb.ysize(); ++y) {
@@ -411,13 +318,11 @@ ImageF DiffPrecompute(const ImageF& xyb, float cutoff) {
       } else {
         x1 = x;
       }
-      float diff = mul0 *
-          (fabs(row_in[x] - row_in[x2]) +
-           fabs(row_in[x] - row_in2[x]) +
-           fabs(row_in[x] - row_in[x1]) +
-           fabs(row_in[x] - row_in1[x]) +
-           3 * (fabs(row_in2[x] - row_in1[x]) +
-                fabs(row_in[x1] - row_in[x2])));
+      float diff =
+          mul0 *
+          (fabs(row_in[x] - row_in[x2]) + fabs(row_in[x] - row_in2[x]) +
+           fabs(row_in[x] - row_in[x1]) + fabs(row_in[x] - row_in1[x]) +
+           3 * (fabs(row_in2[x] - row_in1[x]) + fabs(row_in[x1] - row_in[x2])));
       diff *= RatioOfCubicRootToSimpleGamma(row_in[x] + match_gamma_offset);
       row_out[x] = std::min(cutoff, diff);
     }
@@ -451,81 +356,597 @@ ImageF DiffPrecompute(const ImageF& xyb, float cutoff) {
   return result;
 }
 
+// Expand the average of last three pixels to form a larger image.
 ImageF Expand(const ImageF& img, size_t out_xsize, size_t out_ysize) {
   PIK_ASSERT(img.xsize() > 0);
   PIK_ASSERT(img.ysize() > 0);
   ImageF out(out_xsize, out_ysize);
-  for (size_t y = 0; y < out_ysize; ++y) {
-    const float* const PIK_RESTRICT row_in =
-        y < img.ysize() ? img.Row(y) : out.Row(y - 1);
+  // Expand to columns on right.
+  for (size_t y = 0; y < img.ysize(); ++y) {
+    const float* const PIK_RESTRICT row_in = img.Row(y);
     float* const PIK_RESTRICT row_out = out.Row(y);
     memcpy(row_out, row_in, img.xsize() * sizeof(row_out[0]));
-    const float lastval = row_in[img.xsize() - 1];
+    float lastval = row_in[img.xsize() - 1];
+    if (img.xsize() >= 3) {
+      lastval += row_in[img.xsize() - 3];
+      lastval += row_in[img.xsize() - 2];
+      lastval *= (1.0 / 3);
+    } else if (img.xsize() >= 2) {
+      lastval += row_in[img.xsize() - 2];
+      lastval *= 0.5;
+    }
     for (size_t x = img.xsize(); x < out_xsize; ++x) {
       row_out[x] = lastval;
+    }
+  }
+  // Expand to rows at bottom.
+  if (img.ysize() != out_ysize) {
+    for (size_t x = 0; x < out_xsize; ++x) {
+      const size_t ys = img.ysize();
+      float lastval = out.Row(ys - 1)[x];
+      if (ys >= 3) {
+        lastval += out.Row(ys - 2)[x];
+        lastval += out.Row(ys - 3)[x];
+        lastval *= (1.0 / 3);
+      } else if (ys >= 2) {
+        lastval += out.Row(ys - 2)[x];
+        lastval *= 0.5;
+      }
+      for (size_t y = img.ysize(); y < out_ysize; ++y) {
+        out.Row(y)[x] = lastval;
+      }
     }
   }
   return out;
 }
 
 ImageF ComputeMask(const ImageF& diffs) {
-  static const float kBase = 0.57325257052582801;
-  static const float kMul1 = 0.0079468128384258541;
-  static const float kOffset1 = 0.0050013629254370999;
-  static const float kMul2 = -0.075232946798815287;
-  static const float kOffset2 = 0.22433469484556165;
+  static const float kBase = 1.1352029431638126;
+  static const float kMul1 = 0.011134087946508579;
+  static const float kOffset1 = 0.0070057082516685083;
+  static const float kMul2 = -0.20545785980711334;
+  static const float kOffset2 = 0.080407961356758706;
   ImageF out(diffs.xsize(), diffs.ysize());
   for (int y = 0; y < diffs.ysize(); ++y) {
     const float* const PIK_RESTRICT row_in = diffs.Row(y);
-    float * const PIK_RESTRICT row_out = out.Row(y);
+    float* const PIK_RESTRICT row_out = out.Row(y);
     for (int x = 0; x < diffs.xsize(); ++x) {
       const float val = row_in[x];
       // Avoid division by zero.
       double div = std::max<double>(val + kOffset1, 1e-3);
-      row_out[x] = kBase +
-          kMul1 / div +
-          kMul2 / (val * val + kOffset2);
+      row_out[x] = kBase + kMul1 / div + kMul2 / (val * val + kOffset2);
     }
   }
   return out;
 }
 
-ImageF SubsampleWithMax(const ImageF& in, int factor) {
-  PROFILER_ZONE("aq Subsample");
-  PIK_ASSERT(in.xsize() % factor == 0);
-  PIK_ASSERT(in.ysize() % factor == 0);
-  const size_t out_xsize = in.xsize() / factor;
-  const size_t out_ysize = in.ysize() / factor;
-  ImageF out(out_xsize, out_ysize);
-  for (size_t oy = 0; oy < out_ysize; ++oy) {
-    float* PIK_RESTRICT row_out = out.Row(oy);
-    for (size_t ox = 0; ox < out_xsize; ++ox) {
-      float maxval = 0.0f;
-      for (int iy = 0; iy < factor; ++iy) {
-        const float* PIK_RESTRICT row_in = in.Row(oy * factor + iy);
-        for (int ix = 0; ix < factor; ++ix) {
-          const float val = row_in[ox * factor + ix];
-          maxval = std::max(maxval, val);
+ImageF TileDistMap(const ImageF& distmap, int tile_size, int margin,
+                   const AcStrategyImage& ac_strategy) {
+  PROFILER_FUNC;
+  const int tile_xsize = (distmap.xsize() + tile_size - 1) / tile_size;
+  const int tile_ysize = (distmap.ysize() + tile_size - 1) / tile_size;
+  ImageF tile_distmap(tile_xsize, tile_ysize);
+  size_t distmap_stride = tile_distmap.PixelsPerRow();
+  for (int tile_y = 0; tile_y < tile_ysize; ++tile_y) {
+    AcStrategyRow ac_strategy_row = ac_strategy.ConstRow(tile_y);
+    float* PIK_RESTRICT dist_row = tile_distmap.Row(tile_y);
+    for (int tile_x = 0; tile_x < tile_xsize; ++tile_x) {
+      AcStrategy acs = ac_strategy_row[tile_x];
+      if (!acs.IsFirstBlock()) continue;
+      int this_tile_xsize = acs.covered_blocks_x() * tile_size;
+      int this_tile_ysize = acs.covered_blocks_y() * tile_size;
+      int y_begin = std::max<int>(0, tile_size * tile_y - margin);
+      int y_end = std::min<int>(distmap.ysize(),
+                                tile_size * tile_y + this_tile_ysize + margin);
+      int x_begin = std::max<int>(0, tile_size * tile_x - margin);
+      int x_end = std::min<int>(distmap.xsize(),
+                                tile_size * tile_x + this_tile_xsize + margin);
+      float dist_norm = 0.0;
+      double pixels = 0;
+      for (int y = y_begin; y < y_end; ++y) {
+        float ymul = 1.0;
+        static const float kBorderMul = 0.98f;
+        static const float kCornerMul = 0.7f;
+        if (margin != 0 && (y == y_begin || y == y_end - 1)) {
+          ymul = kBorderMul;
+        }
+        const float* const PIK_RESTRICT row = distmap.Row(y);
+        for (int x = x_begin; x < x_end; ++x) {
+          float xmul = ymul;
+          if (margin != 0 && (x == x_begin || x == x_end - 1)) {
+            if (xmul == 1.0) {
+              xmul = kBorderMul;
+            } else {
+              xmul = kCornerMul;
+            }
+          }
+          float v = row[x];
+          v *= v;
+          v *= v;
+          v *= v;
+          v *= v;
+          dist_norm += xmul * v;
+          pixels += xmul;
         }
       }
-      row_out[ox] = maxval;
+      if (pixels == 0) pixels = 1;
+      // 16th norm is less than the max norm, we reduce the difference
+      // with this normalization factor.
+      static const double kTileNorm = 1.2;
+      const double tile_dist = kTileNorm * pow(dist_norm / pixels, 1.0 / 16);
+      dist_row[tile_x] = tile_dist;
+      for (size_t iy = 0; iy < acs.covered_blocks_y(); iy++) {
+        for (size_t ix = 0; ix < acs.covered_blocks_x(); ix++) {
+          dist_row[tile_x + distmap_stride * iy + ix] = tile_dist;
+        }
+      }
     }
   }
-  return out;
+  return tile_distmap;
+}
+
+ImageF DistToPeakMap(const ImageF& field, float peak_min, int local_radius,
+                     float peak_weight) {
+  ImageF result(field.xsize(), field.ysize());
+  FillImage(-1.0f, &result);
+  for (int y0 = 0; y0 < field.ysize(); ++y0) {
+    for (int x0 = 0; x0 < field.xsize(); ++x0) {
+      int x_min = std::max(0, x0 - local_radius);
+      int y_min = std::max(0, y0 - local_radius);
+      int x_max = std::min<int>(field.xsize(), x0 + 1 + local_radius);
+      int y_max = std::min<int>(field.ysize(), y0 + 1 + local_radius);
+      float local_max = peak_min;
+      for (int y = y_min; y < y_max; ++y) {
+        for (int x = x_min; x < x_max; ++x) {
+          local_max = std::max(local_max, field.Row(y)[x]);
+        }
+      }
+      if (field.Row(y0)[x0] >
+          (1.0f - peak_weight) * peak_min + peak_weight * local_max) {
+        for (int y = y_min; y < y_max; ++y) {
+          for (int x = x_min; x < x_max; ++x) {
+            float dist = std::max(std::abs(y - y0), std::abs(x - x0));
+            float cur_dist = result.Row(y)[x];
+            if (cur_dist < 0.0 || cur_dist > dist) {
+              result.Row(y)[x] = dist;
+            }
+          }
+        }
+      }
+    }
+  }
+  return result;
+}
+
+bool AdjustQuantVal(float* const PIK_RESTRICT q, const float d,
+                    const float factor, const float quant_max) {
+  if (*q >= 0.999f * quant_max) return false;
+  const float inv_q = 1.0f / *q;
+  const float adj_inv_q = inv_q - factor / (d + 1.0f);
+  *q = 1.0f / std::max(1.0f / quant_max, adj_inv_q);
+  return true;
+}
+
+void DumpHeatmap(const PikInfo* info, const std::string& label,
+                 const ImageF& image, float good_threshold,
+                 float bad_threshold) {
+  Image3B heatmap =
+      butteraugli::CreateHeatMapImage(image, good_threshold, bad_threshold);
+  char filename[200];
+  snprintf(filename, sizeof(filename), "%s%05d", label.c_str(),
+           info->num_butteraugli_iters);
+  info->DumpImage(filename, heatmap);
+}
+
+void DumpHeatmaps(const PikInfo* info, float ba_target,
+                  const ImageF& quant_field, const ImageF& tile_heatmap) {
+  if (!WantDebugOutput(info)) return;
+  ImageF inv_qmap(quant_field.xsize(), quant_field.ysize());
+  for (size_t y = 0; y < quant_field.ysize(); ++y) {
+    const float* PIK_RESTRICT row_q = quant_field.ConstRow(y);
+    float* PIK_RESTRICT row_inv_q = inv_qmap.Row(y);
+    for (size_t x = 0; x < quant_field.xsize(); ++x) {
+      row_inv_q[x] = 1.0f / row_q[x];  // never zero
+    }
+  }
+  DumpHeatmap(info, "quant_heatmap", inv_qmap, 4.0f * ba_target,
+              6.0f * ba_target);
+  DumpHeatmap(info, "tile_heatmap", tile_heatmap, ba_target, 1.5f * ba_target);
+}
+
+void AdjustQuantField(const AcStrategyImage& ac_strategy, ImageF* quant_field) {
+  // Replace the whole quant_field in non-8x8 blocks with the maximum of each
+  // 8x8 block.
+  size_t stride = quant_field->PixelsPerRow();
+  for (size_t y = 0; y < quant_field->ysize(); ++y) {
+    AcStrategyRow ac_strategy_row = ac_strategy.ConstRow(y);
+    float* PIK_RESTRICT quant_row = quant_field->Row(y);
+    for (size_t x = 0; x < quant_field->xsize(); ++x) {
+      AcStrategy acs = ac_strategy_row[x];
+      PIK_ASSERT(x + acs.covered_blocks_x() <= quant_field->xsize());
+      PIK_ASSERT(y + acs.covered_blocks_y() <= quant_field->ysize());
+      float max = quant_row[x];
+      for (size_t iy = 0; iy < acs.covered_blocks_y(); iy++) {
+        for (size_t ix = 0; ix < acs.covered_blocks_x(); ix++) {
+          max = std::max(quant_row[x + ix + iy * stride], max);
+        }
+      }
+      for (size_t iy = 0; iy < acs.covered_blocks_y(); iy++) {
+        for (size_t ix = 0; ix < acs.covered_blocks_x(); ix++) {
+          quant_row[x + ix + iy * stride] = max;
+        }
+      }
+    }
+  }
+}
+
+static const float kDcQuantPow = 0.51334848288505397;
+static const float kDcQuant = 0.6920431110918609;
+static const float kAcQuant = 0.94080165407291261;
+
+void FindBestQuantization(const Image3F& opsin_orig, const Image3F& opsin_arg,
+                          const CompressParams& cparams,
+                          const PassHeader& pass_header,
+                          const GroupHeader& header, float butteraugli_target,
+                          const ColorCorrelationMap& cmap,
+                          const AcStrategyImage& ac_strategy,
+                          ImageF& quant_field, ThreadPool* pool,
+                          Quantizer* quantizer, PikInfo* aux_out,
+                          MultipassManager* multipass_manager, double rescale) {
+  const float intensity_multiplier = cparams.GetIntensityMultiplier();
+  const float intensity_multiplier3 = std::cbrt(intensity_multiplier);
+  ButteraugliComparator comparator(opsin_orig, cparams.hf_asymmetry,
+                                   intensity_multiplier);
+  const float butteraugli_target_dc =
+      std::min<float>(butteraugli_target, pow(butteraugli_target, kDcQuantPow));
+  const float initial_quant_dc =
+      intensity_multiplier3 * kDcQuant / butteraugli_target_dc;
+  AdjustQuantField(ac_strategy, &quant_field);
+  ImageF tile_distmap;
+  ImageF tile_distmap_localopt;
+  ImageF initial_quant_field = CopyImage(quant_field);
+  ImageF last_quant_field = CopyImage(initial_quant_field);
+  ImageF last_tile_distmap_localopt;
+
+  constexpr int kOriginalComparisonRound = 5;
+  constexpr float kMaximumDistanceIncreaseFactor = 1.015;
+  EncCache cache;
+  cache.use_new_dc = cparams.use_new_dc;
+  ComputeInitialCoefficients(pass_header, header, opsin_arg, &cache);
+  cache.ac_strategy = ac_strategy.Copy();
+
+  PassDecCache pass_dec_cache;
+  pass_dec_cache.ac_strategy = ac_strategy.Copy();
+  PIK_ASSERT(opsin_arg.ysize() % kBlockDim == 0);
+  pass_dec_cache.biases =
+      Image3F(opsin_arg.xsize() * kBlockDim, opsin_arg.ysize() / kBlockDim);
+
+  for (int i = 0; i < cparams.max_butteraugli_iters + 1; ++i) {
+    if (FLAGS_dump_quant_state) {
+      printf("\nQuantization field:\n");
+      for (int y = 0; y < quant_field.ysize(); ++y) {
+        for (int x = 0; x < quant_field.xsize(); ++x) {
+          printf(" %.5f", quant_field.Row(y)[x]);
+        }
+        printf("\n");
+      }
+    }
+
+    if (quantizer->SetQuantField(initial_quant_dc, QuantField(quant_field))) {
+      DecCache dec_cache;
+      ComputeCoefficients(*quantizer, cmap, pool, &cache, multipass_manager);
+      pass_dec_cache.raw_quant_field = CopyImage(cache.quant_field);
+      dec_cache.quantized_dc = std::move(cache.dc);
+      dec_cache.quantized_ac = std::move(cache.ac);
+      dec_cache.gradient = std::move(cache.gradient);
+      DequantImage(*quantizer, cmap, pool, &dec_cache, &pass_dec_cache,
+                   Rect(opsin_arg));
+      Image3F recon =
+          ReconOpsinImage(pass_header, header, *quantizer, Rect(quant_field),
+                          &dec_cache, &pass_dec_cache);
+      multipass_manager->RestoreOpsin(&recon);
+      multipass_manager->UpdateBiases(&pass_dec_cache.biases);
+      recon = FinalizePassDecoding(std::move(recon), pass_header, *quantizer,
+                                   &pass_dec_cache);
+      // Move the gradient back to the EncCache because it may reuse it in
+      // ComputeCoefficients next iteration depending on last_quant_dc_key
+      cache.gradient = std::move(dec_cache.gradient);
+
+      PROFILER_ZONE("enc Butteraugli");
+      Image3F linear(recon.xsize(), recon.ysize());
+      CopyImageTo(recon, &linear);
+      linear.ShrinkTo(opsin_orig.xsize(), opsin_orig.ysize());
+      OpsinToLinear(linear, pool, &linear);
+      comparator.Compare(linear);
+      static const int kMargins[100] = {0, 0, 0, 1, 2, 1, 1, 1, 0};
+      tile_distmap =
+          TileDistMap(comparator.distmap(), 8, kMargins[i], cache.ac_strategy);
+      tile_distmap_localopt =
+          TileDistMap(comparator.distmap(), 8, 2, cache.ac_strategy);
+      if (WantDebugOutput(aux_out)) {
+        DumpHeatmaps(aux_out, butteraugli_target, quant_field, tile_distmap);
+        ++aux_out->num_butteraugli_iters;
+      }
+      if (FLAGS_log_search_state) {
+        float minval, maxval;
+        ImageMinMax(quant_field, &minval, &maxval);
+        printf("\nButteraugli iter: %d/%d\n", i, cparams.max_butteraugli_iters);
+        printf("Butteraugli distance: %f\n", comparator.distance());
+        printf("quant range: %f ... %f  DC quant: %f\n", minval, maxval,
+               initial_quant_dc);
+        if (FLAGS_dump_quant_state) {
+          quantizer->DumpQuantizationMap();
+        }
+      }
+    }
+
+    if (i > kOriginalComparisonRound) {
+      // Undo last round if it made things worse (i.e. increased the quant value
+      // AND the distance in nearby pixels by at least some percentage).
+      for (size_t y = 0; y < quant_field.ysize(); ++y) {
+        float* const PIK_RESTRICT row_q = quant_field.Row(y);
+        const float* const PIK_RESTRICT row_dist = tile_distmap_localopt.Row(y);
+        const float* const PIK_RESTRICT row_last_dist =
+            last_tile_distmap_localopt.Row(y);
+        const float* const PIK_RESTRICT row_last_q = last_quant_field.Row(y);
+        for (size_t x = 0; x < quant_field.xsize(); ++x) {
+          if (row_q[x] > row_last_q[x] &&
+              row_dist[x] > kMaximumDistanceIncreaseFactor * row_last_dist[x]) {
+            row_q[x] = row_last_q[x];
+          }
+        }
+      }
+    }
+    last_quant_field = CopyImage(quant_field);
+    last_tile_distmap_localopt = CopyImage(tile_distmap_localopt);
+    if (i == cparams.max_butteraugli_iters) break;
+
+    double kPow[8] = {
+        0.97524596113492301,
+        1.0424361904568509,
+        0.64984804448911193,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    };
+    double kPowMod[8] = {
+        0.011236980155043978,
+        0.0061256294105472651,
+        -0.0030115055086858242,
+        0.06929488142351059,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    };
+    if (i == kOriginalComparisonRound) {
+      // Don't allow optimization to make the quant field a lot worse than
+      // what the initial guess was. This allows the AC field to have enough
+      // precision to reduce the oscillations due to the dc reconstruction.
+      double kInitMul = 0.6;
+      const double kOneMinusInitMul = 1.0 - kInitMul;
+      for (int y = 0; y < quant_field.ysize(); ++y) {
+        float* const PIK_RESTRICT row_q = quant_field.Row(y);
+        const float* const PIK_RESTRICT row_init = initial_quant_field.Row(y);
+        for (int x = 0; x < quant_field.xsize(); ++x) {
+          double clamp = kOneMinusInitMul * row_q[x] + kInitMul * row_init[x];
+          if (row_q[x] < clamp) {
+            row_q[x] = clamp;
+          }
+        }
+      }
+    }
+
+    double cur_pow = 0.0;
+    if (i < 7) {
+      cur_pow = kPow[i] + (butteraugli_target - 1.0) * kPowMod[i];
+      if (cur_pow < 0) {
+        cur_pow = 0;
+      }
+    }
+    // pow(x, 0) == 1, so skip pow.
+    if (cur_pow == 0.0) {
+      for (int y = 0; y < quant_field.ysize(); ++y) {
+        const float* const PIK_RESTRICT row_dist = tile_distmap.Row(y);
+        float* const PIK_RESTRICT row_q = quant_field.Row(y);
+        for (int x = 0; x < quant_field.xsize(); ++x) {
+          const float diff = row_dist[x] / butteraugli_target;
+          if (diff >= 1.0f) {
+            row_q[x] *= diff;
+          }
+        }
+      }
+    } else {
+      for (int y = 0; y < quant_field.ysize(); ++y) {
+        const float* const PIK_RESTRICT row_dist = tile_distmap.Row(y);
+        float* const PIK_RESTRICT row_q = quant_field.Row(y);
+        for (int x = 0; x < quant_field.xsize(); ++x) {
+          const float diff = row_dist[x] / butteraugli_target;
+          if (diff < 1.0f) {
+            row_q[x] *= pow(diff, cur_pow);
+          } else {
+            row_q[x] *= diff;
+          }
+        }
+      }
+    }
+  }
+  quantizer->SetQuantField(initial_quant_dc, QuantField(quant_field));
+}
+
+void FindBestQuantizationHQ(
+    const Image3F& opsin_orig, const Image3F& opsin,
+    const CompressParams& cparams, const PassHeader& pass_header,
+    const GroupHeader& header, float butteraugli_target,
+    const ColorCorrelationMap& cmap, const AcStrategyImage& ac_strategy,
+    ImageF& quant_field, ThreadPool* pool, Quantizer* quantizer,
+    PikInfo* aux_out, MultipassManager* multipass_manager, double rescale) {
+  const float intensity_multiplier = cparams.GetIntensityMultiplier();
+  const float intensity_multiplier3 = std::cbrt(intensity_multiplier);
+  ButteraugliComparator comparator(opsin_orig, cparams.hf_asymmetry,
+                                   intensity_multiplier);
+  AdjustQuantField(ac_strategy, &quant_field);
+  ImageF best_quant_field = CopyImage(quant_field);
+  float best_butteraugli = 1000.0f;
+  ImageF tile_distmap;
+  static const int kMaxOuterIters = 2;
+  int outer_iter = 0;
+  int butteraugli_iter = 0;
+  int search_radius = 0;
+  float quant_ceil = 5.0f;
+  float quant_dc = intensity_multiplier3 * 1.2f;
+  float best_quant_dc = quant_dc;
+  int num_stalling_iters = 0;
+  int max_iters = cparams.max_butteraugli_iters_guetzli_mode;
+  EncCache cache;
+  cache.use_new_dc = cparams.use_new_dc;
+  ComputeInitialCoefficients(pass_header, header, opsin, &cache);
+  cache.ac_strategy = ac_strategy.Copy();
+
+  PassDecCache pass_dec_cache;
+  pass_dec_cache.ac_strategy = ac_strategy.Copy();
+  PIK_ASSERT(opsin.ysize() % kBlockDim == 0);
+  pass_dec_cache.biases =
+      Image3F(opsin.xsize() * kBlockDim, opsin.ysize() / kBlockDim);
+
+  for (;;) {
+    if (FLAGS_dump_quant_state) {
+      printf("\nQuantization field:\n");
+      for (int y = 0; y < quant_field.ysize(); ++y) {
+        for (int x = 0; x < quant_field.xsize(); ++x) {
+          printf(" %.5f", quant_field.Row(y)[x]);
+        }
+        printf("\n");
+      }
+    }
+    float qmin, qmax;
+    ImageMinMax(quant_field, &qmin, &qmax);
+    ++butteraugli_iter;
+    if (quantizer->SetQuantField(quant_dc, QuantField(quant_field))) {
+      ComputeCoefficients(*quantizer, cmap, pool, &cache, multipass_manager);
+      DecCache dec_cache;
+      pass_dec_cache.raw_quant_field = CopyImage(cache.quant_field);
+      dec_cache.quantized_dc = std::move(cache.dc);
+      dec_cache.quantized_ac = std::move(cache.ac);
+      dec_cache.gradient = std::move(cache.gradient);
+      DequantImage(*quantizer, cmap, pool, &dec_cache, &pass_dec_cache,
+                   Rect(opsin));
+      Image3F recon =
+          ReconOpsinImage(pass_header, header, *quantizer, Rect(quant_field),
+                          &dec_cache, &pass_dec_cache);
+      multipass_manager->RestoreOpsin(&recon);
+      multipass_manager->UpdateBiases(&pass_dec_cache.biases);
+      recon = FinalizePassDecoding(std::move(recon), pass_header, *quantizer,
+                                   &pass_dec_cache);
+      // Move the gradient back to the EncCache because it may reuse it in
+      // ComputeCoefficients next iteration depending on last_quant_dc_key
+      cache.gradient = std::move(dec_cache.gradient);
+
+      PROFILER_ZONE("enc Butteraugli");
+      Image3F linear(recon.xsize(), recon.ysize());
+      CopyImageTo(recon, &linear);
+      linear.ShrinkTo(opsin_orig.xsize(), opsin_orig.ysize());
+      OpsinToLinear(linear, pool, &linear);
+      comparator.Compare(linear);
+      bool best_quant_updated = false;
+      if (comparator.distance() <= best_butteraugli) {
+        best_quant_field = CopyImage(quant_field);
+        best_butteraugli = std::max(comparator.distance(), butteraugli_target);
+        best_quant_updated = true;
+        best_quant_dc = quant_dc;
+        num_stalling_iters = 0;
+      } else if (outer_iter == 0) {
+        ++num_stalling_iters;
+      }
+      tile_distmap = TileDistMap(comparator.distmap(), 8, 0, ac_strategy);
+      if (WantDebugOutput(aux_out)) {
+        DumpHeatmaps(aux_out, butteraugli_target, quant_field, tile_distmap);
+      }
+      if (aux_out) {
+        ++aux_out->num_butteraugli_iters;
+      }
+      if (FLAGS_log_search_state) {
+        float minval, maxval;
+        ImageMinMax(quant_field, &minval, &maxval);
+        printf("\nButteraugli iter: %d/%d%s\n", butteraugli_iter, max_iters,
+               best_quant_updated ? " (*)" : "");
+        printf("Butteraugli distance: %f\n", comparator.distance());
+        printf(
+            "quant range: %f ... %f  DC quant: "
+            "%f\n",
+            minval, maxval, quant_dc);
+        printf("search radius: %d\n", search_radius);
+        if (FLAGS_dump_quant_state) {
+          quantizer->DumpQuantizationMap();
+        }
+      }
+    }
+    if (butteraugli_iter >= max_iters) {
+      break;
+    }
+    bool changed = false;
+    while (!changed && comparator.distance() > butteraugli_target) {
+      for (int radius = 0; radius <= search_radius && !changed; ++radius) {
+        ImageF dist_to_peak_map =
+            DistToPeakMap(tile_distmap, butteraugli_target, radius, 0.0);
+        for (int y = 0; y < quant_field.ysize(); ++y) {
+          float* const PIK_RESTRICT row_q = quant_field.Row(y);
+          const float* const PIK_RESTRICT row_dist = dist_to_peak_map.Row(y);
+          for (int x = 0; x < quant_field.xsize(); ++x) {
+            if (row_dist[x] >= 0.0f) {
+              static const float kAdjSpeed[kMaxOuterIters] = {0.1f, 0.04f};
+              const float factor =
+                  kAdjSpeed[outer_iter] * tile_distmap.Row(y)[x];
+              if (AdjustQuantVal(&row_q[x], row_dist[x], factor, quant_ceil)) {
+                changed = true;
+              }
+            }
+          }
+        }
+      }
+      if (!changed || num_stalling_iters >= 3) {
+        // Try to extend the search parameters.
+        if ((search_radius < 4) &&
+            (qmax < 0.99f * quant_ceil || quant_ceil >= 3.0f + search_radius)) {
+          ++search_radius;
+          continue;
+        }
+        if (quant_dc < 0.4f * quant_ceil - 0.8f) {
+          quant_dc += 0.2f;
+          changed = true;
+          continue;
+        }
+        if (quant_ceil < 8.0f) {
+          quant_ceil += 0.5f;
+          continue;
+        }
+        break;
+      }
+    }
+    if (!changed) {
+      if (++outer_iter == kMaxOuterIters) break;
+      static const float kQuantScale = 0.75f;
+      for (int y = 0; y < quant_field.ysize(); ++y) {
+        for (int x = 0; x < quant_field.xsize(); ++x) {
+          quant_field.Row(y)[x] *= kQuantScale;
+        }
+      }
+      num_stalling_iters = 0;
+    }
+  }
+  quantizer->SetQuantField(best_quant_dc, QuantField(best_quant_field));
 }
 
 }  // namespace
 
-ImageF AdaptiveQuantizationMap(
-    const ImageF& img,
-    const ImageF& img_ac,
-    const CompressParams &cparams,
-    size_t resolution) {
+ImageF AdaptiveQuantizationMap(const ImageF& img, const ImageF& img_ac,
+                               const CompressParams& cparams) {
   PROFILER_ZONE("aq AdaptiveQuantMap");
-  static const int kSampleRate = 8;
-  PIK_ASSERT(resolution % kSampleRate == 0);
-  const size_t out_xsize = (img.xsize() + resolution - 1) / resolution;
-  const size_t out_ysize = (img.ysize() + resolution - 1) / resolution;
+  static const int kResolution = 8;
+  const size_t out_xsize = (img.xsize() + kResolution - 1) / kResolution;
+  const size_t out_ysize = (img.ysize() + kResolution - 1) / kResolution;
   if (img.xsize() <= 1) {
     ImageF out(1, out_ysize);
     FillImage(1.0f, &out);
@@ -536,34 +957,76 @@ ImageF AdaptiveQuantizationMap(
     FillImage(1.0f, &out);
     return out;
   }
-  static const float kSigma0 = 12.180081590321119;
-  static const float kWeight0 = 0.85074460070908942;
-  static const float kSigma1 = 2.6389153225470978;
-  static const float kWeight1 = 1.0 - kWeight0;
-  static const int kRadius = static_cast<int>(2 * kSigma0 + 0.5f);
-  std::vector<float> kernel0 = GaussianKernel(kRadius, kSigma0);
-  std::vector<float> kernel1 = GaussianKernel(kRadius, kSigma1);
-  std::vector<float> kernel(kernel0.size());
-  for (int i = 0; i < kernel0.size(); ++i) {
-    kernel[i] = kWeight0 * kernel0[i] + kWeight1 * kernel1[i];
-  }
-  static const float kDiffCutoff = 0.10929896077297953;
+  static const float kSigma = 8.2553856725566153;
+  static const int kRadius = static_cast<int>(2 * kSigma + 0.5f);
+  std::vector<float> kernel = GaussianKernel(kRadius, kSigma);
+  static const float kDiffCutoff = 0.11883287948847132;
   ImageF out = DiffPrecompute(img, kDiffCutoff);
-  out = Expand(out, resolution * out_xsize, resolution * out_ysize);
-  out = ConvolveAndSample(out, kernel, kSampleRate);
+  out = Expand(out, kResolution * out_xsize, kResolution * out_ysize);
+  out = ConvolveAndSample(out, kernel, kResolution);
   out = ComputeMask(out);
-  if (resolution > kSampleRate) {
-    out = SubsampleWithMax(out, resolution / kSampleRate);
-  }
-  BorderModulation(&out);
-  ChessboardModulation(&out);
   DctModulation(img_ac, &out);
   RangeModulation(img_ac, &out);
   HfModulation(img_ac, &out);
-  // TODO(user): Flag-guard. Only want to do this in slow-mode.
-  // Note that this operates on 'img'.
-  ROIModulation(img, cparams, &out);
+  Exp(&out);
   return out;
+}
+
+ImageF InitialQuantField(double butteraugli_target, double intensity_multiplier,
+                         const Image3F& opsin_orig,
+                         const CompressParams& cparams, ThreadPool* pool,
+                         double rescale) {
+  const float intensity_multiplier3 = std::cbrt(intensity_multiplier);
+  const float quant_ac = intensity_multiplier3 * kAcQuant / butteraugli_target;
+  ImageF intensity_ac =
+      IntensityAcEstimate(opsin_orig.Plane(1), intensity_multiplier3, pool);
+  ImageF quant_field = ScaleImage(
+      quant_ac * (float)rescale,
+      AdaptiveQuantizationMap(opsin_orig.Plane(1), intensity_ac, cparams));
+  return quant_field;
+}
+
+std::shared_ptr<Quantizer> FindBestQuantizer(
+    const CompressParams& cparams, size_t xsize_blocks, size_t ysize_blocks,
+    const Image3F& opsin_orig, const Image3F& opsin,
+    const NoiseParams& noise_params, const PassHeader& pass_header,
+    const GroupHeader& header, const ColorCorrelationMap& cmap,
+    const AcStrategyImage& ac_strategy, ImageF& quant_field, ThreadPool* pool,
+    PikInfo* aux_out, MultipassManager* multipass_manager, double rescale) {
+  int quant_template = kQuantDefault;
+  std::shared_ptr<Quantizer> quantizer = std::make_shared<Quantizer>(
+      kBlockDim, quant_template, xsize_blocks, ysize_blocks);
+  const float intensity_multiplier = cparams.GetIntensityMultiplier();
+  const float intensity_multiplier3 = std::cbrt(intensity_multiplier);
+  if (cparams.fast_mode) {
+    PROFILER_ZONE("enc fast quant");
+    const float butteraugli_target = cparams.butteraugli_distance;
+    const float butteraugli_target_dc = std::min<float>(
+        butteraugli_target, pow(butteraugli_target, kDcQuantPow));
+    const float quant_dc =
+        intensity_multiplier3 * kDcQuant / butteraugli_target_dc;
+    Rect full(opsin_orig);
+    AdjustQuantField(ac_strategy, &quant_field);
+    quantizer->SetQuantField(quant_dc, QuantField(quant_field));
+  } else if (cparams.uniform_quant > 0.0) {
+    PROFILER_ZONE("enc SetQuant");
+    quantizer->SetQuant(cparams.uniform_quant * rescale);
+  } else {
+    // Normal PIK encoding to a butteraugli score.
+    PROFILER_ZONE("enc find best2");
+    if (cparams.guetzli_mode) {
+      FindBestQuantizationHQ(opsin_orig, opsin, cparams, pass_header, header,
+                             cparams.butteraugli_distance, cmap, ac_strategy,
+                             quant_field, pool, quantizer.get(), aux_out,
+                             multipass_manager, rescale);
+    } else {
+      FindBestQuantization(opsin_orig, opsin, cparams, pass_header, header,
+                           cparams.butteraugli_distance, cmap, ac_strategy,
+                           quant_field, pool, quantizer.get(), aux_out,
+                           multipass_manager, rescale);
+    }
+  }
+  return quantizer;
 }
 
 }  // namespace pik

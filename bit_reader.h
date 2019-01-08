@@ -67,7 +67,10 @@ class BitReader {
     }
   }
 
-  void Advance(size_t num_bits) { bit_pos_ += num_bits; }
+  void Advance(size_t num_bits) {
+    PIK_ASSERT(num_bits + bit_pos_ <= 64);
+    bit_pos_ += num_bits;
+  }
 
   template <size_t N>
   int PeekFixedBits() const {
@@ -97,9 +100,7 @@ class BitReader {
     return bits;
   }
 
-  uint16_t GetNextWord() {
-    return static_cast<uint16_t>(ReadBits(16));
-  }
+  uint16_t GetNextWord() { return static_cast<uint16_t>(ReadBits(16)); }
 
   void SkipBits(size_t skip) {
     // Satisfy from existing buffer
@@ -116,9 +117,12 @@ class BitReader {
     Advance(skip);
   }
 
-  void JumpToByteBoundary() {
+  Status JumpToByteBoundary() {
     size_t rem = bit_pos_ % 8;
-    if (rem != 0) ReadBits(8 - rem);
+    if ((rem != 0) && (ReadBits(8 - rem) != 0)) {
+      return PIK_FAILURE("Non-zero padding bits");
+    }
+    return true;
   }
 
   size_t BitsRead() const { return 32 * pos32_ + bit_pos_ - 64; }

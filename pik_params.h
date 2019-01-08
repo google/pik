@@ -1,8 +1,12 @@
 #ifndef PIK_PARAMS_H_
 #define PIK_PARAMS_H_
 
-#include <stddef.h>
-#include <stdint.h>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+
+#include "epf.h"
+#include "gaborish.h"
 
 namespace pik {
 
@@ -11,13 +15,9 @@ namespace pik {
 static constexpr int kDefaultIntensityTarget = 250;
 static constexpr float kIntensityMultiplier = 1.0f / kDefaultIntensityTarget;
 
-// No effect if kDefault, otherwise forces a feature (typically a Header flag)
-// on or off.
-enum class Override : int {
-  kOn = 1,
-  kOff = 0,
-  kDefault = -1
-};
+// No effect if kDefault, otherwise forces a feature (typically a GroupHeader
+// flag) on or off.
+enum class Override : int { kOn = 1, kOff = 0, kDefault = -1 };
 
 static inline bool ApplyOverride(Override o, bool condition) {
   if (o == Override::kOn) condition = true;
@@ -34,9 +34,6 @@ struct CompressParams {
   float butteraugli_distance = 1.0f;
   size_t target_size = 0;
   float target_bitrate = 0.0f;
-
-  // 1+this is multiplied onto quant map in regions of interest (e.g. faces).
-  float roi_factor = 0.5f;
 
   // 0.0 means search for the adaptive quantization map that matches the
   // butteraugli distance, positive values mean quantize everywhere with that
@@ -55,17 +52,41 @@ struct CompressParams {
   bool guetzli_mode = false;
   int max_butteraugli_iters_guetzli_mode = 100;
 
+  bool lossless_mode = false;
+
   Override noise = Override::kDefault;
-  Override smooth = Override::kDefault;
   Override gradient = Override::kDefault;
   Override adaptive_reconstruction = Override::kDefault;
-  int gaborish = -1;  // 0..7 or -1 for default.
+  GaborishStrength gaborish = GaborishStrength::k750;
 
   bool use_ac_strategy = false;
 
-  // Prints extra information after encoding.
+  // Progressive mode.
+  bool progressive_mode = false;
+
+  // Progressive-mode saliency extractor.
+  // Empty string disables this feature.
+  std::string saliency_extractor_for_progressive_mode;
+  // Every saliency-heatmap cell with saliency > threshold will be considered as
+  // 'salient'.
+  float saliency_threshold = 1.0f;
+  // Debug parameter: If true, drop non-salient AC part in progressive encoding.
+  bool saliency_debug_skip_nonsalient = false;
+
+  // Input and output file name. Will be used to provide pluggable saliency
+  // extractor with paths.
+  std::string file_in;
+  std::string file_out;
+
+  // Whether to keep temporary files (used e.g. to communicate with external
+  // saliency extractor).
+  bool keep_tempfiles = false;
+
+  // Prints extra information during/after encoding.
   bool verbose = false;
 
+  // Multiplier for penalizing new HF artifacts more than blurring away
+  // features. 1.0=neutral.
   float hf_asymmetry = 1.0f;
 
   // Intended intensity target of the viewer after decoding, in nits (cd/m^2).
@@ -74,6 +95,32 @@ struct CompressParams {
   // content is more typically mastered to 4K nits. The default requires no
   // scaling for Butteraugli.
   float intensity_target = kDefaultIntensityTarget;
+
+  // Enable new Lossless codec for DC. This flag exists only temporarily
+  // as long as both old and new implementation co-exist, and eventually
+  // only the new implementation should remain.
+  bool use_new_dc = false;
+
+  // Enable LF/HF predictions.
+  bool predict_lf = true;
+  bool predict_hf = true;
+
+  // Edge-preserving filter parameters for AdaptiveReconstruction.
+  EpfParams epf_params;
+
+  float GetIntensityMultiplier() const {
+    return intensity_target * kIntensityMultiplier;
+  }
+
+  size_t TargetSize(const Rect& rect) const {
+    if (target_size > 0) {
+      return target_size;
+    }
+    if (target_bitrate > 0.0) {
+      return 0.5 + target_bitrate * rect.xsize() * rect.ysize() / 8;
+    }
+    return 0;
+  }
 };
 
 struct DecompressParams {
@@ -82,20 +129,27 @@ struct DecompressParams {
   // was consumed by the decoder.
   bool check_decompressed_size = true;
 
-  Override noise = Override::kDefault;  // cannot be kOn (needs encoder)
-  // (It is not useful to override smooth in the decoder because the residuals
-  // are specific to the chosen predictor.)
+  Override noise = Override::kDefault;     // cannot be kOn (needs encoder)
   Override gradient = Override::kDefault;  // cannot be kOn (needs encoder)
+
   Override adaptive_reconstruction = Override::kDefault;
-  int gaborish = -1;  // 0..7 or -1 for default.
+  // Edge-preserving filter parameters for AdaptiveReconstruction - overrides
+  // epf_params from the bitstream if adaptive_reconstruction == kOn.
+  EpfParams epf_params;
+
+  bool override_gaborish = false;  // if true, override GroupHeader.gaborish ..
+  GaborishStrength gaborish = GaborishStrength::k750;  // with this value.
+
+  // Enable new Lossless codec for DC. This flag exists only temporarily
+  // as long as both old and new implementation co-exist, and eventually
+  // only the new implementation should remain.
+  bool use_new_dc = false;
 };
 
 // Enable features for distances >= these thresholds:
-static constexpr float kMinButteraugliForNoise = 1.4f;  // see pik.cc
-static constexpr float kMinButteraugliForGradient = 1.85f;  // see pik.cc
-static constexpr float kMinButteraugliForAdaptiveReconstruction = 1.0f;
-
-static constexpr float kMinButteraugliForDefaultQuant = 2.0f;
+static constexpr float kMinButteraugliForNoise = 99.0f;     // disabled
+static constexpr float kMinButteraugliForGradient = 99.0f;  // disabled
+static constexpr float kMinButteraugliForAdaptiveReconstruction = 0.0f;
 
 }  // namespace pik
 

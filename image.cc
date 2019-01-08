@@ -15,11 +15,32 @@
 #include "image.h"
 
 #include <stdint.h>
+#include <atomic>
 
 #include "common.h"
+#undef PROFILER_ENABLED
+#define PROFILER_ENABLED 1
 #include "profiler.h"
 
 namespace pik {
+
+// Offset for the allocated pointer to avoid 2K aliasing (see BytesPerRow)
+// between the planes of an Image3. Necessary because consecutive large
+// allocations on Linux often return pointers with the same alignment.
+static size_t Avoid2K() {
+  static std::atomic<int32_t> next{0};
+  const int32_t kGroups = 8;
+  const int32_t group = next.fetch_add(1, std::memory_order_relaxed) % kGroups;
+  return (2048 / kGroups) * group;
+}
+
+CacheAlignedUniquePtr AllocateImageBytes(size_t size) {
+  PROFILER_FUNC;
+  // Note: size may be zero.
+  CacheAlignedUniquePtr bytes = AllocateArray(size, Avoid2K());
+  PIK_ASSERT(reinterpret_cast<uintptr_t>(bytes.get()) % kImageAlign == 0);
+  return bytes;
+}
 
 ImageB Float255ToByteImage(const ImageF& from) {
   ImageB to(from.xsize(), from.ysize());

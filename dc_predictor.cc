@@ -494,11 +494,12 @@ class Adaptive {
     LeftBorder2<N>::Shrink(xsize, row_m, row_b, residuals);
 
     ForeachPrediction(xsize, row_ym, row_yb, row_t, row_m, row_b,
-                      [row_b, residuals](const size_t x, const PixelV pred) {
-                        const auto c = N::Load(row_b, x);
-                        N::Store(c - pred, residuals, x);
-                        return c;
-                      });
+                      [row_b, residuals](const size_t x, const PixelV pred)
+                          SIMD_ATTR {
+                            const auto c = N::Load(row_b, x);
+                            N::Store(c - pred, residuals, x);
+                            return c;
+                          });
 
     RightBorder1<N>::Shrink(xsize, row_b, residuals);
   }
@@ -513,11 +514,12 @@ class Adaptive {
     LeftBorder2<N>::Expand(xsize, residuals, row_m, row_b);
 
     ForeachPrediction(xsize, row_ym, row_yb, row_t, row_m, row_b,
-                      [row_b, residuals](const size_t x, const PixelV pred) {
-                        const auto c = pred + N::Load(residuals, x);
-                        N::Store(c, row_b, x);
-                        return c;
-                      });
+                      [row_b, residuals](const size_t x, const PixelV pred)
+                          SIMD_ATTR {
+                            const auto c = pred + N::Load(residuals, x);
+                            N::Store(c, row_b, x);
+                            return c;
+                          });
 
     RightBorder1<N>::Expand(xsize, residuals, row_b);
   }

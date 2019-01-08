@@ -32,13 +32,13 @@ namespace pik {
 class PaddedBytes {
  public:
   // Required for output params.
-  PaddedBytes() {}
+  PaddedBytes() : size_(0), capacity_(0) {}
 
-  explicit PaddedBytes(size_t size) : size_(size) {
+  explicit PaddedBytes(size_t size) : size_(size), capacity_(0) {
     if (size != 0) IncreaseCapacityTo(size);
   }
 
-  PaddedBytes(const PaddedBytes& other) : size_(other.size_) {
+  PaddedBytes(const PaddedBytes& other) : size_(other.size_), capacity_(0) {
     if (size_ != 0) IncreaseCapacityTo(size_);
     if (data() != nullptr) memcpy(data(), other.data(), size_);
   }
@@ -49,8 +49,23 @@ class PaddedBytes {
     return *this;
   }
 
-  PaddedBytes(PaddedBytes&& other) = default;
-  PaddedBytes& operator=(PaddedBytes&& other) = default;
+  // default is not OK - need to set other.size_ to 0!
+  PaddedBytes(PaddedBytes&& other)
+      : size_(other.size_),
+        capacity_(other.capacity_),
+        data_(std::move(other.data_)) {
+    other.size_ = other.capacity_ = 0;
+  }
+  PaddedBytes& operator=(PaddedBytes&& other) {
+    size_ = other.size_;
+    capacity_ = other.capacity_;
+    data_ = std::move(other.data_);
+
+    if (&other != this) {
+      other.size_ = other.capacity_ = 0;
+    }
+    return *this;
+  }
 
   void swap(PaddedBytes& other) {
     std::swap(size_, other.size_);
@@ -117,13 +132,20 @@ class PaddedBytes {
     return data()[size() - 1];
   }
 
+  template <typename T>
+  void append(const T& other) {
+    size_t old_size = size();
+    resize(size() + other.size());
+    memcpy(data() + old_size, other.data(), other.size());
+  }
+
  private:
   // Copies existing data to newly allocated "data_". If allocation fails,
   // data() == nullptr and size_ = capacity_ = 0.
   void IncreaseCapacityTo(size_t capacity);
 
-  size_t size_ = 0;
-  size_t capacity_ = 0;
+  size_t size_;
+  size_t capacity_;
   CacheAlignedUniquePtr data_;
 };
 

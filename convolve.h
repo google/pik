@@ -21,6 +21,9 @@
 #include <stdint.h>
 #include <cassert>
 
+#undef PROFILER_ENABLED
+#define PROFILER_ENABLED 1
+
 #include "compiler_specific.h"
 #include "data_parallel.h"
 #include "image.h"
@@ -483,7 +486,7 @@ static inline const int32_t* MirrorLanes(const size_t mod) {
   };
   return idx_lanes + mod * d.N;
 #elif SIMD_TARGET_VALUE == SIMD_NONE
-  (void)d;  // silence warning about unused d
+  (void)d;         // silence warning about unused d
   return nullptr;  // do not call
 #else
   // 0123| 3210   loadedReg 3210 mirroredReg 0123
@@ -1448,13 +1451,13 @@ class ConvolveT {
     if (ybegin >= yend) return;
 
     const int64_t stride = in.bytes_per_row() / sizeof(float);
-    executor.Run(ybegin, yend,
-                 [&in, stride, &kernel, out](const int y, const int thread) {
-                   RunRow<kSizeModN, LeftRight>(in.ConstRow(y), in.xsize(),
-                                                stride, WrapRowUnchanged(),
-                                                kernel, out->Row(y));
-                 },
-                 "Convolve");
+    executor.Run(
+        ybegin, yend,
+        [&in, stride, &kernel, out](const int y, const int thread) {
+          RunRow<kSizeModN, LeftRight>(in.ConstRow(y), in.xsize(), stride,
+                                       WrapRowUnchanged(), kernel, out->Row(y));
+        },
+        "Convolve");
   }
 
   // Threaded, Image3.
@@ -1466,15 +1469,16 @@ class ConvolveT {
     if (ybegin >= yend) return;
 
     const int64_t stride = in.Plane(0).bytes_per_row() / sizeof(float);
-    executor.Run(ybegin, yend,
-                 [&in, stride, &kernel, out](const int y, const int thread) {
-                   for (size_t c = 0; c < 3; ++c) {
-                     RunRow<kSizeModN, LeftRight>(
-                         in.ConstPlaneRow(c, y), in.xsize(), stride,
-                         WrapRowUnchanged(), kernel, out->PlaneRow(c, y));
-                   }
-                 },
-                 "Convolve3");
+    executor.Run(
+        ybegin, yend,
+        [&in, stride, &kernel, out](const int y, const int thread) SIMD_ATTR {
+          for (size_t c = 0; c < 3; ++c) {
+            RunRow<kSizeModN, LeftRight>(in.ConstPlaneRow(c, y), in.xsize(),
+                                         stride, WrapRowUnchanged(), kernel,
+                                         out->PlaneRow(c, y));
+          }
+        },
+        "Convolve3");
   }
 
   // Plain loop.

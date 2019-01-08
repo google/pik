@@ -109,7 +109,7 @@ struct CacheAlignedDeleter {
 using CacheAlignedUniquePtr = std::unique_ptr<uint8_t[], CacheAlignedDeleter>;
 
 // Does not invoke constructors.
-inline CacheAlignedUniquePtr AllocateArray(const size_t entries,
+static inline CacheAlignedUniquePtr AllocateArray(const size_t entries,
                                            const size_t offset = 0) {
   const size_t size = entries * sizeof(uint8_t);
   return CacheAlignedUniquePtr(

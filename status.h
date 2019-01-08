@@ -27,19 +27,19 @@ namespace pik {
 #endif
 
 #if PIK_ENABLE_ASSERT || defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION)
-#define PIK_ASSERT(condition)                                   \
-  while (!(condition)) {                                        \
-    printf("Pik assert failed at %s:%d\n", __FILE__, __LINE__); \
-    abort();                                                    \
+#define PIK_ASSERT(condition)                                            \
+  while (!(condition)) {                                                 \
+    fprintf(stderr, "Pik assert failed at %s:%d\n", __FILE__, __LINE__); \
+    abort();                                                             \
   }
 #else
 #define PIK_ASSERT(condition)
 #endif
 
-#define PIK_CHECK(condition)                                   \
-  while (!(condition)) {                                       \
-    printf("Pik check failed at %s:%d\n", __FILE__, __LINE__); \
-    abort();                                                   \
+#define PIK_CHECK(condition)                                            \
+  while (!(condition)) {                                                \
+    fprintf(stderr, "Pik check failed at %s:%d\n", __FILE__, __LINE__); \
+    abort();                                                            \
   }
 
 #define PIK_RETURN_IF_ERROR(condition) \
@@ -51,14 +51,14 @@ namespace pik {
 #ifdef PIK_CRASH_ON_ERROR
 inline bool PikFailure(const char* f, int l, const char* msg) {
   for (;;) {
-    printf("Pik failure at %s:%d: %s", f, l, msg);
+    fprintf(stderr, "Pik failure at %s:%d: %s\n", f, l, msg);
     abort();
   }
   return false;
 }
-#define PIK_NOTIFY_ERROR(message_string)                                \
+#define PIK_NOTIFY_ERROR(message_string) \
   (void)PikFailure(__FILE__, __LINE__, message_string)
-#define PIK_FAILURE(message_string)                        \
+#define PIK_FAILURE(message_string) \
   PikFailure(__FILE__, __LINE__, message_string)
 #else
 #define PIK_NOTIFY_ERROR(message_string)

@@ -271,7 +271,7 @@ either naturally-aligned (`aligned`) or possibly unaligned (`p`).
 *   `D::V cast_to(D, V)`: returns the bits of `V` reinterpreted as type `D::V`.
 
 *   `V`,`D`: (`u8,i16`), (`u8,i32`), (`u16,i32`), (`i8,i16`), (`i8,i32`),
-    (`i16,i32`) \
+    (`i16,i32`), (`f32,f64`) \
     `D::V convert_to(D, V part)`: returns `part[i]` zero- or sign-extended to
     the wider `D::T` type.
 

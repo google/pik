@@ -15,7 +15,10 @@
 #ifndef OS_SPECIFIC_H_
 #define OS_SPECIFIC_H_
 
+#include <string>
 #include <vector>
+
+#include "status.h"
 
 namespace pik {
 
@@ -34,16 +37,19 @@ struct ThreadAffinity;
 ThreadAffinity* GetThreadAffinity();
 
 // Restores a previous affinity returned by GetThreadAffinity.
-void SetThreadAffinity(ThreadAffinity* affinity);
+Status SetThreadAffinity(ThreadAffinity* affinity);
 
 // Ensures the thread is running on the specified cpu, and no others.
 // Useful for reducing nanobenchmark variability (fewer context switches).
 // Uses SetThreadAffinity.
-void PinThreadToCPU(const int cpu);
+Status PinThreadToCPU(const int cpu);
 
 // Random choice of CPU avoids overloading any one core.
 // Uses SetThreadAffinity.
-void PinThreadToRandomCPU();
+Status PinThreadToRandomCPU();
+
+// Executes a command in a subprocess.
+Status RunCommand(const std::vector<std::string>& args);
 
 }  // namespace pik
 

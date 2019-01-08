@@ -28,14 +28,16 @@ int Convert(int argc, char** argv) {
   const std::string& desc = argv[2];
   const std::string& out = argv[3];
 
-  CodecContext codec_context(4);
+  CodecContext codec_context;
   CodecInOut io(&codec_context);
+  ThreadPool pool(4);
   io.dec_hints.Add("color_space", desc);
-  if (!io.SetFromFile(in)) {
+  if (!io.SetFromFile(in, &pool)) {
     fprintf(stderr, "Failed to read %s\n", in.c_str());
     return 1;
   }
-  if (!io.EncodeToFile(io.dec_c_original, io.original_bits_per_sample(), out)) {
+  if (!io.EncodeToFile(io.dec_c_original, io.original_bits_per_sample(), out,
+                       &pool)) {
     fprintf(stderr, "Failed to write %s\n", out.c_str());
     return 1;
   }

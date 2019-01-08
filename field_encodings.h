@@ -35,10 +35,11 @@ static constexpr uint32_t kU32Direct3Plus4 = 0x51828180u;
 // Three direct values 0, 1, 2 or 3 extra bits for [3, 10].
 static constexpr uint32_t kU32Direct3Plus8 = 0x52828180u;
 
-// Four direct values 2, 3, 4 or 8.
+// Four direct values 2, 3, 4, 8 or 1, 2, 4, 8.
 static constexpr uint32_t kU32Direct2348 = 0x88848382u;
+static constexpr uint32_t kU32Direct1248 = 0x88848281u;
 
-enum Bytes {
+enum class BytesEncoding {
   // Values are determined by kU32Direct3Plus8.
   kNone = 0,  // Not present, don't write size
   kRaw,

@@ -12,8 +12,7 @@ namespace pik {
 
 using ImageD = Image<double>;
 
-inline double DotProduct(const size_t N,
-                         const double* const PIK_RESTRICT a,
+inline double DotProduct(const size_t N, const double* const PIK_RESTRICT a,
                          const double* const PIK_RESTRICT b) {
   double sum = 0.0;
   for (int k = 0; k < N; ++k) {
@@ -42,7 +41,7 @@ inline ImageD Transpose(const ImageD& A) {
   return out;
 }
 
-template<typename Tout, typename Tin1, typename Tin2>
+template <typename Tout, typename Tin1, typename Tin2>
 Image<Tout> MatMul(const Image<Tin1>& A, const Image<Tin2>& B) {
   PIK_ASSERT(A.ysize() == B.xsize());
   Image<Tout> out(A.xsize(), B.ysize());
@@ -59,20 +58,19 @@ Image<Tout> MatMul(const Image<Tin1>& A, const Image<Tin2>& B) {
   return out;
 }
 
-template<typename T1, typename T2>
+template <typename T1, typename T2>
 ImageD MatMul(const Image<T1>& A, const Image<T2>& B) {
   return MatMul<double, T1, T2>(A, B);
 }
 
-template<typename T1, typename T2>
+template <typename T1, typename T2>
 ImageI MatMulI(const Image<T1>& A, const Image<T2>& B) {
   return MatMul<int, T1, T2>(A, B);
 }
 
 // Computes A = B * C, with sizes rows*cols: A=ha*wa, B=wa*wb, C=ha*wb
-template<typename T>
-void MatMul(const T* a, const T* b,
-            int ha, int wa, int wb, T* c) {
+template <typename T>
+void MatMul(const T* a, const T* b, int ha, int wa, int wb, T* c) {
   std::vector<T> temp(wa);  // Make better use of cache lines
   for (int x = 0; x < wb; x++) {
     for (int z = 0; z < wa; z++) {
@@ -89,15 +87,14 @@ void MatMul(const T* a, const T* b,
 }
 
 // Computes C = A + factor * B
-template<typename T, typename F>
-void MatAdd(const T* a, const T* b, F factor,
-            int h, int w, T* c) {
+template <typename T, typename F>
+void MatAdd(const T* a, const T* b, F factor, int h, int w, T* c) {
   for (int i = 0; i < w * h; i++) {
     c[i] = a[i] + b[i] * factor;
   }
 }
 
-template<typename T>
+template <typename T>
 inline Image<T> Identity(const size_t N) {
   Image<T> out(N, N);
   for (size_t i = 0; i < N; ++i) {
@@ -126,23 +123,20 @@ inline ImageD Diagonal(const ImageD& d) {
 void GivensRotation(const double x, const double y, double* c, double* s);
 
 // U = U * Givens(i, j, c, s)
-void RotateMatrixCols(ImageD* const PIK_RESTRICT U,
-                      int i, int j, double c, double s);
+void RotateMatrixCols(ImageD* const PIK_RESTRICT U, int i, int j, double c,
+                      double s);
 
 // A is symmetric, U is orthogonal, T is tri-diagonal and
 // A = U * T * Transpose(U).
-void ConvertToTridiagonal(const ImageD& A,
-                          ImageD* const PIK_RESTRICT T,
+void ConvertToTridiagonal(const ImageD& A, ImageD* const PIK_RESTRICT T,
                           ImageD* const PIK_RESTRICT U);
 
 // A is symmetric, U is orthogonal, and A = U * Diagonal(diag) * Transpose(U).
-void ConvertToDiagonal(const ImageD& A,
-                       ImageD* const PIK_RESTRICT diag,
+void ConvertToDiagonal(const ImageD& A, ImageD* const PIK_RESTRICT diag,
                        ImageD* const PIK_RESTRICT U);
 
 // A is square matrix, Q is orthogonal, R is upper triangular and A = Q * R;
-void ComputeQRFactorization(const ImageD& A,
-                            ImageD* const PIK_RESTRICT Q,
+void ComputeQRFactorization(const ImageD& A, ImageD* const PIK_RESTRICT Q,
                             ImageD* const PIK_RESTRICT R);
 
 // Inverts a 3x3 matrix in place
@@ -165,12 +159,10 @@ void Inv3x3Matrix(T* matrix) {
   }
 }
 
-
-
 // Solves system of linear equations A * X = B using the conjugate gradient
 // method. Matrix a must be a n*n, symmetric and positive definite.
 // Vectors b and x must have n elements
-template<typename T>
+template <typename T>
 void ConjugateGradient(const T* a, int n, const T* b, T* x) {
   std::vector<T> r(n);
   MatMul(a, x, n, n, 1, r.data());
@@ -203,12 +195,11 @@ void ConjugateGradient(const T* a, int n, const T* b, T* x) {
   }
 }
 
-
 // Computes optimal coefficients r to approximate points p with linear
 // combination of functions f. The matrix f has h rows and w columns, r has h
 // values, p has w values. h is the amount of functions, w the amount of points.
 // Uses the finite element method and minimizes mean square error.
-template<typename T>
+template <typename T>
 void FEM(const T* f, int h, int w, const T* p, T* r) {
   // Compute "Gramian" matrix G = F * F^T
   // Speed up multiplication by using non-zero intervals in sparse F.

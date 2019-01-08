@@ -24,7 +24,6 @@
 #include <sys/types.h>
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cmath>
 #include <complex>
 #include <limits>
@@ -76,6 +75,9 @@ static inline size_t BytesPerRow(const size_t valid_bytes) {
   return bytes_per_row;
 }
 
+// Factored out of Image<> to avoid dependency on profiler.h and <atomic>.
+CacheAlignedUniquePtr AllocateImageBytes(size_t size);
+
 // Single channel, aligned rows separated by padding. T must be POD.
 //
 // Rationale: vectorization benefits from aligned operands - unaligned loads and
@@ -107,12 +109,10 @@ class Image {
   Image(const size_t xsize, const size_t ysize)
       : xsize_(xsize),
         ysize_(ysize),
-        bytes_per_row_(BytesPerRow<kImageAlign>(xsize * sizeof(T))),
-        bytes_(AllocateArray(bytes_per_row_ * ysize, Avoid2K())) {
-    // xsize and/or ysize can legitimately be zero.
-
-    PIK_ASSERT(reinterpret_cast<uintptr_t>(bytes_.get()) % kImageAlign == 0);
+        bytes_per_row_(BytesPerRow<kImageAlign>(xsize * sizeof(T))) {
     PIK_ASSERT(bytes_per_row_ % kImageAlign == 0);
+    // xsize and/or ysize can legitimately be zero.
+    bytes_ = AllocateImageBytes(bytes_per_row_ * ysize);
 
 #ifdef MEMORY_SANITIZER
     // Only in MSAN builds: ensure full vectors are initialized.
@@ -193,7 +193,7 @@ class Image {
   }
 
   // Returns pointer to const (see above), even if called on a non-const Image.
-  PIK_INLINE const T* PIK_RESTRICT ConstRow(const size_t y) const  {
+  PIK_INLINE const T* PIK_RESTRICT ConstRow(const size_t y) const {
     return Row(y);
   }
 
@@ -219,16 +219,6 @@ class Image {
   }
 
  private:
-  // Offset for the allocated pointer to avoid 2K aliasing (see BytesPerRow)
-  // between the planes of an Image3. Necessary because consecutive large
-  // allocations on Linux often return pointers with the same alignment.
-  static size_t Avoid2K() {
-    static std::atomic<int32_t> next{0};
-    const int32_t kGroups = 8;
-    const int32_t group = next.fetch_add(1) % kGroups;
-    return (2048 / kGroups) * group;
-  }
-
   // (Members are non-const to enable assignment during move-assignment.)
   size_t xsize_;  // original intended pixels, not including any padding.
   size_t ysize_;
@@ -347,11 +337,22 @@ Image<T> CopyImage(const Image<T>& image) {
   const size_t ysize = image.ysize();
   Image<T> copy(xsize, ysize);
   for (size_t y = 0; y < ysize; ++y) {
-    const T* const PIK_RESTRICT row = image.Row(y);
-    T* const PIK_RESTRICT row_copy = copy.Row(y);
+    const T* PIK_RESTRICT row = image.ConstRow(y);
+    T* PIK_RESTRICT row_copy = copy.Row(y);
     memcpy(row_copy, row, xsize * sizeof(T));
   }
   return copy;
+}
+
+// Same as above but avoids allocating a new image.
+template <typename T>
+void CopyImageTo(const Image<T>& from, Image<T>* PIK_RESTRICT to) {
+  PIK_ASSERT(SameSize(from, *to));
+  for (size_t y = 0; y < from.ysize(); ++y) {
+    const T* PIK_RESTRICT row_from = from.ConstRow(y);
+    T* PIK_RESTRICT row_to = to->Row(y);
+    memcpy(row_to, row_from, from.xsize() * sizeof(T));
+  }
 }
 
 // Also works for Image3 and mixed argument types.
@@ -496,8 +497,8 @@ void AddTo(const Image<Tin>& what, Image<Tout>* to) {
 
 // Returns linear combination of two grayscale images.
 template <typename T>
-Image<T> LinComb(const T lambda1, const Image<T>& image1,
-                 const T lambda2, const Image<T>& image2) {
+Image<T> LinComb(const T lambda1, const Image<T>& image1, const T lambda2,
+                 const Image<T>& image2) {
   const size_t xsize = image1.xsize();
   const size_t ysize = image1.ysize();
   PIK_CHECK(xsize == image2.xsize());
@@ -819,6 +820,15 @@ class Rect {
   explicit Rect(const Image<T>& image)
       : Rect(0, 0, image.xsize(), image.ysize()) {}
 
+  Rect(const Rect&) = default;
+  Rect& operator=(const Rect&) = default;
+
+  Rect Subrect(size_t xbegin, size_t ybegin, size_t xsize_max,
+               size_t ysize_max) {
+    return Rect(x0_ + xbegin, y0_ + ybegin, xsize_max, ysize_max, x0_ + xsize_,
+                y0_ + ysize_);
+  }
+
   template <typename T>
   T* Row(Image<T>* image, size_t y) const {
     return image->Row(y + y0_) + x0_;
@@ -858,11 +868,11 @@ class Rect {
     return (begin + size_max <= end) ? size_max : end - begin;
   }
 
-  const size_t x0_;
-  const size_t y0_;
+  size_t x0_;
+  size_t y0_;
 
-  const size_t xsize_;
-  const size_t ysize_;
+  size_t xsize_;
+  size_t ysize_;
 };
 
 // Returns a copy of the "image" pixels that lie in "rect".
@@ -1002,99 +1012,18 @@ using Image3I = Image3<int32_t>;
 using Image3F = Image3<float>;
 using Image3D = Image3<double>;
 
-// DEPRECATED. Image3 for color, optional Image for alpha channel.
-template <typename ComponentType>
-class MetaImage {
- public:
-  using T = ComponentType;
-  using PlaneT = Image<T>;
-
-  const Image3<T>& GetColor() const {
-    return color_;
-  }
-
-  Image3<T>& GetColor() {
-    return color_;
-  }
-
-  void SetColor(Image3<T>&& color) {
-    if (alpha_bit_depth_ > 0) {
-      PIK_CHECK(SameSize(color, alpha_));
-    }
-    color_ = std::move(color);
-  }
-
-  PIK_INLINE size_t xsize() const { return color_.xsize(); }
-  PIK_INLINE size_t ysize() const { return color_.ysize(); }
-
-  void AddAlpha(int bit_depth) {
-    PIK_CHECK(alpha_bit_depth_ == 0);
-    PIK_CHECK(bit_depth == 8 || bit_depth == 16);
-    alpha_bit_depth_ = bit_depth;
-    alpha_ = ImageU(color_.xsize(), color_.ysize());
-    FillImage(static_cast<uint16_t>(0xFFFFu >> (16 - bit_depth)), &alpha_);
-  }
-
-  void SetAlpha(ImageU&& alpha, int bit_depth) {
-    PIK_CHECK(SameSize(alpha, color_));
-    PIK_CHECK(bit_depth == 8 || bit_depth == 16);
-    alpha_bit_depth_ = bit_depth;
-    alpha_ = std::move(alpha);
-    const size_t max = 0xFFFFu >> (16 - bit_depth);
-    for (size_t y = 0; y < alpha_.ysize(); ++y) {
-      const uint16_t* PIK_RESTRICT row = alpha_.Row(y);
-      for (size_t x = 0; x < alpha_.xsize(); ++x) {
-        PIK_CHECK(row[x] <= max);
-      }
-    }
-  }
-
-  template<typename T>
-  void CopyAlpha(const MetaImage<T>& other) {
-    if (other.HasAlpha()) {
-      SetAlpha(CopyImage(other.GetAlpha()), other.AlphaBitDepth());
-    }
-  }
-
-  bool HasAlpha() const {
-    return alpha_bit_depth_ > 0;
-  }
-
-  int AlphaBitDepth() const {
-    return alpha_bit_depth_;
-  }
-
-  ImageU& GetAlpha() {
-    return alpha_;
-  }
-
-  const ImageU& GetAlpha() const {
-    return alpha_;
-  }
-
-  void ShrinkTo(const size_t xsize, const size_t ysize) {
-    color_.ShrinkTo(xsize, ysize);
-    if (alpha_bit_depth_ > 0) {
-      alpha_.ShrinkTo(xsize, ysize);
-    }
-  }
-
- private:
-  Image3<T> color_;
-  ImageU alpha_;
-  int alpha_bit_depth_ = 0;
-};
-
-using MetaImageB = MetaImage<uint8_t>;
-using MetaImageS = MetaImage<int16_t>;
-using MetaImageU = MetaImage<uint16_t>;
-using MetaImageF = MetaImage<float>;
-using MetaImageD = MetaImage<double>;
-
 template <typename T>
 Image3<T> CopyImage(const Image3<T>& image3) {
   return Image3<T>(CopyImage(image3.Plane(0)), CopyImage(image3.Plane(1)),
                    CopyImage(image3.Plane(2)));
+}
+
+// Same as above but avoids allocating a new image.
+template <typename T>
+void CopyImageTo(const Image3<T>& from, Image3<T>* PIK_RESTRICT to) {
+  CopyImageTo(from.Plane(0), to->MutablePlane(0));
+  CopyImageTo(from.Plane(1), to->MutablePlane(1));
+  CopyImageTo(from.Plane(2), to->MutablePlane(2));
 }
 
 template <typename T>
@@ -1169,14 +1098,14 @@ void SetBorder(const size_t thickness, const T value, Image3<T>* image) {
 
 // Computes independent minimum and maximum values for each plane.
 template <typename T>
-void Image3MinMax(const Image3<T>& image, std::array<T, 3>* out_min,
-                  std::array<T, 3>* out_max) {
+void Image3MinMax(const Image3<T>& image, const Rect& rect,
+                  std::array<T, 3>* out_min, std::array<T, 3>* out_max) {
   for (int c = 0; c < 3; ++c) {
     T min = std::numeric_limits<T>::max();
     T max = std::numeric_limits<T>::min();
-    for (size_t y = 0; y < image.ysize(); ++y) {
-      const T* PIK_RESTRICT row = image.ConstPlaneRow(c, y);
-      for (size_t x = 0; x < image.xsize(); ++x) {
+    for (size_t y = 0; y < rect.ysize(); ++y) {
+      const T* PIK_RESTRICT row = rect.ConstPlaneRow(image, c, y);
+      for (size_t x = 0; x < rect.xsize(); ++x) {
         min = std::min(min, row[x]);
         max = std::max(max, row[x]);
       }
@@ -1184,6 +1113,13 @@ void Image3MinMax(const Image3<T>& image, std::array<T, 3>* out_min,
     (*out_min)[c] = min;
     (*out_max)[c] = max;
   }
+}
+
+// Computes independent minimum and maximum values for each plane.
+template <typename T>
+void Image3MinMax(const Image3<T>& image, std::array<T, 3>* out_min,
+                  std::array<T, 3>* out_max) {
+  Image3MinMax(image, Rect(image), out_min, out_max);
 }
 
 template <typename T>
@@ -1244,6 +1180,26 @@ Image3<ToType> StaticCastImage3(const Image3<FromType>& from) {
 Image3B Float255ToByteImage3(const Image3F& from);
 
 template <typename Tin, typename Tout>
+void Subtract(const Image3<Tin>& image1, const Image3<Tin>& image2,
+              Image3<Tout>* out) {
+  const size_t xsize = image1.xsize();
+  const size_t ysize = image1.ysize();
+  PIK_CHECK(xsize == image2.xsize());
+  PIK_CHECK(ysize == image2.ysize());
+
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < ysize; ++y) {
+      const Tin* const PIK_RESTRICT row1 = image1.ConstPlaneRow(c, y);
+      const Tin* const PIK_RESTRICT row2 = image2.ConstPlaneRow(c, y);
+      Tout* const PIK_RESTRICT row_out = out->PlaneRow(c, y);
+      for (size_t x = 0; x < xsize; ++x) {
+        row_out[x] = row1[x] - row2[x];
+      }
+    }
+  }
+}
+
+template <typename Tin, typename Tout>
 void SubtractFrom(const Image3<Tin>& what, Image3<Tout>* to) {
   const size_t xsize = what.xsize();
   const size_t ysize = what.ysize();
@@ -1274,8 +1230,8 @@ void AddTo(const Image3<Tin>& what, Image3<Tout>* to) {
 }
 
 template <typename T>
-Image3<T> LinComb(const T lambda1, const Image3<T>& image1,
-                  const T lambda2, const Image3<T>& image2) {
+Image3<T> LinComb(const T lambda1, const Image3<T>& image1, const T lambda2,
+                  const Image3<T>& image2) {
   Image<T> plane0 = LinComb(lambda1, image1.Plane(0), lambda2, image2.Plane(0));
   Image<T> plane1 = LinComb(lambda1, image1.Plane(1), lambda2, image2.Plane(1));
   Image<T> plane2 = LinComb(lambda1, image1.Plane(2), lambda2, image2.Plane(2));
@@ -1298,6 +1254,16 @@ void FillImage(const T value, Image3<T>* image) {
       for (size_t x = 0; x < image->xsize(); ++x) {
         row[x] = value;
       }
+    }
+  }
+}
+
+template <typename T>
+void ZeroFillImage(Image3<T>* image) {
+  for (int c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < image->ysize(); ++y) {
+      T* PIK_RESTRICT row = image->PlaneRow(c, y);
+      memset(row, 0, image->xsize() * sizeof(T));
     }
   }
 }
@@ -1358,12 +1324,14 @@ template <typename T>
 std::vector<std::vector<T>> Packed3FromImage3(const Image3<T>& planes) {
   std::vector<std::vector<T>> result(
       3, std::vector<T>(planes.xsize() * planes.ysize()));
-  for (int c = 0; c < 3; ++c) {
-    for (size_t y = 0; y < planes.ysize(); y++) {
-      T* PIK_RESTRICT row = planes.PlaneRow(c, y);
-      for (size_t x = 0; x < planes.xsize(); x++) {
-        result[c][y * planes.xsize() + x] = row[x];
-      }
+  for (size_t y = 0; y < planes.ysize(); y++) {
+    const T* PIK_RESTRICT row0 = planes.PlaneRow(0, y);
+    const T* PIK_RESTRICT row1 = planes.PlaneRow(1, y);
+    const T* PIK_RESTRICT row2 = planes.PlaneRow(2, y);
+    for (size_t x = 0; x < planes.xsize(); x++) {
+      result[0][y * planes.xsize() + x] = row0[x];
+      result[1][y * planes.xsize() + x] = row1[x];
+      result[2][y * planes.xsize() + x] = row2[x];
     }
   }
   return result;
@@ -1373,12 +1341,14 @@ template <typename T>
 Image3<T> Image3FromPacked3(const std::vector<std::vector<T>>& packed,
                             const size_t xsize, const size_t ysize) {
   Image3<T> out(xsize, ysize);
-  for (int c = 0; c < 3; ++c) {
-    for (size_t y = 0; y < ysize; ++y) {
-      T* PIK_RESTRICT row = out.PlaneRow(c, y);
-      for (size_t x = 0; x < xsize; ++x) {
-        row[c][x] = packed[c][y * xsize + x];
-      }
+  for (size_t y = 0; y < ysize; ++y) {
+    T* PIK_RESTRICT row0 = out.PlaneRow(0, y);
+    T* PIK_RESTRICT row1 = out.PlaneRow(1, y);
+    T* PIK_RESTRICT row2 = out.PlaneRow(2, y);
+    for (size_t x = 0; x < xsize; ++x) {
+      row0[x] = packed[0][y * xsize + x];
+      row1[x] = packed[1][y * xsize + x];
+      row2[x] = packed[2][y * xsize + x];
     }
   }
   return out;
@@ -1436,14 +1406,14 @@ void AddScalar(T v0, T v1, T v2, Image3<T>* img) {
   }
 }
 
-template<typename T, typename Fun>
+template <typename T, typename Fun>
 void Apply(Fun f, Image<T>* image) {
   const size_t xsize = image->xsize();
   const size_t ysize = image->ysize();
 
-  for(size_t y = 0; y < ysize; y++) {
+  for (size_t y = 0; y < ysize; y++) {
     T* PIK_RESTRICT row = image->Row(y);
-    for(size_t x = 0; x < xsize; x++) {
+    for (size_t x = 0; x < xsize; x++) {
       f(&row[x]);
     }
   }
@@ -1454,8 +1424,8 @@ void PrintImageStats(const std::string& desc, const Image<T>& img) {
   T mn, mx;
   ImageMinMax(img, &mn, &mx);
   T avg = ImageAverage(img);
-  fprintf(stderr, "Image %s: min=%f, max=%f, avg=%f\n",
-      desc.c_str(), double(mn), double(mx), double(avg));
+  fprintf(stderr, "Image %s: min=%f, max=%f, avg=%f\n", desc.c_str(),
+          double(mn), double(mx), double(avg));
 }
 
 template <typename T>

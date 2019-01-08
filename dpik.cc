@@ -15,7 +15,9 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include "data_parallel.h"
 
+#undef PROFILER_ENABLED
 #define PROFILER_ENABLED 1
 #include "arch_specific.h"
 #include "args.h"
@@ -70,11 +72,7 @@ struct DecompressArgs {
         } else if (strcmp(argv[i], "--gaborish") == 0) {
           size_t strength;
           PIK_RETURN_IF_ERROR(ParseUnsigned(argc, argv, &i, &strength));
-          if (strength > 7) {
-            fprintf(stderr, "Invalid gaborish strength, must be 0..7.\n");
-            return PIK_FAILURE("Invalid gaborish strength");
-          }
-          params.gaborish = strength;
+          params.gaborish = static_cast<GaborishStrength>(strength);
         } else if (strcmp(argv[i], "--print_profile") == 0) {
           PIK_RETURN_IF_ERROR(ParseOverride(argc, argv, &i, &print_profile));
         } else {
@@ -138,7 +136,7 @@ class DecompressStats {
     elapsed_.push_back(elapsed_seconds);
   }
 
-  Status Print(const CodecInOut& io) {
+  Status Print(const CodecInOut& io, ThreadPool* pool) {
     const size_t xsize = io.xsize();
     const size_t ysize = io.ysize();
     const size_t channels = io.c_current().Channels() + io.HasAlpha();
@@ -153,13 +151,13 @@ class DecompressStats {
       fprintf(stderr,
               "%zu x %zu pixels (%s%.2f MB/s, %zu reps, %zu threads).\n", xsize,
               ysize, type, bytes * 1E-6 / elapsed, elapsed_.size(),
-              io.Context()->pool.NumThreads());
+              NumWorkerThreads(pool));
     } else {
       fprintf(
           stderr,
           "%zu x %zu pixels (%s%.2f MB/s (var %.2f), %zu reps, %zu threads).\n",
           xsize, ysize, type, bytes * 1E-6 / elapsed, variability,
-          elapsed_.size(), io.Context()->pool.NumThreads());
+          elapsed_.size(), NumWorkerThreads(pool));
     }
     return true;
   }
@@ -201,7 +199,7 @@ class DecompressStats {
 
     // Else: mode
     std::sort(elapsed_.begin(), elapsed_.end());
-    *summary = Mode(elapsed_.data(), elapsed_.size());
+    *summary = HalfSampleMode()(elapsed_.data(), elapsed_.size());
     *variability = MedianAbsoluteDeviation(elapsed_, *summary);
     *type = "mode: ";
     return true;
@@ -235,15 +233,16 @@ Status WriteOutput(const DecompressArgs& args, const CodecInOut& io) {
   if (!args.color_space.empty()) {
     ProfileParams pp;
     if (!ParseDescription(args.color_space, &pp) ||
-        !io.Context()->cms.SetFromParams(pp, &c_out)) {
+        !ColorManagement::SetFromParams(pp, &c_out)) {
       fprintf(stderr, "Failed to apply color_space.\n");
       return false;
     }
   }
 
   // Override original #bits with arg if specified.
-  const size_t bits_per_sample = args.bits_per_sample == 0 ?
-      io.original_bits_per_sample() : args.bits_per_sample;
+  const size_t bits_per_sample = args.bits_per_sample == 0
+                                     ? io.original_bits_per_sample()
+                                     : args.bits_per_sample;
 
   if (!io.EncodeToFile(c_out, bits_per_sample, args.file_out)) {
     fprintf(stderr, "Failed to write decoded image.\n");
@@ -253,7 +252,7 @@ Status WriteOutput(const DecompressArgs& args, const CodecInOut& io) {
   return true;
 }
 
-int Run(int argc, char* argv[]) {
+int Decompress(int argc, char* argv[]) {
   DecompressArgs args;
   if (!args.Init(argc, argv)) {
     fprintf(stderr, DecompressArgs::HelpFormatString(), argv[0]);
@@ -270,8 +269,19 @@ int Run(int argc, char* argv[]) {
   if (!ReadFile(args.file_in, &compressed)) return 1;
   fprintf(stderr, "Read %zu compressed bytes\n", compressed.size());
 
-  CodecContext codec_context(args.num_threads);
+  CodecContext codec_context;
+  ThreadPool pool(args.num_threads);
   DecompressStats stats;
+
+  const std::vector<int> cpus = AvailableCPUs();
+  pool.RunOnEachThread([&cpus](const int task, const int thread) {
+    // 1.1-1.2x speedup (36 cores) from pinning.
+    if (thread < cpus.size()) {
+      if (!PinThreadToCPU(cpus[thread])) {
+        fprintf(stderr, "WARNING: failed to pin thread %d.\n", thread);
+      }
+    }
+  });
 
   CodecInOut io(&codec_context);
   for (size_t i = 0; i < args.num_reps; ++i) {
@@ -282,7 +292,7 @@ int Run(int argc, char* argv[]) {
 
   if (!WriteOutput(args, io)) return 1;
 
-  (void)stats.Print(io);
+  (void)stats.Print(io, &pool);
 
   if (args.print_profile == Override::kOn) {
     PROFILER_PRINT_RESULTS();
@@ -294,4 +304,4 @@ int Run(int argc, char* argv[]) {
 }  // namespace
 }  // namespace pik
 
-int main(int argc, char* argv[]) { return pik::Run(argc, argv); }
+int main(int argc, char* argv[]) { return pik::Decompress(argc, argv); }

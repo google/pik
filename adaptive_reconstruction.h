@@ -15,22 +15,24 @@
 #ifndef ADAPTIVE_RECONSTRUCTION_H_
 #define ADAPTIVE_RECONSTRUCTION_H_
 
-#include <functional>
-#include "compressed_image.h"
-#include "data_parallel.h"
+#include "adaptive_reconstruction_fwd.h"
+#include "epf.h"
 #include "image.h"
-#include "intra_transform.h"
+#include "multipass_handler.h"
 #include "quantizer.h"
 
 namespace pik {
 
-// Edge-preserving smoothing plus clamping the result to the quantized interval.
-// "cmap" is required to predict the actual quantized values.
-Image3F AdaptiveReconstruction(const Quantizer& quantizer,
-                               const ColorCorrelationMap& cmap,
-                               ThreadPool* pool, const Image3F& in,
-                               const ImageB& ac_strategy,
-                               OpsinIntraTransform* transform);
+// Edge-preserving smoothing plus clamping the result to the quantized interval
+// (which requires `quantizer` and `biases` to reconstruct the values that
+// were actually quantized). `in` is the image to filter:  opsin AFTER gaborish.
+// `non_smoothed` is BEFORE gaborish.
+Image3F AdaptiveReconstruction(Image3F* in, const Image3F& non_smoothed,
+                               const Quantizer& quantizer,
+                               const ImageI& raw_quant_field,
+                               const AcStrategyImage& ac_strategy,
+                               const Image3F& biases, const EpfParams& params,
+                               AdaptiveReconstructionAux* aux = nullptr);
 
 }  // namespace pik
 

@@ -25,7 +25,7 @@
 namespace pik {
 
 // DCT building blocks that require SIMD vector length to be 4, e.g. SSE4.
-static_assert(BlockDesc().N == 4, "Wrong vector size, must be 4");
+static_assert(BlockDesc<8>().N == 4, "Wrong vector size, must be 4");
 
 template <class From, class To>
 static SIMD_ATTR PIK_INLINE void TransposeBlock8_V4(const From& from,
