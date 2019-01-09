@@ -1,16 +1,8 @@
 // Copyright 2018 Google Inc. All Rights Reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT.
 
 #ifndef EXTERNAL_IMAGE_H_
 #define EXTERNAL_IMAGE_H_
@@ -49,7 +41,10 @@ class ExternalImage {
   Status IsHealthy() const { return is_healthy_; }
 
   // Sets "io" to a newly allocated copy with c_current color space.
-  // Uses temp_intervals for rescaling if not null.
+  // Uses temp_intervals for rescaling if not null (NOTE: temp_intervals is
+  // given as if a range of [0.0f-1.0f] would be used, even though it uses
+  // [0.0f-255.0f] internally, to match the same parameter given to the
+  // color converting constructor).
   Status CopyTo(const CodecIntervals* temp_intervals, ThreadPool* pool,
                 CodecInOut* io) const;
 

@@ -1,16 +1,8 @@
 // Copyright 2017 Google Inc. All Rights Reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT.
 
 #include "ac_strategy.h"
 #include "block.h"
@@ -608,13 +600,15 @@ size_t AcStrategyImage::CountBlocks(AcStrategy::Type type) const {
 }
 
 SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
-                                  const ImageF* quant_field, const Image3F* src,
-                                  const Image3F* coeffs_init, ThreadPool* pool,
+                                  const ImageF* quant_field, const Image3F& src,
+                                  ThreadPool* pool,
                                   AcStrategyImage* ac_strategy,
                                   PikInfo* aux_out) {
   PROFILER_FUNC;
-  size_t xsize_blocks = src->xsize() / kBlockDim;
-  size_t ysize_blocks = src->ysize() / kBlockDim;
+  size_t xsize_blocks = src.xsize() / kBlockDim;
+  size_t ysize_blocks = src.ysize() / kBlockDim;
+  Image3F coeffs = Image3F(xsize_blocks * kBlockDim * kBlockDim, ysize_blocks);
+  TransposedScaledDCT(src, &coeffs);
   *ac_strategy = AcStrategyImage(xsize_blocks, ysize_blocks);
   if (kChooseAcStrategy) {
     const auto find_block_strategy = [&](int bx, int by) SIMD_ATTR {
@@ -684,7 +678,7 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
       };
 
       int identity_score =
-          apply_identity(butteraugli_target, src, quant_field, kBlockDim,
+          apply_identity(butteraugli_target, &src, quant_field, kBlockDim,
                          kBlockDim, bx, by, kQuant64Identity);
       if (identity_score > 3 * 49) {
         return AcStrategy::Type::IDENTITY;
@@ -698,10 +692,10 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
           (by & 3) == 0) {
         static const double kDiff = 0.17023516028338581;
         double dct8x8_entropy = 0;
-        for (size_t c = 0; c < coeffs_init->kNumPlanes; c++) {
+        for (size_t c = 0; c < coeffs.kNumPlanes; c++) {
           double entropy = 0;
           for (size_t iy = 0; iy < 4; iy++) {
-            const float* row = coeffs_init->ConstPlaneRow(c, by + iy);
+            const float* row = coeffs.ConstPlaneRow(c, by + iy);
             int bx_actual = bx;
             for (size_t ix = 1; ix < kBlockDim * kBlockDim * 4; ix++) {
               // Skip the dc values at 0 and 64.
@@ -732,13 +726,13 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
         double kMulInho = (-47.780 * (7.8075571028999997)) / butteraugli_target;
         dct8x8_entropy += kMulInho * quant_inhomogeneity;
         double dct32x32_entropy = 0;
-        for (size_t c = 0; c < src->kNumPlanes; c++) {
+        for (size_t c = 0; c < src.kNumPlanes; c++) {
           double entropy = 0;
           SIMD_ALIGN float dct32x32[16 * kBlockDim * kBlockDim] = {};
           ComputeTransposedScaledDCT<4 * kBlockDim>()(
               FromLines<4 * kBlockDim>(
-                  src->PlaneRow(c, kBlockDim * by) + kBlockDim * bx,
-                  src->PixelsPerRow()),
+                  src.PlaneRow(c, kBlockDim * by) + kBlockDim * bx,
+                  src.PixelsPerRow()),
               ScaleToBlock<4 * kBlockDim>(dct32x32));
           for (size_t k = 0; k < 16 * kBlockDim * kBlockDim; k++) {
             if ((k & 31) < 4 && (k >> 5) < 4) {
@@ -769,10 +763,10 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
           (by & 1) == 0) {
         static const double kDiff = 0.10873821113104205;
         double dct8x8_entropy = 0;
-        for (size_t c = 0; c < coeffs_init->kNumPlanes; c++) {
+        for (size_t c = 0; c < coeffs.kNumPlanes; c++) {
           double entropy = 0;
           for (size_t iy = 0; iy < 2; iy++) {
-            const float* row = coeffs_init->ConstPlaneRow(c, by + iy);
+            const float* row = coeffs.ConstPlaneRow(c, by + iy);
             int bx_actual = bx;
             for (size_t ix = 1; ix < kBlockDim * kBlockDim * 2; ix++) {
               // Skip the dc values at 0 and 64.
@@ -803,13 +797,13 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
         double kMulInho = (-47.780 * (2.1328696219249883)) / butteraugli_target;
         dct8x8_entropy += kMulInho * quant_inhomogeneity;
         double dct16x16_entropy = 0;
-        for (size_t c = 0; c < src->kNumPlanes; c++) {
+        for (size_t c = 0; c < src.kNumPlanes; c++) {
           double entropy = 0;
           SIMD_ALIGN float dct16x16[4 * kBlockDim * kBlockDim] = {};
           ComputeTransposedScaledDCT<2 * kBlockDim>()(
               FromLines<2 * kBlockDim>(
-                  src->PlaneRow(c, kBlockDim * by) + kBlockDim * bx,
-                  src->PixelsPerRow()),
+                  src.PlaneRow(c, kBlockDim * by) + kBlockDim * bx,
+                  src.PixelsPerRow()),
               ScaleToBlock<2 * kBlockDim>(dct16x16));
           for (size_t k = 2; k < 4 * kBlockDim * kBlockDim; k++) {
             if ((k & 15) < 2 && (k >> 4) < 2) {

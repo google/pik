@@ -1,3 +1,9 @@
+# Copyright 2019 Google LLC
+#
+# Use of this source code is governed by an MIT-style
+# license that can be found in the LICENSE file or at
+# https://opensource.org/licenses/MIT.
+
 override CPPFLAGS += -I. -I../ -Ithird_party/brotli/c/include//..
 override CXXFLAGS += -std=c++11 -Wall -O3 -fPIC -fsanitize=address
 override LDFLAGS += $(CXXFLAGS)

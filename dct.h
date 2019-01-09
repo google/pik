@@ -1,16 +1,8 @@
 // Copyright 2017 Google Inc. All Rights Reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT.
 
 #ifndef DCT_H_
 #define DCT_H_
@@ -520,7 +512,7 @@ static SIMD_ATTR PIK_INLINE float ComputeScaledDC(const From& from) {
 #if SIMD_TARGET_VALUE == SIMD_AVX2
   return ComputeScaledDC8_V8(from);
 #elif SIMD_TARGET_VALUE == SIMD_NONE
-  const BlockDesc d;
+  const BlockDesc<N> d;
   auto sum = setzero(d);
   for (size_t iy = 0; iy < N; ++iy) {
     for (size_t ix = 0; ix < N; ix += d.N) {

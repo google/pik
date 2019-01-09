@@ -1,5 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
+ <comment>
+  Copyright 2019 Google LLC
+
+  Use of this source code is governed by an MIT-style
+  license that can be found in the LICENSE file or at
+  https://opensource.org/licenses/MIT.
+ </comment>
  <class>CodecComparisonWindow</class>
  <widget class="QMainWindow" name="CodecComparisonWindow">
   <property name="windowTitle">

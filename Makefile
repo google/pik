@@ -1,3 +1,9 @@
+# Copyright 2019 Google LLC
+#
+# Use of this source code is governed by an MIT-style
+# license that can be found in the LICENSE file or at
+# https://opensource.org/licenses/MIT.
+
 SIMD_FLAGS := -march=haswell
 
 ifeq ($(origin CXX),default)
@@ -37,7 +43,6 @@ override LDFLAGS += -s -Wl,--whole-archive -lpthread -Wl,--no-whole-archive -sta
 
 PIK_OBJS := $(addprefix obj/, \
 	simd/targets.o \
-	third_party/lodepng/lodepng.o \
 	ac_predictions.o \
 	ac_strategy.o \
 	adaptive_quantization.o \
@@ -83,7 +88,6 @@ PIK_OBJS := $(addprefix obj/, \
 	huffman_decode.o \
 	huffman_encode.o \
 	image_io.o \
-	jpeg_quant_tables.o \
 	lehmer_code.o \
 	metadata.o \
 	noise.o \
@@ -117,7 +121,10 @@ third_party/lcms/src/.libs/liblcms2.a:
 	cd third_party/lcms; ./configure; cd ..
 	$(MAKE) -C third_party/lcms
 
-THIRD_PARTY := third_party/brotli/libbrotli.a third_party/lcms/src/.libs/liblcms2.a
+THIRD_PARTY := \
+	third_party/brotli/libbrotli.a \
+	third_party/lcms/src/.libs/liblcms2.a \
+	third_party/lodepng/lodepng.o
 
 bin/cpik: obj/cpik.o $(PIK_OBJS) $(THIRD_PARTY)
 bin/dpik: obj/dpik.o $(PIK_OBJS) $(THIRD_PARTY)

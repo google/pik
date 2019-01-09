@@ -1,16 +1,8 @@
 // Copyright 2018 Google Inc. All Rights Reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT.
 
 #ifndef HEADERS_H_
 #define HEADERS_H_
@@ -149,9 +141,12 @@ struct GroupHeader {
 enum class ImageEncoding : uint32_t {
   kPasses = 0,   // PIK
   kProgressive,  // FUIF
-  kLossless8,
-  kLossless16,
-  // Future extensions: [4, 6]
+  kLosslessGray8,
+  kLosslessGray16,
+  kLosslessColor8,
+  kLosslessColor16,
+  // TODO(user): extend amount of possible values
+  // Future extensions: [6]
 };
 
 struct FrameInfo {

@@ -1,16 +1,8 @@
 // Copyright 2016 Google Inc. All Rights Reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//    http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT.
 //
 // Disclaimer: This is not an official Google product.
 
@@ -530,16 +522,6 @@ Image<T> ScaleImage(const T lambda, const Image<T>& image) {
 }
 
 template <typename T>
-Image<T> ZeroPadImage(const Image<T>& in, int padx0, int pady0, int padx1,
-                      int pady1) {
-  Image<T> out(in.xsize() + padx0 + padx1, in.ysize() + pady0 + pady1, T());
-  for (int y = 0; y < in.ysize(); ++y) {
-    memcpy(out.Row(y + pady0) + padx0, in.Row(y), in.xsize() * sizeof(T));
-  }
-  return out;
-}
-
-template <typename T>
 Image<T> Product(const Image<T>& a, const Image<T>& b) {
   Image<T> c(a.xsize(), a.ysize());
   for (size_t y = 0; y < a.ysize(); ++y) {
@@ -554,19 +536,6 @@ Image<T> Product(const Image<T>& a, const Image<T>& b) {
 }
 
 float DotProduct(const ImageF& a, const ImageF& b);
-
-template <typename T>
-Image<T> TorusShift(const Image<T>& img, size_t shift_x, size_t shift_y) {
-  Image<T> out(img.xsize(), img.ysize());
-  for (size_t y = 0; y < img.ysize(); ++y) {
-    const T* const PIK_RESTRICT row_in = img.Row((y + shift_y) % img.ysize());
-    T* const PIK_RESTRICT row_out = out.Row(y);
-    for (size_t x = 0; x < img.xsize(); ++x) {
-      row_out[x] = row_in[(x + shift_x) % img.xsize()];
-    }
-  }
-  return out;
-}
 
 template <typename T>
 void FillImage(const T value, Image<T>* image) {
@@ -681,20 +650,6 @@ void SetBorder(const size_t thickness, const T value, Image<T>* image) {
   }
 }
 
-// Shrinks the image (without reallocating nor copying pixels) such that its
-// size is a multiple of x/y_multiple.
-template <class Image>
-void CropToMultipleOf(const size_t x_multiple, const size_t y_multiple,
-                      Image* image) {
-  const size_t xsize = image->xsize();
-  const size_t ysize = image->ysize();
-  const size_t x_excess = xsize % x_multiple;
-  const size_t y_excess = ysize % y_multiple;
-  if (x_excess != 0 || y_excess != 0) {
-    image->ShrinkTo(xsize - x_excess, ysize - y_excess);
-  }
-}
-
 // Computes the minimum and maximum pixel value.
 template <typename T>
 void ImageMinMax(const Image<T>& image, T* const PIK_RESTRICT min,
@@ -747,8 +702,7 @@ void ImageConvert(const Image<FromType>& from, const float to_range,
   }
 }
 
-// FromType and ToType are the pixel types. For float to byte, consider using
-// Float255ToByteImage instead as it rounds the values correctly.
+// FromType and ToType are the pixel types.
 template <typename FromType, typename ToType>
 Image<ToType> StaticCastImage(const Image<FromType>& from) {
   Image<ToType> to(from.xsize(), from.ysize());
@@ -761,8 +715,6 @@ Image<ToType> StaticCastImage(const Image<FromType>& from) {
   }
   return to;
 }
-
-ImageB Float255ToByteImage(const ImageF& from);
 
 template <typename T>
 std::vector<T> PackedFromImage(const Image<T>& image) {
@@ -1159,8 +1111,7 @@ void Image3Convert(const Image3<FromType>& from, const float to_range,
   }
 }
 
-// FromType and ToType are the pixel types. For float to byte, consider using
-// Float255ToByteImage instead as it rounds the values correctly.
+// FromType and ToType are the pixel types.
 template <typename FromType, typename ToType>
 Image3<ToType> StaticCastImage3(const Image3<FromType>& from) {
   Image3<ToType> to(from.xsize(), from.ysize());
@@ -1175,9 +1126,6 @@ Image3<ToType> StaticCastImage3(const Image3<FromType>& from) {
   }
   return to;
 }
-
-// Clamps input components to [0, 255] and casts to uint8_t.
-Image3B Float255ToByteImage3(const Image3F& from);
 
 template <typename Tin, typename Tout>
 void Subtract(const Image3<Tin>& image1, const Image3<Tin>& image2,
@@ -1318,105 +1266,6 @@ Image3<T> Image3FromInterleaved(const T* const interleaved, const size_t xsize,
     }
   }
   return image3;
-}
-
-template <typename T>
-std::vector<std::vector<T>> Packed3FromImage3(const Image3<T>& planes) {
-  std::vector<std::vector<T>> result(
-      3, std::vector<T>(planes.xsize() * planes.ysize()));
-  for (size_t y = 0; y < planes.ysize(); y++) {
-    const T* PIK_RESTRICT row0 = planes.PlaneRow(0, y);
-    const T* PIK_RESTRICT row1 = planes.PlaneRow(1, y);
-    const T* PIK_RESTRICT row2 = planes.PlaneRow(2, y);
-    for (size_t x = 0; x < planes.xsize(); x++) {
-      result[0][y * planes.xsize() + x] = row0[x];
-      result[1][y * planes.xsize() + x] = row1[x];
-      result[2][y * planes.xsize() + x] = row2[x];
-    }
-  }
-  return result;
-}
-
-template <typename T>
-Image3<T> Image3FromPacked3(const std::vector<std::vector<T>>& packed,
-                            const size_t xsize, const size_t ysize) {
-  Image3<T> out(xsize, ysize);
-  for (size_t y = 0; y < ysize; ++y) {
-    T* PIK_RESTRICT row0 = out.PlaneRow(0, y);
-    T* PIK_RESTRICT row1 = out.PlaneRow(1, y);
-    T* PIK_RESTRICT row2 = out.PlaneRow(2, y);
-    for (size_t x = 0; x < xsize; ++x) {
-      row0[x] = packed[0][y * xsize + x];
-      row1[x] = packed[1][y * xsize + x];
-      row2[x] = packed[2][y * xsize + x];
-    }
-  }
-  return out;
-}
-
-// Rounds size up to multiples of xres and yres by replicating the last pixel.
-template <typename T>
-Image3<T> ExpandAndCopyBorders(const Image3<T>& img, const size_t xres,
-                               const size_t yres) {
-  const size_t xsize = xres * ((img.xsize() + xres - 1) / xres);
-  const size_t ysize = yres * ((img.ysize() + yres - 1) / yres);
-  Image3<T> out(xsize, ysize);
-  for (int c = 0; c < 3; ++c) {
-    for (size_t y = 0; y < ysize; ++y) {
-      const T* PIK_RESTRICT row_in =
-          img.PlaneRow(c, std::min(img.ysize() - 1, y));
-      T* PIK_RESTRICT row_out = out.PlaneRow(c, y);
-      size_t x = 0;
-      for (; x < img.xsize(); ++x) {
-        row_out[x] = row_in[x];
-      }
-      for (; x < xsize; ++x) {
-        row_out[x] = row_in[img.xsize() - 1];
-      }
-    }
-  }
-  return out;
-}
-
-template <typename T>
-void AddScalar(T v, Image<T>* img) {
-  const size_t xsize = img->xsize();
-  const size_t ysize = img->ysize();
-  for (size_t y = 0; y < ysize; ++y) {
-    T* PIK_RESTRICT row = img->Row(y);
-    for (size_t x = 0; x < xsize; ++x) {
-      row[x] += v;
-    }
-  }
-}
-
-template <typename T>
-void AddScalar(T v0, T v1, T v2, Image3<T>* img) {
-  const size_t xsize = img->xsize();
-  const size_t ysize = img->ysize();
-  for (size_t y = 0; y < ysize; ++y) {
-    T* PIK_RESTRICT row0 = img->PlaneRow(0, y);
-    T* PIK_RESTRICT row1 = img->PlaneRow(1, y);
-    T* PIK_RESTRICT row2 = img->PlaneRow(2, y);
-    for (size_t x = 0; x < xsize; ++x) {
-      row0[x] += v0;
-      row1[x] += v1;
-      row2[x] += v2;
-    }
-  }
-}
-
-template <typename T, typename Fun>
-void Apply(Fun f, Image<T>* image) {
-  const size_t xsize = image->xsize();
-  const size_t ysize = image->ysize();
-
-  for (size_t y = 0; y < ysize; y++) {
-    T* PIK_RESTRICT row = image->Row(y);
-    for (size_t x = 0; x < xsize; x++) {
-      f(&row[x]);
-    }
-  }
 }
 
 template <typename T>

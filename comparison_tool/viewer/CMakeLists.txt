@@ -1,3 +1,9 @@
+# Copyright 2019 Google LLC
+#
+# Use of this source code is governed by an MIT-style
+# license that can be found in the LICENSE file or at
+# https://opensource.org/licenses/MIT.
+
 find_package(Qt5 COMPONENTS Concurrent Widgets X11Extras)
 if (NOT Qt5_FOUND)
   message(WARNING "Qt5 was not found. The comparison tool will not be built.")

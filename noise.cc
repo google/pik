@@ -1,6 +1,13 @@
+// Copyright 2019 Google LLC
+//
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT.
+
 #include <cmath>
 #include <cstdio>
 #include <numeric>
+#include <random>
 
 #include "convolve.h"
 #include "descriptive_statistics.h"
@@ -11,12 +18,13 @@
 #include "robust_statistics.h"
 #include "simd/simd.h"
 #include "write_bits.h"
-#include "xorshift128plus.h"
+
+typedef std::mt19937 RandomGenerator;
 
 namespace pik {
 namespace {
 
-SIMD_ATTR ImageF RandomImage(ImageF* PIK_RESTRICT temp, Xorshift128Plus* rng) {
+SIMD_ATTR ImageF RandomImage(ImageF* PIK_RESTRICT temp, RandomGenerator* rng) {
   const size_t xsize = temp->xsize();
   const size_t ysize = temp->ysize();
   for (size_t y = 0; y < ysize; ++y) {
@@ -24,7 +32,11 @@ SIMD_ATTR ImageF RandomImage(ImageF* PIK_RESTRICT temp, Xorshift128Plus* rng) {
     const SIMD_FULL(float) df;
     const SIMD_FULL(uint32_t) du;
     for (size_t x = 0; x < xsize; x += df.N) {
-      const auto bits = cast_to(du, (*rng)());
+      uint32_t rnd[SIMD_FULL(uint32_t)::N];
+      for (size_t i = 0; i < du.N; i++) {
+        rnd[i] = (*rng)();
+      }
+      const auto bits = load_unaligned(du, rnd);
       // 1.0 + 23 random mantissa bits = [1, 2)
       const auto rand12 =
           cast_to(df, shift_right<9>(bits) | set1(du, 0x3F800000));
@@ -298,7 +310,7 @@ SIMD_ATTR void AddNoiseT(const StrengthEval& noise_model, Image3F* opsin) {
   const size_t xsize = opsin->xsize();
   const size_t ysize = opsin->ysize();
 
-  Xorshift128Plus rng(65537, 123456789);
+  RandomGenerator rng(123456789);
   ImageF temp(xsize, ysize);
   const ImageF& rnd_noise_red = RandomImage(&temp, &rng);
   const ImageF& rnd_noise_green = RandomImage(&temp, &rng);

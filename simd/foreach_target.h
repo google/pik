@@ -1,3 +1,9 @@
+// Copyright 2019 Google LLC
+//
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT.
+
 // Includes a specified file for every enabled SIMD_TARGET. This is used to
 // generate template instantiations to be called via runtime dispatche.
 

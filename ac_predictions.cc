@@ -1,16 +1,8 @@
 // Copyright 2017 Google Inc. All Rights Reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT.
 
 #include "ac_predictions.h"
 #include "ac_strategy.h"
@@ -169,48 +161,59 @@ struct LFPredictionBlur {
 // compute 2x2 block.
 template <size_t c>
 SIMD_ATTR void ComputeDecoderBlockAnd2x2DC(
-    bool predict_lf, bool predict_hf, AcStrategy acs,
+    bool is_border, bool predict_lf, bool predict_hf, AcStrategy acs,
     const size_t residuals_stride, const size_t pred_stride,
     const size_t lf2x2_stride, const size_t bx, const Quantizer& quantizer,
     int32_t quant_ac, const float* PIK_RESTRICT cmap_factor,
     const float* PIK_RESTRICT pred[3], float* PIK_RESTRICT residuals[3],
-    float* PIK_RESTRICT lf2x2_row[3], float* PIK_RESTRICT y_residuals_dec) {
+    float* PIK_RESTRICT lf2x2_row[3], const float* PIK_RESTRICT dc[3],
+    float* PIK_RESTRICT y_residuals_dec) {
   PROFILER_FUNC;
   constexpr size_t N = kBlockDim;
   float decoder_coeffs[AcStrategy::kMaxCoeffArea] = {};
-  for (size_t iby = 0; iby < acs.covered_blocks_y(); iby++) {
-    for (size_t ibx = 0; ibx < acs.covered_blocks_x(); ibx++) {
-      float* current =
-          residuals[c] + N * N * (bx + ibx) + residuals_stride * iby;
-      const float* pred_current =
-          pred[c] + 2 * (bx + ibx) + pred_stride * 2 * iby;
-      float* y_current =
-          y_residuals_dec + N * N * (acs.covered_blocks_x() * iby + ibx);
-      float* decoder_current =
-          decoder_coeffs + N * N * (acs.covered_blocks_x() * iby + ibx);
+  if (!is_border) {
+    for (size_t iby = 0; iby < acs.covered_blocks_y(); iby++) {
+      for (size_t ibx = 0; ibx < acs.covered_blocks_x(); ibx++) {
+        float* current =
+            residuals[c] + N * N * (bx + ibx - 1) + residuals_stride * iby;
+        const float* pred_current =
+            pred[c] + 2 * (bx + ibx) + pred_stride * 2 * iby;
+        float* y_current =
+            y_residuals_dec + N * N * (acs.covered_blocks_x() * iby + ibx);
+        float* decoder_current =
+            decoder_coeffs + N * N * (acs.covered_blocks_x() * iby + ibx);
 
-      if (predict_lf) {
-        // Remove prediction
-        current[1] -= pred_current[1];
-        current[N] -= pred_current[pred_stride];
-        current[N + 1] -= pred_current[pred_stride + 1];
+        if (predict_lf) {
+          // Remove prediction
+          current[1] -= pred_current[1];
+          current[N] -= pred_current[pred_stride];
+          current[N + 1] -= pred_current[pred_stride + 1];
+        }
+
+        // Quantization roundtrip
+        const size_t kind =
+            acs.GetQuantKind(iby * acs.covered_blocks_x() + ibx);
+        const float inv_quant_ac = quantizer.inv_quant_ac(quant_ac);
+        // 0x302 has bits 1, 8, 9 set.
+        ComputeDecoderCoefficients<c>(cmap_factor[c], quantizer, quant_ac,
+                                      inv_quant_ac, kind, current, 0x302,
+                                      decoder_current, y_current);
+
+        decoder_current[0] = current[0];
+        if (predict_lf) {
+          // Add back prediction
+          decoder_current[1] += pred_current[1];
+          decoder_current[N] += pred_current[pred_stride];
+          decoder_current[N + 1] += pred_current[pred_stride + 1];
+        }
       }
-
-      // Quantization roundtrip
-      const size_t kind = acs.GetQuantKind(iby * acs.covered_blocks_x() + ibx);
-      const float inv_quant_ac = quantizer.inv_quant_ac(quant_ac);
-      // 0x302 has bits 1, 8, 9 set.
-      ComputeDecoderCoefficients<c>(cmap_factor[c], quantizer, quant_ac,
-                                    inv_quant_ac, kind, current, 0x302,
-                                    decoder_current, y_current);
-
-      decoder_current[0] = current[0];
-      if (predict_lf) {
-        // Add back prediction
-        decoder_current[1] += pred_current[1];
-        decoder_current[N] += pred_current[pred_stride];
-        decoder_current[N + 1] += pred_current[pred_stride + 1];
-      }
+    }
+  } else {
+    decoder_coeffs[0] = dc[c][bx];
+    if (predict_lf) {
+      decoder_coeffs[1] = pred[c][2 * bx + 1];
+      decoder_coeffs[N] = pred[c][pred_stride + 2 * bx];
+      decoder_coeffs[N + 1] = pred[c][pred_stride + 2 * bx + 1];
     }
   }
   if (predict_hf) {
@@ -224,16 +227,16 @@ SIMD_ATTR void CopyLlf(const Image3F& llf, Image3F* PIK_RESTRICT ac64) {
   PROFILER_FUNC;
   constexpr size_t N = kBlockDim;
   constexpr size_t block_size = N * N;
-  const size_t xsize = llf.xsize();
-  const size_t ysize = llf.ysize();
+  const size_t xsize = llf.xsize() - 2;
+  const size_t ysize = llf.ysize() - 2;
 
   // Copy (reinterpreted) DC values to 0-th block values.
   for (size_t c = 0; c < ac64->kNumPlanes; c++) {
     for (size_t by = 0; by < ysize; ++by) {
-      const float* llf_row = llf.ConstPlaneRow(c, by);
+      const float* llf_row = llf.ConstPlaneRow(c, by + 1);
       float* ac_row = ac64->PlaneRow(c, by);
       for (size_t bx = 0; bx < xsize; bx++) {
-        ac_row[block_size * bx] = llf_row[bx];
+        ac_row[block_size * bx] = llf_row[bx + 1];
       }
     }
   }
@@ -312,28 +315,14 @@ SIMD_ATTR void UpSample4x4BlurDCT(const Rect& dc_rect, const ImageF& img,
   V vw2[4] = {set1(d, kernel[2][0]), set1(d, kernel[2][1]),
               set1(d, kernel[2][2]), set1(d, kernel[2][3])};
 
-  // Use extended values, if available, otherwise mirroring.
-  size_t left_border_x = 2 * ((bx0 == 0) ? 1 : bx0) - 1;
-  size_t right_border_x = 2 * ((bx1 == bx_max) ? (bx_max - 1) : bx1);
-  size_t top_border_y = 2 * ((by0 == 0) ? 1 : by0) - 1;
-  size_t bottom_border_y = 2 * ((by1 == by_max) ? (by_max - 1) : by1);
-
   ImageF blur_x(xs * 4, ys + 2);
-  ImageF padded(xs + 2, 1);
   for (size_t y = 0; y < ys + 2; ++y) {
-    const size_t src_y =
-        (y == 0) ? top_border_y
-                 : (y == ys + 1) ? bottom_border_y : 2 * by0 + y - 1;
-    float* PIK_RESTRICT row_tmp = padded.Row(0);
-    const float* PIK_RESTRICT row = img.ConstRow(src_y);
-    memcpy(&row_tmp[1], row + 2 * bx0, xs * sizeof(row[0]));
-    row_tmp[0] = row[left_border_x];
-    row_tmp[xs + 1] = row[right_border_x];
+    const float* PIK_RESTRICT row = img.ConstRow(y + 1);
     float* const PIK_RESTRICT row_out = blur_x.Row(y);
     for (int x = 0; x < xs; ++x) {
-      const float v0 = row_tmp[x];
-      const float v1 = row_tmp[x + 1];
-      const float v2 = row_tmp[x + 2];
+      const float v0 = row[x + 1];
+      const float v1 = row[x + 2];
+      const float v2 = row[x + 3];
       for (int ix = 0; ix < 4; ++ix) {
         row_out[4 * x + ix] =
             v0 * kernel[0][ix] + v1 * kernel[1][ix] + v2 * kernel[2][ix];
@@ -418,12 +407,17 @@ SIMD_ATTR void ComputeLlf(const Image3F& dc, const AcStrategyImage& ac_strategy,
   // Copy (reinterpreted) DC values to 0-th block values.
   for (size_t c = 0; c < llf->kNumPlanes; c++) {
     for (size_t by = 0; by < ysize; ++by) {
-      AcStrategyRow ac_strategy_row = ac_strategy.ConstRow(acs_rect, by);
+      const bool is_border_y = by == 0 || by == ysize - 1;
+      AcStrategyRow ac_strategy_row =
+          ac_strategy.ConstRow(acs_rect, is_border_y ? 0 : by - 1);
       const float* dc_row = dc.ConstPlaneRow(c, by);
       float* llf_row = llf->PlaneRow(c, by);
       for (size_t bx = 0; bx < xsize; bx++) {
-        ac_strategy_row[bx].LowestFrequenciesFromDC(dc_row + bx, dc_stride,
-                                                    llf_row + bx, llf_stride);
+        const bool is_border = is_border_y || (bx == 0 || bx == xsize - 1);
+        AcStrategy acs = is_border ? AcStrategy(AcStrategy::Type::DCT, 0)
+                                   : ac_strategy_row[bx - 1];
+        acs.LowestFrequenciesFromDC(dc_row + bx, dc_stride, llf_row + bx,
+                                    llf_stride);
       }
     }
   }
@@ -450,12 +444,17 @@ SIMD_ATTR void PredictLf(const AcStrategyImage& ac_strategy,
 
     // Computes the initial DC2x2 from the lowest-frequency coefficients.
     for (size_t by = 0; by < ysize; ++by) {
-      AcStrategyRow ac_strategy_row = ac_strategy.ConstRow(acs_rect, by);
+      const bool is_border_y = by == 0 || by == ysize - 1;
+      AcStrategyRow ac_strategy_row =
+          ac_strategy.ConstRow(acs_rect, is_border_y ? 0 : by - 1);
       float* tmp2x2_row = tmp2x2->Row(2 * by);
       const float* llf_row = llf_plane.Row(by);
       for (size_t bx = 0; bx < xsize; bx++) {
-        ac_strategy_row[bx].DC2x2FromLowestFrequencies(
-            llf_row + bx, llf_stride, tmp2x2_row + 2 * bx, tmp2x2_stride);
+        const bool is_border = is_border_y || (bx == 0 || bx == xsize - 1);
+        AcStrategy acs = is_border ? AcStrategy(AcStrategy::Type::DCT, 0)
+                                   : ac_strategy_row[bx - 1];
+        acs.DC2x2FromLowestFrequencies(llf_row + bx, llf_stride,
+                                       tmp2x2_row + 2 * bx, tmp2x2_stride);
       }
     }
 
@@ -475,11 +474,16 @@ SIMD_ATTR void PredictLf(const AcStrategyImage& ac_strategy,
 
     // Compute LF coefficients
     for (size_t by = 0; by < ysize; ++by) {
-      AcStrategyRow ac_strategy_row = ac_strategy.ConstRow(acs_rect, by);
+      const bool is_border_y = by == 0 || by == ysize - 1;
+      AcStrategyRow ac_strategy_row =
+          ac_strategy.ConstRow(acs_rect, is_border_y ? 0 : by - 1);
       float* lf2x2_row = lf2x2_plane->Row(2 * by);
       for (size_t bx = 0; bx < xsize; bx++) {
-        ac_strategy_row[bx].LowFrequenciesFromDC2x2(
-            lf2x2_row + 2 * bx, lf2x2_stride, lf2x2_row + 2 * bx, lf2x2_stride);
+        const bool is_border = is_border_y || (bx == 0 || bx == xsize - 1);
+        AcStrategy acs = is_border ? AcStrategy(AcStrategy::Type::DCT, 0)
+                                   : ac_strategy_row[bx - 1];
+        acs.LowFrequenciesFromDC2x2(lf2x2_row + 2 * bx, lf2x2_stride,
+                                    lf2x2_row + 2 * bx, lf2x2_stride);
       }
     }
   }
@@ -504,10 +508,11 @@ SIMD_ATTR void PredictLfForEncoder(bool predict_lf, bool predict_hf,
   Image3F lf2x2(xsize * 2, ysize * 2);
   {
     Image3F llf(xsize, ysize);
-    ComputeLlf(dc, ac_strategy, Rect(dc), &llf);
+    ComputeLlf(dc, ac_strategy, Rect(ac_strategy.ConstRaw()), &llf);
     if (predict_lf) {
       // dc2x2 plane is borrowed for temporary storage.
-      PredictLf(ac_strategy, Rect(dc), llf, dc2x2->MutablePlane(0), &lf2x2);
+      PredictLf(ac_strategy, Rect(ac_strategy.ConstRaw()), llf,
+                dc2x2->MutablePlane(0), &lf2x2);
     }
     CopyLlf(llf, ac64);
   }
@@ -517,36 +522,45 @@ SIMD_ATTR void PredictLfForEncoder(bool predict_lf, bool predict_hf,
   // predictions.
   for (size_t by = 0; by < ysize; ++by) {
     float y_residuals_dec[AcStrategy::kMaxCoeffArea];
-    AcStrategyRow acr = ac_strategy.ConstRow(by);
-    float* ac_row[3] = {ac64->PlaneRow(0, by), ac64->PlaneRow(1, by),
-                        ac64->PlaneRow(2, by)};
+    const bool is_border_y = by == 0 || by == ysize - 1;
+    // The following variables will not be used if we are on a border.
+    AcStrategyRow acr = ac_strategy.ConstRow(is_border_y ? 0 : by - 1);
+    float* ac_row[3] = {ac64->PlaneRow(0, is_border_y ? 0 : by - 1),
+                        ac64->PlaneRow(1, is_border_y ? 0 : by - 1),
+                        ac64->PlaneRow(2, is_border_y ? 0 : by - 1)};
+
+    const float* dc_row[3] = {dc.ConstPlaneRow(0, by), dc.ConstPlaneRow(1, by),
+                              dc.ConstPlaneRow(2, by)};
     const float* lf2x2_row[3] = {lf2x2.ConstPlaneRow(0, 2 * by),
                                  lf2x2.ConstPlaneRow(1, 2 * by),
                                  lf2x2.ConstPlaneRow(2, 2 * by)};
     float* dc2x2_row[3] = {dc2x2->PlaneRow(0, 2 * by),
                            dc2x2->PlaneRow(1, 2 * by),
                            dc2x2->PlaneRow(2, 2 * by)};
-    const int32_t* row_quant = quantizer.RawQuantField().ConstRow(by);
+    const int32_t* row_quant =
+        quantizer.RawQuantField().ConstRow(is_border_y ? 0 : by - 1);
     for (size_t bx = 0; bx < xsize; bx++) {
-      AcStrategy acs = acr[bx];
+      const bool is_border = is_border_y || (bx == 0 || bx == xsize - 1);
+      AcStrategy acs =
+          is_border ? AcStrategy(AcStrategy::Type::DCT, 0) : acr[bx - 1];
       if (!acs.IsFirstBlock()) continue;
-      size_t tx = bx / kColorTileDimInBlocks;
-      size_t ty = by / kColorTileDimInBlocks;
+      size_t tx = (is_border ? 0 : bx - 1) / kColorTileDimInBlocks;
+      size_t ty = (is_border ? 0 : by - 1) / kColorTileDimInBlocks;
       float cmap_factor[3] = {
           ColorCorrelationMap::YtoX(1.0f, cmap.ytox_map.ConstRow(ty)[tx]), 0.0f,
           ColorCorrelationMap::YtoB(1.0f, cmap.ytob_map.ConstRow(ty)[tx])};
-      ComputeDecoderBlockAnd2x2DC<1>(predict_lf, predict_hf, acs, ac_stride,
-                                     lf2x2_stride, dc2x2_stride, bx, quantizer,
-                                     row_quant[bx], cmap_factor, lf2x2_row,
-                                     ac_row, dc2x2_row, y_residuals_dec);
-      ComputeDecoderBlockAnd2x2DC<0>(predict_lf, predict_hf, acs, ac_stride,
-                                     lf2x2_stride, dc2x2_stride, bx, quantizer,
-                                     row_quant[bx], cmap_factor, lf2x2_row,
-                                     ac_row, dc2x2_row, y_residuals_dec);
-      ComputeDecoderBlockAnd2x2DC<2>(predict_lf, predict_hf, acs, ac_stride,
-                                     lf2x2_stride, dc2x2_stride, bx, quantizer,
-                                     row_quant[bx], cmap_factor, lf2x2_row,
-                                     ac_row, dc2x2_row, y_residuals_dec);
+      ComputeDecoderBlockAnd2x2DC<1>(
+          is_border, predict_lf, predict_hf, acs, ac_stride, lf2x2_stride,
+          dc2x2_stride, bx, quantizer, row_quant[bx - 1], cmap_factor,
+          lf2x2_row, ac_row, dc2x2_row, dc_row, y_residuals_dec);
+      ComputeDecoderBlockAnd2x2DC<0>(
+          is_border, predict_lf, predict_hf, acs, ac_stride, lf2x2_stride,
+          dc2x2_stride, bx, quantizer, row_quant[bx - 1], cmap_factor,
+          lf2x2_row, ac_row, dc2x2_row, dc_row, y_residuals_dec);
+      ComputeDecoderBlockAnd2x2DC<2>(
+          is_border, predict_lf, predict_hf, acs, ac_stride, lf2x2_stride,
+          dc2x2_stride, bx, quantizer, row_quant[bx - 1], cmap_factor,
+          lf2x2_row, ac_row, dc2x2_row, dc_row, y_residuals_dec);
     }
   }
 }
@@ -569,10 +583,10 @@ SIMD_ATTR void UpdateLfForDecoder(const Rect& tile, bool predict_lf,
   const size_t lf2x2_stride = predict_lf ? lf2x2_plane->PixelsPerRow() : 0;
 
   for (size_t by = by0; by < by1; ++by) {
-    const float* llf_row = llf_plane.ConstRow(by);
+    const float* llf_row = llf_plane.ConstRow(by + 1);
     float* ac_row = ac64_plane->Row(by);
     for (size_t bx = bx0; bx < bx1; bx++) {
-      ac_row[block_size * bx] = llf_row[bx];
+      ac_row[block_size * bx] = llf_row[bx + 1];
     }
   }
 
@@ -583,7 +597,7 @@ SIMD_ATTR void UpdateLfForDecoder(const Rect& tile, bool predict_lf,
     for (size_t by = by0; by < by1; ++by) {
       AcStrategyRow ac_strategy_row = ac_strategy.ConstRow(acs_rect, by);
       float* ac_row = ac64_plane->Row(by);
-      const float* lf2x2_row = lf2x2_plane->ConstRow(2 * by);
+      const float* lf2x2_row = lf2x2_plane->ConstRow(2 * (by + 1));
       for (size_t bx = bx0; bx < bx1; bx++) {
         AcStrategy acs = ac_strategy_row[bx];
         if (!acs.IsFirstBlock()) continue;
@@ -592,7 +606,7 @@ SIMD_ATTR void UpdateLfForDecoder(const Rect& tile, bool predict_lf,
             for (size_t ix = 0; ix < acs.covered_blocks_x(); ix++) {
               float* ac_pos = ac_row + ac_stride * iy + (bx + ix) * block_size;
               const float* lf2x2_pos =
-                  lf2x2_row + lf2x2_stride * iy * 2 + (bx + ix) * 2;
+                  lf2x2_row + lf2x2_stride * iy * 2 + (bx + 1 + ix) * 2;
               ac_pos[1] += lf2x2_pos[1];
               ac_pos[N] += lf2x2_pos[lf2x2_stride];
               ac_pos[N + 1] += lf2x2_pos[lf2x2_stride + 1];
@@ -606,13 +620,13 @@ SIMD_ATTR void UpdateLfForDecoder(const Rect& tile, bool predict_lf,
   if (predict_hf) {
     for (size_t by = by0; by < by1; ++by) {
       AcStrategyRow ac_strategy_row = ac_strategy.ConstRow(acs_rect, by);
-      float* dc2x2_row = dc2x2_plane->Row(2 * by);
+      float* dc2x2_row = dc2x2_plane->Row(2 * (by + 1));
       const float* ac_row = ac64_plane->Row(by);
       for (size_t bx = bx0; bx < bx1; bx++) {
         AcStrategy acs = ac_strategy_row[bx];
         if (!acs.IsFirstBlock()) continue;
         acs.DC2x2FromLowFrequencies(ac_row + block_size * bx, ac_stride,
-                                    dc2x2_row + 2 * bx, dc2x2_stride);
+                                    dc2x2_row + 2 * (bx + 1), dc2x2_stride);
       }
     }
   }
@@ -621,7 +635,7 @@ SIMD_ATTR void UpdateLfForDecoder(const Rect& tile, bool predict_lf,
 SIMD_ATTR void ComputePredictionResiduals(const Image3F& pred2x2,
                                           const AcStrategyImage& ac_strategy,
                                           Image3F* PIK_RESTRICT coeffs) {
-  Rect dc_rect(0, 0, pred2x2.xsize() / 2, pred2x2.ysize() / 2);
+  Rect dc_rect(0, 0, pred2x2.xsize() / 2 - 2, pred2x2.ysize() / 2 - 2);
   Rect acs_rect(0, 0, ac_strategy.xsize(), ac_strategy.ysize());
   Ub4Kernel kernel;
   ComputeUb4Kernel(k4x4BlurStrength, &kernel);
@@ -635,7 +649,7 @@ SIMD_ATTR void ComputePredictionResiduals(const Image3F& pred2x2,
 void AddPredictions(const Image3F& pred2x2, const AcStrategyImage& ac_strategy,
                     const Rect& acs_rect, Image3F* PIK_RESTRICT dcoeffs) {
   PROFILER_FUNC;
-  Rect dc_rect(0, 0, pred2x2.xsize() / 2, pred2x2.ysize() / 2);
+  Rect dc_rect(0, 0, pred2x2.xsize() / 2 - 2, pred2x2.ysize() / 2 - 2);
   Ub4Kernel kernel;
   ComputeUb4Kernel(k4x4BlurStrength, &kernel);
   for (int c = 0; c < dcoeffs->kNumPlanes; ++c) {

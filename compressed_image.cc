@@ -1,16 +1,8 @@
 // Copyright 2017 Google Inc. All Rights Reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT.
 
 #include "compressed_image.h"
 
@@ -204,28 +196,68 @@ void RecomputeGradient(const Quantizer& quantizer, ThreadPool* pool,
                      pool, &enc_cache->gradient);
 }
 
-SIMD_ATTR void ComputeInitialCoefficients(const PassHeader& pass_header,
-                                          const GroupHeader& group_header,
-                                          const Image3F& opsin,
-                                          EncCache* enc_cache) {
+namespace {
+size_t SourceCoord(size_t candidate, size_t limit) {
+  return candidate == 0 ? 0
+                        : (candidate == limit + 1 ? limit - 1 : candidate - 1);
+}
+}  // namespace
+
+SIMD_ATTR void InitializeEncCache(const PassHeader& pass_header,
+                                  const GroupHeader& group_header,
+                                  const Image3F& opsin_full,
+                                  const Rect& group_rect, EncCache* enc_cache) {
   PROFILER_FUNC;
   constexpr size_t N = kBlockDim;
   constexpr int block_size = N * N;
   PIK_ASSERT(!enc_cache->initialized);
 
-  enc_cache->xsize_blocks = opsin.xsize() / N;
-  enc_cache->ysize_blocks = opsin.ysize() / N;
+  const size_t full_xsize_blocks = opsin_full.xsize() / N;
+  const size_t full_ysize_blocks = opsin_full.ysize() / N;
+  const size_t x0_blocks = group_rect.x0() / N;
+  const size_t y0_blocks = group_rect.y0() / N;
+
+  enc_cache->xsize_blocks = group_rect.xsize() / N;
+  enc_cache->ysize_blocks = group_rect.ysize() / N;
   enc_cache->use_gradient = pass_header.flags & PassHeader::kGradientMap;
   enc_cache->grayscale_opt = pass_header.flags & PassHeader::kGrayscaleOpt;
   enc_cache->predict_lf = pass_header.predict_lf;
   enc_cache->predict_hf = pass_header.predict_hf;
 
-  enc_cache->src = &opsin;
+  enc_cache->src = CopyImage(group_rect, opsin_full);
+
+  const size_t stride = opsin_full.PixelsPerRow();
 
   enc_cache->coeffs_init =
       Image3F(enc_cache->xsize_blocks * block_size, enc_cache->ysize_blocks);
-  TransposedScaledDCT(opsin, &enc_cache->coeffs_init);
-  enc_cache->dc_init = DCImage(enc_cache->coeffs_init);
+
+  enc_cache->dc_init =
+      Image3F(enc_cache->xsize_blocks + 2, enc_cache->ysize_blocks + 2);
+  FillImage(0.0f, &enc_cache->dc_init);
+  for (size_t c = 0; c < 3; c++) {
+    for (size_t x : {0UL, enc_cache->xsize_blocks + 1}) {
+      const size_t x_src = SourceCoord(x + x0_blocks, full_xsize_blocks);
+      for (size_t y = 0; y < enc_cache->ysize_blocks + 2; y++) {
+        const size_t y_src = SourceCoord(y + y0_blocks, full_ysize_blocks);
+        const float* row_src = opsin_full.ConstPlaneRow(c, y_src * N);
+        float* row_dc = enc_cache->dc_init.PlaneRow(c, y);
+        row_dc[x] =
+            ComputeScaledDC<N>(FromLines<N>(row_src + x_src * N, stride)) *
+            (1.0 / block_size);
+      }
+    }
+    for (size_t y : {0UL, enc_cache->ysize_blocks + 1}) {
+      const size_t y_src = SourceCoord(y + y0_blocks, full_ysize_blocks);
+      const float* row_src = opsin_full.ConstPlaneRow(c, y_src * N);
+      float* row_dc = enc_cache->dc_init.PlaneRow(c, y);
+      for (size_t x = 0; x < enc_cache->xsize_blocks + 2; x++) {
+        const size_t x_src = SourceCoord(x + x0_blocks, full_xsize_blocks);
+        row_dc[x] =
+            ComputeScaledDC<N>(FromLines<N>(row_src + x_src * N, stride)) *
+            (1.0 / block_size);
+      }
+    }
+  }
 
   enc_cache->initialized = true;
 }
@@ -240,26 +272,23 @@ SIMD_ATTR void ComputeCoefficients(const Quantizer& quantizer,
   constexpr size_t block_size = N * N;
   const size_t xsize_blocks = enc_cache->xsize_blocks;
   const size_t ysize_blocks = enc_cache->ysize_blocks;
-  PIK_ASSERT(enc_cache->src->xsize() == N * xsize_blocks);
-  PIK_ASSERT(enc_cache->src->ysize() == N * ysize_blocks);
+  PIK_ASSERT(enc_cache->src.xsize() == N * xsize_blocks);
+  PIK_ASSERT(enc_cache->src.ysize() == N * ysize_blocks);
   PIK_ASSERT(enc_cache->initialized);
 
-  // TODO(user): this should really happen in ComputeInitialCoefficients.
-  // Move it as soon as FindBestAcStrategy stops using the output of
-  // ComputeInitialCoefficients.
   for (size_t by = 0; by < ysize_blocks; ++by) {
     for (int c = 0; c < 3; ++c) {
       for (size_t bx = 0; bx < xsize_blocks; ++bx) {
         AcStrategy acs = enc_cache->ac_strategy.ConstRow(by)[bx];
         acs.TransformFromPixels(
-            enc_cache->src->ConstPlaneRow(c, by * N) + bx * N,
-            enc_cache->src->PixelsPerRow(),
+            enc_cache->src.ConstPlaneRow(c, by * N) + bx * N,
+            enc_cache->src.PixelsPerRow(),
             enc_cache->coeffs_init.PlaneRow(c, by) + bx * block_size,
             enc_cache->coeffs_init.PixelsPerRow());
         acs.DCFromLowestFrequencies(
             enc_cache->coeffs_init.ConstPlaneRow(c, by) + bx * block_size,
             enc_cache->coeffs_init.PixelsPerRow(),
-            enc_cache->dc_init.PlaneRow(c, by) + bx,
+            enc_cache->dc_init.PlaneRow(c, by + 1) + bx + 1,
             enc_cache->dc_init.PixelsPerRow());
       }
     }
@@ -551,10 +580,12 @@ PaddedBytes EncodeToBitstream(const EncCache& enc_cache, const Rect& rect,
   PIK_ASSERT(rect.ysize() % N == 0);
   const size_t xsize_blocks = rect.xsize() / N;
   const size_t ysize_blocks = rect.ysize() / N;
+  PIK_ASSERT(xsize_blocks + 2 == enc_cache.dc.xsize());
+  PIK_ASSERT(ysize_blocks + 2 == enc_cache.dc.ysize());
   const size_t xsize_tiles = DivCeil(xsize_blocks, kTileDimInBlocks);
   const size_t ysize_tiles = DivCeil(ysize_blocks, kTileDimInBlocks);
-  const Rect group_dc_area_rect(rect.x0() / N, rect.y0() / N, xsize_blocks,
-                                ysize_blocks);
+  const Rect group_acs_qf_area_rect(rect.x0() / N, rect.y0() / N, xsize_blocks,
+                                    ysize_blocks);
   const Rect tile_rect(rect.x0() / kTileDim, rect.y0() / kTileDim, xsize_tiles,
                        ysize_tiles);
 
@@ -570,20 +601,20 @@ PaddedBytes EncodeToBitstream(const EncCache& enc_cache, const Rect& rect,
 
   PaddedBytes serialized_gradient_map;
   if (enc_cache.use_gradient) {
-    SerializeGradientMap(enc_cache.gradient, group_dc_area_rect, quantizer,
+    SerializeGradientMap(enc_cache.gradient, Rect(enc_cache.dc), quantizer,
                          &serialized_gradient_map);
   }
 
   std::string dc_code;
   if (enc_cache.use_new_dc) {
     PaddedBytes enc_dc;
-    Image3SCompress(enc_cache.dc, group_dc_area_rect, enc_cache.grayscale_opt,
+    Image3SCompress(enc_cache.dc, Rect(enc_cache.dc), enc_cache.grayscale_opt,
                     &enc_dc);
     dc_code.assign(enc_dc.data(), enc_dc.data() + enc_dc.size());
   } else {
-    Image3S tmp_dc_residuals(xsize_blocks, ysize_blocks);
-    ShrinkDC(group_dc_area_rect, enc_cache.dc, &tmp_dc_residuals);
-    dc_code = EncodeImageData(group_dc_area_rect, tmp_dc_residuals, dc_info);
+    Image3S tmp_dc_residuals(xsize_blocks + 2, ysize_blocks + 2);
+    ShrinkDC(Rect(enc_cache.dc), enc_cache.dc, &tmp_dc_residuals);
+    dc_code = EncodeImageData(Rect(enc_cache.dc), tmp_dc_residuals, dc_info);
   }
 
   const Rect ac_rect(8 * rect.x0(), rect.y0() / 8, 8 * rect.xsize(),
@@ -608,11 +639,11 @@ PaddedBytes EncodeToBitstream(const EncCache& enc_cache, const Rect& rect,
     }
   }
 
-  TokenizeAcStrategy(group_dc_area_rect, enc_cache.ac_strategy,
+  TokenizeAcStrategy(group_acs_qf_area_rect, enc_cache.ac_strategy,
                      handler->HintAcStrategy(),
                      &ac_strategy_and_quant_field_tokens);
 
-  TokenizeQuantField(group_dc_area_rect, enc_cache.quant_field,
+  TokenizeQuantField(group_acs_qf_area_rect, enc_cache.quant_field,
                      handler->HintQuantField(), enc_cache.ac_strategy,
                      &ac_strategy_and_quant_field_tokens);
 
@@ -996,14 +1027,15 @@ bool DecodeCoefficientsAndDequantize(
   PIK_ASSERT(group_rect.y0() % kBlockDim == 0);
   const size_t x0_blocks = DivCeil(group_rect.x0(), kBlockDim);
   const size_t y0_blocks = DivCeil(group_rect.y0(), kBlockDim);
-  const Rect group_dc_rect(x0_blocks, y0_blocks, xsize_blocks, ysize_blocks);
+  const Rect group_acs_qf_rect(x0_blocks, y0_blocks, xsize_blocks,
+                               ysize_blocks);
 
   const size_t xsize_tiles = DivCeil(xsize_blocks, kTileDimInBlocks);
   const size_t ysize_tiles = DivCeil(ysize_blocks, kTileDimInBlocks);
   const size_t num_tiles = xsize_tiles * ysize_tiles;
 
   DecoderBuffers tmp;
-  tmp.InitOnce(xsize_blocks, ysize_blocks);
+  tmp.InitOnce(xsize_blocks + 2, ysize_blocks + 2);
   const Rect dc_rect(tmp.quantized_dc);
 
   if (dec_cache->use_new_dc) {
@@ -1039,16 +1071,16 @@ bool DecodeCoefficientsAndDequantize(
   ANSSymbolReader ac_strategy_and_quant_field_decoder(&code);
   ANSSymbolReader strategy_decoder(&code);
   if (!DecodeAcStrategy(reader, &ac_strategy_and_quant_field_decoder,
-                        context_map, group_dc_rect,
+                        context_map, group_acs_qf_rect,
                         &pass_dec_cache->ac_strategy,
                         handler->HintAcStrategy())) {
     return PIK_FAILURE("Failed to decode AcStrategy.");
   }
 
-  if (!DecodeQuantField(reader, &ac_strategy_and_quant_field_decoder,
-                        context_map, group_dc_rect, pass_dec_cache->ac_strategy,
-                        &pass_dec_cache->raw_quant_field,
-                        handler->HintQuantField())) {
+  if (!DecodeQuantField(
+          reader, &ac_strategy_and_quant_field_decoder, context_map,
+          group_acs_qf_rect, pass_dec_cache->ac_strategy,
+          &pass_dec_cache->raw_quant_field, handler->HintQuantField())) {
     return PIK_FAILURE("Failed to decode QuantField.");
   }
   if (!ac_strategy_and_quant_field_decoder.CheckANSFinalState()) {
@@ -1058,7 +1090,7 @@ bool DecodeCoefficientsAndDequantize(
 
   Dequant dequant;
   dequant.Init(*cmap, *quantizer);
-  dec_cache->dc = Image3F(xsize_blocks, ysize_blocks);
+  dec_cache->dc = Image3F(xsize_blocks + 2, ysize_blocks + 2);
   dec_cache->ac = Image3F(xsize_blocks * block_size, ysize_blocks);
   dequant.DoDC(dc_rect, tmp.quantized_dc, dc_rect, dec_cache);
 
@@ -1076,7 +1108,7 @@ bool DecodeCoefficientsAndDequantize(
       return PIK_FAILURE("Failed to decode AC.");
     }
 
-    dequant.DoAC(quantized_rect, tmp.quantized_ac, rect, group_dc_rect,
+    dequant.DoAC(quantized_rect, tmp.quantized_ac, rect, group_acs_qf_rect,
                  cmap->ytox_map, cmap->ytob_map, dec_cache, pass_dec_cache);
   }
   if (!ac_decoder.CheckANSFinalState()) {
@@ -1138,7 +1170,10 @@ void DequantImage(const Quantizer& quantizer, const ColorCorrelationMap& cmap,
   constexpr size_t block_size = N * N;
 
   // Caller must have allocated/filled quantized_dc/ac.
-  PIK_CHECK(SameSize(dec_cache->quantized_dc, quantizer.RawQuantField()));
+  PIK_CHECK(dec_cache->quantized_dc.xsize() ==
+                quantizer.RawQuantField().xsize() + 2 &&
+            dec_cache->quantized_dc.ysize() ==
+                quantizer.RawQuantField().ysize() + 2);
 
   const size_t xsize_blocks = quantizer.RawQuantField().xsize();
   const size_t ysize_blocks = quantizer.RawQuantField().ysize();
@@ -1147,7 +1182,7 @@ void DequantImage(const Quantizer& quantizer, const ColorCorrelationMap& cmap,
 
   Dequant dequant;
   dequant.Init(cmap, quantizer);
-  dec_cache->dc = Image3F(xsize_blocks, ysize_blocks);
+  dec_cache->dc = Image3F(xsize_blocks + 2, ysize_blocks + 2);
   dec_cache->ac = Image3F(xsize_blocks * block_size, ysize_blocks);
 
   std::vector<DecoderBuffers> decoder_buf(NumThreads(pool));
@@ -1160,6 +1195,9 @@ void DequantImage(const Quantizer& quantizer, const ColorCorrelationMap& cmap,
       group_rect.x0() / kBlockDim, group_rect.y0() / kBlockDim,
       group_rect.xsize() / kBlockDim, group_rect.ysize() / kBlockDim);
 
+  dequant.DoDC(Rect(dec_cache->quantized_dc), dec_cache->quantized_dc,
+               Rect(dec_cache->dc), dec_cache);
+
   const size_t num_tiles = xsize_tiles * ysize_tiles;
   const auto dequant_tile = [&](const int task, const int thread) {
     DecoderBuffers& tmp = decoder_buf[thread];
@@ -1171,7 +1209,6 @@ void DequantImage(const Quantizer& quantizer, const ColorCorrelationMap& cmap,
                     kTileDimInBlocks, kTileDimInBlocks, xsize_blocks,
                     ysize_blocks);
 
-    dequant.DoDC(rect, dec_cache->quantized_dc, rect, dec_cache);
     dequant.DoAC(rect, dec_cache->quantized_ac, rect, block_group_rect,
                  cmap.ytox_map, cmap.ytob_map, dec_cache, pass_dec_cache);
   };
@@ -1244,16 +1281,75 @@ Image3F ReconOpsinImage(const PassHeader& pass_header,
 
   // Currently llf is temporary storage, but it will be more persistent
   // in tile-wise processing.
-  Image3F llf(xsize_blocks, ysize_blocks);
+  Image3F llf(xsize_blocks + 2, ysize_blocks + 2);
   ComputeLlf(dec_cache->dc, pass_dec_cache->ac_strategy, block_group_rect,
              &llf);
 
-  std::unique_ptr<Image3F> lf2x2;
+  Image3F lf2x2;
   if (predict_lf) {
-    lf2x2.reset(new Image3F(xsize_blocks * 2, ysize_blocks * 2));
+    lf2x2 = Image3F((xsize_blocks + 2) * 2, (ysize_blocks + 2) * 2);
     // dc2x2 plane is borrowed for temporary storage.
     PredictLf(pass_dec_cache->ac_strategy, block_group_rect, llf,
-              pred2x2.MutablePlane(0), lf2x2.get());
+              pred2x2.MutablePlane(0), &lf2x2);
+  }
+  FillImage(0.0f, &pred2x2);
+
+  // Compute the border of pred2x2.
+  if (predict_hf) {
+    AcStrategy acs(AcStrategy::Type::DCT, 0);
+    const size_t pred2x2_stride = pred2x2.PixelsPerRow();
+    if (predict_lf) {
+      const size_t lf2x2_stride = lf2x2.PixelsPerRow();
+      float block[N * N] = {};
+      for (size_t c = 0; c < 3; c++) {
+        for (size_t x : {0UL, xsize_blocks + 1}) {
+          for (size_t y = 0; y < ysize_blocks + 2; y++) {
+            const float* row_llf = llf.ConstPlaneRow(c, y);
+            const float* row_lf2x2 = lf2x2.ConstPlaneRow(c, 2 * y);
+            float* row_pred2x2 = pred2x2.PlaneRow(c, 2 * y);
+            block[0] = row_llf[x];
+            block[1] = row_lf2x2[2 * x + 1];
+            block[N] = row_lf2x2[lf2x2_stride + 2 * x];
+            block[N + 1] = row_lf2x2[lf2x2_stride + 2 * x + 1];
+            acs.DC2x2FromLowFrequencies(block, 0 /*not used*/,
+                                        row_pred2x2 + 2 * x, pred2x2_stride);
+          }
+        }
+        for (size_t y : {0UL, ysize_blocks + 1}) {
+          const float* row_llf = llf.ConstPlaneRow(c, y);
+          const float* row_lf2x2 = lf2x2.ConstPlaneRow(c, 2 * y);
+          float* row_pred2x2 = pred2x2.PlaneRow(c, 2 * y);
+          for (size_t x = 0; x < xsize_blocks + 2; x++) {
+            block[0] = row_llf[x];
+            block[1] = row_lf2x2[2 * x + 1];
+            block[N] = row_lf2x2[lf2x2_stride + 2 * x];
+            block[N + 1] = row_lf2x2[lf2x2_stride + 2 * x + 1];
+            acs.DC2x2FromLowFrequencies(block, 0 /*not used*/,
+                                        row_pred2x2 + 2 * x, pred2x2_stride);
+          }
+        }
+      }
+    } else {
+      const size_t llf_stride = llf.PixelsPerRow();
+      for (size_t c = 0; c < 3; c++) {
+        for (size_t x : {0UL, xsize_blocks + 1}) {
+          for (size_t y = 0; y < ysize_blocks + 2; y++) {
+            const float* row_llf = llf.ConstPlaneRow(c, y);
+            float* row_pred2x2 = pred2x2.PlaneRow(c, 2 * y);
+            acs.DC2x2FromLowestFrequencies(row_llf + x, llf_stride,
+                                           row_pred2x2 + 2 * x, pred2x2_stride);
+          }
+        }
+        for (size_t y : {0UL, ysize_blocks + 1}) {
+          const float* row_llf = llf.ConstPlaneRow(c, y);
+          float* row_pred2x2 = pred2x2.PlaneRow(c, 2 * y);
+          for (size_t x = 0; x < xsize_blocks + 2; x++) {
+            acs.DC2x2FromLowestFrequencies(row_llf + x, llf_stride,
+                                           row_pred2x2 + 2 * x, pred2x2_stride);
+          }
+        }
+      }
+    }
   }
 
   // tile_stage is used to make calculation dispatching simple; each pixel
@@ -1274,7 +1370,7 @@ Image3F ReconOpsinImage(const PassHeader& pass_header,
     const ImageF& llf_plane = llf.Plane(c);
     ImageF* ac64_plane = ac64->MutablePlane(c);
     ImageF* pred2x2_plane = predict_hf ? pred2x2.MutablePlane(c) : nullptr;
-    ImageF* lf2x2_plane = predict_lf ? lf2x2->MutablePlane(c) : nullptr;
+    ImageF* lf2x2_plane = predict_lf ? lf2x2.MutablePlane(c) : nullptr;
     for (size_t ty = 0; ty < ysize_tiles; ++ty) {
       for (size_t tx = 0; tx < xsize_tiles; ++tx) {
         for (size_t lfty = ty; lfty < ty + 2; ++lfty) {
@@ -1346,8 +1442,8 @@ Image3F FinalizePassDecoding(Image3F&& idct, const PassHeader& pass_header,
         pass_header.epf_params, ar_aux);
   }
 
-  idct =
-      ConvolveGaborish(std::move(idct), pass_header.gaborish, /*pool=*/nullptr);
+  idct = ConvolveGaborish(std::move(idct), pass_header.gaborish,
+                          /*pool=*/nullptr);
   return std::move(idct);
 }
 

@@ -1,3 +1,9 @@
+// Copyright 2019 Google LLC
+//
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT.
+
 #include "upscaler.h"
 
 #include <stdio.h>
@@ -155,15 +161,6 @@ void Smooth4x4Corners(Image3F& ima) {
 }
 
 }  // namespace
-
-SIMD_ATTR Image3F UpscalerReconstruct(const Image3F& in) {
-  Image3F out1 = SuperSample4x4(in);
-  Smooth4x4Corners(out1);
-  out1 = Blur(out1, 2.5);
-  Image3F out(out1.xsize() * 2, out1.ysize() * 2);
-  Upsample<slow::Upsampler>(ExecutorLoop(), out1, kernel::CatmullRom(), &out);
-  return out;
-}
 
 Image3F Blur(const Image3F& image, float sigma) {
   float border = 0.0;

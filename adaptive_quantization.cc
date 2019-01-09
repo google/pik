@@ -1,16 +1,8 @@
 // Copyright 2017 Google Inc. All Rights Reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT.
 
 #include "adaptive_quantization.h"
 
@@ -580,6 +572,86 @@ void AdjustQuantField(const AcStrategyImage& ac_strategy, ImageF* quant_field) {
   }
 }
 
+Image3F RoundtripImage(const CompressParams& cparams,
+                       const PassHeader& pass_header, const GroupHeader& header,
+                       const Image3F& opsin_orig, const Image3F& opsin,
+                       const AcStrategyImage& ac_strategy,
+                       const Quantizer& quantizer,
+                       const ColorCorrelationMap& full_cmap, ThreadPool* pool,
+                       MultipassManager* multipass_manager) {
+  PROFILER_ZONE("enc roundtrip");
+  PassDecCache pass_dec_cache;
+  pass_dec_cache.ac_strategy = ac_strategy.Copy();
+  PIK_ASSERT(opsin.ysize() % kBlockDim == 0);
+  pass_dec_cache.biases =
+      Image3F(opsin.xsize() * kBlockDim, opsin.ysize() / kBlockDim);
+  pass_dec_cache.raw_quant_field = CopyImage(quantizer.RawQuantField());
+
+  const size_t xsize_groups = DivCeil(opsin.xsize(), kGroupWidth);
+  const size_t ysize_groups = DivCeil(opsin.ysize(), kGroupHeight);
+  const size_t num_groups = xsize_groups * ysize_groups;
+
+  std::vector<MultipassHandler*> handlers(num_groups);
+  for (size_t group_index = 0; group_index < num_groups; ++group_index) {
+    const size_t gx = group_index % xsize_groups;
+    const size_t gy = group_index / xsize_groups;
+    const Rect rect(gx * kGroupWidth, gy * kGroupHeight, kGroupWidth,
+                    kGroupHeight, opsin.xsize(), opsin.ysize());
+    handlers[group_index] =
+        multipass_manager->GetGroupHandler(group_index, rect);
+  }
+
+  Image3F idct(opsin.xsize(), opsin.ysize());
+
+  const auto process_group = [&](const int group_index, const int thread) {
+    MultipassHandler* handler = handlers[group_index];
+    const Rect& group_rect = handler->PaddedGroupRect();
+    Rect block_group_rect = handler->BlockGroupRect();
+    EncCache cache;
+    cache.use_new_dc = cparams.use_new_dc;
+    InitializeEncCache(pass_header, header, opsin, group_rect, &cache);
+    cache.ac_strategy = ac_strategy.Copy(block_group_rect);
+    Quantizer quant = quantizer.Copy(block_group_rect);
+
+    Rect group_in_color_tiles(
+        block_group_rect.x0() / kColorTileDimInBlocks,
+        block_group_rect.y0() / kColorTileDimInBlocks,
+        DivCeil(block_group_rect.xsize(), kColorTileDimInBlocks),
+        DivCeil(block_group_rect.ysize(), kColorTileDimInBlocks));
+
+    ColorCorrelationMap cmap = full_cmap.Copy(group_in_color_tiles);
+
+    DecCache dec_cache;
+    ComputeCoefficients(quant, cmap, pool, &cache, multipass_manager);
+    dec_cache.quantized_dc = std::move(cache.dc);
+    dec_cache.quantized_ac = std::move(cache.ac);
+    dec_cache.gradient = std::move(cache.gradient);
+    DequantImage(quant, cmap, pool, &dec_cache, &pass_dec_cache, group_rect);
+    Image3F recon =
+        ReconOpsinImage(pass_header, header, quant, block_group_rect,
+                        &dec_cache, &pass_dec_cache);
+    for (size_t c = 0; c < 3; c++) {
+      for (size_t y = 0; y < group_rect.ysize(); y++) {
+        const float* PIK_RESTRICT row = recon.ConstPlaneRow(c, y);
+        float* PIK_RESTRICT output_row = group_rect.PlaneRow(&idct, c, y);
+        for (size_t x = 0; x < group_rect.xsize(); x++) {
+          output_row[x] = row[x];
+        }
+      }
+    }
+  };
+  RunOnPool(pool, 0, num_groups, process_group, "PixelsToPikPass");
+
+  multipass_manager->RestoreOpsin(&idct);
+  multipass_manager->UpdateBiases(&pass_dec_cache.biases);
+  idct = FinalizePassDecoding(std::move(idct), pass_header, quantizer,
+                              &pass_dec_cache);
+
+  Image3F linear(opsin_orig.xsize(), opsin_orig.ysize());
+  OpsinToLinear(idct, pool, &linear);
+  return linear;
+}
+
 static const float kDcQuantPow = 0.51334848288505397;
 static const float kDcQuant = 0.6920431110918609;
 static const float kAcQuant = 0.94080165407291261;
@@ -610,16 +682,6 @@ void FindBestQuantization(const Image3F& opsin_orig, const Image3F& opsin_arg,
 
   constexpr int kOriginalComparisonRound = 5;
   constexpr float kMaximumDistanceIncreaseFactor = 1.015;
-  EncCache cache;
-  cache.use_new_dc = cparams.use_new_dc;
-  ComputeInitialCoefficients(pass_header, header, opsin_arg, &cache);
-  cache.ac_strategy = ac_strategy.Copy();
-
-  PassDecCache pass_dec_cache;
-  pass_dec_cache.ac_strategy = ac_strategy.Copy();
-  PIK_ASSERT(opsin_arg.ysize() % kBlockDim == 0);
-  pass_dec_cache.biases =
-      Image3F(opsin_arg.xsize() * kBlockDim, opsin_arg.ysize() / kBlockDim);
 
   for (int i = 0; i < cparams.max_butteraugli_iters + 1; ++i) {
     if (FLAGS_dump_quant_state) {
@@ -633,36 +695,16 @@ void FindBestQuantization(const Image3F& opsin_orig, const Image3F& opsin_arg,
     }
 
     if (quantizer->SetQuantField(initial_quant_dc, QuantField(quant_field))) {
-      DecCache dec_cache;
-      ComputeCoefficients(*quantizer, cmap, pool, &cache, multipass_manager);
-      pass_dec_cache.raw_quant_field = CopyImage(cache.quant_field);
-      dec_cache.quantized_dc = std::move(cache.dc);
-      dec_cache.quantized_ac = std::move(cache.ac);
-      dec_cache.gradient = std::move(cache.gradient);
-      DequantImage(*quantizer, cmap, pool, &dec_cache, &pass_dec_cache,
-                   Rect(opsin_arg));
-      Image3F recon =
-          ReconOpsinImage(pass_header, header, *quantizer, Rect(quant_field),
-                          &dec_cache, &pass_dec_cache);
-      multipass_manager->RestoreOpsin(&recon);
-      multipass_manager->UpdateBiases(&pass_dec_cache.biases);
-      recon = FinalizePassDecoding(std::move(recon), pass_header, *quantizer,
-                                   &pass_dec_cache);
-      // Move the gradient back to the EncCache because it may reuse it in
-      // ComputeCoefficients next iteration depending on last_quant_dc_key
-      cache.gradient = std::move(dec_cache.gradient);
-
+      Image3F linear = RoundtripImage(cparams, pass_header, header, opsin_orig,
+                                      opsin_arg, ac_strategy, *quantizer, cmap,
+                                      pool, multipass_manager);
       PROFILER_ZONE("enc Butteraugli");
-      Image3F linear(recon.xsize(), recon.ysize());
-      CopyImageTo(recon, &linear);
-      linear.ShrinkTo(opsin_orig.xsize(), opsin_orig.ysize());
-      OpsinToLinear(linear, pool, &linear);
       comparator.Compare(linear);
       static const int kMargins[100] = {0, 0, 0, 1, 2, 1, 1, 1, 0};
       tile_distmap =
-          TileDistMap(comparator.distmap(), 8, kMargins[i], cache.ac_strategy);
+          TileDistMap(comparator.distmap(), 8, kMargins[i], ac_strategy);
       tile_distmap_localopt =
-          TileDistMap(comparator.distmap(), 8, 2, cache.ac_strategy);
+          TileDistMap(comparator.distmap(), 8, 2, ac_strategy);
       if (WantDebugOutput(aux_out)) {
         DumpHeatmaps(aux_out, butteraugli_target, quant_field, tile_distmap);
         ++aux_out->num_butteraugli_iters;
@@ -800,16 +842,6 @@ void FindBestQuantizationHQ(
   float best_quant_dc = quant_dc;
   int num_stalling_iters = 0;
   int max_iters = cparams.max_butteraugli_iters_guetzli_mode;
-  EncCache cache;
-  cache.use_new_dc = cparams.use_new_dc;
-  ComputeInitialCoefficients(pass_header, header, opsin, &cache);
-  cache.ac_strategy = ac_strategy.Copy();
-
-  PassDecCache pass_dec_cache;
-  pass_dec_cache.ac_strategy = ac_strategy.Copy();
-  PIK_ASSERT(opsin.ysize() % kBlockDim == 0);
-  pass_dec_cache.biases =
-      Image3F(opsin.xsize() * kBlockDim, opsin.ysize() / kBlockDim);
 
   for (;;) {
     if (FLAGS_dump_quant_state) {
@@ -825,30 +857,9 @@ void FindBestQuantizationHQ(
     ImageMinMax(quant_field, &qmin, &qmax);
     ++butteraugli_iter;
     if (quantizer->SetQuantField(quant_dc, QuantField(quant_field))) {
-      ComputeCoefficients(*quantizer, cmap, pool, &cache, multipass_manager);
-      DecCache dec_cache;
-      pass_dec_cache.raw_quant_field = CopyImage(cache.quant_field);
-      dec_cache.quantized_dc = std::move(cache.dc);
-      dec_cache.quantized_ac = std::move(cache.ac);
-      dec_cache.gradient = std::move(cache.gradient);
-      DequantImage(*quantizer, cmap, pool, &dec_cache, &pass_dec_cache,
-                   Rect(opsin));
-      Image3F recon =
-          ReconOpsinImage(pass_header, header, *quantizer, Rect(quant_field),
-                          &dec_cache, &pass_dec_cache);
-      multipass_manager->RestoreOpsin(&recon);
-      multipass_manager->UpdateBiases(&pass_dec_cache.biases);
-      recon = FinalizePassDecoding(std::move(recon), pass_header, *quantizer,
-                                   &pass_dec_cache);
-      // Move the gradient back to the EncCache because it may reuse it in
-      // ComputeCoefficients next iteration depending on last_quant_dc_key
-      cache.gradient = std::move(dec_cache.gradient);
-
-      PROFILER_ZONE("enc Butteraugli");
-      Image3F linear(recon.xsize(), recon.ysize());
-      CopyImageTo(recon, &linear);
-      linear.ShrinkTo(opsin_orig.xsize(), opsin_orig.ysize());
-      OpsinToLinear(linear, pool, &linear);
+      Image3F linear = RoundtripImage(cparams, pass_header, header, opsin_orig,
+                                      opsin, ac_strategy, *quantizer, cmap,
+                                      pool, multipass_manager);
       comparator.Compare(linear);
       bool best_quant_updated = false;
       if (comparator.distance() <= best_butteraugli) {

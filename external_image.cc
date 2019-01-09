@@ -1,16 +1,8 @@
 // Copyright 2018 Google Inc. All Rights Reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT.
 
 #include "external_image.h"
 
@@ -26,22 +18,33 @@ namespace {
 
 // Encoding CodecInOut using other codecs requires format conversions to their
 // "External" representation:
-// IO -[1]-> Temp -[CMS]-> Temp -[2dt]-> External
+// IO -[1]-> Temp01 -[CMS]-> Temp01 -[2dt]-> External
 // For External -> IO, we need only demux and rescale.
 //
-// "Temp" is interleaved float [0, 1] as required by the CMS. It has 1 or 3
-// non-alpha channels. Alpha is included in External but not Temp because it is
-// not transformed. "IO" is Image3F (range [0, 255]) + ImageU alpha.
+// "Temp01" and "Temp255" are interleaved and have 1 or 3 non-alpha channels.
+// Alpha is included in External but not Temp because it is neither color-
+// transformed nor included in Image3F.
+// "IO" is Image3F (range [0, 255]) + ImageU alpha.
+//
+// "Temp01" is in range float [0, 1] as required by the CMS, but cannot
+// losslessly represent 8-bit integer values [0, 255] due to floating point
+// precision, which will reflect as a loss in Image3F which uses float range
+// [0, 255] instead, which may cause effects on butteraugli score. Therefore,
+// only use Temp01 if CMS transformation to different color space is required.
+//
+// "Temp255" is in range float [0, 255] and can losslessly represent 8-bit
+// integer values [0, 255], but has floating point loss for 16-bit integer
+// values [0, 65535]. The latter is not an issue however since Image3F uses
+// float [0, 255] so has the same loss (so no butteraugli score effect), and
+// the loss is gone when outputting to external integer again.
 //
 // Summary of formats:
-//   Name   |   Bits  | Max | Channels |   Layout    |  Alpha
-// External | 8,16,32 | 255 |  1,2,3,4 | Interleaved | Included
-//   Temp   |    32   |  1  |    1,3   | Interleaved | Separate
-//    IO    |    32   | 255 |    3,4   |   Planar    |  ImageU
-//
-// Note that Max is not a hard upper limit - we try not to clamp. It is only
-// necessary when writing to External without temp_intervals being available.
-// Note that Bits=16 Max=65535.
+//   Name   |   Bits  |    Max   | Channels |   Layout    |  Alpha
+// ---------+---------+----------+----------+-------------+---------
+// External | 8,16,32 | 2^Bits-1 |  1,2,3,4 | Interleaved | Included
+//  Temp01  |    32   |     1    |    1,3   | Interleaved | Separate
+// Temp255  |    32   |    255   |    1,3   | Interleaved | Separate
+//    IO    |    32   |    255   |    3,4   |   Planar    |  ImageU
 
 // Number of external channels including alpha.
 struct Channels1 {};
@@ -51,18 +54,18 @@ struct Channels4 {};
 
 // Step 1: interleaved <-> planar and rescale [0, 1] <-> [0, 255]
 struct Interleave {
-  static PIK_INLINE void Image3ToTemp(Channels1, const size_t y,
-                                      const Image3F& image, const Rect& rect,
-                                      float* PIK_RESTRICT row_temp) {
+  static PIK_INLINE void Image3ToTemp01(Channels1, const size_t y,
+                                        const Image3F& image, const Rect& rect,
+                                        float* PIK_RESTRICT row_temp) {
     const float* PIK_RESTRICT row_image1 = rect.ConstPlaneRow(image, 1, y);
     for (size_t x = 0; x < rect.xsize(); ++x) {
       row_temp[x] = row_image1[x] * (1.0f / 255);
     }
   }
 
-  static PIK_INLINE void Image3ToTemp(Channels3, const size_t y,
-                                      const Image3F& image, const Rect& rect,
-                                      float* PIK_RESTRICT row_temp) {
+  static PIK_INLINE void Image3ToTemp01(Channels3, const size_t y,
+                                        const Image3F& image, const Rect& rect,
+                                        float* PIK_RESTRICT row_temp) {
     const float* PIK_RESTRICT row_image0 = rect.ConstPlaneRow(image, 0, y);
     const float* PIK_RESTRICT row_image1 = rect.ConstPlaneRow(image, 1, y);
     const float* PIK_RESTRICT row_image2 = rect.ConstPlaneRow(image, 2, y);
@@ -73,14 +76,27 @@ struct Interleave {
     }
   }
 
-  static PIK_INLINE void TempToImage3(Channels1,
-                                      const float* PIK_RESTRICT row_temp,
-                                      size_t y,
-                                      const Image3F* PIK_RESTRICT image) {
+  // Same implementation for 2/4 because neither Image3 nor Temp have alpha.
+  static PIK_INLINE void Image3ToTemp01(Channels2, const size_t y,
+                                        const Image3F& image, const Rect& rect,
+                                        float* PIK_RESTRICT row_temp) {
+    Image3ToTemp01(Channels1(), y, image, rect, row_temp);
+  }
+
+  static PIK_INLINE void Image3ToTemp01(Channels4, const size_t y,
+                                        const Image3F& image, const Rect& rect,
+                                        float* PIK_RESTRICT row_temp) {
+    Image3ToTemp01(Channels3(), y, image, rect, row_temp);
+  }
+
+  static PIK_INLINE void Temp255ToImage3(Channels1,
+                                         const float* PIK_RESTRICT row_temp,
+                                         size_t y,
+                                         const Image3F* PIK_RESTRICT image) {
     const size_t xsize = image->xsize();
     float* PIK_RESTRICT row0 = const_cast<float*>(image->PlaneRow(0, y));
     for (size_t x = 0; x < xsize; ++x) {
-      row0[x] = row_temp[x] * 255.0f;
+      row0[x] = row_temp[x];
     }
 
     for (size_t c = 1; c < 3; ++c) {
@@ -89,46 +105,34 @@ struct Interleave {
     }
   }
 
-  static PIK_INLINE void TempToImage3(Channels3,
-                                      const float* PIK_RESTRICT row_temp,
-                                      size_t y,
-                                      const Image3F* PIK_RESTRICT image) {
+  static PIK_INLINE void Temp255ToImage3(Channels3,
+                                         const float* PIK_RESTRICT row_temp,
+                                         size_t y,
+                                         const Image3F* PIK_RESTRICT image) {
     float* PIK_RESTRICT row_image0 = const_cast<float*>(image->PlaneRow(0, y));
     float* PIK_RESTRICT row_image1 = const_cast<float*>(image->PlaneRow(1, y));
     float* PIK_RESTRICT row_image2 = const_cast<float*>(image->PlaneRow(2, y));
     for (size_t x = 0; x < image->xsize(); ++x) {
-      row_image0[x] = row_temp[3 * x + 0] * 255.0f;
-      row_image1[x] = row_temp[3 * x + 1] * 255.0f;
-      row_image2[x] = row_temp[3 * x + 2] * 255.0f;
+      row_image0[x] = row_temp[3 * x + 0];
+      row_image1[x] = row_temp[3 * x + 1];
+      row_image2[x] = row_temp[3 * x + 2];
     }
   }
 
-  // Same implementation for 2/4 because neither Image3 nor Temp have alpha.
-  static PIK_INLINE void Image3ToTemp(Channels2, const size_t y,
-                                      const Image3F& image, const Rect& rect,
-                                      float* PIK_RESTRICT row_temp) {
-    Image3ToTemp(Channels1(), y, image, rect, row_temp);
+  static PIK_INLINE void Temp255ToImage3(Channels2,
+                                         const float* PIK_RESTRICT row_temp,
+                                         size_t y,
+                                         const Image3F* PIK_RESTRICT image) {
+    Temp255ToImage3(Channels1(), row_temp, y, image);
   }
 
-  static PIK_INLINE void Image3ToTemp(Channels4, const size_t y,
-                                      const Image3F& image, const Rect& rect,
-                                      float* PIK_RESTRICT row_temp) {
-    Image3ToTemp(Channels3(), y, image, rect, row_temp);
+  static PIK_INLINE void Temp255ToImage3(Channels4,
+                                         const float* PIK_RESTRICT row_temp,
+                                         size_t y,
+                                         const Image3F* PIK_RESTRICT image) {
+    Temp255ToImage3(Channels3(), row_temp, y, image);
   }
 
-  static PIK_INLINE void TempToImage3(Channels2,
-                                      const float* PIK_RESTRICT row_temp,
-                                      size_t y,
-                                      const Image3F* PIK_RESTRICT image) {
-    TempToImage3(Channels1(), row_temp, y, image);
-  }
-
-  static PIK_INLINE void TempToImage3(Channels4,
-                                      const float* PIK_RESTRICT row_temp,
-                                      size_t y,
-                                      const Image3F* PIK_RESTRICT image) {
-    TempToImage3(Channels3(), row_temp, y, image);
-  }
 };
 
 // Step 2t: type conversion
@@ -172,14 +176,16 @@ struct Sample {
   static PIK_INLINE void ToExternal(TypeB, const float sample,
                                     uint8_t* external) {
     PIK_ASSERT(0 <= sample && sample < 256);
-    *external = static_cast<int>(std::round(sample));
+    // Don't need std::round since sample value is positive.
+    *external = static_cast<int>(sample + 0.5f);
   }
 
   template <class Order>
   static PIK_INLINE void ToExternal(TypeU, const float sample,
                                     uint8_t* external) {
     PIK_ASSERT(0 <= sample && sample < 65536);
-    Store16(Order(), static_cast<int>(std::round(sample)), external);
+    // Don't need std::round since sample value is positive.
+    Store16(Order(), static_cast<int>(sample + 0.5f), external);
   }
 
   template <class Order>
@@ -235,6 +241,7 @@ struct Alpha {
 };
 
 // Step 2d: demux external into separate (type-converted) color and alpha.
+// Supports Temp01 and Temp255, the Cast decides this.
 struct Demux {
   // 1 plane - copy all.
   template <class Type, class Order, class Cast>
@@ -563,13 +570,14 @@ CodecInterval GetInterval(const size_t bits_per_sample) {
   }
 }
 
+
 // Lossless conversion between [0, 1] and [min, min+width]. Width is 1 or
 // > 1 ("unbounded", useful for round trip testing). This is used to scale to
 // the external type and back to the arbitrary interval.
-class CastRescale {
+class CastRescale01 {
  public:
-  CastRescale(const CodecIntervals& temp_intervals,
-              const CodecInterval ext_interval) {
+  CastRescale01(const CodecIntervals& temp_intervals,
+                const CodecInterval ext_interval) {
     for (size_t c = 0; c < 4; ++c) {
       temp_min_[c] = temp_intervals[c].min;
       temp_mul_[c] = ext_interval.width / temp_intervals[c].width;
@@ -577,7 +585,45 @@ class CastRescale {
       external_mul_[c] = temp_intervals[c].width / ext_interval.width;
     }
 #if PIK_EXT_VERBOSE >= 2
-    printf("CastRescale min %f width %f %f\n", temp_intervals[0].min,
+    printf("CastRescale01 min %f width %f %f\n", temp_intervals[0].min,
+           temp_intervals[0].width, ext_interval[0].width);
+#endif
+  }
+
+  PIK_INLINE float FromExternal(const float external, const size_t c) const {
+    return (external - external_min_[c]) * external_mul_[c] + temp_min_[c];
+  }
+  PIK_INLINE float FromTemp(const float temp, const size_t c) const {
+    return (temp - temp_min_[c]) * temp_mul_[c] + external_min_[c];
+  }
+
+ private:
+  float temp_min_[4];
+  float temp_mul_[4];
+  float external_min_[4];
+  float external_mul_[4];
+};
+
+
+// Lossless conversion between [0, 255] and [min, min+width]. Width is 255 or
+// > 255 ("unbounded", useful for round trip testing). This is used to scale to
+// the external type and back to the arbitrary interval.
+// NOTE: this rescaler exists to make CopyTo match the convention of
+// "temp_intervals" used by the color converting constructor. In the external to
+// IO case without color conversion, one normally does not use this parameter.
+class CastRescale255 {
+ public:
+  CastRescale255(const CodecIntervals& temp_intervals,
+                 const CodecInterval ext_interval) {
+    for (size_t c = 0; c < 4; ++c) {
+      temp_min_[c] = 255.0f * temp_intervals[c].min;
+      temp_mul_[c] =
+          ext_interval.width / temp_intervals[c].width * (1.0f / 255);
+      external_min_[c] = ext_interval.min * (1.0f / 255);
+      external_mul_[c] = 255.0f * temp_intervals[c].width / ext_interval.width;
+    }
+#if PIK_EXT_VERBOSE >= 2
+    printf("CastRescale255 min %f width %f %f\n", temp_intervals[0].min,
            temp_intervals[0].width, ext_interval[0].width);
 #endif
   }
@@ -599,16 +645,16 @@ class CastRescale {
 // Converts between [0, 1] and the external type's range. Lossy because values
 // outside [0, 1] are clamped - this is necessary for codecs that are not able
 // to store min/width metadata.
-class CastClip {
+class CastClip01 {
  public:
-  CastClip(const CodecInterval ext_interval) {
+  CastClip01(const CodecInterval ext_interval) {
     for (size_t c = 0; c < 4; ++c) {
       temp_mul_[c] = ext_interval.width;
       external_min_[c] = ext_interval.min;
       external_mul_[c] = 1.0f / ext_interval.width;
     }
 #if PIK_EXT_VERBOSE >= 2
-    printf("CastClip width %f\n", ext_interval[0].width);
+    printf("CastClip01 width %f\n", ext_interval[0].width);
 #endif
   }
 
@@ -647,6 +693,80 @@ struct CastFloat {
   }
   PIK_INLINE float FromTemp(const float temp, const size_t c) const {
     return temp * 255.0f;
+  }
+};
+
+// Converts between [0, 255] and the external type's range. Lossy because values
+// outside [0, 255] are clamped - this is necessary for codecs that are not able
+// to store min/width metadata.
+class CastClip255 {
+ public:
+  CastClip255(const CodecInterval ext_interval) {
+    for (size_t c = 0; c < 4; ++c) {
+      temp_mul_[c] = ext_interval.width;
+      external_min_[c] = ext_interval.min;
+      external_mul_[c] = 255.0f / ext_interval.width;
+    }
+#if PIK_EXT_VERBOSE >= 2
+    printf("CastClip255 width %f\n", ext_interval[0].width);
+#endif
+  }
+
+  PIK_INLINE float FromExternal(const float external, const size_t c) const {
+    const float temp255 = (external - external_min_[c]) * external_mul_[c];
+    return temp255;
+  }
+  PIK_INLINE float FromTemp(const float temp, const size_t c) const {
+    return Clamp255(temp) * temp_mul_[c] + external_min_[c];
+  }
+
+ private:
+  static PIK_INLINE float Clamp255(const float temp) {
+    return std::min(std::max(0.0f, temp), 255.0f);
+  }
+
+  float temp_mul_[4];
+  float external_min_[4];
+  float external_mul_[4];
+};
+
+struct CastFloat01 {
+  CastFloat01(const CodecInterval ext_interval) {
+    for (size_t c = 0; c < 4; ++c) {
+      PIK_CHECK(ext_interval.min == 0.0f);
+      PIK_CHECK(ext_interval.width == 255.0f);
+    }
+#if PIK_EXT_VERBOSE >= 2
+    printf("CastFloat01\n");
+#endif
+  }
+
+  PIK_INLINE float FromExternal(const float external, const size_t c) const {
+    const float temp01 = external * (1.0f / 255);
+    return temp01;
+  }
+  PIK_INLINE float FromTemp(const float temp, const size_t c) const {
+    return temp * 255.0f;
+  }
+};
+
+// No-op
+struct CastFloat255 {
+  CastFloat255(const CodecInterval ext_interval) {
+    for (size_t c = 0; c < 4; ++c) {
+      PIK_CHECK(ext_interval.min == 0.0f);
+      PIK_CHECK(ext_interval.width == 255.0f);
+    }
+#if PIK_EXT_VERBOSE >= 2
+    printf("CastFloat255\n");
+#endif
+  }
+
+  PIK_INLINE float FromExternal(const float external, const size_t c) const {
+    return external;
+  }
+  PIK_INLINE float FromTemp(const float temp, const size_t c) const {
+    return temp;
   }
 };
 
@@ -709,7 +829,7 @@ class Transformer {
                         const size_t y, const size_t thread) {
     float* PIK_RESTRICT row_temp = extents->RowTemp(y);
 
-    Interleave::Image3ToTemp(Channels(), y, color_, rect_, row_temp);
+    Interleave::Image3ToTemp01(Channels(), y, color_, rect_, row_temp);
 
 #if PIK_EXT_VERBOSE
     const float in0 = row_temp[3 * kX + 0], in1 = row_temp[3 * kX + 1];
@@ -729,7 +849,7 @@ class Transformer {
   // Second pass: only needed for ExtentsDynamic/CastRescale.
   template <class Type, class Order, class Channels>
   PIK_INLINE void DoRow(ToExternal2, ExtentsDynamic* extents,
-                        const CastRescale& cast, const size_t y,
+                        const CastRescale01& cast, const size_t y,
                         const size_t thread) {
     const float* PIK_RESTRICT row_temp = extents->RowTemp(y);
     uint8_t* PIK_RESTRICT row_external = external_->Row(y);
@@ -752,7 +872,7 @@ class Transformer {
   PIK_INLINE void DoRow(ToExternal, ExtentsStatic*, const Cast& cast,
                         const size_t y, const size_t thread) {
     float* PIK_RESTRICT row_temp = transform_.BufDst(thread);
-    Interleave::Image3ToTemp(Channels(), y, color_, rect_, row_temp);
+    Interleave::Image3ToTemp01(Channels(), y, color_, rect_, row_temp);
 
     transform_.Run(thread, row_temp, row_temp);
 
@@ -928,7 +1048,7 @@ class Converter {
            row_temp[3 * kX + 2]);
 #endif
 
-    Interleave::TempToImage3(Channels(), row_temp, y, &color_);
+    Interleave::Temp255ToImage3(Channels(), row_temp, y, &color_);
   }
 
   // Closure callable by ThreadPool.
@@ -1035,7 +1155,7 @@ ExternalImage::ExternalImage(ThreadPool* pool, const Image3F& color,
 
   if (bits_per_sample == 32) {
     ExtentsStatic extents;
-    const CastFloat cast(ext_interval);  // only multiply by const
+    const CastFloat01 cast(ext_interval);  // only multiply by const
     is_healthy_ = transformer.Run<ToExternal>(&extents, cast);
   } else if (temp_intervals != nullptr) {
     // Store temp to separate image and obtain per-channel intervals.
@@ -1046,11 +1166,11 @@ ExternalImage::ExternalImage(ThreadPool* pool, const Image3F& color,
     extents.Finalize(temp_intervals);
 
     // Rescale based on temp_intervals.
-    const CastRescale cast(*temp_intervals, ext_interval);
+    const CastRescale01 cast(*temp_intervals, ext_interval);
     is_healthy_ = transformer.Run<ToExternal2>(&extents, cast);
   } else {
     ExtentsStatic extents;
-    const CastClip cast(ext_interval);  // clip
+    const CastClip01 cast(ext_interval);  // clip
     is_healthy_ = transformer.Run<ToExternal>(&extents, cast);
   }
 }
@@ -1064,13 +1184,13 @@ Status ExternalImage::CopyTo(const CodecIntervals* temp_intervals,
   const CodecInterval ext_interval = GetInterval(bits_per_sample_);
 
   if (bits_per_sample_ == 32) {
-    const CastFloat cast(ext_interval);
+    const CastFloat255 cast(ext_interval);
     PIK_RETURN_IF_ERROR(converter.Run(cast));
   } else if (temp_intervals != nullptr) {
-    const CastRescale cast(*temp_intervals, ext_interval);
+    const CastRescale255 cast(*temp_intervals, ext_interval);
     PIK_RETURN_IF_ERROR(converter.Run(cast));
   } else {
-    const CastClip cast(ext_interval);
+    const CastClip255 cast(ext_interval);
     PIK_RETURN_IF_ERROR(converter.Run(cast));
   }
 

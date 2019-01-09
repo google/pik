@@ -1,3 +1,9 @@
+// Copyright 2019 Google LLC
+//
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT.
+
 #ifndef COMPARISON_TOOL_VIEWER_SPLIT_IMAGE_VIEW_H_
 #define COMPARISON_TOOL_VIEWER_SPLIT_IMAGE_VIEW_H_
 

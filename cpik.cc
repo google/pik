@@ -1,16 +1,8 @@
 // Copyright 2017 Google Inc. All Rights Reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT.
 
 #include <cstddef>
 #include <cstdio>
@@ -212,7 +204,7 @@ static double ApproximateDistanceForBPP(double bpp) {
   return 1.704 * pow(bpp, -0.804);
 }
 
-Status Compress(ThreadPool* pool, const CompressArgs& args,
+Status Compress(ThreadPool* pool, CompressArgs& args,
                 PaddedBytes* compressed) {
   double t0, t1;
 
@@ -272,14 +264,16 @@ Status Compress(ThreadPool* pool, const CompressArgs& args,
       }
     }
     printf("Choosing butteraugli distance %.15g\n", best_dist);
+    args.params.butteraugli_distance = best_dist;
+    args.params.target_bitrate = 0;
+    args.params.target_size = 0;
   }
   char mode[200];
   if (args.params.fast_mode) {
-    strcpy(mode, "with fast mode");
-  } else {
-    snprintf(mode, sizeof(mode), "with maximum Butteraugli distance %f",
-             args.params.butteraugli_distance);
+    strcpy(mode, "in fast mode ");
   }
+  snprintf(mode, sizeof(mode), "with maximum Butteraugli distance %f",
+           args.params.butteraugli_distance);
   fprintf(stderr,
           "Read %zu bytes (%zux%zu, %.1f MP/s); compressing %s, %zu threads.\n",
           io.enc_size, xsize, ysize, decode_mps, mode, NumWorkerThreads(pool));

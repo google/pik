@@ -1,3 +1,9 @@
+# Copyright 2019 Google LLC
+#
+# Use of this source code is governed by an MIT-style
+# license that can be found in the LICENSE file or at
+# https://opensource.org/licenses/MIT.
+
 cmake_minimum_required(VERSION 3.1)
 
 project(PIK CXX)
@@ -34,8 +40,6 @@ include_directories("${CMAKE_CURRENT_SOURCE_DIR}")
 add_library(pikcommon STATIC
   simd/targets.cc
   simd/targets.h
-  third_party/lodepng/lodepng.cc
-  third_party/lodepng/lodepng.h
   ac_predictions.cc
   ac_predictions.h
   ac_strategy.cc
@@ -140,8 +144,6 @@ add_library(pikcommon STATIC
   image.h
   image_io.cc
   image_io.h
-  jpeg_quant_tables.cc
-  jpeg_quant_tables.h
   lehmer_code.cc
   lehmer_code.h
   linalg.cc
@@ -195,7 +197,6 @@ add_library(pikcommon STATIC
   upscaler.cc
   upscaler.h
   write_bits.h
-  xorshift128plus.h
   yuv_convert.cc
   yuv_convert.h
 )
@@ -203,10 +204,16 @@ add_library(pikcommon STATIC
 target_compile_options(pikcommon PUBLIC -mavx2)
 add_dependencies(pikcommon LCMS2)
 
+add_library(lodepng STATIC
+  third_party/lodepng/lodepng.cpp
+  third_party/lodepng/lodepng.h
+)
+
 target_link_libraries(pikcommon PRIVATE
   brotlicommon-static
   brotlienc-static
   brotlidec-static
+  lodepng
   Eigen3::Eigen
   "${LCMS2_INSTALL_DIR}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}lcms2${CMAKE_STATIC_LIBRARY_SUFFIX}"
   Threads::Threads

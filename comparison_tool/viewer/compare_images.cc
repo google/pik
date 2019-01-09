@@ -1,6 +1,14 @@
+// Copyright 2019 Google LLC
+//
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT.
+
 #include <cstdlib>
 
 #include <QApplication>
+#include <QCommandLineOption>
+#include <QCommandLineParser>
 #include <QFlags>
 #include <QImage>
 #include <QMessageBox>
@@ -29,21 +37,41 @@ void displayLoadingError(const QString& path) {
 int main(int argc, char** argv) {
   QApplication application(argc, argv);
 
-  QStringList arguments = application.arguments();
-  arguments.removeFirst();  // program name
-  if (arguments.size() < 2) {
-    QMessageBox message;
-    message.setIcon(QMessageBox::Information);
-    message.setWindowTitle(
-        QCoreApplication::translate("SplitImageView", "Usage"));
-    message.setText(QCoreApplication::translate(
-        "SplitImageView", "Please pass at least two images to this tool."));
-    message.setInformativeText(
-        QCoreApplication::translate("SplitImageView",
-                                    "A third image can optionally be passed. "
-                                    "It will be displayed in the middle."));
-    message.exec();
-    return EXIT_FAILURE;
+  QCommandLineParser parser;
+  parser.setApplicationDescription(
+      QCoreApplication::translate("compare_images", "Image comparison tool"));
+  parser.addHelpOption();
+  parser.addPositionalArgument(
+      "left-image",
+      QCoreApplication::translate("compare_images",
+                                  "The image to display on the left."),
+      "<left-image>");
+  parser.addPositionalArgument(
+      "right-image",
+      QCoreApplication::translate("compare_images",
+                                  "The image to display on the right."),
+      "<right-image>");
+  parser.addPositionalArgument(
+      "middle-image",
+      QCoreApplication::translate(
+          "compare_images", "The image to display in the middle (optional)."),
+      "[<middle-image>]");
+
+  QCommandLineOption colorSpaceOption(
+      {"color-space", "c"},
+      QCoreApplication::translate(
+          "compare_images",
+          "The color space to use for untagged images (typically PNM)."),
+      QCoreApplication::translate("compare_images", "color-space"));
+  parser.addOption(colorSpaceOption);
+
+  parser.process(application);
+
+  const QString colorSpaceHint = parser.value(colorSpaceOption);
+
+  QStringList arguments = parser.positionalArguments();
+  if (arguments.size() < 2 || arguments.size() > 3) {
+    parser.showHelp(EXIT_FAILURE);
   }
 
   pik::SplitImageView view;
@@ -52,7 +80,8 @@ int main(int argc, char** argv) {
       pik::GetMonitorIccProfile(QX11Info::connection(), QX11Info::appScreen());
 
   const QString leftImagePath = arguments.takeFirst();
-  QImage leftImage = pik::loadImage(leftImagePath, monitorIccProfile);
+  QImage leftImage =
+      pik::loadImage(leftImagePath, monitorIccProfile, colorSpaceHint);
   if (leftImage.isNull()) {
     displayLoadingError(leftImagePath);
     return EXIT_FAILURE;
@@ -60,7 +89,8 @@ int main(int argc, char** argv) {
   view.setLeftImage(std::move(leftImage));
 
   const QString rightImagePath = arguments.takeFirst();
-  QImage rightImage = pik::loadImage(rightImagePath, monitorIccProfile);
+  QImage rightImage =
+      pik::loadImage(rightImagePath, monitorIccProfile, colorSpaceHint);
   if (rightImage.isNull()) {
     displayLoadingError(rightImagePath);
     return EXIT_FAILURE;
@@ -69,7 +99,8 @@ int main(int argc, char** argv) {
 
   if (!arguments.empty()) {
     const QString middleImagePath = arguments.takeFirst();
-    QImage middleImage = pik::loadImage(middleImagePath, monitorIccProfile);
+    QImage middleImage =
+        pik::loadImage(middleImagePath, monitorIccProfile, colorSpaceHint);
     if (middleImage.isNull()) {
       displayLoadingError(middleImagePath);
       return EXIT_FAILURE;

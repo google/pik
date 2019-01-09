@@ -1,3 +1,9 @@
+// Copyright 2019 Google LLC
+//
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT.
+
 #include "image_loading.h"
 
 #include <QRgb>
@@ -7,11 +13,15 @@
 
 namespace pik {
 
-QImage loadImage(const QString& filename, PaddedBytes targetIccProfile) {
+QImage loadImage(const QString& filename, PaddedBytes targetIccProfile,
+                 const QString& sourceColorSpaceHint) {
   static pik::CodecContext codecContext;
   static pik::ThreadPool pool(QThread::idealThreadCount());
 
   pik::CodecInOut decoder(&codecContext);
+  if (!sourceColorSpaceHint.isEmpty()) {
+    decoder.dec_hints.Add("color_space", sourceColorSpaceHint.toStdString());
+  }
   if (!decoder.SetFromFile(filename.toStdString(), &pool)) {
     return QImage();
   }

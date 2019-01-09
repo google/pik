@@ -1,16 +1,8 @@
 // Copyright 2017 Google Inc. All Rights Reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT.
 
 #ifndef SIMD_UTIL_H_
 #define SIMD_UTIL_H_
@@ -83,26 +75,6 @@ constexpr T LimitsMax() {
 template <typename T>
 constexpr T LimitsMin() {
   return IsSigned<T>() ? T(-1) - LimitsMax<T>() : T(0);
-}
-
-// Random numbers
-
-struct RandomState {
-  uint64_t state;
-  uint64_t inc;
-};
-
-// *Really* minimal PCG32 code / (c) 2014 M.E. O'Neill / pcg-random.org
-// Licensed under Apache License 2.0 (NO WARRANTY, etc. see website)
-SIMD_INLINE uint32_t Random32(RandomState* rng) {
-  const uint64_t oldstate = rng->state;
-  // Advance internal state
-  rng->state = oldstate * 6364136223846793005ULL + (rng->inc | 1);
-  // Calculate output function (XSH RR), uses old state for max ILP
-  const uint32_t xorshifted = ((oldstate >> 18u) ^ oldstate) >> 27u;
-  const uint32_t rot = oldstate >> 59u;
-  const uint32_t neg_rot = -static_cast<int32_t>(rot);
-  return (xorshifted >> rot) | (xorshifted << (neg_rot & 31));
 }
 
 // Value to string

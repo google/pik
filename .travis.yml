@@ -1,3 +1,9 @@
+# Copyright 2019 Google LLC
+#
+# Use of this source code is governed by an MIT-style
+# license that can be found in the LICENSE file or at
+# https://opensource.org/licenses/MIT.
+
 language: cpp
 
 # Use container-based image; it usually starts up faster.
@@ -21,6 +27,7 @@ matrix:
           packages:
           - clang-6.0
           - libstdc++-8-dev
+          - libeigen3-dev
 
     - os: linux
       env: C_COMPILER=clang-7 CXX_COMPILER=clang++-7
@@ -32,11 +39,7 @@ matrix:
           packages:
           - clang-7
           - libstdc++-8-dev
-
-addons:
-  apt:
-    packages:
-      - liblcms2-dev
+          - libeigen3-dev
 
 before_install:
 - if [ -n "${C_COMPILER}" ]; then export CC="${C_COMPILER}"; fi

@@ -1,16 +1,8 @@
 // Copyright 2018 Google Inc. All Rights Reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT.
 
 #ifndef METADATA_H_
 #define METADATA_H_
@@ -34,7 +26,7 @@ struct Transcoded {
 
   template <class Visitor>
   Status VisitFields(Visitor* PIK_RESTRICT visitor) {
-    if (visitor->AllDefault(*this, &needs_visit)) return true;
+    if (visitor->AllDefault(*this, &all_default)) return true;
 
     visitor->U32(0x05A09088, 8, &original_bit_depth);
     PIK_RETURN_IF_ERROR(visitor->VisitNested(&original_color_encoding));
@@ -43,7 +35,7 @@ struct Transcoded {
     return true;
   }
 
-  bool needs_visit;
+  bool all_default;
 
   uint32_t original_bit_depth;            // = CodecInOut.dec_bit_depth
   ColorEncoding original_color_encoding;  // = io->dec_c_original in the encoder
@@ -60,7 +52,7 @@ struct Metadata {
 
   template <class Visitor>
   Status VisitFields(Visitor* PIK_RESTRICT visitor) {
-    if (visitor->AllDefault(*this, &needs_visit)) return true;
+    if (visitor->AllDefault(*this, &all_default)) return true;
 
     PIK_RETURN_IF_ERROR(visitor->VisitNested(&transcoded));
 
@@ -74,7 +66,7 @@ struct Metadata {
     return true;
   }
 
-  bool needs_visit;
+  bool all_default;
 
   Transcoded transcoded;
 

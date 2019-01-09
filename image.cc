@@ -1,16 +1,8 @@
 // Copyright 2017 Google Inc. All Rights Reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT.
 
 #include "image.h"
 
@@ -42,19 +34,7 @@ CacheAlignedUniquePtr AllocateImageBytes(size_t size) {
   return bytes;
 }
 
-ImageB Float255ToByteImage(const ImageF& from) {
-  ImageB to(from.xsize(), from.ysize());
-  PROFILER_FUNC;
-  for (size_t y = 0; y < from.ysize(); ++y) {
-    const float* const PIK_RESTRICT row_from = from.Row(y);
-    uint8_t* const PIK_RESTRICT row_to = to.Row(y);
-    for (size_t x = 0; x < from.xsize(); ++x) {
-      float f = std::min(std::max(0.0f, row_from[x]), 255.0f);
-      row_to[x] = static_cast<uint8_t>(f + 0.5);
-    }
-  }
-  return to;
-}
+
 
 ImageB ImageFromPacked(const uint8_t* packed, const size_t xsize,
                        const size_t ysize, const size_t bytes_per_row) {
@@ -69,6 +49,7 @@ ImageB ImageFromPacked(const uint8_t* packed, const size_t xsize,
   return image;
 }
 
+// Note that using mirroring here gives slightly worse results.
 Image3F PadImageToMultiple(const Image3F& in, const size_t N) {
   PROFILER_FUNC;
   const size_t xsize_blocks = DivCeil(in.xsize(), N);
@@ -99,22 +80,6 @@ Image3F PadImageToMultiple(const Image3F& in, const size_t N) {
     }
   }
   return out;
-}
-
-Image3B Float255ToByteImage3(const Image3F& from) {
-  Image3B to(from.xsize(), from.ysize());
-  PROFILER_FUNC;
-  for (int c = 0; c < 3; c++) {
-    for (size_t y = 0; y < from.ysize(); ++y) {
-      const float* PIK_RESTRICT row_from = from.ConstPlaneRow(c, y);
-      uint8_t* PIK_RESTRICT row_to = to.PlaneRow(c, y);
-      for (size_t x = 0; x < from.xsize(); ++x) {
-        float f = std::min(std::max(0.0f, row_from[x]), 255.0f);
-        row_to[x] = static_cast<uint8_t>(f + 0.5);
-      }
-    }
-  }
-  return to;
 }
 
 float DotProduct(const ImageF& a, const ImageF& b) {

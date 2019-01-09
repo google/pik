@@ -1,16 +1,8 @@
 // Copyright 2017 Google Inc. All Rights Reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT.
 
 #include "pik_pass.h"
 
@@ -54,7 +46,6 @@
 #include "headers.h"
 #include "image.h"
 #include "image_io.h"
-#include "jpeg_quant_tables.h"
 #include "lossless16.h"
 #include "lossless8.h"
 #include "opsin_image.h"
@@ -81,9 +72,10 @@ uint32_t PassFlagsFromParams(const CompressParams& cparams,
     flags |= PassHeader::kNoise;
   }
 
-  if (ApplyOverride(cparams.gradient, dist >= kMinButteraugliForGradient)) {
+  // TODO(user): broken for now, to be fixed.
+  /*if (ApplyOverride(cparams.gradient, dist >= kMinButteraugliForGradient)) {
     flags |= PassHeader::kGradientMap;
-  }
+  }*/
 
   if (io->IsGray()) {
     flags |= PassHeader::kGrayscaleOpt;
@@ -128,6 +120,75 @@ void OverrideGroupFlags(const DecompressParams& dparams,
   if (!pass_header->is_last) return;
 }
 
+// Specializes a 8-bit and 16-bit of rounding from floating point to lossless.
+template <typename T>
+T RoundForLossless(float in);
+
+template <>
+uint8_t RoundForLossless(float in) {
+  return static_cast<uint8_t>(in + 0.5f);
+}
+
+template <>
+uint16_t RoundForLossless(float in) {
+  return static_cast<uint16_t>(in * 257.0f + 0.5f);
+}
+
+// Specializes a 8-bit and 16-bit lossless diff for previous pass.
+template <typename T>
+T DiffForLossless(float in, float prev);
+
+template <>
+uint8_t DiffForLossless(float in, float prev) {
+  uint8_t diff = static_cast<int>(RoundForLossless<uint8_t>(in)) -
+                 static_cast<int>(RoundForLossless<uint8_t>(prev));
+  if (diff > 127)
+    diff = (255 - diff) * 2 + 1;
+  else
+    diff = diff * 2;
+  return diff;
+}
+
+template <>
+uint16_t DiffForLossless(float in, float prev) {
+  uint32_t diff = 0xFFFF & (static_cast<int>(RoundForLossless<uint16_t>(in)) -
+                            static_cast<int>(RoundForLossless<uint16_t>(prev)));
+  if (diff > 32767)
+    diff = (65535 - diff) * 2 + 1;
+  else
+    diff = diff * 2;
+  return diff;
+}
+
+// Handles one channel c for converting ImageF or Image3F to lossless 8-bit or
+// lossless 16-bit, and optionally handles previous pass delta.
+template <typename T>
+void LosslessChannelPass(const int c, const CodecInOut* io, const Rect& rect,
+                         const Image3F& previous_pass, Image<T>* channel_out) {
+  size_t xsize = rect.xsize();
+  size_t ysize = rect.ysize();
+  if (previous_pass.xsize() == 0) {
+    for (size_t y = 0; y < ysize; ++y) {
+      const float* const PIK_RESTRICT row_in =
+          rect.ConstPlaneRow(io->color(), c, y);
+      T* const PIK_RESTRICT row_out = channel_out->Row(y);
+      for (size_t x = 0; x < xsize; ++x) {
+        row_out[x] = RoundForLossless<T>(row_in[x]);
+      }
+    }
+  } else {
+    for (size_t y = 0; y < ysize; ++y) {
+      const float* const PIK_RESTRICT row_in =
+          rect.ConstPlaneRow(io->color(), c, y);
+      T* const PIK_RESTRICT row_out = channel_out->Row(y);
+      const float* const PIK_RESTRICT row_prev = previous_pass.PlaneRow(0, y);
+      for (size_t x = 0; x < xsize; ++x) {
+        row_out[x] = DiffForLossless<T>(row_in[x], row_prev[x]);
+      }
+    }
+  }
+}
+
 }  // namespace
 
 Status PixelsToPikLosslessFrame(CompressParams cparams,
@@ -138,74 +199,40 @@ Status PixelsToPikLosslessFrame(CompressParams cparams,
                                 PikInfo* aux_out) {
   size_t xsize = rect.xsize();
   size_t ysize = rect.ysize();
-  if (pass_header.encoding == ImageEncoding::kLossless16) {
-    ImageU imageu(xsize, ysize);
-    // Do not use ImageConvert, it does not correctly round the values.
-    if (previous_pass.xsize() == 0) {
-      for (size_t y = 0; y < ysize; ++y) {
-        const float* const PIK_RESTRICT row_in =
-            rect.ConstPlaneRow(io->color(), 0, y);
-        uint16_t* const PIK_RESTRICT row_out = imageu.Row(y);
-        for (size_t x = 0; x < xsize; ++x) {
-          row_out[x] = static_cast<int>(row_in[x] * 257.0f + 0.5f);
-        }
-      }
-    } else {
-      for (size_t y = 0; y < ysize; ++y) {
-        const float* const PIK_RESTRICT row_in =
-            rect.ConstPlaneRow(io->color(), 0, y);
-        uint16_t* const PIK_RESTRICT row_out = imageu.Row(y);
-        const float* const PIK_RESTRICT row_prev = previous_pass.PlaneRow(0, y);
-        for (size_t x = 0; x < xsize; ++x) {
-          uint32_t diff =
-              0xFFFF & (static_cast<int>(row_in[x] * 257.0f + 0.5f) -
-                        static_cast<int>(row_prev[x] * 257.0f + 0.5f));
-          if (diff > 32767)
-            diff = (65535 - diff) * 2 + 1;
-          else
-            diff = diff * 2;
-          row_out[x] = diff;
-        }
-      }
-    }
+  if (pass_header.encoding == ImageEncoding::kLosslessGray16) {
+    ImageU channel(xsize, ysize);
+    LosslessChannelPass(0, io, rect, previous_pass, &channel);
     compressed->resize(pos / 8);
-    if (!Grayscale16bit_compress(imageu, compressed)) {
+    if (!Grayscale16bit_compress(channel, compressed)) {
       return PIK_FAILURE("Lossless compression failed");
     }
-
+  } else if (pass_header.encoding == ImageEncoding::kLosslessColor16) {
+    Image3U image(xsize, ysize);
+    LosslessChannelPass(0, io, rect, previous_pass, image.MutablePlane(0));
+    LosslessChannelPass(1, io, rect, previous_pass, image.MutablePlane(1));
+    LosslessChannelPass(2, io, rect, previous_pass, image.MutablePlane(2));
+    compressed->resize(pos / 8);
+    if (!Colorful16bit_compress(image, compressed)) {
+      return PIK_FAILURE("Lossless compression failed");
+    }
+  } else if (pass_header.encoding == ImageEncoding::kLosslessGray8) {
+    ImageB channel(xsize, ysize);
+    LosslessChannelPass(0, io, rect, previous_pass, &channel);
+    compressed->resize(pos / 8);
+    if (!Grayscale8bit_compress(channel, compressed)) {
+      return PIK_FAILURE("Lossless compression failed");
+    }
+  } else if (pass_header.encoding == ImageEncoding::kLosslessColor8) {
+    Image3B image(xsize, ysize);
+    LosslessChannelPass(0, io, rect, previous_pass, image.MutablePlane(0));
+    LosslessChannelPass(1, io, rect, previous_pass, image.MutablePlane(1));
+    LosslessChannelPass(2, io, rect, previous_pass, image.MutablePlane(2));
+    compressed->resize(pos / 8);
+    if (!Colorful8bit_compress(image, compressed)) {
+      return PIK_FAILURE("Lossless compression failed");
+    }
   } else {
-    ImageB imageb(xsize, ysize);
-    // Do not use ImageConvert, it does not correctly round the values.
-    if (previous_pass.xsize() == 0) {
-      for (size_t y = 0; y < ysize; ++y) {
-        const float* const PIK_RESTRICT row_in =
-            rect.ConstPlaneRow(io->color(), 0, y);
-        uint8_t* const PIK_RESTRICT row_out = imageb.Row(y);
-        for (size_t x = 0; x < xsize; ++x) {
-          row_out[x] = static_cast<int>(row_in[x] + 0.5f);
-        }
-      }
-    } else {
-      for (size_t y = 0; y < ysize; ++y) {
-        const float* const PIK_RESTRICT row_in =
-            rect.ConstPlaneRow(io->color(), 0, y);
-        uint8_t* const PIK_RESTRICT row_out = imageb.Row(y);
-        const float* const PIK_RESTRICT row_prev = previous_pass.PlaneRow(0, y);
-        for (size_t x = 0; x < xsize; ++x) {
-          uint8_t diff = static_cast<int>(row_in[x] + 0.5f) -
-                         static_cast<int>(row_prev[x] + 0.5f);
-          if (diff > 127)
-            diff = (255 - diff) * 2 + 1;
-          else
-            diff = diff * 2;
-          row_out[x] = diff;
-        }
-      }
-    }
-    compressed->resize(pos / 8);
-    if (!Grayscale8bit_compress(imageb, compressed)) {
-      return PIK_FAILURE("Lossless compression failed");
-    }
+    return PIK_FAILURE("Unkonwn lossless encoding");
   }
   pos = compressed->size() * 8;
   return true;
@@ -250,10 +277,10 @@ Status PikPassHeuristics(CompressParams cparams, const PassHeader& pass_header,
   cache.saliency_threshold = cparams.saliency_threshold;
   cache.saliency_debug_skip_nonsalient = cparams.saliency_debug_skip_nonsalient;
 
-  ComputeInitialCoefficients(pass_header, *template_group_header, opsin,
-                             &cache);
+  InitializeEncCache(pass_header, *template_group_header, opsin, Rect(opsin),
+                     &cache);
   multipass_manager->GetAcStrategy(
-      cparams.butteraugli_distance, &quant_field, cache.src, &cache.coeffs_init,
+      cparams.butteraugli_distance, &quant_field, cache.src,
       /*pool=*/nullptr, &cache.ac_strategy, aux_out);
   *full_ac_strategy = cache.ac_strategy.Copy();
 
@@ -298,9 +325,6 @@ Status PixelsToPikGroup(CompressParams cparams, const PassHeader& pass_header,
   }
 
   if (cparams.lossless_mode) {
-    if (!io->IsGray()) {
-      return PIK_FAILURE("Lossless is currently only supported for grayscale");
-    }
     Image3F previous_pass;
     PIK_RETURN_IF_ERROR(multipass_handler->GetPreviousPass(
         io->dec_c_original, /*pool=*/nullptr, &previous_pass));
@@ -321,10 +345,8 @@ Status PixelsToPikGroup(CompressParams cparams, const PassHeader& pass_header,
   cache.saliency_threshold = cparams.saliency_threshold;
   cache.saliency_debug_skip_nonsalient = cparams.saliency_debug_skip_nonsalient;
 
-  // TODO(user): avoid extra copy by passing rects around.
-  Image3F opsin = CopyImage(multipass_handler->PaddedGroupRect(), opsin_in);
-
-  ComputeInitialCoefficients(pass_header, header, opsin, &cache);
+  InitializeEncCache(pass_header, header, opsin_in,
+                     multipass_handler->PaddedGroupRect(), &cache);
   cache.ac_strategy = ac_strategy.Copy(multipass_handler->BlockGroupRect());
 
   Quantizer quantizer =
@@ -336,7 +358,7 @@ Status PixelsToPikGroup(CompressParams cparams, const PassHeader& pass_header,
   multipass_handler->Manager()->StripInfo(&cache);
 
   PaddedBytes compressed_data =
-      EncodeToBitstream(cache, Rect(opsin), quantizer, noise_params, cmap,
+      EncodeToBitstream(cache, Rect(cache.src), quantizer, noise_params, cmap,
                         cparams.fast_mode, multipass_handler, aux_out);
 
   compressed->append(compressed_data);
@@ -354,43 +376,50 @@ Status PixelsToPikPass(CompressParams cparams, const PassParams& pass_params,
                        PaddedBytes* compressed, size_t& pos, PikInfo* aux_out,
                        MultipassManager* multipass_manager) {
   PassHeader pass_header;
-  pass_header.resampling_factor2 = cparams.resampling_factor2;
-  pass_header.flags = PassFlagsFromParams(cparams, io);
+  pass_header.have_adaptive_reconstruction = false;
+  if (cparams.lossless_mode) {
+    bool gray = io->IsGray();
+    pass_header.encoding = io->original_bits_per_sample() > 8
+                               ? (gray ? ImageEncoding::kLosslessGray16
+                                       : ImageEncoding::kLosslessColor16)
+                               : (gray ? ImageEncoding::kLosslessGray8
+                                       : ImageEncoding::kLosslessColor8);
+  }
+
   pass_header.is_last = pass_params.is_last;
   pass_header.frame = pass_params.frame_info;
-  pass_header.has_alpha = io->HasAlpha() && pass_header.is_last;
-  pass_header.predict_hf = cparams.predict_hf;
-  pass_header.predict_lf = cparams.predict_lf;
-  pass_header.gaborish = cparams.gaborish;
+  pass_header.has_alpha = io->HasAlpha() && pass_params.is_last;
 
-  if (io->xsize() <= 8 || io->ysize() <= 8) {
-    // Broken, disable.
-    pass_header.gaborish = GaborishStrength::kOff;
-  }
+  if (pass_header.encoding == ImageEncoding::kPasses) {
+    pass_header.resampling_factor2 = cparams.resampling_factor2;
+    pass_header.flags = PassFlagsFromParams(cparams, io);
+    pass_header.predict_hf = cparams.predict_hf;
+    pass_header.predict_lf = cparams.predict_lf;
+    pass_header.gaborish = cparams.gaborish;
 
-  pass_header.have_adaptive_reconstruction = false;
-  if (ApplyOverride(cparams.adaptive_reconstruction,
-                    cparams.butteraugli_distance >=
-                        kMinButteraugliForAdaptiveReconstruction)) {
-    pass_header.have_adaptive_reconstruction = true;
-    pass_header.epf_params = cparams.epf_params;
-    if (pass_header.epf_params.enable_adaptive &&
-        pass_header.epf_params.lut == 0) {
-      if (cparams.butteraugli_distance <= 1.0f) {
-        pass_header.epf_params.lut = 1;
-      } else if (cparams.butteraugli_distance <= 2.0f) {
-        pass_header.epf_params.lut = 2;
-      } else if (cparams.butteraugli_distance <= 3.0f) {
-        pass_header.epf_params.lut = 3;
-      } else {
-        pass_header.epf_params.lut = 0;
+    if (io->xsize() <= 8 || io->ysize() <= 8) {
+      // Broken, disable.
+      pass_header.gaborish = GaborishStrength::kOff;
+    }
+
+    if (ApplyOverride(cparams.adaptive_reconstruction,
+                      cparams.butteraugli_distance >=
+                          kMinButteraugliForAdaptiveReconstruction)) {
+      pass_header.have_adaptive_reconstruction = true;
+      pass_header.epf_params = cparams.epf_params;
+      if (pass_header.epf_params.enable_adaptive &&
+          pass_header.epf_params.lut == 0) {
+        if (cparams.butteraugli_distance <= 1.0f) {
+          pass_header.epf_params.lut = 1;
+        } else if (cparams.butteraugli_distance <= 2.0f) {
+          pass_header.epf_params.lut = 2;
+        } else if (cparams.butteraugli_distance <= 3.0f) {
+          pass_header.epf_params.lut = 3;
+        } else {
+          pass_header.epf_params.lut = 0;
+        }
       }
     }
-  }
-  if (cparams.lossless_mode) {
-    pass_header.encoding = io->original_bits_per_sample() > 8
-                               ? ImageEncoding::kLossless16
-                               : ImageEncoding::kLossless8;
   }
 
   multipass_manager->StartPass(pass_header);
@@ -426,55 +455,58 @@ Status PixelsToPikPass(CompressParams cparams, const PassParams& pass_params,
     }
   }
 
-  Image3F opsin_orig = OpsinDynamicsImage(io, Rect(io->color()));
-  if (pass_header.resampling_factor2 != 2) {
-    opsin_orig = DownsampleImage(opsin_orig, pass_header.resampling_factor2);
-  }
-
-  constexpr size_t N = kBlockDim;
-  PROFILER_ZONE("enc OpsinToPik uninstrumented");
-  const size_t xsize = opsin_orig.xsize();
-  const size_t ysize = opsin_orig.ysize();
-  if (xsize == 0 || ysize == 0) return PIK_FAILURE("Empty image");
-  Image3F opsin = PadImageToMultiple(opsin_orig, N);
-  NoiseParams noise_params;
-
-  if (pass_header.flags & PassHeader::kNoise) {
-    PROFILER_ZONE("enc GetNoiseParam");
-    // Don't start at zero amplitude since adding noise is expensive -- it
-    // significantly slows down decoding, and this is unlikely to completely go
-    // away even with advanced optimizations. After the
-    // kNoiseModelingRampUpDistanceRange we have reached the full level, i.e.
-    // noise is no longer represented by the compressed image, so we can add
-    // full noise by the noise modeling itself.
-    static const double kNoiseModelingRampUpDistanceRange = 0.6;
-    static const double kNoiseLevelAtStartOfRampUp = 0.25;
-    // TODO(user) test and properly select quality_coef with smooth filter
-    float quality_coef = 1.0f;
-    const double rampup =
-        (cparams.butteraugli_distance - kMinButteraugliForNoise) /
-        kNoiseModelingRampUpDistanceRange;
-    if (rampup < 1.0) {
-      quality_coef = kNoiseLevelAtStartOfRampUp +
-                     (1.0 - kNoiseLevelAtStartOfRampUp) * rampup;
-    }
-    GetNoiseParameter(opsin, &noise_params, quality_coef);
-  }
-  if (pass_header.gaborish != GaborishStrength::kOff) {
-    opsin = SlowGaborishInverse(opsin, 0.92718927264540152);
-  }
-
-  multipass_manager->DecorrelateOpsin(&opsin);
-
   GroupHeader template_group_header;
   ColorCorrelationMap full_cmap(io->xsize(), io->ysize());
   std::shared_ptr<Quantizer> full_quantizer;
   AcStrategyImage full_ac_strategy;
+  Image3F opsin_orig, opsin;
+  NoiseParams noise_params;
 
-  PIK_RETURN_IF_ERROR(
-      PikPassHeuristics(cparams, pass_header, opsin_orig, opsin, noise_params,
-                        multipass_manager, &template_group_header, &full_cmap,
-                        &full_quantizer, &full_ac_strategy, aux_out));
+  if (pass_header.encoding == ImageEncoding::kPasses) {
+    opsin_orig = OpsinDynamicsImage(io, Rect(io->color()));
+    if (pass_header.resampling_factor2 != 2) {
+      opsin_orig = DownsampleImage(opsin_orig, pass_header.resampling_factor2);
+    }
+
+    constexpr size_t N = kBlockDim;
+    PROFILER_ZONE("enc OpsinToPik uninstrumented");
+    const size_t xsize = opsin_orig.xsize();
+    const size_t ysize = opsin_orig.ysize();
+    if (xsize == 0 || ysize == 0) return PIK_FAILURE("Empty image");
+    opsin = PadImageToMultiple(opsin_orig, N);
+
+    if (pass_header.flags & PassHeader::kNoise) {
+      PROFILER_ZONE("enc GetNoiseParam");
+      // Don't start at zero amplitude since adding noise is expensive -- it
+      // significantly slows down decoding, and this is unlikely to completely
+      // go away even with advanced optimizations. After the
+      // kNoiseModelingRampUpDistanceRange we have reached the full level, i.e.
+      // noise is no longer represented by the compressed image, so we can add
+      // full noise by the noise modeling itself.
+      static const double kNoiseModelingRampUpDistanceRange = 0.6;
+      static const double kNoiseLevelAtStartOfRampUp = 0.25;
+      // TODO(user) test and properly select quality_coef with smooth filter
+      float quality_coef = 1.0f;
+      const double rampup =
+          (cparams.butteraugli_distance - kMinButteraugliForNoise) /
+          kNoiseModelingRampUpDistanceRange;
+      if (rampup < 1.0) {
+        quality_coef = kNoiseLevelAtStartOfRampUp +
+                       (1.0 - kNoiseLevelAtStartOfRampUp) * rampup;
+      }
+      GetNoiseParameter(opsin, &noise_params, quality_coef);
+    }
+    if (pass_header.gaborish != GaborishStrength::kOff) {
+      opsin = SlowGaborishInverse(opsin, 0.92718927264540152);
+    }
+
+    multipass_manager->DecorrelateOpsin(&opsin);
+
+    PIK_RETURN_IF_ERROR(
+        PikPassHeuristics(cparams, pass_header, opsin_orig, opsin, noise_params,
+                          multipass_manager, &template_group_header, &full_cmap,
+                          &full_quantizer, &full_ac_strategy, aux_out));
+  }
 
   // Compress groups.
   std::vector<PaddedBytes> group_codes(num_groups);
@@ -550,54 +582,86 @@ Status ValidateImageDimensions(const FileHeader& container,
   return true;
 }
 
+namespace {
+
+// Specializes a 8-bit and 16-bit of converting to float from lossless.
+float ToFloatForLossless(uint8_t in) { return static_cast<float>(in); }
+
+float ToFloatForLossless(uint16_t in) { return in * (1.0f / 257); }
+
+// Specializes a 8-bit and 16-bit undo of lossless diff.
+float UndiffForLossless(uint8_t in, float prev) {
+  uint16_t diff;
+  if (in % 2 == 0)
+    diff = in / 2;
+  else
+    diff = 255 - (in / 2);
+  uint8_t out = diff + static_cast<int>(RoundForLossless<uint8_t>(prev));
+  return ToFloatForLossless(out);
+}
+
+float UndiffForLossless(uint16_t in, float prev) {
+  uint16_t diff;
+  if (in % 2 == 0)
+    diff = in / 2;
+  else
+    diff = 65535 - (in / 2);
+  uint16_t out = diff + static_cast<int>(RoundForLossless<uint16_t>(prev));
+  return ToFloatForLossless(out);
+}
+
+// Handles converting lossless 8-bit or lossless 16-bit, to Image3F, with
+// option to give 3x same channel at input for grayscale, and optionally handles
+// previous pass delta.
+template <typename T>
+void LosslessChannelDecodePass(int num_channels, const Image<T>** in,
+                               const Rect& rect, const Image3F& previous_pass,
+                               Image3F* color) {
+  size_t xsize = rect.xsize();
+  size_t ysize = rect.ysize();
+
+  for (int c = 0; c < num_channels; c++) {
+    if (previous_pass.xsize() == 0) {
+      for (size_t y = 0; y < ysize; ++y) {
+        const T* const PIK_RESTRICT row_in = in[c]->Row(y);
+        float* const PIK_RESTRICT row_out = rect.PlaneRow(color, c, y);
+        for (size_t x = 0; x < xsize; ++x) {
+          row_out[x] = ToFloatForLossless(row_in[x]);
+        }
+      }
+    } else {
+      for (size_t y = 0; y < ysize; ++y) {
+        const T* const PIK_RESTRICT row_in = in[c]->Row(y);
+        float* const PIK_RESTRICT row_out = rect.PlaneRow(color, c, y);
+        const float* const PIK_RESTRICT row_prev =
+            previous_pass.ConstPlaneRow(c, y);
+        for (size_t x = 0; x < xsize; ++x) {
+          row_out[x] = UndiffForLossless(row_in[x], row_prev[x]);
+        }
+      }
+    }
+  }
+
+  // Grayscale, copy the channel tot he other two output channels
+  if (num_channels == 1) {
+    for (size_t y = 0; y < ysize; ++y) {
+      const float* const PIK_RESTRICT row_0 = rect.PlaneRow(color, 0, y);
+      float* const PIK_RESTRICT row_1 = rect.PlaneRow(color, 1, y);
+      float* const PIK_RESTRICT row_2 = rect.PlaneRow(color, 2, y);
+      for (size_t x = 0; x < xsize; ++x) {
+        row_1[x] = row_2[x] = row_0[x];
+      }
+    }
+  }
+}
+}  // namespace
+
 Status PikLosslessFrameToPixels(const PaddedBytes& compressed,
                                 const PassHeader& pass_header, size_t* position,
                                 Image3F* color, const Rect& rect,
                                 const Image3F& previous_pass) {
   PROFILER_FUNC;
-  if (pass_header.encoding == ImageEncoding::kLossless16) {
-    ImageU image;
-    if (!Grayscale16bit_decompress(compressed, position, &image)) {
-      return PIK_FAILURE("Lossless decompression failed");
-    }
-    if (!SameSize(image, rect)) {
-      return PIK_FAILURE("Lossless decompression yielded wrong dimensions.");
-    }
-    size_t xsize = image.xsize();
-    size_t ysize = image.ysize();
-
-    if (previous_pass.xsize() == 0) {
-      for (size_t y = 0; y < ysize; ++y) {
-        const uint16_t* const PIK_RESTRICT row_in = image.Row(y);
-        float* const PIK_RESTRICT row0_out = rect.PlaneRow(color, 0, y);
-        float* const PIK_RESTRICT row1_out = rect.PlaneRow(color, 1, y);
-        float* const PIK_RESTRICT row2_out = rect.PlaneRow(color, 2, y);
-        for (size_t x = 0; x < xsize; ++x) {
-          row0_out[x] = row1_out[x] = row2_out[x] =
-              static_cast<float>(row_in[x] * (1.0f / 257));
-        }
-      }
-    } else {
-      for (size_t y = 0; y < ysize; ++y) {
-        const uint16_t* const PIK_RESTRICT row_in = image.Row(y);
-        float* const PIK_RESTRICT row0_out = rect.PlaneRow(color, 0, y);
-        float* const PIK_RESTRICT row1_out = rect.PlaneRow(color, 1, y);
-        float* const PIK_RESTRICT row2_out = rect.PlaneRow(color, 2, y);
-        const float* const PIK_RESTRICT row_prev =
-            previous_pass.ConstPlaneRow(0, y);
-        for (size_t x = 0; x < xsize; ++x) {
-          uint16_t diff;
-          if (row_in[x] % 2 == 0)
-            diff = row_in[x] / 2;
-          else
-            diff = 65535 - (row_in[x] / 2);
-          uint16_t out = diff + static_cast<int>(row_prev[x] * 257.0f + 0.5f);
-          row0_out[x] = row1_out[x] = row2_out[x] =
-              static_cast<float>(out) * (1.0f / 257);
-        }
-      }
-    }
-  } else {
+  if (pass_header.encoding == ImageEncoding::kLosslessGray8) {
     ImageB image;
     if (!Grayscale8bit_decompress(compressed, position, &image)) {
       return PIK_FAILURE("Lossless decompression failed");
@@ -605,40 +669,42 @@ Status PikLosslessFrameToPixels(const PaddedBytes& compressed,
     if (!SameSize(image, rect)) {
       return PIK_FAILURE("Lossless decompression yielded wrong dimensions.");
     }
-    size_t xsize = image.xsize();
-    size_t ysize = image.ysize();
-    ImageF imagef(xsize, ysize);
-
-    if (previous_pass.xsize() == 0) {
-      for (size_t y = 0; y < ysize; ++y) {
-        const uint8_t* const PIK_RESTRICT row_in = image.Row(y);
-        float* const PIK_RESTRICT row0_out = rect.PlaneRow(color, 0, y);
-        float* const PIK_RESTRICT row1_out = rect.PlaneRow(color, 1, y);
-        float* const PIK_RESTRICT row2_out = rect.PlaneRow(color, 2, y);
-        for (size_t x = 0; x < xsize; ++x) {
-          row0_out[x] = row1_out[x] = row2_out[x] =
-              static_cast<float>(row_in[x]);
-        }
-      }
-    } else {
-      for (size_t y = 0; y < ysize; ++y) {
-        const uint8_t* const PIK_RESTRICT row_in = image.Row(y);
-        float* const PIK_RESTRICT row0_out = rect.PlaneRow(color, 0, y);
-        float* const PIK_RESTRICT row1_out = rect.PlaneRow(color, 1, y);
-        float* const PIK_RESTRICT row2_out = rect.PlaneRow(color, 2, y);
-        const float* const PIK_RESTRICT row_prev =
-            previous_pass.ConstPlaneRow(0, y);
-        for (size_t x = 0; x < xsize; ++x) {
-          uint8_t diff;
-          if (row_in[x] % 2 == 0)
-            diff = row_in[x] / 2;
-          else
-            diff = 255 - (row_in[x] / 2);
-          uint8_t out = diff + static_cast<int>(row_prev[x] + 0.5f);
-          row0_out[x] = row1_out[x] = row2_out[x] = static_cast<float>(out);
-        }
-      }
+    const ImageB* array[1] = {&image};
+    LosslessChannelDecodePass(1, array, rect, previous_pass, color);
+  } else if (pass_header.encoding == ImageEncoding::kLosslessGray16) {
+    ImageU image;
+    if (!Grayscale16bit_decompress(compressed, position, &image)) {
+      return PIK_FAILURE("Lossless decompression failed");
     }
+    if (!SameSize(image, rect)) {
+      return PIK_FAILURE("Lossless decompression yielded wrong dimensions.");
+    }
+    const ImageU* array[1] = {&image};
+    LosslessChannelDecodePass(1, array, rect, previous_pass, color);
+  } else if (pass_header.encoding == ImageEncoding::kLosslessColor8) {
+    Image3B image;
+    if (!Colorful8bit_decompress(compressed, position, &image)) {
+      return PIK_FAILURE("Lossless decompression failed");
+    }
+    if (!SameSize(image, rect)) {
+      return PIK_FAILURE("Lossless decompression yielded wrong dimensions.");
+    }
+    const ImageB* array[3] = {&image.Plane(0), &image.Plane(1),
+                              &image.Plane(2)};
+    LosslessChannelDecodePass(3, array, rect, previous_pass, color);
+  } else if (pass_header.encoding == ImageEncoding::kLosslessColor16) {
+    Image3U image;
+    if (!Colorful16bit_decompress(compressed, position, &image)) {
+      return PIK_FAILURE("Lossless decompression failed");
+    }
+    if (!SameSize(image, rect)) {
+      return PIK_FAILURE("Lossless decompression yielded wrong dimensions.");
+    }
+    const ImageU* array[3] = {&image.Plane(0), &image.Plane(1),
+                              &image.Plane(2)};
+    LosslessChannelDecodePass(3, array, rect, previous_pass, color);
+  } else {
+    return PIK_FAILURE("Unknown lossless encoding");
   }
   return true;
 }
@@ -931,8 +997,10 @@ Status PikGroupToPixels(const DecompressParams& dparams,
     PIK_RETURN_IF_ERROR(DecodeAlpha(dparams, header.alpha, alpha_output, rect));
   }
 
-  if (pass_header->encoding == ImageEncoding::kLossless8 ||
-      pass_header->encoding == ImageEncoding::kLossless16) {
+  if (pass_header->encoding == ImageEncoding::kLosslessGray8 ||
+      pass_header->encoding == ImageEncoding::kLosslessGray16 ||
+      pass_header->encoding == ImageEncoding::kLosslessColor8 ||
+      pass_header->encoding == ImageEncoding::kLosslessColor16) {
     size_t pos = reader->Position();
     size_t before_pos = pos;
     Image3F previous_pass;
@@ -1047,8 +1115,10 @@ Status PikPassToPixels(const DecompressParams& dparams,
 
   // TODO(user): add kProgressive.
   if (header.encoding != ImageEncoding::kPasses &&
-      header.encoding != ImageEncoding::kLossless8 &&
-      header.encoding != ImageEncoding::kLossless16) {
+      header.encoding != ImageEncoding::kLosslessGray8 &&
+      header.encoding != ImageEncoding::kLosslessGray16 &&
+      header.encoding != ImageEncoding::kLosslessColor8 &&
+      header.encoding != ImageEncoding::kLosslessColor16) {
     return PIK_FAILURE("Unsupported bitstream");
   }
 
@@ -1143,25 +1213,23 @@ Status PikPassToPixels(const DecompressParams& dparams,
     }
   }
 
-  // TODO(user): here we "steal" the quantizer of the first group. This
-  // assumes that all group quantizer share the global scale and DC, which is
-  // true as the encoder produces these kind of images. The format should
-  // disallow other situations.
-  Quantizer quantizer = handlers[0]->TakeDecoderQuantizer();
-
-  multipass_handler->RestoreOpsin(&opsin);
-  multipass_handler->UpdateBiases(&pass_dec_cache.biases);
-  multipass_handler->StoreBiases(pass_dec_cache.biases);
-  if (header.encoding == ImageEncoding::kPasses) {
-    multipass_handler->SetDecodedPass(opsin);
-  }
-
-  opsin = FinalizePassDecoding(std::move(opsin), header, quantizer,
-                               &pass_dec_cache, aux_out);
-
   PIK_RETURN_IF_ERROR(num_errors.load(std::memory_order_relaxed) == 0);
 
   if (header.encoding == ImageEncoding::kPasses) {
+    // TODO(user): here we "steal" the quantizer of the first group. This
+    // assumes that all group quantizer share the global scale and DC, which is
+    // true as the encoder produces these kind of images. The format should
+    // disallow other situations.
+    Quantizer quantizer = handlers[0]->TakeDecoderQuantizer();
+
+    multipass_handler->RestoreOpsin(&opsin);
+    multipass_handler->UpdateBiases(&pass_dec_cache.biases);
+    multipass_handler->StoreBiases(pass_dec_cache.biases);
+    multipass_handler->SetDecodedPass(opsin);
+
+    opsin = FinalizePassDecoding(std::move(opsin), header, quantizer,
+                                 &pass_dec_cache, aux_out);
+
     Image3F color(padded_xsize, padded_ysize);
     OpsinToLinear(opsin, Rect(opsin), &color);
 
@@ -1181,8 +1249,10 @@ Status PikPassToPixels(const DecompressParams& dparams,
     const ColorEncoding& c =
         io->Context()->c_linear_srgb[io->dec_c_original.IsGray()];
     io->SetFromImage(std::move(color), c);
-  } else if (header.encoding == ImageEncoding::kLossless8 ||
-             header.encoding == ImageEncoding::kLossless16) {
+  } else if (header.encoding == ImageEncoding::kLosslessGray8 ||
+             header.encoding == ImageEncoding::kLosslessGray16 ||
+             header.encoding == ImageEncoding::kLosslessColor8 ||
+             header.encoding == ImageEncoding::kLosslessColor16) {
     io->SetFromImage(std::move(opsin), io->dec_c_original);
     multipass_handler->SetDecodedPass(io);
   } else {

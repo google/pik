@@ -1,19 +1,13 @@
 // Copyright 2018 Google Inc. All Rights Reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Use of this source code is governed by an MIT-style
+// license that can be found in the LICENSE file or at
+// https://opensource.org/licenses/MIT.
 
 // Empty if not included by foreach_target.
 #ifdef SIMD_ATTR_IMPL
+
+#include <random>
 
 namespace pik {
 namespace SIMD_NAMESPACE {
@@ -28,6 +22,14 @@ inline SIMD_ATTR void PreventElision(T&& output) {
 #ifndef _MSC_VER
   asm volatile("" : "+r"(output) : : "memory");
 #endif
+}
+
+// Random numbers
+
+typedef std::mt19937 RandomState;
+
+SIMD_INLINE uint32_t Random32(RandomState* rng) {
+  return (*rng)();
 }
 
 // Compare non-vector T.
@@ -132,7 +134,7 @@ SIMD_ATTR void TestFloorLog2() {
 
   uint8_t in[kBytes];
   uint8_t expected[kBytes];
-  RandomState rng = {1234};
+  RandomState rng{1234};
   for (size_t i = 0; i < kBytes; ++i) {
     expected[i] = Random32(&rng) & 7;
     in[i] = 1u << expected[i];
@@ -168,7 +170,7 @@ SIMD_ATTR void Copy(const uint8_t* SIMD_RESTRICT from, const size_t size,
 }
 
 SIMD_ATTR void TestCopy() {
-  RandomState rng = {1234};
+  RandomState rng{1234};
   const size_t kSize = 34;
   SIMD_ALIGN uint8_t from[kSize];
   for (size_t i = 0; i < kSize; ++i) {
@@ -199,7 +201,7 @@ SIMD_ATTR void MulAdd(const T* SIMD_RESTRICT mul_array,
 
 template <typename T>
 SIMD_ATTR T SumMulAdd() {
-  RandomState rng = {1234};
+  RandomState rng{1234};
   const size_t kSize = 64;
   SIMD_ALIGN T mul[kSize];
   SIMD_ALIGN T x[kSize];
@@ -221,8 +223,8 @@ SIMD_ATTR void TestExamples() {
   TestFloorLog2();
   TestCopy();
 
-  ASSERT_EQ(75598.0f, SumMulAdd<float>());
-  ASSERT_EQ(75598.0, SumMulAdd<double>());
+  ASSERT_EQ(78944.0f, SumMulAdd<float>());
+  ASSERT_EQ(78944.0, SumMulAdd<double>());
 }
 
 }  // namespace examples
@@ -1539,7 +1541,7 @@ struct TestLogicalT {
 struct TestSelect {
   template <typename T, class D>
   SIMD_ATTR void operator()(T, D d) const {
-    RandomState rng = {1234};
+    RandomState rng{1234};
     const T mask0(0);
     const uint64_t ones = ~0ull;
     T mask1;
@@ -1566,7 +1568,7 @@ struct TestSelect {
 struct TestSelectSign {
   template <typename T, class D>
   SIMD_ATTR void operator()(T, D d) const {
-    RandomState rng = {1234};
+    RandomState rng{1234};
 
     SIMD_ALIGN T lanes1[d.N];
     SIMD_ALIGN T lanes2[d.N];
@@ -2205,7 +2207,7 @@ struct TestShuffleT {
   SIMD_ATTR void operator()(T, D d) const {
 // Not supported by scalar.h (its vector size is always less than 16 bytes)
 #if SIMD_TARGET_VALUE != SIMD_NONE
-    RandomState rng = {1234};
+    RandomState rng{1234};
     const SIMD_FULL(uint8_t) d8;
     constexpr size_t N8 = SIMD_FULL(uint8_t)::N;
     SIMD_ALIGN uint8_t in_bytes[N8];
