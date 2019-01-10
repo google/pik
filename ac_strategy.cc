@@ -633,6 +633,57 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
           1.0,
           2.5316749591824266,
       };
+      // DCT4X4
+      {
+        double minval = 1e30;
+        double maxval = -1e30;
+        // 4x4 DCT needs less focus on B channel, since at that resolution
+        // blue needs to be correct only by average.
+        static const double kColorWeights4x4[3] = {
+          0.37190083410056468,
+          1.0,
+          0.2,
+        };
+        for (int ix = 0; ix < 4; ++ix) {
+          double total_sum = 0;
+          int offx = (ix & 1) * 4;
+          int offy = (ix & 2) * 2;
+          for (size_t c = 0; c < src.kNumPlanes; c++) {
+            double sum = 0;
+            for (size_t iy = 0; iy < 3; iy++) {
+              const float* row0 =
+                  src.ConstPlaneRow(c, by * kBlockDim + offy + iy);
+              const float* row1 =
+                  src.ConstPlaneRow(c, by * kBlockDim + offy + iy + 1);
+              for (size_t dx = 0; dx < 3; dx++) {
+                int x = bx * kBlockDim + offx + dx;
+                sum += fabs(row0[x] - row0[x + 1]) +
+                       fabs(row0[x] - row1[x]);
+              }
+              {
+                int x = bx * kBlockDim + offx + 3;
+                sum += fabs(row0[x] - row1[x]);
+              }
+            }
+            int iy = 3;
+            const float* row0 =
+                src.ConstPlaneRow(c, by * kBlockDim + offy + iy);
+            for (size_t dx = 0; dx < 3; dx++) {
+              int x = bx * kBlockDim + offx + dx;
+              sum += fabs(row0[x] - row0[x + 1]);
+            }
+            total_sum += kColorWeights4x4[c] * sum;
+          }
+          minval = std::min(minval, total_sum);
+          maxval = std::max(maxval, total_sum);
+        }
+        minval /= (butteraugli_target + 4);
+        maxval /= (butteraugli_target + 4);
+        if (maxval - minval >= 0.32 && minval < 0.07) {
+          return AcStrategy::Type::DCT4X4;
+        }
+      }
+
 
       const auto apply_identity = [](const double butteraugli_target,
                                      const Image3F* img,
@@ -686,6 +737,7 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
 
       const double kPow = 0.89978799825439681;
       const double kPow2 = 3.3440552419343303e-06;
+
 
       // DCT32
       if (bx + 3 < xsize_blocks && by + 3 < ysize_blocks && (bx & 3) == 0 &&

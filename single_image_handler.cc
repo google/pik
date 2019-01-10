@@ -169,16 +169,14 @@ void SingleImageManager::StripInfoBeforePredictions(EncCache* cache) {
       break;
     }
     case ProgressiveMode::kLfOnly: {
-      FillImage(0.0f, &cache->dc_init);
       break;
     }
     case ProgressiveMode::kHfOnly:
     case ProgressiveMode::kNonSalientHfOnly:
     case ProgressiveMode::kSalientHfOnly: {
-      FillImage(0.0f, &cache->dc_init);
       for (size_t c = 0; c < cache->ac.kNumPlanes; c++) {
         for (size_t by = 0; by < cache->ac_strategy.ysize(); by++) {
-          float* PIK_RESTRICT row = cache->coeffs_init.PlaneRow(c, by);
+          float* PIK_RESTRICT row = cache->coeffs.PlaneRow(c, by);
           for (size_t bx = 0; bx < cache->ac_strategy.xsize(); bx++) {
             float* PIK_RESTRICT block = row + kBlockSize * bx;
             // Zero out components that should be zero but might not quite be so
@@ -195,6 +193,29 @@ void SingleImageManager::StripInfoBeforePredictions(EncCache* cache) {
           }
         }
       }
+      break;
+    }
+    case ProgressiveMode::kFull: {
+      break;
+    }
+  }
+}
+
+void SingleImageManager::StripDCInfo(PassEncCache* cache) {
+  switch (mode_) {
+    case ProgressiveMode::kDcOnly: {
+      break;
+    }
+    case ProgressiveMode::kLfOnly: {
+      FillImage(0.0f, &cache->dc_dec);
+      FillImage(int16_t(0), &cache->dc);
+      break;
+    }
+    case ProgressiveMode::kHfOnly:
+    case ProgressiveMode::kNonSalientHfOnly:
+    case ProgressiveMode::kSalientHfOnly: {
+      FillImage(0.0f, &cache->dc_dec);
+      FillImage(int16_t(0), &cache->dc);
       break;
     }
     case ProgressiveMode::kFull: {

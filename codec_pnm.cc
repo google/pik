@@ -251,8 +251,9 @@ Status DecodeImagePNM(const PaddedBytes& bytes, ThreadPool* pool,
   const bool has_alpha = false;
   const uint8_t* end = bytes.data() + bytes.size();
   const ExternalImage external(header.xsize, header.ysize, io->dec_c_original,
-                               has_alpha, header.bits_per_sample,
-                               header.big_endian, pos, end);
+                               has_alpha,  /*alpha_bits=*/ 0,
+                               header.bits_per_sample, header.big_endian,
+                               pos, end);
   const CodecIntervals* temp_intervals = nullptr;  // Don't know min/max.
   return external.CopyTo(temp_intervals, pool, io);
 }
@@ -274,9 +275,10 @@ Status EncodeImagePNM(const CodecInOut* io, const ColorEncoding& c_desired,
   }
 
   const ImageU* alpha = io->HasAlpha() ? &io->alpha() : nullptr;
+  const size_t alpha_bits = io->HasAlpha() ? io->AlphaBits() : 0;
   CodecIntervals* temp_intervals = nullptr;  // Can't store min/max.
   ExternalImage external(pool, io->color(), Rect(io->color()), io->c_current(),
-                         c_desired, io->HasAlpha(), alpha,
+                         c_desired, io->HasAlpha(), alpha, alpha_bits,
                          io->enc_bits_per_sample, big_endian, temp_intervals);
   PIK_RETURN_IF_ERROR(external.IsHealthy());
 

@@ -13,7 +13,7 @@ ifeq ($(origin CC),default)
   CC = clang
 endif
 
-INC_FLAGS = -I. -I../ -Ithird_party/brotli/c/include/ $(shell pkg-config --cflags eigen3)
+INC_FLAGS = -I. -I../ -Ithird_party/brotli/c/include/
 
 # Clang-specific flags, tested with 6.0.1
 # -Xclang -mprefer-vector-width=128 would decrease likelihood of undesired and
@@ -63,6 +63,7 @@ PIK_OBJS := $(addprefix obj/, \
 	color_correlation.o \
 	color_encoding.o \
 	color_management.o \
+	compressed_dc.o \
 	compressed_image.o \
 	context_map_encode.o \
 	context_map_decode.o \

@@ -29,12 +29,21 @@ namespace pik {
 
 struct GradientMap;
 
+// Initialize per-pass information.
+SIMD_ATTR void InitializePassEncCache(const PassHeader& pass_header,
+                                      const Image3F& opsin_full,
+                                      const AcStrategyImage& ac_strategy,
+                                      const Quantizer& quantizer,
+                                      const ColorCorrelationMap& cmap,
+                                      ThreadPool* pool,
+                                      PassEncCache* pass_enc_cache);
+
 // Initializes the encoder cache, setting parameters from the headers,
 // setting up the `src` and `dc_init` images in enc_cache, and allocating
 // `coeffs_init`.
 SIMD_ATTR void InitializeEncCache(const PassHeader& pass_header,
                                   const GroupHeader& group_header,
-                                  const Image3F& opsin_full,
+                                  const PassEncCache& pass_enc_cache,
                                   const Rect& group_rect, EncCache* enc_cache);
 
 SIMD_ATTR void ComputeCoefficients(const Quantizer& quantizer,
@@ -59,9 +68,9 @@ bool DecodeFromBitstream(const PassHeader& pass_header,
                          const PaddedBytes& compressed, BitReader* reader,
                          const Rect& group_rect, MultipassHandler* handler,
                          const size_t xsize_blocks, const size_t ysize_blocks,
-                         ColorCorrelationMap* cmap, NoiseParams* noise_params,
-                         Quantizer* quantizer, DecCache* cache,
-                         PassDecCache* pass_dec_cache);
+                         const ColorCorrelationMap& cmap,
+                         NoiseParams* noise_params, const Quantizer& quantizer,
+                         DecCache* cache, PassDecCache* pass_dec_cache);
 
 // Dequantizes AC and DC coefficients.
 void DequantImage(const Quantizer& quantizer, const ColorCorrelationMap& cmap,

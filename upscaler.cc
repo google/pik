@@ -103,63 +103,6 @@ ImageF Blur(const ImageF& in, float sigma, float border_ratio) {
                      border_ratio);
 }
 
-Image3F SuperSample4x4(const Image3F& image) {
-  size_t nxs = image.xsize() << 2;
-  size_t nys = image.ysize() << 2;
-  Image3F retval(nxs, nys);
-  for (int c = 0; c < 3; ++c) {
-    for (size_t ny = 0; ny < nys; ++ny) {
-      const float* PIK_RESTRICT row_in = image.PlaneRow(c, ny >> 2);
-      float* PIK_RESTRICT row_out = retval.PlaneRow(c, ny);
-
-      for (size_t nx = 0; nx < nxs; ++nx) {
-        row_out[nx] = row_in[nx >> 2];
-      }
-    }
-  }
-  return retval;
-}
-
-void Smooth4x4Corners(Image3F& ima) {
-  static const float overshoot = 3.5;
-  static const float m = 1.0 / (4.0 - overshoot);
-  for (int y = 3; y + 3 < ima.ysize(); y += 4) {
-    for (int x = 3; x + 3 < ima.xsize(); x += 4) {
-      float ave[3] = {0};
-      for (int c = 0; c < 3; ++c) {
-        ave[c] += ima.PlaneRow(c, y)[x];
-        ave[c] += ima.PlaneRow(c, y)[x + 1];
-        ave[c] += ima.PlaneRow(c, y + 1)[x];
-        ave[c] += ima.PlaneRow(c, y + 1)[x + 1];
-      }
-      const int off = 2;
-      for (int c = 0; c < 3; ++c) {
-        float others = (ave[c] - overshoot * ima.PlaneRow(c, y)[x]) * m;
-        ima.PlaneRow(c, y - off)[x - off] -= (others - ima.PlaneRow(c, y)[x]);
-        ima.PlaneRow(c, y)[x] = others;
-      }
-      for (int c = 0; c < 3; ++c) {
-        float others = (ave[c] - overshoot * ima.PlaneRow(c, y)[x + 1]) * m;
-        ima.PlaneRow(c, y - off)[x + off + 1] -=
-            (others - ima.PlaneRow(c, y)[x + 1]);
-        ima.PlaneRow(c, y)[x + 1] = others;
-      }
-      for (int c = 0; c < 3; ++c) {
-        float others = (ave[c] - overshoot * ima.PlaneRow(c, y + 1)[x]) * m;
-        ima.PlaneRow(c, y + off + 1)[x - off] -=
-            (others - ima.PlaneRow(c, y + 1)[x]);
-        ima.PlaneRow(c, y + 1)[x] = others;
-      }
-      for (int c = 0; c < 3; ++c) {
-        float others = (ave[c] - overshoot * ima.PlaneRow(c, y + 1)[x + 1]) * m;
-        ima.PlaneRow(c, y + off + 1)[x + off + 1] -=
-            (others - ima.PlaneRow(c, y + 1)[x + 1]);
-        ima.PlaneRow(c, y + 1)[x + 1] = others;
-      }
-    }
-  }
-}
-
 }  // namespace
 
 Image3F Blur(const Image3F& image, float sigma) {

@@ -30,7 +30,9 @@ constexpr size_t kBlockDim = 8;
 
 constexpr size_t kDCTBlockSize = kBlockDim * kBlockDim;
 
-// Group is the rectangular grid of blocks that can be decoded in parallel.
+// Group is the rectangular grid of blocks that can be decoded in parallel. This
+// is different for DC.
+constexpr size_t kDcGroupDimInBlocks = 256;
 constexpr size_t kGroupWidth = 512;
 constexpr size_t kGroupHeight = 512;
 static_assert(kGroupWidth % kBlockDim == 0,

@@ -1215,7 +1215,12 @@ struct State {
           }
         }  // groupX
       }    // groupY
+// Disabled, because it is actually useful that the decoder supports decoding
+// its own stream when contained inside a bigger stream and knows the correct
+// end position.
+#if 0
       assert(pos == compressedSize);
+#endif
 
       for (int channel = 0; channel < 3; ++channel)
         if (imageMethod & (1 << channel)) {

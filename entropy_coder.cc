@@ -790,9 +790,9 @@ std::string EncodeImageData(const Rect& rect, const Image3S& img,
       }
     };
     for (size_t c = 0; c < 3; c++) {
-      for (size_t y = 0; y < img.ysize(); y++) {
-        const int16_t* PIK_RESTRICT row = img.ConstPlaneRow(c, y);
-        for (size_t x = 0; x < img.xsize(); x++) {
+      for (size_t y = 0; y < ysize; y++) {
+        const int16_t* PIK_RESTRICT row = rect.ConstPlaneRow(img, c, y);
+        for (size_t x = 0; x < xsize; x++) {
           if (!rle || row[x]) {
             encode_cnt(c);
             int nbits, bits;
@@ -851,7 +851,7 @@ bool DecodeImageData(BitReader* PIK_RESTRICT br,
     const int histo_idx = context_map[c];
     size_t skip = 0;
     for (size_t y = 0; y < ysize; y++) {
-      int16_t* PIK_RESTRICT row = img->PlaneRow(c, y);
+      int16_t* PIK_RESTRICT row = rect.PlaneRow(img, c, y);
       for (size_t x = 0; x < xsize; x++) {
         if (skip) {
           row[x] = 0;
@@ -924,7 +924,7 @@ bool DecodeImage(BitReader* PIK_RESTRICT br, const Rect& rect,
                  Image3S* PIK_RESTRICT img) {
   std::vector<uint8_t> context_map;
   ANSCode code;
-  PIK_RETURN_IF_ERROR(DecodeHistograms(br, 3, 32, &code, &context_map));
+  PIK_RETURN_IF_ERROR(DecodeHistograms(br, 3, 40, &code, &context_map));
   ANSSymbolReader decoder(&code);
   PIK_RETURN_IF_ERROR(DecodeImageData(br, context_map, &decoder, rect, img));
   if (!decoder.CheckANSFinalState()) {

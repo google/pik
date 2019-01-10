@@ -77,7 +77,7 @@ struct EdgePreservingFilter {
   // corresponds to 1/3 of patch pixels having the minimum integer SAD of 1.
   static constexpr int kMinSigma = 4 << kSigmaShift;
   // Somewhat arbitrary; determines size of a lookup table.
-  static constexpr int kMaxSigma = 216 << kSigmaShift;  // 18 per patch pixel
+  static constexpr int kMaxSigma = 168 << kSigmaShift;  // 14 per patch pixel
 
   // For each block, compute adaptive sigma.
   template <class Target>

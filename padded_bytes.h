@@ -141,6 +141,14 @@ class PaddedBytes {
   CacheAlignedUniquePtr data_;
 };
 
+template <typename T>
+static inline void Append(const T& s, PaddedBytes* out,
+                          size_t* PIK_RESTRICT byte_pos) {
+  memcpy(out->data() + *byte_pos, s.data(), s.size());
+  *byte_pos += s.size();
+  PIK_CHECK(*byte_pos <= out->size());
+}
+
 }  // namespace pik
 
 #endif  // PADDED_BYTES_H_

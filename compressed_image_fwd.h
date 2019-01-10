@@ -30,10 +30,13 @@ struct GradientMap {
   bool grayscale;
 };
 
-// Working area for ComputeCoefficients; avoids duplicated work when called
-// multiple times.
-struct EncCache {
-  bool initialized = false;
+// Contains global information that are computed once per pass.
+struct PassEncCache {
+  // DCT coefficients for the full image
+  Image3F coeffs;
+
+  Image3F dc_dec;
+  Image3S dc;
 
   // Enable new Lossless codec for DC. This flag exists only temporarily
   // as long as both old and new implementation co-exist, and eventually
@@ -42,28 +45,24 @@ struct EncCache {
 
   bool use_gradient;
   bool grayscale_opt = false;
+  // Gradient map, if used.
+  GradientMap gradient;
+};
+
+// Working area for ComputeCoefficients
+struct EncCache {
+  bool initialized = false;
+
+  bool grayscale_opt = false;
+
   size_t xsize_blocks;
   size_t ysize_blocks;
-
-  // Original image.
-  Image3F src;
-
-  // DCT [with optional preprocessing that depends only on DC]
-  Image3F coeffs_init;
-
-  Image3F dc_init;
-
-  // Working value, copied from coeffs_init.
-  Image3F coeffs;
-
-  // QuantDcKey() value for which cached results are valid.
-  uint32_t last_quant_dc_key = ~0u;
 
   // ComputePredictionResiduals
   Image3F dc_dec;
 
-  // Gradient map, if used.
-  GradientMap gradient;
+  // Working value, copied from coeffs_init.
+  Image3F coeffs;
 
   // AC strategy.
   AcStrategyImage ac_strategy;
@@ -74,40 +73,46 @@ struct EncCache {
   bool saliency_debug_skip_nonsalient;
 
   // Enable/disable predictions. Set in ComputeInitialCoefficients from the
-  // group header. Current usage is only in progressive mode.
+  // pass header. Current usage is only in progressive mode.
   bool predict_lf;
   bool predict_hf;
 
   // Output values
-  Image3S dc;
   Image3S ac;          // 64 coefs per block, first (DC) is ignored.
   ImageI quant_field;  // Final values, to be encoded in stream.
 };
 
 struct DecCache {
-  // Enable new Lossless codec for DC. This flag exists only temporarily
-  // as long as both old and new implementation co-exist, and eventually
-  // only the new implementation should remain.
-  bool use_new_dc = false;
-
   // Only used in encoder loop.
-  Image3S quantized_dc;
   Image3S quantized_ac;
 
-  // Dequantized output produced by DecodeFromBitstream or DequantImage.
+  // Dequantized output produced by DecodeFromBitstream, DequantImage or
+  // ExtractGroupDC.
+  // TODO(user): replace the DC with a pointer + a rect to avoid copies.
   Image3F dc;
   Image3F ac;
-
-  GradientMap gradient;
 };
 
 // Information that is used at the pass level. All the images here should be
 // accessed through a group rect (either with block units or pixel units).
 struct PassDecCache {
+  // Enable new Lossless codec for DC. This flag exists only temporarily
+  // as long as both old and new implementation co-exist, and eventually
+  // only the new implementation should remain.
+  bool use_new_dc = false;
+
+  bool grayscale;
+
   // Bias that was used for dequantization of the corresponding coefficient.
   // Note that the code that stores the biases relies on the fact that DC biases
   // are 0.
   Image3F biases;
+
+  // Full DC of the pass. Note that this will be split in *AC* group sized
+  // chunks for AC predictions (DC group size != AC group size).
+  Image3F dc;
+
+  GradientMap gradient;
 
   // Raw quant field to be used for adaptive reconstruction.
   ImageI raw_quant_field;

@@ -55,12 +55,6 @@ class MultipassHandler {
   // Returns the MultipassManager this handler was created by.
   virtual MultipassManager* Manager() = 0;
 
-  void SetDecoderQuantizer(Quantizer&& quantizer) {
-    quantizer_ = std::move(quantizer);
-  }
-
-  Quantizer TakeDecoderQuantizer() { return std::move(quantizer_); }
-
  private:
   Quantizer quantizer_{kBlockDim, 0, 0, 0};
 };
@@ -123,6 +117,9 @@ class MultipassManager {
   // Remove information from the image, just before encoding.
   virtual void StripInfo(EncCache* cache) {}
   virtual void StripInfoBeforePredictions(EncCache* cache) {}
+
+  // Remove DC information from the image. Runs per-pass.
+  virtual void StripDCInfo(PassEncCache* cache) {}
 };
 
 }  // namespace pik

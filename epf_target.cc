@@ -10,6 +10,9 @@
 #ifndef EPF_NEW_SIGMA
 #define EPF_NEW_SIGMA 0
 #endif
+#ifndef EPF_INDEP_RANGE
+#define EPF_INDEP_RANGE 0
+#endif
 
 namespace pik {
 namespace SIMD_NAMESPACE {
@@ -843,10 +846,12 @@ class SIMD_ALIGN MinMaxWorker {
     ysize_ = in->ysize();
     aligned_x_end_ = xsize_ - (xsize_ % df.N);
 
-    store(set1(df, FLT_MAX), df, min_);
-    store(set1(df, -FLT_MAX), df, max_);
-    scalar_min_ = FLT_MAX;
-    scalar_max_ = -FLT_MAX;
+    for (int c = 0; c < 3; ++c) {
+      store(set1(df, FLT_MAX), df, min_[c]);
+      store(set1(df, -FLT_MAX), df, max_[c]);
+      scalar_min_[c] = FLT_MAX;
+      scalar_max_[c] = -FLT_MAX;
+    }
   }
 
   // iy may be out of bounds (for padding).
@@ -864,20 +869,26 @@ class SIMD_ALIGN MinMaxWorker {
   }
 
   SIMD_ATTR void Assimilate(const MinMaxWorker& other) {
-    const auto min1 = load(df, min_);
-    const auto min2 = load(df, other.min_);
-    store(min(min1, min2), df, min_);
-    const auto max1 = load(df, max_);
-    const auto max2 = load(df, other.max_);
-    store(max(max1, max2), df, max_);
-    scalar_min_ = std::min(scalar_min_, other.scalar_min_);
-    scalar_max_ = std::max(scalar_max_, other.scalar_max_);
+    for (int c = 0; c < 3; ++c) {
+      const auto min1 = load(df, min_[c]);
+      const auto min2 = load(df, other.min_[c]);
+      store(min(min1, min2), df, min_[c]);
+      const auto max1 = load(df, max_[c]);
+      const auto max2 = load(df, other.max_[c]);
+      store(max(max1, max2), df, max_[c]);
+      scalar_min_[c] = std::min(scalar_min_[c], other.scalar_min_[c]);
+      scalar_max_[c] = std::max(scalar_max_[c], other.scalar_max_[c]);
+    }
   }
 
-  SIMD_ATTR void Finalize(float* PIK_RESTRICT min,
-                          float* PIK_RESTRICT max) const {
-    *min = std::min(scalar_min_, *std::min_element(min_, min_ + df.N));
-    *max = std::max(scalar_max_, *std::max_element(max_, max_ + df.N));
+  SIMD_ATTR void Finalize(std::array<float, 3>* PIK_RESTRICT min,
+                          std::array<float, 3>* PIK_RESTRICT max) const {
+    for (int c = 0; c < 3; ++c) {
+      (*min)[c] =
+          std::min(scalar_min_[c], *std::min_element(min_[c], min_[c] + df.N));
+      (*max)[c] =
+          std::max(scalar_max_[c], *std::max_element(max_[c], max_[c] + df.N));
+    }
   }
 
  private:
@@ -892,8 +903,8 @@ class SIMD_ALIGN MinMaxWorker {
     // Local copies avoid stores in each iteration. Part+min also leads to
     // better code than std::min (VUCOMISS + CMOV).
     const SIMD_PART(float, 1) d1;
-    auto my_min1 = load(d1, &scalar_min_);
-    auto my_max1 = load(d1, &scalar_max_);
+    auto my_min1 = load(d1, &scalar_min_[c]);
+    auto my_max1 = load(d1, &scalar_max_[c]);
 
     // Left: mirror and vector alignment
     int64_t ix = -kBorder;
@@ -906,16 +917,16 @@ class SIMD_ALIGN MinMaxWorker {
     }
 
     // Interior: whole vectors
-    auto my_min = load(df, min_);
-    auto my_max = load(df, max_);
+    auto my_min = load(df, min_[c]);
+    auto my_max = load(df, max_[c]);
     for (; ix + df.N <= xsize_; ix += df.N) {
       const auto in = load_unaligned(df, row_in + ix);
       my_min = min(my_min, in);
       my_max = max(my_max, in);
       store(in, df, row_out + ix);
     }
-    store(my_min, df, min_);
-    store(my_max, df, max_);
+    store(my_min, df, min_[c]);
+    store(my_max, df, max_[c]);
 
     // Right: vector remainder and mirror
     for (; ix < xsize_ + kBorder; ++ix) {
@@ -926,8 +937,8 @@ class SIMD_ALIGN MinMaxWorker {
       store(in, d1, row_out + ix);
     }
 
-    store(my_min1, d1, &scalar_min_);
-    store(my_max1, d1, &scalar_max_);
+    store(my_min1, d1, &scalar_min_[c]);
+    store(my_max1, d1, &scalar_max_[c]);
   }
 
   // Border, no need to update min/max from mirrored values.
@@ -959,22 +970,23 @@ class SIMD_ALIGN MinMaxWorker {
     }
   }
 
-  SIMD_ALIGN float min_[df.N];
-  SIMD_ALIGN float max_[df.N];
+  SIMD_ALIGN float min_[3][df.N];
+  SIMD_ALIGN float max_[3][df.N];
   const Image3F* SIMD_RESTRICT in_;  // not owned
   Image3F* SIMD_RESTRICT padded_;    // not owned
   size_t xsize_;
   size_t ysize_;
   size_t aligned_x_end_;
-  float scalar_min_;
-  float scalar_max_;
+  float scalar_min_[3];
+  float scalar_max_[3];
 };
 static_assert(sizeof(MinMaxWorker) % sizeof(DF::V) == 0, "Align");
 
 // Returns a new image with kBorder additional pixels on each side initialized
 // by mirroring.
 SIMD_ATTR void MinMax(const Image3F& in, ThreadPool* pool,
-                      float* SIMD_RESTRICT min, float* SIMD_RESTRICT max,
+                      std::array<float, 3>* SIMD_RESTRICT min,
+                      std::array<float, 3>* SIMD_RESTRICT max,
                       Image3F* SIMD_RESTRICT padded) {
   PROFILER_FUNC;
   // A bit too large for the stack. Must be aligned for min_/max_ members.
@@ -1001,21 +1013,39 @@ SIMD_ATTR void MinMax(const Image3F& in, ThreadPool* pool,
 // Returns a guide image for "in" (padded). u8 is required for the SAD
 // hardware acceleration; precomputing is faster than converting a window for
 // each pixel.
-SIMD_ATTR Image3B MakeGuide(const Image3F& padded, const float min,
-                            const float max, const float stretch) {
+SIMD_ATTR Image3B MakeGuide(const Image3F& padded,
+                            const std::array<float, 3>& min,
+                            const std::array<float, 3>& max) {
   const size_t xsize = padded.xsize();
   const size_t ysize = padded.ysize();
   Image3B guide(xsize, ysize);
-
-  PIK_CHECK(max > min);
-  const auto vmul = set1(df, stretch);
-  const auto vmin = set1(df, min);
 
   const SIMD_FULL(int32_t) di;
   const SIMD_FULL(uint32_t) du;
   const SIMD_PART(uint8_t, df.N) d8;
 
+#if EPF_INDEP_RANGE
+  const float channel_scale[3] = {1.0f / 16, 1.0f / 4, 1.0f};
+#else
+  const float all_max = *std::max_element(max.begin(), max.end());
+  const float all_min = *std::min_element(min.begin(), min.end());
+  const float range = all_max - all_min;
+  const auto vmul = set1(df, 255.0f / range);
+  const auto vmin = set1(df, all_min);
+#endif
+
   for (size_t c = 0; c < 3; ++c) {
+    PIK_CHECK(max[c] >= min[c]);
+#if EPF_INDEP_RANGE
+    float range = max[c] - min[c];
+    if (range == 0.0f) {
+      // Prevent division by zero. Guide is zero because we subtract min.
+      range = 1.0f;
+    }
+    const auto vmul = set1(df, 255.0f * channel_scale[c] / range);
+    const auto vmin = set1(df, min[c]);
+#endif
+
     const ImageF& padded_plane = padded.Plane(c);
     ImageB* PIK_RESTRICT guide_plane = guide.MutablePlane(c);
 
@@ -1023,7 +1053,8 @@ SIMD_ATTR Image3B MakeGuide(const Image3F& padded, const float min,
       const float* SIMD_RESTRICT padded_row = padded_plane.ConstRow(y);
       uint8_t* SIMD_RESTRICT guide_row = guide_plane->Row(y);
 
-      for (size_t x = 0; x < xsize; x += df.N) {
+      size_t x = 0;
+      for (; x < xsize; x += df.N) {
         const auto scaled = (load(df, padded_row + x) - vmin) * vmul;
         const auto i32 = convert_to(di, scaled);
         const auto bytes = u8_from_u32(cast_to(du, i32));
@@ -1032,7 +1063,7 @@ SIMD_ATTR Image3B MakeGuide(const Image3F& padded, const float min,
 
       // MPSADBW will read 16 bytes but only 11 need be valid;
       // zero-initialize the rest.
-      for (size_t x = xsize; x < xsize + 16 - 11; x += df.N) {
+      for (; x < xsize + 16 - 11; x += df.N) {
         store(setzero(d8), d8, guide_row + x);
       }
     }
@@ -1047,47 +1078,7 @@ static PIK_INLINE int SigmaFromQuant(float signal, float stretch,
   // Larger signal => less quantization, less smoothing.
 
 #if EPF_NEW_SIGMA
-
-#if 0
-  // d1 lo
-  const float min_signal = 0.259460f;
-  const float max_signal = 0.648651f;
-  const float mul_signal = 38.541489f;
-  const float lut[kTableSize] = {0.186378f, 0.090105f, 0.074057f, 0.074057f,
-                                 0.074057f, 0.074057f, 0.074057f, 0.074057f,
-                                 0.074057f, 0.074057f, 0.070354f, 0.062949f,
-                                 0.222170f, 0.360413f, 0.227109f, 0.160457f};
-
-#elif 1
-  //  // d2 !fast
-  //  const float min_signal = 0.029833f;
-  //  const float max_signal = 0.333176f;
-  //  const float mul_signal = 49.449009f;
-  //  const float lut[kTableSize] = {0.946576f, 0.667288f, 0.502517f, 0.567771f,
-  //                                 0.361993f, 0.392580f, 0.296945f, 0.077424f,
-  //                                 0.154105f, 0.122892f, 0.074090f, 0.162067f,
-  //                                 0.131289f, 0.184670f, 0.185143f,
-  //                                 0.185143f};
-
-  // d2 fast - narrow range. important to zero last entry.
-  const float min_signal = 0.016665f;
-  const float max_signal = 0.179203f;
-  const float mul_signal = 92.286072f;
-  const float lut[kTableSize] = {
-      0.943995f, 1.020266f, 0.851213f, 0.785951f,    0.590426f, 0.567771f,
-      0.545319f, 0.474421f, 0.336717f, 0.355881f,    0.269268f, 0.231344f,
-      0.237465f, 0.194991f, 0.179781f, 0.246857f * 0};
-
-#elif 0
-  // d3
-  const float min_signal = 0.027740f;
-  const float max_signal = 0.418152f;
-  const float mul_signal = 38.420933f;
-  const float lut[kTableSize] = {
-      0.864000f, 0.571737f, 0.444343f, 0.444343f,    0.258346f, 0.201044f,
-      0.228295f, 0.248434f, 0.259494f, 0.195039f,    0.293287f, 0.269247f,
-      0.221383f, 0.187296f, 0.149550f, 0.123429f * 0};
-#endif
+#error "Add new LUT"
 
 #else
   // baseline
@@ -1120,11 +1111,7 @@ static PIK_INLINE int SigmaFromQuant(float signal, float stretch,
     PIK_ASSERT(0.0f <= frac && frac <= 1.0f);
     unscaled_sigma = frac * lut[trunc + 1] + (1.0f - frac) * lut[trunc];
   }
-#if EPF_NEW_SIGMA
-  static const float kBias = 0.0f;
-#else
   static const float kBias = 0.65510999999999997;
-#endif
   const int sigma = unscaled_sigma * stretch + kBias;
   // No need to clamp to kMinSigma, we skip blocks with very low sigma.
   return std::min(sigma, kMaxSigma);
@@ -1145,7 +1132,7 @@ SIMD_ATTR void AdaptiveFilter(const Image3F& in_guide, const Image3F& in,
 
   PIK_ASSERT(epf_params.enable_adaptive);
 
-  float min, max;
+  std::array<float, 3> min, max;
 
   Image3F padded_in(xsize + 2 * kBorder, ysize + 2 * kBorder);
   MinMax(in, /*pool=*/nullptr, &min, &max, &padded_in);
@@ -1157,15 +1144,26 @@ SIMD_ATTR void AdaptiveFilter(const Image3F& in_guide, const Image3F& in,
   Image3F padded_guide(xsize + 2 * kBorder, ysize + 2 * kBorder);
   MinMax(epf_params.use_sharpened ? in : in_guide, /*pool=*/nullptr, &min, &max,
          &padded_guide);
-  const float stretch = 255.0f / (max - min);
+  if (epf_stats != nullptr) {
+    for (int c = 0; c < 3; ++c) {
+      epf_stats->s_ranges[c].Notify(max[c] - min[c]);
+    }
+  }
+  const float all_max = *std::max_element(max.begin(), max.end());
+  const float all_min = *std::min_element(min.begin(), min.end());
+  const float stretch = 255.0f / (all_max - all_min);
 
-  Image3B guide = MakeGuide(padded_guide, min, max, stretch);
+  Image3B guide = MakeGuide(padded_guide, min, max);
   const size_t guide_stride = guide.Plane(0).bytes_per_row();
   PIK_CHECK(guide_stride == guide.Plane(1).bytes_per_row());
   PIK_CHECK(guide_stride == guide.Plane(2).bytes_per_row());
 
 #if DUMP_SIGMA
   ImageB dump(DivCeil(xsize, kBlockDim), ysize_blocks);
+#endif
+
+#if !EPF_NEW_SIGMA
+  quant_scale = 0.039324273f;
 #endif
 
   WeightFast weight_func;
@@ -1177,15 +1175,10 @@ SIMD_ATTR void AdaptiveFilter(const Image3F& in_guide, const Image3F& in,
     uint8_t* dump_row = dump.Row(by);
 #endif
 
-#if !EPF_NEW_SIGMA
-    quant_scale = 0.045818462195368434;
-#endif
-
     for (size_t bx = 0; bx < xsize; bx += kBlockDim) {
       const float ac_q = ac_quant_row[bx / kBlockDim];
       const AcStrategy ac_strategy = ac_strategy_row[bx / kBlockDim];
-      // PIK_ASSERT(ac_strategy.Strategy() == AcStrategy::Type::DCT);
-      float scale = ac_strategy.QuantScale();
+      const float scale = ac_strategy.ARQuantScale();
       // fprintf(stderr, "%d %d %g (%g %g)\n", by, bx, ac_q, scale,
       // quant_scale);
       const float quant = ac_q * scale * quant_scale;
@@ -1329,7 +1322,7 @@ void Filter(const Image3F& in_guide, const Image3F& in,
     return;
   }
 
-  float min, max;
+  std::array<float, 3> min, max;
   Image3F padded_in(xsize + 2 * kBorder, ysize + 2 * kBorder);
   MinMax(in, /*pool=*/nullptr, &min, &max, &padded_in);
 
@@ -1337,9 +1330,11 @@ void Filter(const Image3F& in_guide, const Image3F& in,
   MinMax(epf_params.use_sharpened ? in : in_guide, /*pool=*/nullptr, &min, &max,
          &padded_guide);
 
-  *stretch = 255.0f / (max - min);
+  const float all_max = *std::max_element(max.begin(), max.end());
+  const float all_min = *std::min_element(min.begin(), min.end());
+  *stretch = 255.0f / (all_max - all_min);
 
-  Image3B guide = MakeGuide(padded_guide, min, max, *stretch);
+  Image3B guide = MakeGuide(padded_guide, min, max);
 
   FilterWorkers workers(1, guide, padded_in, epf_params.sigma, smoothed);
   for (size_t y = 0; y < ysize_blocks; ++y) {

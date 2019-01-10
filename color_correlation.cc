@@ -5,6 +5,9 @@
 // https://opensource.org/licenses/MIT.
 
 #include "color_correlation.h"
+#include "huffman_decode.h"
+#include "huffman_encode.h"
+#include "write_bits.h"
 
 #undef PROFILER_ENABLED
 #define PROFILER_ENABLED 1
@@ -44,7 +47,7 @@ void FindBestCorrelation(const Image3F& dct, ImageI* PIK_RESTRICT map,
   constexpr float kZeroThresh = kScale * kZeroBiasDefault[SIDE_CHANNEL];
   // Always use DCT8 quantization values for DC.
   const float* const PIK_RESTRICT kDequantMatrix =
-    DequantMatrix(0, kQuantKindDCT8, SIDE_CHANNEL);
+      DequantMatrix(0, kQuantKindDCT8, SIDE_CHANNEL);
   float qm[block_size];
   for (int k = 0; k < block_size; ++k) {
     qm[k] = 1.0f / kDequantMatrix[k];
@@ -234,6 +237,65 @@ void FindBestColorCorrelationMap(const Image3F& opsin,
   FindBestCorrelation</* from Y */ 1, /* to X */ 0, kColorFactorX,
                       kColorOffsetX>(dct, &cmap->ytox_map, &tmp, &cmap->ytox_dc,
                                      y_to_x_acceptance);
+}
+
+bool DecodeColorMap(BitReader* PIK_RESTRICT br, ImageI* PIK_RESTRICT ac_map,
+                    int* PIK_RESTRICT dc_val) {
+  HuffmanDecodingData entropy;
+  if (!entropy.ReadFromBitStream(br)) {
+    return PIK_FAILURE("Invalid histogram data.");
+  }
+  HuffmanDecoder decoder;
+  br->FillBitBuffer();
+  *dc_val = decoder.ReadSymbol(entropy, br);
+  for (size_t y = 0; y < ac_map->ysize(); ++y) {
+    int* PIK_RESTRICT row = ac_map->Row(y);
+    for (size_t x = 0; x < ac_map->xsize(); ++x) {
+      br->FillBitBuffer();
+      row[x] = decoder.ReadSymbol(entropy, br);
+    }
+  }
+  PIK_RETURN_IF_ERROR(br->JumpToByteBoundary());
+  return true;
+}
+
+std::string EncodeColorMap(const ImageI& ac_map, const Rect& rect,
+                           const int dc_val, PikImageSizeInfo* info) {
+  PIK_ASSERT(rect.IsInside(ac_map));
+  const size_t max_out_size = rect.xsize() * rect.ysize() + 1024;
+  std::string output(max_out_size, 0);
+  size_t storage_ix = 0;
+  uint8_t* storage = reinterpret_cast<uint8_t*>(&output[0]);
+  storage[0] = 0;
+  std::vector<uint32_t> histogram(256);
+  ++histogram[dc_val];
+  for (int y = 0; y < rect.ysize(); ++y) {
+    for (int x = 0; x < rect.xsize(); ++x) {
+      ++histogram[rect.ConstRow(ac_map, y)[x]];
+    }
+  }
+  std::vector<uint8_t> bit_depths(256);
+  std::vector<uint16_t> bit_codes(256);
+  BuildAndStoreHuffmanTree(histogram.data(), histogram.size(),
+                           bit_depths.data(), bit_codes.data(), &storage_ix,
+                           storage);
+  const size_t histo_bits = storage_ix;
+  WriteBits(bit_depths[dc_val], bit_codes[dc_val], &storage_ix, storage);
+  for (int y = 0; y < rect.ysize(); ++y) {
+    const int* PIK_RESTRICT row = rect.ConstRow(ac_map, y);
+    for (int x = 0; x < rect.xsize(); ++x) {
+      WriteBits(bit_depths[row[x]], bit_codes[row[x]], &storage_ix, storage);
+    }
+  }
+  WriteZeroesToByteBoundary(&storage_ix, storage);
+  PIK_ASSERT((storage_ix >> 3) <= output.size());
+  output.resize(storage_ix >> 3);
+  if (info) {
+    info->histogram_size += histo_bits >> 3;
+    info->entropy_coded_bits += storage_ix - histo_bits;
+    info->total_size += output.size();
+  }
+  return output;
 }
 
 }  // namespace pik

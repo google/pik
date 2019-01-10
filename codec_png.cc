@@ -645,7 +645,8 @@ Status DecodeImagePNG(const PaddedBytes& bytes, ThreadPool* pool,
   const bool big_endian = true;  // PNG requirement
   const uint8_t* end = nullptr;  // Don't know.
   const ExternalImage external(w, h, io->dec_c_original, has_alpha,
-                               bits_per_sample, big_endian, out, end);
+                               /*alpha_bits=*/ bits_per_sample, bits_per_sample,
+                               big_endian, out, end);
   free(out);
   const CodecIntervals* temp_intervals = nullptr;  // Don't know min/max.
   return external.CopyTo(temp_intervals, pool, io);
@@ -657,12 +658,13 @@ Status EncodeImagePNG(const CodecInOut* io, const ColorEncoding& c_desired,
   io->enc_bits_per_sample = bits_per_sample == 8 ? 8 : 16;
 
   const ImageU* alpha = io->HasAlpha() ? &io->alpha() : nullptr;
+  const size_t alpha_bits = io->HasAlpha() ? io->AlphaBits() : 0;
   const bool big_endian = true;              // PNG requirement
   CodecIntervals* temp_intervals = nullptr;  // Can't store min/max.
   const ExternalImage external(pool, io->color(), Rect(io->color()),
                                io->c_current(), c_desired, io->HasAlpha(),
-                               alpha, io->enc_bits_per_sample, big_endian,
-                               temp_intervals);
+                               alpha, alpha_bits, io->enc_bits_per_sample,
+                               big_endian, temp_intervals);
   PIK_RETURN_IF_ERROR(external.IsHealthy());
 
   PNGState state;

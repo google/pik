@@ -83,9 +83,9 @@ class AcStrategy {
     return static_cast<size_t>(strategy_);
   }
 
-  float QuantScale() const {
-    if (strategy_ == Type::DCT32X32) return 0.98256064095740803f;
-    if (strategy_ == Type::DCT16X16) return 0.97374440468750001f;
+  float ARQuantScale() const {
+    if (strategy_ == Type::DCT32X32) return 0.71122376f;
+    if (strategy_ == Type::DCT16X16) return 0.827516904f;
     // TODO(user): find better value.
     if (strategy_ == Type::DCT4X4) return 1.2f;
     return 1.0f;

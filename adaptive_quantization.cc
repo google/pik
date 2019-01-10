@@ -10,6 +10,7 @@
 #include <cmath>
 #include <vector>
 #include "ac_strategy.h"
+#include "gradient_map.h"
 
 #undef PROFILER_ENABLED
 #define PROFILER_ENABLED 1
@@ -17,6 +18,7 @@
 #include "butteraugli_comparator.h"
 #include "common.h"
 #include "compiler_specific.h"
+#include "compressed_dc.h"
 #include "compressed_image.h"
 #include "dct.h"
 #include "entropy_coder.h"
@@ -591,6 +593,16 @@ Image3F RoundtripImage(const CompressParams& cparams,
   const size_t ysize_groups = DivCeil(opsin.ysize(), kGroupHeight);
   const size_t num_groups = xsize_groups * ysize_groups;
 
+  PassEncCache pass_enc_cache;
+  InitializePassEncCache(pass_header, opsin, ac_strategy, quantizer, full_cmap,
+                         pool, &pass_enc_cache);
+
+  pass_dec_cache.dc = CopyImage(pass_enc_cache.dc_dec);
+  pass_dec_cache.gradient = std::move(pass_enc_cache.gradient);
+  if (pass_header.flags & PassHeader::kGradientMap) {
+    ApplyGradientMap(pass_dec_cache.gradient, quantizer, &pass_dec_cache.dc);
+  }
+
   std::vector<MultipassHandler*> handlers(num_groups);
   for (size_t group_index = 0; group_index < num_groups; ++group_index) {
     const size_t gx = group_index % xsize_groups;
@@ -608,8 +620,7 @@ Image3F RoundtripImage(const CompressParams& cparams,
     const Rect& group_rect = handler->PaddedGroupRect();
     Rect block_group_rect = handler->BlockGroupRect();
     EncCache cache;
-    cache.use_new_dc = cparams.use_new_dc;
-    InitializeEncCache(pass_header, header, opsin, group_rect, &cache);
+    InitializeEncCache(pass_header, header, pass_enc_cache, group_rect, &cache);
     cache.ac_strategy = ac_strategy.Copy(block_group_rect);
     Quantizer quant = quantizer.Copy(block_group_rect);
 
@@ -620,12 +631,11 @@ Image3F RoundtripImage(const CompressParams& cparams,
         DivCeil(block_group_rect.ysize(), kColorTileDimInBlocks));
 
     ColorCorrelationMap cmap = full_cmap.Copy(group_in_color_tiles);
+    ComputeCoefficients(quant, cmap, pool, &cache, multipass_manager);
 
     DecCache dec_cache;
-    ComputeCoefficients(quant, cmap, pool, &cache, multipass_manager);
-    dec_cache.quantized_dc = std::move(cache.dc);
+    InitializeDecCache(pass_dec_cache, group_rect, &dec_cache);
     dec_cache.quantized_ac = std::move(cache.ac);
-    dec_cache.gradient = std::move(cache.gradient);
     DequantImage(quant, cmap, pool, &dec_cache, &pass_dec_cache, group_rect);
     Image3F recon =
         ReconOpsinImage(pass_header, header, quant, block_group_rect,

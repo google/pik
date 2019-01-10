@@ -193,11 +193,17 @@ void ComputeCoeffOrder(const Image3S& ac, const Rect& rect,
 std::string EncodeCoeffOrders(const int32_t* PIK_RESTRICT order,
                               PikInfo* PIK_RESTRICT pik_info);
 
-// Encodes the "rect" subset of "img".
+// Encodes the `rect` area of `img`.
 // Typically used for DC.
 // See also DecodeImageData.
 std::string EncodeImageData(const Rect& rect, const Image3S& img,
                             PikImageSizeInfo* info);
+
+// See also EncodeImageData.
+bool DecodeImageData(BitReader* PIK_RESTRICT br,
+                     const std::vector<uint8_t>& context_map,
+                     ANSSymbolReader* PIK_RESTRICT decoder, const Rect& rect,
+                     Image3S* PIK_RESTRICT img);
 
 struct Token {
   Token(uint32_t c, uint32_t s, uint32_t nb, uint32_t b)

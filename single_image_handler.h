@@ -112,6 +112,7 @@ class SingleImageManager : public MultipassManager {
 
   void StripInfo(EncCache* cache) override;
   void StripInfoBeforePredictions(EncCache* cache) override;
+  void StripDCInfo(PassEncCache* cache) override;
 
  private:
   friend class SingleImageHandler;

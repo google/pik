@@ -968,6 +968,7 @@ class Converter {
 
     if (external_->HasAlpha()) {
       alpha_ = ImageU(xsize_, ysize_);
+      bits_per_alpha_ = external_->BitsPerAlpha();
       alpha_stats_.resize(num_threads);
     }
   }
@@ -998,6 +999,8 @@ class Converter {
     // Don't have alpha; during TransformTo, don't remove existing alpha.
     if (alpha_stats_.empty()) return true;
 
+    const size_t max_alpha = (1 << bits_per_alpha_) - 1;
+
     // Reduce per-thread statistics.
     uint32_t and_bits = alpha_stats_[0].and_bits;
     uint32_t or_bits = alpha_stats_[0].or_bits;
@@ -1006,15 +1009,13 @@ class Converter {
       or_bits |= alpha_stats_[i].or_bits;
     }
 
-    // Only allow 16 bit alpha. Protects the shift below.
-    if (or_bits >= 0x10000) return PIK_FAILURE("Alpha out of range");
-    const bool all_transparent = or_bits == 0;
-    const size_t alpha_bits = all_transparent ? 0 : (or_bits <= 255 ? 8 : 16);
-    const size_t max_alpha = all_transparent ? 1 : (1U << alpha_bits) - 1;
+    if (or_bits > max_alpha) {
+      return PIK_FAILURE("Alpha out of range");
+    }
 
     // Keep alpha if at least one value is (semi)transparent.
     if (and_bits != max_alpha) {
-      io->SetAlpha(std::move(alpha_), alpha_bits);
+      io->SetAlpha(std::move(alpha_), bits_per_alpha_);
     } else {
       io->RemoveAlpha();
     }
@@ -1102,34 +1103,39 @@ class Converter {
   // Only initialized if external_->HasAlpha() && want_alpha:
   std::vector<Alpha::Stats> alpha_stats_;
   ImageU alpha_;
+  size_t bits_per_alpha_;
 };
 
 }  // namespace
 
 ExternalImage::ExternalImage(const size_t xsize, const size_t ysize,
                              const ColorEncoding& c_current,
-                             const bool has_alpha, const size_t bits_per_sample,
+                             const bool has_alpha, const size_t bits_per_alpha,
+                             const size_t bits_per_sample,
                              const bool big_endian)
     : xsize_(xsize),
       ysize_(ysize),
       c_current_(c_current),
       channels_(c_current.Channels() + has_alpha),
+      bits_per_alpha_(bits_per_alpha),
       bits_per_sample_(bits_per_sample),
       big_endian_(big_endian),
       row_size_(xsize * channels_ * DivCeil(bits_per_sample, kBitsPerByte)) {
   PIK_ASSERT(1 <= channels_ && channels_ <= 4);
   PIK_ASSERT(1 <= bits_per_sample && bits_per_sample <= 32);
+  if (has_alpha) PIK_ASSERT(1 <= bits_per_alpha && bits_per_alpha <= 32);
   bytes_.resize(ysize_ * row_size_);
   is_healthy_ = !bytes_.empty();
 }
 
 ExternalImage::ExternalImage(const size_t xsize, const size_t ysize,
                              const ColorEncoding& c_current,
-                             const bool has_alpha, const size_t bits_per_sample,
+                             const bool has_alpha, const size_t bits_per_alpha,
+                             const size_t bits_per_sample,
                              const bool big_endian, const uint8_t* bytes,
                              const uint8_t* end)
-    : ExternalImage(xsize, ysize, c_current, has_alpha, bits_per_sample,
-                    big_endian) {
+    : ExternalImage(xsize, ysize, c_current, has_alpha, bits_per_alpha,
+                    bits_per_sample, big_endian) {
   if (is_healthy_) {
     if (end != nullptr) PIK_CHECK(bytes + ysize * row_size_ <= end);
     memcpy(bytes_.data(), bytes, bytes_.size());
@@ -1140,10 +1146,11 @@ ExternalImage::ExternalImage(ThreadPool* pool, const Image3F& color,
                              const Rect& rect, const ColorEncoding& c_current,
                              const ColorEncoding& c_desired,
                              const bool has_alpha, const ImageU* alpha,
-                             size_t bits_per_sample, bool big_endian,
+                             size_t bits_per_alpha, size_t bits_per_sample,
+                             bool big_endian,
                              CodecIntervals* temp_intervals)
     : ExternalImage(rect.xsize(), rect.ysize(), c_desired, has_alpha,
-                    bits_per_sample, big_endian) {
+                    bits_per_alpha, bits_per_sample, big_endian) {
   if (!is_healthy_) return;
   Transformer transformer(pool, color, rect, has_alpha, alpha, this);
   if (!transformer.Init(c_current, c_desired)) {

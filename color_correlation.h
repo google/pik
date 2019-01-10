@@ -7,9 +7,11 @@
 #ifndef COLOR_CORRELATION_H_
 #define COLOR_CORRELATION_H_
 
+#include "bit_reader.h"
 #include "common.h"
 #include "data_parallel.h"
 #include "image.h"
+#include "pik_info.h"
 
 namespace pik {
 
@@ -93,6 +95,12 @@ SIMD_ATTR void ApplyColorCorrelationDC(const ColorCorrelationMap& cmap,
 
 void FindBestColorCorrelationMap(const Image3F& opsin,
                                  ColorCorrelationMap* cmap);
+
+std::string EncodeColorMap(const ImageI& ac_map, const Rect& rect,
+                           const int dc_val, PikImageSizeInfo* info);
+
+bool DecodeColorMap(BitReader* PIK_RESTRICT br, ImageI* PIK_RESTRICT ac_map,
+                    int* PIK_RESTRICT dc_val);
 }  // namespace pik
 
 #endif  // COLOR_CORRELATION_H_

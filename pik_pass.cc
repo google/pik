@@ -21,8 +21,6 @@
 #include <vector>
 #include "noise.h"
 
-#include "Eigen/Dense"
-
 #undef PROFILER_ENABLED
 #define PROFILER_ENABLED 1
 #include "ac_strategy.h"
@@ -35,6 +33,7 @@
 #include "color_encoding.h"
 #include "common.h"
 #include "compiler_specific.h"
+#include "compressed_dc.h"
 #include "convolve.h"
 #include "dct.h"
 #include "dct_util.h"
@@ -72,10 +71,9 @@ uint32_t PassFlagsFromParams(const CompressParams& cparams,
     flags |= PassHeader::kNoise;
   }
 
-  // TODO(user): broken for now, to be fixed.
-  /*if (ApplyOverride(cparams.gradient, dist >= kMinButteraugliForGradient)) {
+  if (ApplyOverride(cparams.gradient, dist >= kMinButteraugliForGradient)) {
     flags |= PassHeader::kGradientMap;
-  }*/
+  }
 
   if (io->IsGray()) {
     flags |= PassHeader::kGrayscaleOpt;
@@ -272,21 +270,14 @@ Status PikPassHeuristics(CompressParams cparams, const PassHeader& pass_header,
   ImageF quant_field = InitialQuantField(
       cparams.butteraugli_distance, cparams.GetIntensityMultiplier(),
       opsin_orig, cparams, /*pool=*/nullptr, 1.0);
-  EncCache cache;
-  cache.use_new_dc = cparams.use_new_dc;
-  cache.saliency_threshold = cparams.saliency_threshold;
-  cache.saliency_debug_skip_nonsalient = cparams.saliency_debug_skip_nonsalient;
 
-  InitializeEncCache(pass_header, *template_group_header, opsin, Rect(opsin),
-                     &cache);
-  multipass_manager->GetAcStrategy(
-      cparams.butteraugli_distance, &quant_field, cache.src,
-      /*pool=*/nullptr, &cache.ac_strategy, aux_out);
-  *full_ac_strategy = cache.ac_strategy.Copy();
+  multipass_manager->GetAcStrategy(cparams.butteraugli_distance, &quant_field,
+                                   opsin,
+                                   /*pool=*/nullptr, full_ac_strategy, aux_out);
 
   *full_quantizer = multipass_manager->GetQuantizer(
       cparams, xsize_blocks, ysize_blocks, opsin_orig, opsin, noise_params,
-      pass_header, *template_group_header, *full_cmap, cache.ac_strategy,
+      pass_header, *template_group_header, *full_cmap, *full_ac_strategy,
       quant_field,
       /*pool=*/nullptr, aux_out);
   return true;
@@ -298,9 +289,13 @@ Status PixelsToPikGroup(CompressParams cparams, const PassHeader& pass_header,
                         const ColorCorrelationMap& full_cmap,
                         const CodecInOut* io, const Image3F& opsin_in,
                         const NoiseParams& noise_params,
-                        PaddedBytes* compressed, size_t& pos, PikInfo* aux_out,
+                        PaddedBytes* compressed, size_t& pos,
+                        const PassEncCache& pass_enc_cache, PikInfo* aux_out,
                         MultipassHandler* multipass_handler) {
   const Rect& rect = multipass_handler->GroupRect();
+  const Rect& padded_rect = multipass_handler->PaddedGroupRect();
+  const Rect area_to_encode =
+      Rect(0, 0, padded_rect.xsize(), padded_rect.ysize());
 
   // In progressive mode, encoders may choose to send alpha in any pass, the
   // decoder shouldn't care in which pass it comes. Since at the moment it is
@@ -341,11 +336,10 @@ Status PixelsToPikGroup(CompressParams cparams, const PassHeader& pass_header,
               kColorTileDimInBlocks));
   ColorCorrelationMap cmap = full_cmap.Copy(group_in_color_tiles);
   EncCache cache;
-  cache.use_new_dc = cparams.use_new_dc;
   cache.saliency_threshold = cparams.saliency_threshold;
   cache.saliency_debug_skip_nonsalient = cparams.saliency_debug_skip_nonsalient;
 
-  InitializeEncCache(pass_header, header, opsin_in,
+  InitializeEncCache(pass_header, header, pass_enc_cache,
                      multipass_handler->PaddedGroupRect(), &cache);
   cache.ac_strategy = ac_strategy.Copy(multipass_handler->BlockGroupRect());
 
@@ -358,7 +352,7 @@ Status PixelsToPikGroup(CompressParams cparams, const PassHeader& pass_header,
   multipass_handler->Manager()->StripInfo(&cache);
 
   PaddedBytes compressed_data =
-      EncodeToBitstream(cache, Rect(cache.src), quantizer, noise_params, cmap,
+      EncodeToBitstream(cache, area_to_encode, quantizer, noise_params, cmap,
                         cparams.fast_mode, multipass_handler, aux_out);
 
   compressed->append(compressed_data);
@@ -424,8 +418,7 @@ Status PixelsToPikPass(CompressParams cparams, const PassParams& pass_params,
 
   multipass_manager->StartPass(pass_header);
 
-  // TODO(user): delay writing the header until we know the TOC and the total
-  // pass size.
+  // TODO(user): delay writing the header until we know the total pass size.
   size_t extension_bits, total_bits;
   PIK_RETURN_IF_ERROR(CanEncode(pass_header, &extension_bits, &total_bits));
   compressed->resize(DivCeil(pos + total_bits, kBitsPerByte));
@@ -461,6 +454,7 @@ Status PixelsToPikPass(CompressParams cparams, const PassParams& pass_params,
   AcStrategyImage full_ac_strategy;
   Image3F opsin_orig, opsin;
   NoiseParams noise_params;
+  PassEncCache pass_enc_cache;
 
   if (pass_header.encoding == ImageEncoding::kPasses) {
     opsin_orig = OpsinDynamicsImage(io, Rect(io->color()));
@@ -506,6 +500,41 @@ Status PixelsToPikPass(CompressParams cparams, const PassParams& pass_params,
         PikPassHeuristics(cparams, pass_header, opsin_orig, opsin, noise_params,
                           multipass_manager, &template_group_header, &full_cmap,
                           &full_quantizer, &full_ac_strategy, aux_out));
+
+    // Initialize pass_enc_cache and encode DC.
+    InitializePassEncCache(pass_header, opsin, full_ac_strategy,
+                           *full_quantizer, full_cmap, pool, &pass_enc_cache);
+
+    multipass_manager->StripDCInfo(&pass_enc_cache);
+    pass_enc_cache.use_new_dc = cparams.use_new_dc;
+
+    PaddedBytes pass_global_code;
+    size_t byte_pos = 0;
+
+    // Encode quantizer DC and global scale.
+    PikImageSizeInfo* quant_info =
+        aux_out ? &aux_out->layers[kLayerQuant] : nullptr;
+    std::string quant_code = full_quantizer->Encode(quant_info);
+
+    // Encode cmap. TODO(user): consider encoding DC part of cmap only here,
+    // and AC in groups.
+    PikImageSizeInfo* cmap_info =
+        aux_out ? &aux_out->layers[kLayerCmap] : nullptr;
+    std::string cmap_code =
+        EncodeColorMap(full_cmap.ytob_map, Rect(full_cmap.ytob_map),
+                       full_cmap.ytob_dc, cmap_info) +
+        EncodeColorMap(full_cmap.ytox_map, Rect(full_cmap.ytox_map),
+                       full_cmap.ytox_dc, cmap_info);
+
+    pass_global_code.resize(quant_code.size() + cmap_code.size());
+    Append(quant_code, &pass_global_code, &byte_pos);
+    Append(cmap_code, &pass_global_code, &byte_pos);
+
+    PikImageSizeInfo* dc_info = aux_out ? &aux_out->layers[kLayerDC] : nullptr;
+    pass_global_code.append(
+        EncodeDC(*full_quantizer, pass_enc_cache, pool, dc_info));
+    compressed->append(pass_global_code);
+    pos += pass_global_code.size() * 8;
   }
 
   // Compress groups.
@@ -517,7 +546,8 @@ Status PixelsToPikPass(CompressParams cparams, const PassParams& pass_params,
     if (!PixelsToPikGroup(cparams, pass_header, template_group_header,
                           full_ac_strategy, *full_quantizer, full_cmap, io,
                           opsin, noise_params, group_code, group_pos,
-                          aux_outs[group_index].get(), handlers[group_index])) {
+                          pass_enc_cache, aux_outs[group_index].get(),
+                          handlers[group_index])) {
       num_errors.fetch_add(1, std::memory_order_relaxed);
       return;
     }
@@ -709,270 +739,14 @@ Status PikLosslessFrameToPixels(const PaddedBytes& compressed,
   return true;
 }
 
-// Fit a projective transform which takes:
-// (in[0], in[1]) -> (out[0], out[1])
-// (in[2], in[3]) -> (out[2], out[3])
-// (in[4], in[5]) -> (out[4], out[5])
-// (in[6], in[7]) -> (out[6], out[7]).
-// The output is to be used as the projective matrix as:
-// [ out_0 out_1 out_2 ]
-// [ out_3 out_4 out_5 ]
-// [ out_6 out_7 1     ]
-// To solve, look at:
-// a0*x0 + a1*y0 + a2 - c0*x0*X0 - c1*y0*X0 = X0
-// b0*x0 + b1*y0 + b2 - c0*x0*Y0 - c1*y0*Y0 = Y0
-// a0*x1 + a1*y1 + a2 - c0*x1*X1 - c1*y1*X1 = X1
-// b0*x1 + b1*y1 + b2 - c0*x1*Y1 - c1*y1*Y1 = Y1
-// a0*x2 + a1*y2 + a2 - c0*x2*X2 - c1*y2*X2 = X2
-// b0*x2 + b1*y2 + b2 - c0*x2*Y2 - c1*y2*Y2 = Y2
-// a0*x3 + a1*y3 + a2 - c0*x3*X3 - c1*y3*X3 = X3
-// b0*x3 + b1*y3 + b2 - c0*x3*Y3 - c1*y3*Y3 = Y3
-// Code looks magical, but outputs match skimage _geometric.py.
-// TODO(user): Get rid of the Eigen dep.
-
-std::vector<double> FitMatrixToCorners(const std::vector<int>& in_corners,
-                                       const std::vector<int>& out_corners) {
-  PIK_ASSERT(in_corners.size() == 8);
-  PIK_ASSERT(out_corners.size() == 8);
-
-  std::vector<double> out_params(8);
-  Eigen::Matrix<double, 8, 8> mat;
-
-  mat << in_corners[0], in_corners[1], 1, 0, 0, 0,
-      -in_corners[0] * out_corners[0], -in_corners[1] * out_corners[0], 0, 0, 0,
-      in_corners[0], in_corners[1], 1, -in_corners[0] * out_corners[1],
-      -in_corners[1] * out_corners[1], in_corners[2], in_corners[3], 1, 0, 0, 0,
-      -in_corners[2] * out_corners[2], -in_corners[3] * out_corners[2], 0, 0, 0,
-      in_corners[2], in_corners[3], 1, -in_corners[2] * out_corners[3],
-      -in_corners[3] * out_corners[3], in_corners[4], in_corners[5], 1, 0, 0, 0,
-      -in_corners[4] * out_corners[4], -in_corners[5] * out_corners[4], 0, 0, 0,
-      in_corners[4], in_corners[5], 1, -in_corners[4] * out_corners[5],
-      -in_corners[5] * out_corners[5], in_corners[6], in_corners[7], 1, 0, 0, 0,
-      -in_corners[6] * out_corners[6], -in_corners[7] * out_corners[6], 0, 0, 0,
-      in_corners[6], in_corners[7], 1, -in_corners[6] * out_corners[7],
-      -in_corners[7] * out_corners[7];
-  Eigen::Matrix<double, 8, 1> rhs;
-  rhs << out_corners[0], out_corners[1], out_corners[2], out_corners[3],
-      out_corners[4], out_corners[5], out_corners[6], out_corners[7];
-  Eigen::Matrix<double, 8, 1> transform_coeffs =
-      mat.colPivHouseholderQr().solve(rhs);
-
-  for (size_t i = 0; i < 8; i++) {
-    out_params[i] = transform_coeffs(i);
-  }
-
-  return out_params;
-}
-
-// Take coords and apply a projective transform to them. Slow and simple.
-// This can be accelerated by using a better matmul, but performance is not a
-// significant priority for this code.
-
-std::pair<double, double> CoordinateTransform(double x, double y,
-                                              const double* transform) {
-  double out_z = transform[6] * x + transform[7] * y + 1;
-  double out_x = transform[0] * x + transform[1] * y + transform[2];
-  double out_y = transform[3] * x + transform[4] * y + transform[5];
-
-  return {out_x / out_z, out_y / out_z};
-}
-
-// Find nearest, according to L1, pixel to (t_x, t_y) for which we have data.
-// Returns (-1, -1) if no data is available.
-// TODO(user): When this needs to actually run in reasonable time,
-// use something locality aware.
-std::pair<int, int> FindNearestAvailablePixel(
-    int t_x, int t_y, const bool have_input_data[kTileDim][kTileDim]) {
-  int best_dist = std::numeric_limits<int>::max();
-  std::pair<int, int> best_pixel = {-1, -1};
-
-  for (int y = 0; y < kTileDim; y++) {
-    for (int x = 0; x < kTileDim; x++) {
-      if (!have_input_data[x][y]) continue;
-
-      int dist = std::abs(y - t_y) + std::abs(x - t_x);
-      if (dist < best_dist) {
-        best_dist = dist;
-        best_pixel = std::make_pair(x, y);
-      }
-    }
-  }
-
-  return best_pixel;
-}
-
-// Does bilinear interpolation at (x, y) given values at:
-// (floor(x), floor(y)),
-// (ceil(x), floor(y)),
-// (floor(x), ceil(y)),
-// (ceil(x), ceil(y))
-
-double BilinearInterpolate(double delta_x, double delta_y, double ff_value,
-                           double cf_value, double fc_value, double cc_value) {
-  return ff_value * (1 - delta_x) * (1 - delta_y) +
-         cf_value * delta_x * (1 - delta_y) +
-         fc_value * (1 - delta_x) * delta_y + cc_value * delta_x * delta_y;
-}
-
-void ReverseProjectiveTransformOnTile(
-    const ProjectiveTransformParams& transform_params, const Rect& tile_rect,
-    Image3F* PIK_RESTRICT transformed_output) {
-  std::vector<int> corner_coords(8);
-  for (size_t i = 0; i < 8; i++) {
-    corner_coords[i] = transform_params.corner_coords[i] - 127;
-  }
-
-  std::vector<double> forward_params = FitMatrixToCorners(
-      {0, 0, 0, kTileDim, kTileDim, kTileDim, kTileDim, 0}, corner_coords);
-
-  // Determine which datapoints are available.
-  bool have_input_data[kTileDim][kTileDim];
-
-  for (size_t y = 0; y < kTileDim; y++) {
-    for (size_t x = 0; x < kTileDim; x++) {
-      have_input_data[y][x] = false;
-    }
-  }
-
-  constexpr int kFourNeighbourhood[5][2] = {
-      {0, 0}, {-1, 0}, {1, 0}, {0, -1}, {0, 1}};
-
-  for (size_t y = 0; y < kTileDim; y++) {
-    for (size_t x = 0; x < kTileDim; x++) {
-      std::pair<double, double> forward_coords =
-          CoordinateTransform(x, y, forward_params.data());
-
-      double floor_x = std::floor(forward_coords.first);
-      double floor_y = std::floor(forward_coords.second);
-
-      for (size_t n = 0; n < 5; n++) {
-        int t_x = static_cast<int>(floor_x + kFourNeighbourhood[n][0]);
-        int t_y = static_cast<int>(floor_y + kFourNeighbourhood[n][1]);
-
-        if (t_x >= 0 && t_x < kTileDim && t_y >= 0 && t_y < kTileDim) {
-          have_input_data[t_x][t_y] = true;
-        }
-      }
-    }
-  }
-
-  // Do reverse transform. This uses bilinear when we have all four relevant
-  // pixels and nearest neighbor when we don't.
-  // TODO(user): Simplify this logic and use bicubic when dependencies
-  // are satisfied.
-  Image3F out_tile(kTileDim, kTileDim);
-
-  for (size_t y = 0; y < kTileDim; y++) {
-    float* PIK_RESTRICT row_r = out_tile.PlaneRow(0, y);
-    float* PIK_RESTRICT row_g = out_tile.PlaneRow(1, y);
-    float* PIK_RESTRICT row_b = out_tile.PlaneRow(2, y);
-    for (size_t x = 0; x < kTileDim; x++) {
-      // Not a bug here, we're looking for where (x, y) ends up after the
-      // transform so we can copy from there.
-      std::pair<double, double> reverse_coords =
-          CoordinateTransform(x, y, forward_params.data());
-
-      int floor_x = std::floor(reverse_coords.first);
-      int floor_y = std::floor(reverse_coords.second);
-      int ceil_x = std::ceil(reverse_coords.first);
-      int ceil_y = std::ceil(reverse_coords.second);
-
-      bool have_all_pixels =
-          floor_x >= 0 && floor_x < kTileDim && floor_y >= 0 &&
-          floor_y < kTileDim && ceil_x >= 0 && ceil_x < kTileDim &&
-          ceil_y >= 0 && ceil_y < kTileDim &&
-          have_input_data[floor_x][floor_y] &&
-          have_input_data[floor_x][ceil_y] &&
-          have_input_data[ceil_x][floor_y] && have_input_data[ceil_x][ceil_y];
-      bool should_interpolate = (floor_x != ceil_x) && (floor_y != ceil_y);
-
-      if (have_all_pixels && should_interpolate) {
-        double delta_x = reverse_coords.first - floor_x;
-        double delta_y = reverse_coords.second - floor_y;
-
-        for (size_t p = 0; p < 3; p++) {
-          out_tile.PlaneRow(p, y)[x] = BilinearInterpolate(
-              delta_x, delta_y,
-              tile_rect.PlaneRow(transformed_output, p, floor_y)[floor_x],
-              tile_rect.PlaneRow(transformed_output, p, floor_y)[ceil_x],
-              tile_rect.PlaneRow(transformed_output, p, ceil_y)[floor_x],
-              tile_rect.PlaneRow(transformed_output, p, ceil_y)[ceil_x]);
-        }
-      } else {
-        double s_x = std::round(reverse_coords.first);
-        double s_y = std::round(reverse_coords.second);
-
-        std::pair<int, int> nearest_pixel_with_data = FindNearestAvailablePixel(
-            static_cast<int>(s_x), static_cast<int>(s_y), have_input_data);
-
-        PIK_ASSERT(nearest_pixel_with_data.first >= 0 &&
-                   nearest_pixel_with_data.second >= 0);
-        PIK_ASSERT(nearest_pixel_with_data.first < kTileDim &&
-                   nearest_pixel_with_data.second < kTileDim);
-        int source_x = nearest_pixel_with_data.first;
-        int source_y = nearest_pixel_with_data.second;
-
-        row_r[x] =
-            tile_rect.PlaneRow(transformed_output, 0, source_y)[source_x];
-        row_g[x] =
-            tile_rect.PlaneRow(transformed_output, 1, source_y)[source_x];
-        row_b[x] =
-            tile_rect.PlaneRow(transformed_output, 2, source_y)[source_x];
-      }
-    }
-  }
-
-  for (size_t y = 0; y < kTileDim; y++) {
-    const float* PIK_RESTRICT row_r_in = out_tile.ConstPlaneRow(0, y);
-    const float* PIK_RESTRICT row_g_in = out_tile.ConstPlaneRow(1, y);
-    const float* PIK_RESTRICT row_b_in = out_tile.ConstPlaneRow(2, y);
-
-    float* PIK_RESTRICT row_r_out =
-        tile_rect.PlaneRow(transformed_output, 0, y);
-    float* PIK_RESTRICT row_g_out =
-        tile_rect.PlaneRow(transformed_output, 1, y);
-    float* PIK_RESTRICT row_b_out =
-        tile_rect.PlaneRow(transformed_output, 2, y);
-    for (size_t x = 0; x < kTileDim; x++) {
-      row_r_out[x] = row_r_in[x];
-      row_g_out[x] = row_g_in[x];
-      row_b_out[x] = row_b_in[x];
-    }
-  }
-}
-
-void ReverseProjectiveTransform(const GroupHeader& group_header,
-                                const Rect& group_rect,
-                                Image3F* PIK_RESTRICT color_output) {
-  constexpr size_t kGroupWidthInTiles = kGroupWidthInBlocks / kTileDimInBlocks;
-  constexpr size_t kGroupHeightInTiles =
-      kGroupHeightInBlocks / kTileDimInBlocks;
-
-  for (size_t y = 0; y < kGroupHeightInTiles; y++) {
-    for (size_t x = 0; x < kGroupWidthInTiles; x++) {
-      if (group_header.tile_headers[y * kGroupWidthInTiles + x]
-              .have_projective_transform) {
-        Rect tile_rect(group_rect.x0() + x * kTileDim,
-                       group_rect.y0() + y * kTileDim, kTileDim, kTileDim,
-                       kGroupWidth, kGroupHeight);
-        ReverseProjectiveTransformOnTile(
-            group_header.tile_headers[y * kGroupWidthInTiles + x]
-                .projective_transform_params,
-            tile_rect, color_output);
-      }
-    }
-  }
-}
-
-Status PikGroupToPixels(const DecompressParams& dparams,
-                        const FileHeader& container,
-                        const PassHeader* pass_header,
-                        const PaddedBytes& compressed, BitReader* reader,
-                        Image3F* PIK_RESTRICT opsin_output,
-                        ImageU* alpha_output, CodecContext* context,
-                        PikInfo* aux_out, PassDecCache* pass_dec_cache,
-                        MultipassHandler* multipass_handler,
-                        const ColorEncoding& original_color_encoding) {
+Status PikGroupToPixels(
+    const DecompressParams& dparams, const FileHeader& container,
+    const PassHeader* pass_header, const PaddedBytes& compressed,
+    const Quantizer& quantizer, const ColorCorrelationMap& full_cmap,
+    BitReader* reader, Image3F* PIK_RESTRICT opsin_output, ImageU* alpha_output,
+    CodecContext* context, PikInfo* aux_out, PassDecCache* pass_dec_cache,
+    MultipassHandler* multipass_handler,
+    const ColorEncoding& original_color_encoding) {
   PROFILER_FUNC;
   const Rect& padded_rect = multipass_handler->PaddedGroupRect();
   const Rect& rect = multipass_handler->GroupRect();
@@ -1025,17 +799,27 @@ Status PikGroupToPixels(const DecompressParams& dparams,
   const size_t xsize_blocks = DivCeil<size_t>(opsin_size.xsize, kBlockDim);
   const size_t ysize_blocks = DivCeil<size_t>(opsin_size.ysize, kBlockDim);
 
-  Quantizer quantizer(kBlockDim, 0, 0, 0);
+  Rect group_in_color_tiles(
+      multipass_handler->BlockGroupRect().x0() / kColorTileDimInBlocks,
+      multipass_handler->BlockGroupRect().y0() / kColorTileDimInBlocks,
+      DivCeil(multipass_handler->BlockGroupRect().xsize(),
+              kColorTileDimInBlocks),
+      DivCeil(multipass_handler->BlockGroupRect().ysize(),
+              kColorTileDimInBlocks));
+
   NoiseParams noise_params;
-  ColorCorrelationMap cmap(opsin_size.xsize, opsin_size.ysize);
+  // TODO(user): either avoid the copy, or decode the sub-rect in
+  // DecodeFromBitstream.
+  ColorCorrelationMap cmap = full_cmap.Copy(group_in_color_tiles);
   DecCache dec_cache;
-  dec_cache.use_new_dc = dparams.use_new_dc;
+
+  InitializeDecCache(*pass_dec_cache, padded_rect, &dec_cache);
 
   {
     PROFILER_ZONE("dec_bitstr");
     if (!DecodeFromBitstream(*pass_header, header, compressed, reader,
                              padded_rect, multipass_handler, xsize_blocks,
-                             ysize_blocks, &cmap, &noise_params, &quantizer,
+                             ysize_blocks, cmap, &noise_params, quantizer,
                              &dec_cache, pass_dec_cache)) {
       return PIK_FAILURE("Pik decoding failed.");
     }
@@ -1076,10 +860,6 @@ Status PikGroupToPixels(const DecompressParams& dparams,
     }
   }
 
-  multipass_handler->SetDecoderQuantizer(std::move(quantizer));
-  if (pass_header->is_last) {
-    ReverseProjectiveTransform(header, rect, opsin_output);
-  }
   return true;
 }
 
@@ -1153,6 +933,29 @@ Status PikPassToPixels(const DecompressParams& dparams,
     }
   }
 
+  const size_t xsize_blocks = padded_xsize / kBlockDim;
+  const size_t ysize_blocks = padded_ysize / kBlockDim;
+
+  PassDecCache pass_dec_cache;
+  pass_dec_cache.use_new_dc = dparams.use_new_dc;
+  pass_dec_cache.grayscale = header.flags & PassHeader::kGrayscaleOpt;
+  pass_dec_cache.ac_strategy = AcStrategyImage(xsize_blocks, ysize_blocks);
+  pass_dec_cache.raw_quant_field = ImageI(xsize_blocks, ysize_blocks);
+  pass_dec_cache.biases =
+      Image3F(xsize_blocks * kBlockDim * kBlockDim, ysize_blocks);
+  ColorCorrelationMap cmap(xsize, ysize);
+  Quantizer quantizer(kBlockDim, 0, 0, 0);
+
+  if (header.encoding == ImageEncoding::kPasses) {
+    PIK_RETURN_IF_ERROR(quantizer.Decode(reader));
+    PIK_RETURN_IF_ERROR(reader->JumpToByteBoundary());
+    DecodeColorMap(reader, &cmap.ytob_map, &cmap.ytob_dc);
+    DecodeColorMap(reader, &cmap.ytox_map, &cmap.ytox_dc);
+    PIK_RETURN_IF_ERROR(DecodeDC(reader, compressed, header, xsize_blocks,
+                                 ysize_blocks, quantizer, cmap, pool,
+                                 &pass_dec_cache));
+  }
+
   // Read TOC.
   std::vector<size_t> group_offsets;
   {
@@ -1173,14 +976,6 @@ Status PikPassToPixels(const DecompressParams& dparams,
     return PIK_FAILURE("Group code extends after stream end");
   }
 
-  PassDecCache pass_dec_cache;
-  pass_dec_cache.ac_strategy =
-      AcStrategyImage(padded_xsize / kBlockDim, padded_ysize / kBlockDim);
-  pass_dec_cache.raw_quant_field =
-      ImageI(padded_xsize / kBlockDim, padded_ysize / kBlockDim);
-  pass_dec_cache.biases =
-      Image3F(padded_xsize * kBlockDim, padded_ysize / kBlockDim);
-
   Image3F opsin(padded_xsize, padded_ysize);
 
   // Decode groups.
@@ -1197,8 +992,8 @@ Status PikPassToPixels(const DecompressParams& dparams,
                           kBitsPerByte);
 
     PikInfo* my_aux_out = aux_out ? &aux_outs[group_index] : nullptr;
-    if (!PikGroupToPixels(dparams, container, &header, compressed,
-                          &group_reader, &opsin, &alpha, io->Context(),
+    if (!PikGroupToPixels(dparams, container, &header, compressed, quantizer,
+                          cmap, &group_reader, &opsin, &alpha, io->Context(),
                           my_aux_out, &pass_dec_cache, handlers[group_index],
                           io->dec_c_original)) {
       num_errors.fetch_add(1);
@@ -1216,12 +1011,6 @@ Status PikPassToPixels(const DecompressParams& dparams,
   PIK_RETURN_IF_ERROR(num_errors.load(std::memory_order_relaxed) == 0);
 
   if (header.encoding == ImageEncoding::kPasses) {
-    // TODO(user): here we "steal" the quantizer of the first group. This
-    // assumes that all group quantizer share the global scale and DC, which is
-    // true as the encoder produces these kind of images. The format should
-    // disallow other situations.
-    Quantizer quantizer = handlers[0]->TakeDecoderQuantizer();
-
     multipass_handler->RestoreOpsin(&opsin);
     multipass_handler->UpdateBiases(&pass_dec_cache.biases);
     multipass_handler->StoreBiases(pass_dec_cache.biases);

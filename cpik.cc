@@ -126,7 +126,7 @@ struct CompressArgs {
       }
     }
 
-    if (got_target_bpp + got_target_size + got_distance != 1) {
+    if (got_target_bpp + got_target_size + got_distance > 1) {
       fprintf(stderr, "You can specify only one of '--distance', "
               "'--target_bpp' and '--target_size'. They are all different ways"
               " to specify the image quality. When in doubt, use --distance."

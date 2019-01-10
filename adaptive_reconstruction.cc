@@ -5,6 +5,7 @@
 // https://opensource.org/licenses/MIT.
 
 #include "adaptive_reconstruction.h"
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 
@@ -57,17 +58,32 @@ using VF = DF::V;
 using VI = DI::V;
 using VU = DU::V;
 
-struct AdaptiveReconstructionStats {
-  VU low_clamp_count;
-  VU high_clamp_count;
-  SIMD_ATTR AdaptiveReconstructionStats() {
-    low_clamp_count = setzero(DU());
-    high_clamp_count = setzero(DU());
+struct ARStats {
+  SIMD_ATTR void Assimilate(const ARStats& other) {
+    const DU d;
+    for (int c = 0; c < 3; ++c) {
+      const auto low =
+          load_unaligned(d, clamp_lo[c]) + load_unaligned(d, other.clamp_lo[c]);
+      const auto high =
+          load_unaligned(d, clamp_hi[c]) + load_unaligned(d, other.clamp_hi[c]);
+      store_unaligned(low, d, clamp_lo[c]);
+      store_unaligned(high, d, clamp_hi[c]);
+    }
   }
-  SIMD_ATTR void Assimilate(const AdaptiveReconstructionStats& other) {
-    high_clamp_count += other.high_clamp_count;
-    low_clamp_count += other.low_clamp_count;
+
+  static uint32_t Total(const uint32_t* PIK_RESTRICT from) {
+    const DU d;
+    return get_part(d, ext::sum_of_lanes(load_unaligned(d, from)));
   }
+
+  static void Add(const VU add, uint32_t* PIK_RESTRICT to) {
+    const DU d;
+    store_unaligned(load_unaligned(d, to) + add, d, to);
+  }
+
+  // Number of values (after aggregating across lanes).
+  uint32_t clamp_lo[3][DU::N] = {{0}};
+  uint32_t clamp_hi[3][DU::N] = {{0}};
 };
 
 // Clamp the difference between the coefficients of the filtered image and the
@@ -76,19 +92,20 @@ struct AdaptiveReconstructionStats {
 // scaled according to `interval_scale`.
 // TODO(user): cleanup by removing `bias`, and all the related methods
 // everywhere.
+template <int c>
 SIMD_ATTR PIK_INLINE void AsymmetricClamp(
     const VF interval_scale, const VF bias, const VF values, const float asym,
     float* PIK_RESTRICT block, float* PIK_RESTRICT min_ratio,
     float* PIK_RESTRICT lower_bounds, float* PIK_RESTRICT upper_bounds,
-    AdaptiveReconstructionStats* PIK_RESTRICT stats) {
+    ARStats* PIK_RESTRICT stats) {
   const DF df;
-  const auto half = set1(df, 0.5f);
+  const auto half = set1(df, 0.161406708f);
   const auto small = set1(df, asym);
   const auto is_neg = values < set1(df, -0.5f) * interval_scale;
   const auto upper_bound = select(half, small, is_neg) * interval_scale;
 
   const auto is_pos = values > half * interval_scale;
-  const auto neghalf = set1(df, -0.5f);
+  const auto neghalf = set1(df, -0.161406708f);
   const auto negsmall = set1(df, -asym);
   const auto lower_bound = select(neghalf, negsmall, is_pos) * interval_scale;
 
@@ -100,28 +117,38 @@ SIMD_ATTR PIK_INLINE void AsymmetricClamp(
   store(lo, df, lower_bounds);
   store(hi, df, upper_bounds);
   const auto clamped = min(max(lo, correction), hi);
-  const auto prev_min_ratio = load(df, min_ratio);
 
+  // Integer comparisons are faster than float.
   const SIMD_FULL(uint32_t) du;
-  const auto zero = setzero(du);  // faster than comparing as float.
-  // Can't divide by correction=0, and clamped=0 results in ratio=0.
-  // TODO(janwas): confirm + take advantage of: either both, or neither are 0.
-  const auto all_zero =
-      (cast_to(du, correction) == zero) | (cast_to(du, clamped) == zero);
-  // If sign(clamped) != sign(correction), we get a negative ratio.
+  const auto correction_u = cast_to(du, correction);
+  const auto zero_u = setzero(du);
+  const auto correction_is_zero = cast_to(df, correction_u == zero_u);
+
+  // Sanity checks
+#ifdef ADDRESS_SANITIZER
+  // clamped=0 can only happen if correction_is_zero.
+  PIK_ASSERT(ext::all_zero(correction_is_zero) ||
+             !ext::all_zero(cast_to(du, clamped) == zero_u));
+
+  // clamped must never change sign vs. correction (else min_ratio is negative).
   const auto sign = cast_to(df, set1(du, 0x80000000u));
   const auto changed_sign = (clamped ^ correction) & sign;
-  const auto bad = condition_from_sign(cast_to(df, all_zero) | changed_sign);
-  const auto clamp_ratio = select(clamped / correction, prev_min_ratio, bad);
-  store(min(prev_min_ratio, clamp_ratio), df, min_ratio);
+  PIK_ASSERT(ext::all_zero(cast_to(du, changed_sign)));
+#endif
+
+  // ratio := clamped/correction: small if 'correction' was clamped a lot.
+  // If correction == 0, ratio will be large and min_ratio not updated.
+  const auto divisor = select(correction, set1(df, 1E-7f), correction_is_zero);
+
+  const auto clamp_ratio = clamped / divisor;
+  store(min(clamp_ratio, load(df, min_ratio)), df, min_ratio);
 
 #if PIK_AR_PRINT_STATS
-  const DU du;
   const auto one = set1(du, uint32_t(1));
   const auto is_low = correction < clamped;
-  stats->low_clamp_count += cast_to(du, is_low) & one;
+  ARStats::Add(cast_to(du, is_low) & one, stats->clamp_lo[c]);
   const auto is_high = correction > clamped;
-  stats->high_clamp_count += cast_to(du, is_high) & one;
+  ARStats::Add(cast_to(du, is_high) & one, stats->clamp_hi[c]);
 #endif
 }
 
@@ -131,6 +158,7 @@ SIMD_ATTR PIK_INLINE void AsymmetricClamp(
 // of the DCT of the two images, we compute the DCT of the difference as DCT is
 // a linear operator and this saves some work. `biases` contains the
 // dequantization bias that was used for the current block.
+template <int c>
 SIMD_ATTR PIK_INLINE void UpdateMinRatioOfClampToOriginalDCT(
     const float* PIK_RESTRICT original, size_t stride,
     const float* PIK_RESTRICT biases, const size_t biases_stride,
@@ -138,7 +166,7 @@ SIMD_ATTR PIK_INLINE void UpdateMinRatioOfClampToOriginalDCT(
     const float dc_mul, AcStrategy acs, const float* PIK_RESTRICT filt,
     float* PIK_RESTRICT min_ratio, float* PIK_RESTRICT lower_bounds,
     float* PIK_RESTRICT upper_bounds, float* PIK_RESTRICT block,
-    AdaptiveReconstructionStats* PIK_RESTRICT stats) {
+    ARStats* PIK_RESTRICT stats) {
   const SIMD_FULL(float) df;
   const SIMD_PART(float, 1) d1;
   const SIMD_FULL(uint32_t) du;
@@ -164,7 +192,7 @@ SIMD_ATTR PIK_INLINE void UpdateMinRatioOfClampToOriginalDCT(
   const auto only_lane0 = cast_to(df, load(du, only_lane0_bits));
 
   // The higher the kAsymClampLimit, the more blurred image.
-  const float kAsymClampLimit = 0.18644350819576438;
+  const float kAsymClampLimit = 0.02795096f;
   float asym = kAsymClampLimit;
   SIMD_ALIGN float block2[AcStrategy::kMaxCoeffArea];
   {
@@ -197,7 +225,7 @@ SIMD_ATTR PIK_INLINE void UpdateMinRatioOfClampToOriginalDCT(
     float sum = get_part(d1, ext::sum_of_lanes(sums));
     sum *= acs.InverseNumACCoefficients();
     sum = std::sqrt(sum);
-    sum *= 0.054307033953246348f;
+    sum *= 0.057592392f;
     sum += 0.044037713396095239f;
     // Smaller sum -> sharper image.
     asym = std::min<float>(sum, asym);
@@ -218,9 +246,10 @@ SIMD_ATTR PIK_INLINE void UpdateMinRatioOfClampToOriginalDCT(
       const float cur_dc_mul = acs.ARLowestFrequencyScale(bx, by) * dc_mul;
       const auto interval_scale =
           select(ac_mul, set1(df, cur_dc_mul), only_lane0);
-      AsymmetricClamp(interval_scale, bias, values, asym, block + block_offset,
-                      min_ratio + block_offset, lower_bounds + block_offset,
-                      upper_bounds + block_offset, stats);
+      AsymmetricClamp<c>(interval_scale, bias, values, asym,
+                         block + block_offset, min_ratio + block_offset,
+                         lower_bounds + block_offset,
+                         upper_bounds + block_offset, stats);
 
       for (size_t k = df.N; k < kBlockDim * kBlockDim; k += df.N) {
         const size_t ofs = block_offset + k;
@@ -228,9 +257,9 @@ SIMD_ATTR PIK_INLINE void UpdateMinRatioOfClampToOriginalDCT(
         const auto values = load(df, block2 + ofs);
         const auto interval_scale =
             load(df, dequant_matrix + ofs) * set1(df, inv_quant_ac);
-        AsymmetricClamp(interval_scale, bias, values, asym, block + ofs,
-                        min_ratio + ofs, lower_bounds + ofs, upper_bounds + ofs,
-                        stats);
+        AsymmetricClamp<c>(interval_scale, bias, values, asym, block + ofs,
+                           min_ratio + ofs, lower_bounds + ofs,
+                           upper_bounds + ofs, stats);
       }
     }
   }
@@ -238,7 +267,7 @@ SIMD_ATTR PIK_INLINE void UpdateMinRatioOfClampToOriginalDCT(
 
 // Clamp by multiplying block[k] by min_ratio[k], then IDCT.
 // DoMul allows disabling the scaling for X as an experiment (disabled).
-template <bool DoMul>
+template <bool DoMul, bool DoClamp>
 SIMD_ATTR PIK_INLINE void ClampAndIDCT(
     float* PIK_RESTRICT block, const size_t block_width,
     const size_t block_height, const float* PIK_RESTRICT min_ratio,
@@ -248,7 +277,7 @@ SIMD_ATTR PIK_INLINE void ClampAndIDCT(
     size_t stride) {
 #ifdef ADDRESS_SANITIZER
   for (size_t k = 0; k < AcStrategy::kMaxCoeffArea; ++k) {
-    PIK_ASSERT(min_ratio[k] > 0.0f);
+    PIK_ASSERT(min_ratio[k] >= 0.0f);
   }
 #endif
 
@@ -256,8 +285,9 @@ SIMD_ATTR PIK_INLINE void ClampAndIDCT(
   for (size_t k = 0; k < AcStrategy::kMaxCoeffArea; k += df.N) {
     const auto mul = DoMul ? load(df, min_ratio + k) : set1(df, 1.0f);
     const auto scaled = load(df, block + k) * mul;
-    const auto clamped = min(max(load(df, lower_bounds + k), scaled),
-                             load(df, upper_bounds + k));
+    const auto clamped = DoClamp ? min(max(load(df, lower_bounds + k), scaled),
+                                       load(df, upper_bounds + k))
+                                 : scaled;
     store(clamped, df, block + k);
   }
 
@@ -316,7 +346,7 @@ SIMD_ATTR Image3F AdaptiveReconstruction(
   const size_t biases_stride = biases.PixelsPerRow();
   PIK_ASSERT(stride == in->PlaneRow(0, 1) - in->PlaneRow(0, 0));
 
-  AdaptiveReconstructionStats stats;
+  ARStats stats;
 
   // Dequantization matrices.
   const float* PIK_RESTRICT dequant_matrices =
@@ -388,37 +418,39 @@ SIMD_ATTR Image3F AdaptiveReconstruction(
       SIMD_ALIGN float lo_b[AcStrategy::kMaxCoeffArea];
       SIMD_ALIGN float hi_b[AcStrategy::kMaxCoeffArea];
 
-      UpdateMinRatioOfClampToOriginalDCT(
+      UpdateMinRatioOfClampToOriginalDCT<0>(
           pos_original_x, stride, row_biases_x + bx * kDCTBlockSize,
           biases_stride, dequant_matrix_x, inv_quant_ac, dc_mul[0], acs,
           pos_filt_x, min_ratio, lo_x, hi_x, block_x, &stats);
-      UpdateMinRatioOfClampToOriginalDCT(
+      UpdateMinRatioOfClampToOriginalDCT<1>(
           pos_original_y, stride, row_biases_y + bx * kDCTBlockSize,
           biases_stride, dequant_matrix_y, inv_quant_ac, dc_mul[1], acs,
           pos_filt_y, min_ratio, lo_y, hi_y, block_y, &stats);
-      UpdateMinRatioOfClampToOriginalDCT(
+      UpdateMinRatioOfClampToOriginalDCT<2>(
           pos_original_b, stride, row_biases_b + bx * kDCTBlockSize,
           biases_stride, dequant_matrix_b, inv_quant_ac, dc_mul[2], acs,
           pos_filt_b, min_ratio, lo_b, hi_b, block_b, &stats);
 
       const size_t block_width = kBlockDim * acs.covered_blocks_x();
       const size_t block_height = kBlockDim * acs.covered_blocks_y();
-      ClampAndIDCT<true>(block_x, block_width, block_height, min_ratio, lo_x,
-                         hi_x, acs, pos_original_x, pos_filt_x, stride);
-      ClampAndIDCT<true>(block_y, block_width, block_height, min_ratio, lo_y,
-                         hi_y, acs, pos_original_y, pos_filt_y, stride);
-      ClampAndIDCT<true>(block_b, block_width, block_height, min_ratio, lo_b,
-                         hi_b, acs, pos_original_b, pos_filt_b, stride);
+      ClampAndIDCT<true, true>(block_x, block_width, block_height, min_ratio,
+                               lo_x, hi_x, acs, pos_original_x, pos_filt_x,
+                               stride);
+      ClampAndIDCT<true, true>(block_y, block_width, block_height, min_ratio,
+                               lo_y, hi_y, acs, pos_original_y, pos_filt_y,
+                               stride);
+      ClampAndIDCT<true, true>(block_b, block_width, block_height, min_ratio,
+                               lo_b, hi_b, acs, pos_original_b, pos_filt_b,
+                               stride);
     }  // bx
   }    // by
 
 #if PIK_AR_PRINT_STATS
-  fprintf(
-      stderr,
-      "Number of low-clamped, high-clamped, and total values: %8u %8u %8lu\n",
-      get_part(DU(), ext::sum_of_lanes(stats.low_clamp_count)),
-      get_part(DU(), ext::sum_of_lanes(stats.high_clamp_count)),
-      in->xsize() * in->ysize());
+  printf("Lo/Hi clamped: %5u %5u; %5u %5u; %5u %5u (pixels: %zu)\n",
+         ARStats::Total(stats.clamp_lo[0]), ARStats::Total(stats.clamp_hi[0]),
+         ARStats::Total(stats.clamp_lo[1]), ARStats::Total(stats.clamp_hi[1]),
+         ARStats::Total(stats.clamp_lo[2]), ARStats::Total(stats.clamp_hi[2]),
+         in->xsize() * in->ysize());
 #endif
 
   if (aux != nullptr) {
@@ -426,7 +458,7 @@ SIMD_ATTR Image3F AdaptiveReconstruction(
       ComputeResidualSlow(*in, filt, aux->residual);
     }
     if (aux->ac_quant != nullptr) {
-      CopyImageTo(quantizer.RawQuantField(), aux->ac_quant);
+      CopyImageTo(raw_quant_field, aux->ac_quant);
     }
     if (aux->ac_quant != nullptr) {
       CopyImageTo(ac_strategy.ConstRaw(), aux->ac_strategy);

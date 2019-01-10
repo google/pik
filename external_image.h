@@ -25,7 +25,8 @@ class ExternalImage {
   // only matters for bits_per_sample > 8. "end" is the STL-style end of "bytes"
   // for range checks, or null if unknown.
   ExternalImage(size_t xsize, size_t ysize, const ColorEncoding& c_current,
-                bool has_alpha, size_t bits_per_sample, bool big_endian,
+                bool has_alpha, size_t bits_per_alpha,
+                size_t bits_per_sample, bool big_endian,
                 const uint8_t* bytes, const uint8_t* end);
 
   // Copies pixels from rect and converts from c_current to c_desired. Called by
@@ -34,8 +35,9 @@ class ExternalImage {
   // range. Otherwise, clamps temp to [0, 1].
   ExternalImage(ThreadPool* pool, const Image3F& color, const Rect& rect,
                 const ColorEncoding& c_current, const ColorEncoding& c_desired,
-                bool has_alpha, const ImageU* alpha, size_t bits_per_sample,
-                bool big_endian, CodecIntervals* temp_intervals);
+                bool has_alpha, const ImageU* alpha, size_t bits_per_alpha,
+                size_t bits_per_sample, bool big_endian,
+                CodecIntervals* temp_intervals);
 
   // Indicates whether the ctor succeeded; if not, do not use this instance.
   Status IsHealthy() const { return is_healthy_; }
@@ -56,6 +58,7 @@ class ExternalImage {
   const ColorEncoding& c_current() const { return c_current_; }
   bool IsGray() const { return c_current_.IsGray(); }
   bool HasAlpha() const { return channels_ == 2 || channels_ == 4; }
+  size_t BitsPerAlpha() const { return bits_per_alpha_; }
   size_t BitsPerSample() const { return bits_per_sample_; }
   bool BigEndian() const { return big_endian_; }
 
@@ -66,12 +69,16 @@ class ExternalImage {
 
  private:
   ExternalImage(size_t xsize, size_t ysize, const ColorEncoding& c_current,
-                bool has_alpha, size_t bits_per_sample, bool big_endian);
+                bool has_alpha, size_t bits_per_alpha, size_t bits_per_sample,
+                bool big_endian);
 
   size_t xsize_;
   size_t ysize_;
   ColorEncoding c_current_;
   size_t channels_;
+  // Per alpha channel value
+  size_t bits_per_alpha_;
+  // Per color channel
   size_t bits_per_sample_;
   bool big_endian_;
   size_t row_size_;
