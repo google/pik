@@ -117,7 +117,7 @@ bool RebalanceHistogram(const float* targets, int max_symbol, int table_size,
       // keep the sum as close as possible to sum_nonrounded.
       int inc = SmallestIncrement(counts[n]);
       counts[n] -= counts[n] & (inc - 1);
-      // TODO(user): Should we rescale targets[n]?
+      // TODO(robryk): Should we rescale targets[n]?
       const float target =
           minimize_error_of_sum ? (sum_nonrounded - sum) : targets[n];
       if (counts[n] == 0 ||

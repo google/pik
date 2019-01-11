@@ -7,6 +7,8 @@
 #ifndef PIK_PARAMS_H_
 #define PIK_PARAMS_H_
 
+// Parameters and flags that govern PIK compression/decompression.
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -69,6 +71,12 @@ struct CompressParams {
 
   // Progressive mode.
   bool progressive_mode = false;
+
+  // If non-empty, the image referenced by this filepath will be used as a
+  // lossless first pass. The difference between that first pass and the
+  // original input image will then be encoded as a lossy second pass.
+  // Incompatible with lossless mode and progressive mode.
+  std::string lossless_base;
 
   // Progressive-mode saliency extractor.
   // Empty string disables this feature.

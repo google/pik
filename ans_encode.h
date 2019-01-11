@@ -4,11 +4,11 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT.
 
-// Library to encode the ANS population counts to the bit-stream and encode
-// symbols based on the respective distributions.
-
 #ifndef ANS_ENCODE_H_
 #define ANS_ENCODE_H_
+
+// Library to encode the ANS population counts to the bit-stream and encode
+// symbols based on the respective distributions.
 
 #include <stddef.h>
 #include <stdint.h>

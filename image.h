@@ -9,6 +9,8 @@
 #ifndef IMAGE_H_
 #define IMAGE_H_
 
+// SIMD/multicore-friendly planar image representation with row accessors.
+
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -846,7 +848,7 @@ Image<T> CopyImage(const Rect& rect, const Image<T>& image) {
 // codebase will not be backed by own storage. When this happens we can redesign
 // Image to be a non-storage-holding view class and introduce BackedImage in
 // those places that actually need it.
-// TODO(user): Introduce the distinction between image view and image when
+// TODO(robryk): Introduce the distinction between image view and image when
 // most of Pik wants image views.
 
 // NOTE: we can't use Image as a view because invariants are violated

@@ -39,7 +39,7 @@ struct Transcoded {
 
   uint32_t original_bit_depth;            // = CodecInOut.dec_bit_depth
   ColorEncoding original_color_encoding;  // = io->dec_c_original in the encoder
-  // TODO(user): This should use bits instead of bytes, 1-bit alpha channel
+  // TODO(lode): This should use bits instead of bytes, 1-bit alpha channel
   //             images exist and may be desired by users using this feature.
   // Alpha bytes per channel of original image (not necessarily the same as
   // the encoding used in the pik file).

@@ -51,7 +51,7 @@ Status FromSRGB(const size_t xsize, const size_t ysize, const bool is_gray,
   const size_t bits_per_sample = sizeof(T) * kBitsPerByte;
   const uint8_t* bytes = reinterpret_cast<const uint8_t*>(pixels);
   const uint8_t* bytes_end = reinterpret_cast<const uint8_t*>(end);
-  // TODO(user): must use different value for bits_per_alpha?
+  // TODO(lode): must use different value for bits_per_alpha?
   const ExternalImage external(xsize, ysize, c, has_alpha,
                                /*alpha_bits=*/ bits_per_sample,
                                bits_per_sample, big_endian, bytes, bytes_end);

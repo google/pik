@@ -40,6 +40,12 @@ struct CompressArgs {
           params.guetzli_mode = true;
         } else if (arg == "--progressive") {
           params.progressive_mode = true;
+        } else if (arg == "--lossless_base") {
+          if (i + 1 > argc) {
+            fprintf(stderr, "Expected an argument for --lossless_base.\n");
+            return PIK_FAILURE("Args");
+          }
+          params.lossless_base = argv[++i];
         } else if (arg == "--lossless") {
           params.lossless_mode = true;
         } else if (arg == "--keep_tempfiles") {
@@ -131,6 +137,14 @@ struct CompressArgs {
               "'--target_bpp' and '--target_size'. They are all different ways"
               " to specify the image quality. When in doubt, use --distance."
               " It gives the most visually consistent results.\n");
+      return false;
+    }
+
+    if (!params.lossless_base.empty() &&
+        (params.lossless_mode || params.progressive_mode)) {
+      fprintf(stderr,
+              "--lossless_base is incompatible with --lossless_mode and "
+              "--progressive_mode.\n");
       return false;
     }
 
@@ -288,8 +302,10 @@ Status Compress(ThreadPool* pool, CompressArgs& args,
   const size_t channels = io.c_current().Channels() + io.HasAlpha();
   const size_t bytes = xsize * ysize * channels *
                        DivCeil(io.original_bits_per_sample(), kBitsPerByte);
-  fprintf(stderr, "Compressed to %zu bytes (%.2f MB/s).\n", compressed->size(),
-          bytes * 1E-6 / (t1 - t0));
+  const double bpp = static_cast<double>(compressed->size() * kBitsPerByte) /
+                     (xsize * ysize);
+  fprintf(stderr, "Compressed to %zu bytes (%.2f bpp, %.2f MB/s).\n",
+          compressed->size(), bpp, bytes * 1E-6 / (t1 - t0));
 
   if (args.params.verbose) {
     aux_out.Print(1);

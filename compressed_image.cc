@@ -483,7 +483,7 @@ PaddedBytes EncodeToBitstream(const EncCache& enc_cache, const Rect& rect,
   Append(ac_strategy_and_quant_field_code, &out, &byte_pos);
   Append(ac_code, &out, &byte_pos);
 
-  // TODO(user): fix this with DC supergroups.
+  // TODO(veluca): fix this with DC supergroups.
   float output_size_estimate = out.size() - ac_code.size() - histo_code.size();
   std::vector<std::array<size_t, 256>> counts(kNumContexts);
   size_t extra_bits = 0;
@@ -809,33 +809,18 @@ bool DecodeFromBitstream(const PassHeader& pass_header,
       compressed, reader, cmap, dec_cache, pass_dec_cache, quantizer);
 }
 
-ImageF IntensityAcEstimate(const ImageF& image, float multiplier,
-                           ThreadPool* pool) {
-  constexpr size_t N = kBlockDim;
-  std::vector<float> blur = DCfiedGaussianKernel<N>(5.5);
-  ImageF retval = Convolve(image, blur);
-  for (size_t y = 0; y < retval.ysize(); y++) {
-    float* PIK_RESTRICT retval_row = retval.Row(y);
-    const float* PIK_RESTRICT image_row = image.ConstRow(y);
-    for (size_t x = 0; x < retval.xsize(); ++x) {
-      retval_row[x] = multiplier * (image_row[x] - retval_row[x]);
-    }
-  }
-  return retval;
-}
-
-void DequantImage(const Quantizer& quantizer, const ColorCorrelationMap& cmap,
-                  ThreadPool* pool, DecCache* dec_cache,
-                  PassDecCache* pass_dec_cache, const Rect& group_rect) {
+void DequantImageAC(const Quantizer& quantizer, const ColorCorrelationMap& cmap,
+                    const Image3S& quantized_ac, ThreadPool* pool,
+                    DecCache* dec_cache, PassDecCache* pass_dec_cache,
+                    const Rect& group_rect) {
   PROFILER_ZONE("dequant");
   constexpr size_t N = kBlockDim;
   constexpr size_t block_size = N * N;
 
   // Caller must have allocated/filled quantized_dc/ac.
-  PIK_CHECK(dec_cache->quantized_ac.xsize() ==
+  PIK_CHECK(quantized_ac.xsize() ==
                 quantizer.RawQuantField().xsize() * block_size &&
-            dec_cache->quantized_ac.ysize() ==
-                quantizer.RawQuantField().ysize());
+            quantized_ac.ysize() == quantizer.RawQuantField().ysize());
 
   const size_t xsize_blocks = quantizer.RawQuantField().xsize();
   const size_t ysize_blocks = quantizer.RawQuantField().ysize();
@@ -868,8 +853,8 @@ void DequantImage(const Quantizer& quantizer, const ColorCorrelationMap& cmap,
                     kTileDimInBlocks, kTileDimInBlocks, xsize_blocks,
                     ysize_blocks);
 
-    dequant.DoAC(rect, dec_cache->quantized_ac, rect, block_group_rect,
-                 cmap.ytox_map, cmap.ytob_map, dec_cache, pass_dec_cache);
+    dequant.DoAC(rect, quantized_ac, rect, block_group_rect, cmap.ytox_map,
+                 cmap.ytob_map, dec_cache, pass_dec_cache);
   };
   RunOnPool(pool, 0, num_tiles, dequant_tile, "DequantImage");
 }
@@ -918,6 +903,8 @@ Image3F ReconOpsinImage(const PassHeader& pass_header,
   const bool predict_lf = pass_header.predict_lf;
   const bool predict_hf = pass_header.predict_hf;
 
+  // TODO(veluca): this should probably happen upon dequantization of DC. Also,
+  // we should consider doing something similar for AC.
   if (pass_header.flags & PassHeader::kGrayscaleOpt) {
     PROFILER_ZONE("GrayscaleRestoreXB");
     kGrayXyb->RestoreXB(&dec_cache->dc);

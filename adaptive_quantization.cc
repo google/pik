@@ -635,8 +635,8 @@ Image3F RoundtripImage(const CompressParams& cparams,
 
     DecCache dec_cache;
     InitializeDecCache(pass_dec_cache, group_rect, &dec_cache);
-    dec_cache.quantized_ac = std::move(cache.ac);
-    DequantImage(quant, cmap, pool, &dec_cache, &pass_dec_cache, group_rect);
+    DequantImageAC(quant, cmap, cache.ac, pool, &dec_cache, &pass_dec_cache,
+                   group_rect);
     Image3F recon =
         ReconOpsinImage(pass_header, header, quant, block_group_rect,
                         &dec_cache, &pass_dec_cache);
@@ -991,6 +991,22 @@ ImageF AdaptiveQuantizationMap(const ImageF& img, const ImageF& img_ac,
   HfModulation(img_ac, &out);
   Exp(&out);
   return out;
+}
+
+// TODO(veluca): remove or use pool.
+ImageF IntensityAcEstimate(const ImageF& image, float multiplier,
+                           ThreadPool* pool) {
+  constexpr size_t N = kBlockDim;
+  std::vector<float> blur = DCfiedGaussianKernel<N>(5.5);
+  ImageF retval = Convolve(image, blur);
+  for (size_t y = 0; y < retval.ysize(); y++) {
+    float* PIK_RESTRICT retval_row = retval.Row(y);
+    const float* PIK_RESTRICT image_row = image.ConstRow(y);
+    for (size_t x = 0; x < retval.xsize(); ++x) {
+      retval_row[x] = multiplier * (image_row[x] - retval_row[x]);
+    }
+  }
+  return retval;
 }
 
 ImageF InitialQuantField(double butteraugli_target, double intensity_multiplier,

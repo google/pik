@@ -7,6 +7,8 @@
 #ifndef BITS_H_
 #define BITS_H_
 
+// Specialized instructions for processing register-sized bit arrays.
+
 #ifdef _MSC_VER
 #include <intrin.h>
 #endif

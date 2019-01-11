@@ -16,6 +16,11 @@
 #include "image.h"
 #include "multipass_handler.h"
 
+// A multipass handler/manager to encode single images. It will run heuristics
+// for quantization, AC strategy and color correlation map only the first time
+// we want to encode a lossy pass, and will then re-use the existing heuristics
+// for further passes. All the passes of a single image are added together.
+
 namespace pik {
 
 enum class ProgressiveMode {
@@ -129,8 +134,11 @@ class SingleImageManager : public MultipassManager {
   std::shared_ptr<ImageF> saliency_map_;
 
   std::shared_ptr<Quantizer> quantizer_;
+  bool has_quantizer_ = false;
   ColorCorrelationMap cmap_;
+  bool has_cmap_ = false;
   AcStrategyImage ac_strategy_;
+  bool has_ac_strategy_ = false;
 
   std::vector<std::unique_ptr<SingleImageHandler>> group_handlers_;
 };

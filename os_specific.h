@@ -7,6 +7,8 @@
 #ifndef OS_SPECIFIC_H_
 #define OS_SPECIFIC_H_
 
+// OS-specific functions (e.g. timing and thread affinity)
+
 #include <string>
 #include <vector>
 

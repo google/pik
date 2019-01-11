@@ -35,36 +35,59 @@ bool Image3SCompress(const Image3S& img, const Rect& rect, bool grayscale,
     if (max[c] - min[c] >= 256) fit8 = false;
   }
   bytes->push_back(fit8);
-  size_t num_channels = grayscale ? 1 : 3;
 
   if (fit8) {
-    ImageB combined(rect.xsize(), rect.ysize() * num_channels);
-    size_t out_y = 0;
-    for (int c = 0; c < 3; ++c) {
-      if (grayscale && c != 1) continue;
+    if (grayscale) {
+      ImageB image(rect.xsize(), rect.ysize());
       for (size_t y = 0; y < rect.ysize(); ++y) {
-        const auto* const PIK_RESTRICT row_in = rect.ConstPlaneRow(img, c, y);
-        auto* const PIK_RESTRICT row_out = combined.Row(out_y++);
+        const int16_t* const PIK_RESTRICT row_in =
+            rect.ConstPlaneRow(img, 1, y);
+        uint8_t* const PIK_RESTRICT row_out = image.Row(y);
         for (size_t x = 0; x < img.xsize(); ++x) {
-          row_out[x] = static_cast<uint8_t>(row_in[x] - min[c]);
+          row_out[x] = static_cast<uint8_t>(row_in[x] - min[1]);
         }
       }
+      return Grayscale8bit_compress(image, bytes);
+    } else {
+      Image3B image(rect.xsize(), rect.ysize());
+      for (int c = 0; c < 3; ++c) {
+        for (size_t y = 0; y < rect.ysize(); ++y) {
+          const int16_t* const PIK_RESTRICT row_in =
+              rect.ConstPlaneRow(img, c, y);
+          uint8_t* const PIK_RESTRICT row_out = image.PlaneRow(c, y);
+          for (size_t x = 0; x < img.xsize(); ++x) {
+            row_out[x] = static_cast<uint8_t>(row_in[x] - min[c]);
+          }
+        }
+      }
+      return Colorful8bit_compress(image, bytes);
     }
-    return Grayscale8bit_compress(combined, bytes);
   } else {
-    ImageU combined(rect.xsize(), rect.ysize() * num_channels);
-    size_t out_y = 0;
-    for (int c = 0; c < 3; ++c) {
-      if (grayscale && c != 1) continue;
-      for (size_t y = 0; y < img.ysize(); ++y) {
-        const auto* const PIK_RESTRICT row_in = rect.ConstPlaneRow(img, c, y);
-        auto* const PIK_RESTRICT row_out = combined.Row(out_y++);
+    if (grayscale) {
+      ImageU image(rect.xsize(), rect.ysize());
+      for (size_t y = 0; y < rect.ysize(); ++y) {
+        const int16_t* const PIK_RESTRICT row_in =
+            rect.ConstPlaneRow(img, 1, y);
+        uint16_t* const PIK_RESTRICT row_out = image.Row(y);
         for (size_t x = 0; x < img.xsize(); ++x) {
-          row_out[x] = static_cast<uint16_t>(row_in[x] - min[c]);
+          row_out[x] = static_cast<uint16_t>(row_in[x] - min[1]);
         }
       }
+      return Grayscale16bit_compress(image, bytes);
+    } else {
+      Image3U image(rect.xsize(), rect.ysize());
+      for (int c = 0; c < 3; ++c) {
+        for (size_t y = 0; y < rect.ysize(); ++y) {
+          const int16_t* const PIK_RESTRICT row_in =
+              rect.ConstPlaneRow(img, c, y);
+          uint16_t* const PIK_RESTRICT row_out = image.PlaneRow(c, y);
+          for (size_t x = 0; x < img.xsize(); ++x) {
+            row_out[x] = static_cast<uint16_t>(row_in[x] - min[c]);
+          }
+        }
+      }
+      return Colorful16bit_compress(image, bytes);
     }
-    return Grayscale16bit_compress(combined, bytes);
   }
 }
 
@@ -79,51 +102,68 @@ bool Image3SDecompress(const PaddedBytes& bytes, bool grayscale, size_t* pos,
     *pos += 2;
   }
   bool fit8 = bytes[(*pos)++];
-  size_t num_channels = grayscale ? 1 : 3;
 
   if (fit8) {
-    ImageB combined;
-    if (!Grayscale8bit_decompress(bytes, pos, &combined)) {
-      return PIK_FAILURE("Failed to decode DC");
-    }
-    if (!grayscale && combined.ysize() % 3 != 0) {
-      return PIK_FAILURE("Grouped channels size not multiple of 3");
-    }
-    *result = Image3S(combined.xsize(), combined.ysize() / num_channels);
-    size_t in_y = 0;
-    for (int c = 0; c < 3; ++c) {
-      if (grayscale && c != 1) {
-        FillImage<int16_t>(0, result->MutablePlane(c));
-        continue;
+    if (grayscale) {
+      ImageB image;
+      if (!Grayscale8bit_decompress(bytes, pos, &image)) {
+        return PIK_FAILURE("Failed to decode DC");
       }
+      *result = Image3S(image.xsize(), image.ysize());
+      FillImage<int16_t>(0, result->MutablePlane(0));
+      FillImage<int16_t>(0, result->MutablePlane(2));
       for (size_t y = 0; y < result->ysize(); ++y) {
-        const auto* const PIK_RESTRICT row_in = combined.Row(in_y++);
-        auto* const PIK_RESTRICT row_out = result->MutablePlane(c)->Row(y);
-        for (size_t x = 0; x < combined.xsize(); ++x) {
-          row_out[x] = static_cast<int>(row_in[x]) + min[c];
+        const uint8_t* const PIK_RESTRICT row_in = image.Row(y);
+        int16_t* const PIK_RESTRICT row_out = result->MutablePlane(1)->Row(y);
+        for (size_t x = 0; x < image.xsize(); ++x) {
+          row_out[x] = static_cast<int16_t>(row_in[x]) + min[1];
+        }
+      }
+    } else {
+      Image3B image;
+      if (!Colorful8bit_decompress(bytes, pos, &image)) {
+        return PIK_FAILURE("Failed to decode DC");
+      }
+      *result = Image3S(image.xsize(), image.ysize());
+      for (int c = 0; c < 3; ++c) {
+        for (size_t y = 0; y < result->ysize(); ++y) {
+          const uint8_t* const PIK_RESTRICT row_in = image.PlaneRow(c, y);
+          int16_t* const PIK_RESTRICT row_out = result->MutablePlane(c)->Row(y);
+          for (size_t x = 0; x < image.xsize(); ++x) {
+            row_out[x] = static_cast<int16_t>(row_in[x]) + min[c];
+          }
         }
       }
     }
   } else {
-    ImageU combined;
-    if (!Grayscale16bit_decompress(bytes, pos, &combined)) {
-      return PIK_FAILURE("Failed to decode DC");
-    }
-    if (!grayscale && combined.ysize() % 3 != 0) {
-      return PIK_FAILURE("Grouped channels size not multiple of 3");
-    }
-    *result = Image3S(combined.xsize(), combined.ysize() / num_channels);
-    size_t in_y = 0;
-    for (int c = 0; c < 3; ++c) {
-      if (grayscale && c != 1) {
-        FillImage<int16_t>(0, result->MutablePlane(c));
-        continue;
+    if (grayscale) {
+      ImageU image;
+      if (!Grayscale16bit_decompress(bytes, pos, &image)) {
+        return PIK_FAILURE("Failed to decode DC");
       }
+      *result = Image3S(image.xsize(), image.ysize());
+      FillImage<int16_t>(0, result->MutablePlane(0));
+      FillImage<int16_t>(0, result->MutablePlane(2));
       for (size_t y = 0; y < result->ysize(); ++y) {
-        const auto* const PIK_RESTRICT row_in = combined.Row(in_y++);
-        auto* const PIK_RESTRICT row_out = result->MutablePlane(c)->Row(y);
-        for (size_t x = 0; x < combined.xsize(); ++x) {
-          row_out[x] = static_cast<int16_t>((int)row_in[x]) + (int)min[c];
+        const uint16_t* const PIK_RESTRICT row_in = image.Row(y);
+        int16_t* const PIK_RESTRICT row_out = result->MutablePlane(1)->Row(y);
+        for (size_t x = 0; x < image.xsize(); ++x) {
+          row_out[x] = static_cast<int16_t>(row_in[x]) + min[1];
+        }
+      }
+    } else {
+      Image3U image;
+      if (!Colorful16bit_decompress(bytes, pos, &image)) {
+        return PIK_FAILURE("Failed to decode DC");
+      }
+      *result = Image3S(image.xsize(), image.ysize());
+      for (int c = 0; c < 3; ++c) {
+        for (size_t y = 0; y < result->ysize(); ++y) {
+          const uint16_t* const PIK_RESTRICT row_in = image.PlaneRow(c, y);
+          int16_t* const PIK_RESTRICT row_out = result->MutablePlane(c)->Row(y);
+          for (size_t x = 0; x < image.xsize(); ++x) {
+            row_out[x] = static_cast<int16_t>(row_in[x]) + min[c];
+          }
         }
       }
     }
@@ -232,7 +272,7 @@ Status DecodeDCGroup(BitReader* reader, const PaddedBytes& compressed,
   return true;
 }
 
-// TODO(user): is this the right constant?
+// TODO(veluca): is this the right constant?
 using DCGroupSizeCoder = SizeCoderT<0x150F0E0C>;
 
 }  // namespace
@@ -406,7 +446,7 @@ void InitializeDecCache(const PassDecCache& pass_dec_cache, const Rect& rect,
   const size_t xsize_blocks = rect.xsize() / kBlockDim;
   const size_t ysize_blocks = rect.ysize() / kBlockDim;
 
-  // TODO(user): avoid this copy.
+  // TODO(veluca): avoid this copy.
   dec_cache->dc = Image3F(xsize_blocks + 2, ysize_blocks + 2);
   for (size_t c = 0; c < 3; c++) {
     for (size_t y = 0; y < ysize_blocks + 2; y++) {

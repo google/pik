@@ -4,24 +4,26 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT.
 
-#include <unistd.h>
+#include "pik.h"
 
 #include <string>
 #include <vector>
-
-#include "data_parallel.h"
-#include "pik.h"
-#include "pik_params.h"
 
 #undef PROFILER_ENABLED
 #define PROFILER_ENABLED 1
 #include "adaptive_quantization.h"
 #include "common.h"
+#include "compressed_image.h"
+#include "headers.h"
 #include "image.h"
+#include "multipass_handler.h"
+#include "noise.h"
 #include "os_specific.h"
 #include "pik_multipass.h"
+#include "pik_params.h"
 #include "pik_pass.h"
 #include "profiler.h"
+#include "quantizer.h"
 #include "saliency_map.h"
 #include "single_image_handler.h"
 
@@ -40,6 +42,34 @@ Status PixelsToPik(const CompressParams& cparams, const CodecInOut* io,
   }
   FileHeader container;
   MakeFileHeader(cparams, io, &container);
+
+  if (!cparams.lossless_base.empty()) {
+    SingleImageManager transform;
+    PikMultipassEncoder encoder(container, compressed, &transform, aux_out);
+    CompressParams p = cparams;
+
+    if (ApplyOverride(cparams.adaptive_reconstruction,
+                      cparams.butteraugli_distance >=
+                          kMinButteraugliForAdaptiveReconstruction)) {
+      transform.UseAdaptiveReconstruction();
+    }
+
+    // Lossless base.
+    CodecInOut base_io(io->Context());
+    PIK_RETURN_IF_ERROR(base_io.SetFromFile(cparams.lossless_base, pool));
+    p.adaptive_reconstruction = Override::kOff;
+    p.lossless_mode = true;
+    PIK_RETURN_IF_ERROR(
+        encoder.AddPass(p, PassParams{/*is_last=*/false}, &base_io, pool));
+
+    // Final non-lossless pass.
+    p.adaptive_reconstruction = cparams.adaptive_reconstruction;
+    p.lossless_mode = false;
+    PIK_RETURN_IF_ERROR(
+        encoder.AddPass(p, PassParams{/*is_last=*/true}, io, pool));
+    PIK_RETURN_IF_ERROR(encoder.Finalize());
+    return true;
+  }
 
   if (!cparams.progressive_mode) {
     size_t extension_bits, total_bits;

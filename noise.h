@@ -7,6 +7,8 @@
 #ifndef NOISE_H_
 #define NOISE_H_
 
+// Noise synthesis. Currently disabled.
+
 #include "bit_reader.h"
 #include "image.h"
 

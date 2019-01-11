@@ -61,7 +61,7 @@ Status PikMultipassEncoder::AddPass(const CompressParams& params,
   size_t image_start = pos_;
   PIK_RETURN_IF_ERROR(PixelsToPikPass(params, pass_params, frame, pool, output_,
                                       pos_, info_, multipass_manager_));
-  // TODO(user): only do this if we have another pass.
+  // TODO(veluca): only do this if we have another pass.
   {
     DecompressParams params;
     BitReader reader(output_->data(), output_->size());
@@ -113,7 +113,7 @@ Status PikMultipassDecoder::NextPass(CodecInOut* pass, ThreadPool* pool) {
           &container_.metadata.transcoded.original_color_encoding));
     }
   }
-  // TODO(user): metadata.
+  // TODO(veluca): metadata.
 
   // Not an error, end of file.
   if (reader_.Position() >= input_->size()) return false;

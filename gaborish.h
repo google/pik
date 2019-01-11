@@ -7,6 +7,8 @@
 #ifndef GABORISH_H_
 #define GABORISH_H_
 
+// Linear smoothing (3x3 convolution) for deblocking without too much blur.
+
 #include "data_parallel.h"
 #include "image.h"
 
@@ -24,13 +26,9 @@ enum class GaborishStrength : uint32_t {
   // Future extensions: [5, 6]
 };
 
-// Deprecated, use FastGaborishInverse instead.
-Image3F SlowGaborishInverse(const Image3F& opsin, double mul);
-
-// Returns "in" unchanged if strength == kOff (need rvalue to avoid copying).
-// Approximate.
-Image3F FastGaborishInverse(Image3F&& opsin, GaborishStrength strength,
-                            ThreadPool* pool);
+// Used in encoder to reduce the impact of the decoder's smoothing.
+// This is approximate and slow (unoptimized 5x5 convolution).
+Image3F GaborishInverse(const Image3F& opsin, double mul);
 
 // Returns "in" unchanged if strength == kOff (need rvalue to avoid copying).
 Image3F ConvolveGaborish(Image3F&& in, GaborishStrength strength,

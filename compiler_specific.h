@@ -7,8 +7,7 @@
 #ifndef COMPILER_SPECIFIC_H_
 #define COMPILER_SPECIFIC_H_
 
-// WARNING: compiled with different flags => must not define/instantiate any
-// inline functions, nor include any headers that do - see instruction_sets.h.
+// Macros for compiler version + nonstandard keywords, e.g. __builtin_expect.
 
 #include <stdint.h>
 

@@ -4,10 +4,10 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT.
 
-// For analyzing the range/distribution of scalars.
-
 #ifndef DESCRIPTIVE_STATISTICS_H_
 #define DESCRIPTIVE_STATISTICS_H_
+
+// For analyzing the range/distribution of scalars.
 
 #include <stdint.h>
 #include <algorithm>

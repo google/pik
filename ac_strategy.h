@@ -15,6 +15,19 @@
 #include "pik_info.h"
 #include "quantizer.h"
 
+// Defines the different kinds of transforms, and heuristics to choose between
+// them.
+// `AcStrategy` represents what transform should be used, and which sub-block of
+// that transform we are currently in. Note that DCT4x4 is applied on all four
+// 4x4 sub-blocks of an 8x8 block.
+// `AcStrategyImage` defines which strategy should be used for each 8x8 block
+// of the image. The highest 4 bits represent the strategy to be used, the
+// lowest 4 represent the index of the block inside that strategy. Blocks should
+// be aligned, i.e. 32x32 blocks should only start in positions that are
+// multiples of 32.
+// `FindBestAcStrategy` uses heuristics to choose which AC strategy should be
+// used in each block.
+
 namespace pik {
 
 class AcStrategy {
@@ -86,7 +99,7 @@ class AcStrategy {
   float ARQuantScale() const {
     if (strategy_ == Type::DCT32X32) return 0.71122376f;
     if (strategy_ == Type::DCT16X16) return 0.827516904f;
-    // TODO(user): find better value.
+    // TODO(veluca): find better value.
     if (strategy_ == Type::DCT4X4) return 1.2f;
     return 1.0f;
   }
@@ -243,6 +256,8 @@ class AcStrategyImage {
   ImageB layers_;
 };
 
+// `quant_field` is an initial quantization field for this image. `src` is the
+// input image in the XYB color space. `ac_strategy` is the output strategy.
 SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
                                   const ImageF* quant_field, const Image3F& src,
                                   ThreadPool* pool,

@@ -19,6 +19,10 @@
 #include "quantizer.h"
 #include "status.h"
 
+// Encode and decode a single pass of an image. A pass can be either a
+// decomposition of an image (eg. DC-only pass), or a frame in an animation.
+// The behaviour of the (en/de)coder is defined by the given multipass_manager.
+
 namespace pik {
 
 struct PassParams {

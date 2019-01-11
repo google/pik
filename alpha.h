@@ -7,6 +7,8 @@
 #ifndef ALPHA_H_
 #define ALPHA_H_
 
+// Encodes/decodes alpha image to/from its compressed representation.
+
 #include "headers.h"
 #include "image.h"
 #include "pik_params.h"

@@ -7,6 +7,8 @@
 #ifndef GAMMA_CORRECT_H_
 #define GAMMA_CORRECT_H_
 
+// Deprecated: sRGB transfer function. Use color_management.h instead.
+
 #include <cmath>
 
 #include "compiler_specific.h"

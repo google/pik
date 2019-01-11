@@ -4,11 +4,11 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT.
 
-// Library to decode the Huffman code lengths from the bit-stream and build a
-// decoding table from them.
-
 #ifndef HUFFMAN_DECODE_H_
 #define HUFFMAN_DECODE_H_
+
+// Library to decode the Huffman code lengths from the bit-stream and build a
+// decoding table from them.
 
 #include <stddef.h>
 #include <stdint.h>

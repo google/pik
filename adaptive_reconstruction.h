@@ -7,6 +7,8 @@
 #ifndef ADAPTIVE_RECONSTRUCTION_H_
 #define ADAPTIVE_RECONSTRUCTION_H_
 
+// "In-loop" filter: edge-preserving filter + adaptive clamping to DCT interval.
+
 #include "adaptive_reconstruction_fwd.h"
 #include "epf.h"
 #include "image.h"

@@ -4,11 +4,11 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT.
 
-// Common parameters that are needed for both the ANS entropy encoding and
-// decoding methods.
-
 #ifndef ANS_PARAMS_H_
 #define ANS_PARAMS_H_
+
+// Common parameters that are needed for both the ANS entropy encoding and
+// decoding methods.
 
 #include <stdint.h>
 #include <cstdlib>

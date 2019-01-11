@@ -12,6 +12,23 @@
 #include "quantizer.h"
 #include "simd/simd.h"
 
+// Encoder-side and decoder-side functions to predict low frequency coefficients
+// from lowest-frequency coefficients, and high frequency coefficients from low
+// frequency coefficients.
+// Given a block of size N, the top (N/8)*(N/8) block of coefficients are the
+// lowest-frequency coefficients. Other coefficients in the top (N/4)*(N/4)
+// block are the low frequency coefficients, and the rest of the block are high
+// frequency coefficients.
+// Lowest frequency coefficients are encoded in DC (as an (N/8)*(N/8) IDCT). We
+// obtain a 2x upsampled image out of this, by computing (N/4)*(N/4) IDCTS of
+// the LLF coefficients (other coefficients are set to 0). Then we smooth this
+// image with a convolution, DCT it to obtain LF coefficients, and use that as a
+// prediction.
+// The process for HF predictions is similar: LF coefficients are IDCT-ed back
+// into a 4x downsampled image, which is 4x upsampled and smoothed with a radius
+// 4 gaussian blur. NxN blocks in the resulting image are then used to predict
+// the HF coefficients, after a DCT.
+
 namespace pik {
 
 // All the `acs_rect`s here define which area of the ac_strategy image should be

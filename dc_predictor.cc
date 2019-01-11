@@ -429,7 +429,7 @@ struct LeftBorder2 {
                                           DC* PIK_RESTRICT residuals) {
     N::Store(N::Load(row_b, 0) - N::Load(row_m, 0), residuals, 0);
     if (xsize >= 2) {
-      // TODO(user): Clamped gradient should be slightly better here.
+      // TODO(robryk): Clamped gradient should be slightly better here.
       N::Store(N::Load(row_b, 1) - N::Load(row_b, 0), residuals, 1);
     }
   }
@@ -451,7 +451,7 @@ struct RightBorder1 {
   static SIMD_ATTR PIK_INLINE void Shrink(const size_t xsize,
                                           const DC* PIK_RESTRICT dc,
                                           DC* PIK_RESTRICT residuals) {
-    // TODO(user): Clamped gradient should be slightly better here.
+    // TODO(robryk): Clamped gradient should be slightly better here.
     if (xsize >= 2) {
       const auto res = N::Load(dc, xsize - 1) - N::Load(dc, xsize - 2);
       N::Store(res, residuals, xsize - 1);

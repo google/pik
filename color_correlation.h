@@ -7,6 +7,9 @@
 #ifndef COLOR_CORRELATION_H_
 #define COLOR_CORRELATION_H_
 
+// Chroma-from-luma, computed using heuristics to determine the best linear
+// model for the X and B channels from the Y channel.
+
 #include "bit_reader.h"
 #include "common.h"
 #include "data_parallel.h"

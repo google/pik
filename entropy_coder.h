@@ -33,6 +33,9 @@
 #include "pik_info.h"
 #include "status.h"
 
+// Entropy coding and context modeling of DC and AC coefficients, as well as AC
+// strategy and quantization field.
+
 namespace pik {
 
 /* Python snippet to generate the zig-zag sequence:
@@ -205,6 +208,13 @@ bool DecodeImageData(BitReader* PIK_RESTRICT br,
                      ANSSymbolReader* PIK_RESTRICT decoder, const Rect& rect,
                      Image3S* PIK_RESTRICT img);
 
+// Decodes into "rect" within "img". Calls DecodeImageData.
+bool DecodeImage(BitReader* PIK_RESTRICT br, const Rect& rect,
+                 Image3S* PIK_RESTRICT img);
+
+// Token to be encoded by the ANS. Uses context c (16 bits), writing symbol s
+// (8 bits), and adds up to 32 (nb) extra bits (b) that are interleaved in the
+// ANS stream.
 struct Token {
   Token(uint32_t c, uint32_t s, uint32_t nb, uint32_t b)
       : bits(b), context(c), nbits(nb), symbol(s) {
@@ -253,16 +263,19 @@ bool DecodeAcStrategy(BitReader* PIK_RESTRICT br,
                       AcStrategyImage* PIK_RESTRICT ac_strategy,
                       const AcStrategyImage* PIK_RESTRICT hint);
 
+// Apply context clustering, compute histograms and encode them.
 std::string BuildAndEncodeHistograms(
     size_t num_contexts, const std::vector<std::vector<Token> >& tokens,
     std::vector<ANSEncodingData>* codes, std::vector<uint8_t>* context_map,
     PikImageSizeInfo* info);
 
+// Same as BuildAndEncodeHistograms, but with static context clustering.
 std::string BuildAndEncodeHistogramsFast(
     const std::vector<std::vector<Token> >& tokens,
     std::vector<ANSEncodingData>* codes, std::vector<uint8_t>* context_map,
     PikImageSizeInfo* info);
 
+// Write the tokens to a string.
 std::string WriteTokens(const std::vector<Token>& tokens,
                         const std::vector<ANSEncodingData>& codes,
                         const std::vector<uint8_t>& context_map,
@@ -274,10 +287,7 @@ bool DecodeHistograms(BitReader* br, const size_t num_contexts,
                       const size_t max_alphabet_size, ANSCode* code,
                       std::vector<uint8_t>* context_map);
 
-// Decodes into "rect" within "img".
-bool DecodeImage(BitReader* PIK_RESTRICT br, const Rect& rect,
-                 Image3S* PIK_RESTRICT img);
-
+// See TokenizeQuantField.
 bool DecodeQuantField(BitReader* PIK_RESTRICT br,
                       ANSSymbolReader* PIK_RESTRICT decoder,
                       const std::vector<uint8_t>& context_map,

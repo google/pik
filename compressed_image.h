@@ -25,6 +25,11 @@
 #include "pik_params.h"
 #include "quantizer.h"
 
+// Methods to encode (decode) an image into (from) the bit stream:
+// initialization of per-pass information and per-group information, actual
+// computation of quantized coefficients, and encoding, plus corresponding
+// methods for the decoder.
+
 namespace pik {
 
 struct GradientMap;
@@ -39,20 +44,21 @@ SIMD_ATTR void InitializePassEncCache(const PassHeader& pass_header,
                                       PassEncCache* pass_enc_cache);
 
 // Initializes the encoder cache, setting parameters from the headers,
-// setting up the `src` and `dc_init` images in enc_cache, and allocating
-// `coeffs_init`.
+// setting up the `coeffs` and `dc_init` images in enc_cache.
 SIMD_ATTR void InitializeEncCache(const PassHeader& pass_header,
                                   const GroupHeader& group_header,
                                   const PassEncCache& pass_enc_cache,
                                   const Rect& group_rect, EncCache* enc_cache);
 
+// Computes quantized coefficients from the non-quantized ones already present
+// in enc_cache.
 SIMD_ATTR void ComputeCoefficients(const Quantizer& quantizer,
                                    const ColorCorrelationMap& cmap,
                                    ThreadPool* pool, EncCache* enc_cache,
                                    MultipassManager* manager,
                                    const PikInfo* aux_out = nullptr);
 
-// The gradient may be image with dimension 0 if disabled.
+// Encodes AC quantized coefficients from the given encoder cache.
 PaddedBytes EncodeToBitstream(const EncCache& cache, const Rect& rect,
                               const Quantizer& quantizer,
                               const NoiseParams& noise_params,
@@ -60,9 +66,9 @@ PaddedBytes EncodeToBitstream(const EncCache& cache, const Rect& rect,
                               MultipassHandler* handler,
                               PikInfo* info = nullptr);
 
-// "compressed" is the same range from which reader was constructed, and allows
-// seeking to tiles and constructing per-thread BitReader.
-// Writes to (cache->eager_dequant ? cache->dc/ac : cache->quantized_dc/ac).
+// Decodes AC coefficients from the bit stream, populating the AC
+// fields of the decoder cache, and the corresponding rectangles in the global
+// information (quant_field and ac_strategy) in the per-pass decoder cache.
 bool DecodeFromBitstream(const PassHeader& pass_header,
                          const GroupHeader& header,
                          const PaddedBytes& compressed, BitReader* reader,
@@ -72,26 +78,27 @@ bool DecodeFromBitstream(const PassHeader& pass_header,
                          NoiseParams* noise_params, const Quantizer& quantizer,
                          DecCache* cache, PassDecCache* pass_dec_cache);
 
-// Dequantizes AC and DC coefficients.
-void DequantImage(const Quantizer& quantizer, const ColorCorrelationMap& cmap,
-                  ThreadPool* pool, DecCache* cache,
-                  PassDecCache* pass_dec_cache, const Rect& group_rect);
+// Dequantizes the provided quantized_ac image into the decoder cache. Used in
+// the encoder loop in adaptive_quantization.cc
+void DequantImageAC(const Quantizer& quantizer, const ColorCorrelationMap& cmap,
+                    const Image3S& quantized_ac, ThreadPool* pool,
+                    DecCache* cache, PassDecCache* pass_dec_cache,
+                    const Rect& group_rect);
 
-// Optionally does DC preconditioning, performs IDCT, and
-// optionally applies image post-processing.
+// Applies predictions to de-quantized AC coefficients, copies DC coefficients
+// into AC, and does IDCT.
 Image3F ReconOpsinImage(const PassHeader& pass_header,
                         const GroupHeader& header, const Quantizer& quantizer,
                         const Rect& block_group_rect, DecCache* cache,
                         PassDecCache* pass_dec_cache,
                         PikInfo* pik_info = nullptr);
 
+// Finalizes the decoding of a pass by running per-pass post processing:
+// smoothing and adaptive reconstruction.
 Image3F FinalizePassDecoding(Image3F&& idct, const PassHeader& pass_header,
                              const Quantizer& quantizer,
                              PassDecCache* pass_dec_cache,
                              PikInfo* pik_info = nullptr);
-
-ImageF IntensityAcEstimate(const ImageF& image, float multiplier,
-                           ThreadPool* pool);
 
 }  // namespace pik
 

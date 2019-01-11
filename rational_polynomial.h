@@ -7,6 +7,8 @@
 #ifndef RATIONAL_POLYNOMIAL_H_
 #define RATIONAL_POLYNOMIAL_H_
 
+// Fast SIMD evaluation of rational polynomials for approximating functions.
+
 #include "compiler_specific.h"
 #include "simd/simd.h"
 

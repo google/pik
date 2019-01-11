@@ -610,299 +610,352 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
   Image3F coeffs = Image3F(xsize_blocks * kBlockDim * kBlockDim, ysize_blocks);
   TransposedScaledDCT(src, &coeffs);
   *ac_strategy = AcStrategyImage(xsize_blocks, ysize_blocks);
-  if (kChooseAcStrategy) {
-    const auto find_block_strategy = [&](int bx, int by) SIMD_ATTR {
-      const int32_t* natural_coeff_order_8 = NaturalCoeffOrder();
-      constexpr float kWeights[3] = {1. / kXybRadius[0], 1. / kXybRadius[1],
-                                     1. / kXybRadius[2]};
-
-      // The quantized symbol distribution contracts with the increasing
-      // butteraugli_target.
-      const float kDiscretizationFactor =
-          100 * (6.9654004856811754) / butteraugli_target;
-
-      // A value below 1.0 to favor 8x8s when all things are equal.
-      // 16x16 has wider reach of oscillations and this part of the
-      // computation is not aware of visual masking. Inhomogeneous
-      // visual masking will propagate accuracy further with 16x16 than
-      // with 8x8 dcts.
-      const float kFavor8x8Dct = 0.97022476956774629;
-      const float kFavor8x8DctOver32x32 = 0.86098331750000001;
-      static const double kColorWeights[3] = {
-          0.37190083410056468,
-          1.0,
-          2.5316749591824266,
+  if (!kChooseAcStrategy) {
+    return;
+  }
+  std::vector<bool> disable_dct16(xsize_blocks * ysize_blocks);
+  std::vector<bool> disable_dct32(xsize_blocks * ysize_blocks);
+  const auto disable_large_transforms = [&](int bx, int by) SIMD_ATTR {
+    // If we find a well-fitting DCT4x4 within the larger block,
+    // we disable the larger block.
+    {
+      double minval = 1e30;
+      double maxval = -1e30;
+      // 4x4 DCT needs less focus on B channel, since at that resolution
+      // blue needs to be correct only by average.
+      static const double kColorWeights4x4[3] = {
+        0.37190083410056468,
+        1.0,
+        0.2,
       };
-      // DCT4X4
-      {
-        double minval = 1e30;
-        double maxval = -1e30;
-        // 4x4 DCT needs less focus on B channel, since at that resolution
-        // blue needs to be correct only by average.
-        static const double kColorWeights4x4[3] = {
-          0.37190083410056468,
-          1.0,
-          0.2,
-        };
-        for (int ix = 0; ix < 4; ++ix) {
-          double total_sum = 0;
-          int offx = (ix & 1) * 4;
-          int offy = (ix & 2) * 2;
-          for (size_t c = 0; c < src.kNumPlanes; c++) {
-            double sum = 0;
-            for (size_t iy = 0; iy < 3; iy++) {
-              const float* row0 =
-                  src.ConstPlaneRow(c, by * kBlockDim + offy + iy);
-              const float* row1 =
-                  src.ConstPlaneRow(c, by * kBlockDim + offy + iy + 1);
-              for (size_t dx = 0; dx < 3; dx++) {
-                int x = bx * kBlockDim + offx + dx;
-                sum += fabs(row0[x] - row0[x + 1]) +
-                       fabs(row0[x] - row1[x]);
-              }
-              {
-                int x = bx * kBlockDim + offx + 3;
-                sum += fabs(row0[x] - row1[x]);
-              }
-            }
-            int iy = 3;
+      for (int ix = 0; ix < 4; ++ix) {
+        double total_sum = 0;
+        int offx = (ix & 1) * 4;
+        int offy = (ix & 2) * 2;
+        for (size_t c = 0; c < src.kNumPlanes; c++) {
+          double sum = 0;
+          for (size_t iy = 0; iy < 3; iy++) {
             const float* row0 =
                 src.ConstPlaneRow(c, by * kBlockDim + offy + iy);
+            const float* row1 =
+                src.ConstPlaneRow(c, by * kBlockDim + offy + iy + 1);
             for (size_t dx = 0; dx < 3; dx++) {
               int x = bx * kBlockDim + offx + dx;
-              sum += fabs(row0[x] - row0[x + 1]);
+              sum += fabs(row0[x] - row0[x + 1]) +
+                     fabs(row0[x] - row1[x]);
             }
-            total_sum += kColorWeights4x4[c] * sum;
+            {
+              int x = bx * kBlockDim + offx + 3;
+              sum += fabs(row0[x] - row1[x]);
+            }
           }
-          minval = std::min(minval, total_sum);
-          maxval = std::max(maxval, total_sum);
+          int iy = 3;
+          const float* row0 =
+              src.ConstPlaneRow(c, by * kBlockDim + offy + iy);
+          for (size_t dx = 0; dx < 3; dx++) {
+            int x = bx * kBlockDim + offx + dx;
+            sum += fabs(row0[x] - row0[x + 1]);
+          }
+          total_sum += kColorWeights4x4[c] * sum;
         }
-        minval /= (butteraugli_target + 4);
-        maxval /= (butteraugli_target + 4);
-        if (maxval - minval >= 0.32 && minval < 0.07) {
-          return AcStrategy::Type::DCT4X4;
-        }
+        minval = std::min(minval, total_sum);
+        maxval = std::max(maxval, total_sum);
       }
-
-
-      const auto apply_identity = [](const double butteraugli_target,
-                                     const Image3F* img,
-                                     const ImageF* quant_field,
-                                     size_t block_width, size_t block_height,
-                                     int bx, int by,
-                                     const double* kQuant) SIMD_ATTR {
-        int non_zeros = 0;
-        int zeros = 0;
-        const double low_limit = 1.0 / butteraugli_target;
-        const double high_limit = 5.0 / butteraugli_target;
-        for (size_t c = 0; c < img->kNumPlanes; c++) {
-          double ave[4] = {0};
-          for (size_t iy = 0; iy < block_height; iy++) {
-            const float* row = img->ConstPlaneRow(c, by * block_height + iy);
-            for (size_t ix = 0; ix < block_width; ix++) {
-              int aveix = ((iy >> 2) * 2 + (ix >> 2)) & 3;
-              ave[aveix] += row[bx * block_width + ix];
-            }
-          }
-          ave[0] *= 1.0 / 16;
-          ave[1] *= 1.0 / 16;
-          ave[2] *= 1.0 / 16;
-          ave[3] *= 1.0 / 16;
-          for (size_t iy = 0; iy < block_height; iy++) {
-            const float* row = img->ConstPlaneRow(c, by * block_height + iy);
-            for (size_t ix = 0; ix < block_width; ix++) {
-              int aveix = ((iy >> 2) * 2 + (ix >> 2)) & 3;
-              float val = fabs(row[bx * block_width + ix] - ave[aveix]);
-              if (val < low_limit) {
-                zeros++;
-              }
-              if (c == 1 && val > high_limit) {
-                non_zeros++;
-              }
-            }
-          }
-        }
-        if (non_zeros == 0) {
-          return 0;
-        }
-        return zeros;
-      };
-
-      int identity_score =
-          apply_identity(butteraugli_target, &src, quant_field, kBlockDim,
-                         kBlockDim, bx, by, kQuant64Identity);
-      if (identity_score > 3 * 49) {
-        return AcStrategy::Type::IDENTITY;
+      if (maxval / (minval + 0.01) >= 0.5 * butteraugli_target + 5) {
+        // Probably not multi-threading safe.
+        disable_dct32[(by & ~3) * xsize_blocks + (bx & ~3)] = true;
+        disable_dct16[(by & ~1) * xsize_blocks + (bx & ~1)] = true;
       }
-
-      const double kPow = 0.89978799825439681;
-      const double kPow2 = 3.3440552419343303e-06;
-
-
-      // DCT32
-      if (bx + 3 < xsize_blocks && by + 3 < ysize_blocks && (bx & 3) == 0 &&
-          (by & 3) == 0) {
-        static const double kDiff = 0.17023516028338581;
-        double dct8x8_entropy = 0;
-        for (size_t c = 0; c < coeffs.kNumPlanes; c++) {
-          double entropy = 0;
-          for (size_t iy = 0; iy < 4; iy++) {
-            const float* row = coeffs.ConstPlaneRow(c, by + iy);
-            int bx_actual = bx;
-            for (size_t ix = 1; ix < kBlockDim * kBlockDim * 4; ix++) {
-              // Skip the dc values at 0 and 64.
-              if ((ix & 63) == 0) {
-                bx_actual++;
-                continue;
-              }
-              float mul = GetQuant64Dct(natural_coeff_order_8[ix & 63]);
-              float val =
-                  mul * row[bx * kBlockDim * kBlockDim + ix] * kWeights[c];
-              val *= quant_field->ConstRow(by + iy)[bx_actual];
-              float v = fabsf(val) * kDiscretizationFactor;
-              entropy += 1 + kDiff - pow(kPow, v) - kDiff * pow(kPow2, v);
-            }
-          }
-          dct8x8_entropy += kColorWeights[c] * entropy;
-        }
-        float quant_inhomogeneity = 0;
-        float max_quant = -1e30;
-        for (int dy = 0; dy < 4; ++dy) {
-          for (int dx = 0; dx < 4; ++dx) {
-            float quant = quant_field->ConstRow(by + dy)[bx + dx];
-            max_quant = std::max(max_quant, quant);
-            quant_inhomogeneity -= quant;
-          }
-        }
-        quant_inhomogeneity += 16 * max_quant;
-        double kMulInho = (-47.780 * (7.8075571028999997)) / butteraugli_target;
-        dct8x8_entropy += kMulInho * quant_inhomogeneity;
-        double dct32x32_entropy = 0;
-        for (size_t c = 0; c < src.kNumPlanes; c++) {
-          double entropy = 0;
-          SIMD_ALIGN float dct32x32[16 * kBlockDim * kBlockDim] = {};
-          ComputeTransposedScaledDCT<4 * kBlockDim>()(
-              FromLines<4 * kBlockDim>(
-                  src.PlaneRow(c, kBlockDim * by) + kBlockDim * bx,
-                  src.PixelsPerRow()),
-              ScaleToBlock<4 * kBlockDim>(dct32x32));
-          for (size_t k = 0; k < 16 * kBlockDim * kBlockDim; k++) {
-            if ((k & 31) < 4 && (k >> 5) < 4) {
-              // Leave out the 4x4 corner.
-              continue;
-            }
-            // Not a correct approximation. Let's pretend that they
-            // are 8x8 dct coefficients with x/2,y/2 indexing:
-            int dct_8x8_x = (k & 0x1f) >> 2;
-            int dct_8x8_y = (k >> 7);
-            int respective_ix_in_8x8_dct = dct_8x8_y * 8 + dct_8x8_x;
-            float mul =
-                GetQuant64Dct(natural_coeff_order_8[respective_ix_in_8x8_dct]);
-            float val = mul * dct32x32[k] * kWeights[c];
-            val *= max_quant;
-            float v = fabsf(val) * kDiscretizationFactor;
-            entropy += 1 + kDiff - pow(kPow, v) - kDiff * pow(kPow2, v);
-          }
-          dct32x32_entropy += kColorWeights[c] * entropy;
-        }
-        if (dct32x32_entropy < kFavor8x8DctOver32x32 * dct8x8_entropy) {
-          return AcStrategy::Type::DCT32X32;
-        }
-      }
-
-      // DCT16
-      if (bx + 1 < xsize_blocks && by + 1 < ysize_blocks && (bx & 1) == 0 &&
-          (by & 1) == 0) {
-        static const double kDiff = 0.10873821113104205;
-        double dct8x8_entropy = 0;
-        for (size_t c = 0; c < coeffs.kNumPlanes; c++) {
-          double entropy = 0;
-          for (size_t iy = 0; iy < 2; iy++) {
-            const float* row = coeffs.ConstPlaneRow(c, by + iy);
-            int bx_actual = bx;
-            for (size_t ix = 1; ix < kBlockDim * kBlockDim * 2; ix++) {
-              // Skip the dc values at 0 and 64.
-              if (ix == 64) {
-                bx_actual++;
-                continue;
-              }
-              float mul = GetQuant64Dct(natural_coeff_order_8[ix & 63]);
-              float val =
-                  mul * row[bx * kBlockDim * kBlockDim + ix] * kWeights[c];
-              val *= quant_field->ConstRow(by + iy)[bx_actual];
-              float v = fabsf(val) * kDiscretizationFactor;
-              entropy += 1 + kDiff - pow(kPow, v) - kDiff * pow(kPow2, v);
-            }
-          }
-          dct8x8_entropy += kColorWeights[c] * entropy;
-        }
-        float max_quant = std::max<double>(
-            std::max<double>(quant_field->ConstRow(by)[bx],
-                             quant_field->ConstRow(by)[bx + 1]),
-            std::max<double>(quant_field->ConstRow(by + 1)[bx],
-                             quant_field->ConstRow(by + 1)[bx + 1]));
-        float quant_inhomogeneity =
-            4 * max_quant -
-            (quant_field->ConstRow(by)[bx] + quant_field->ConstRow(by)[bx + 1] +
-             quant_field->ConstRow(by + 1)[bx] +
-             quant_field->ConstRow(by + 1)[bx + 1]);
-        double kMulInho = (-47.780 * (2.1328696219249883)) / butteraugli_target;
-        dct8x8_entropy += kMulInho * quant_inhomogeneity;
-        double dct16x16_entropy = 0;
-        for (size_t c = 0; c < src.kNumPlanes; c++) {
-          double entropy = 0;
-          SIMD_ALIGN float dct16x16[4 * kBlockDim * kBlockDim] = {};
-          ComputeTransposedScaledDCT<2 * kBlockDim>()(
-              FromLines<2 * kBlockDim>(
-                  src.PlaneRow(c, kBlockDim * by) + kBlockDim * bx,
-                  src.PixelsPerRow()),
-              ScaleToBlock<2 * kBlockDim>(dct16x16));
-          for (size_t k = 2; k < 4 * kBlockDim * kBlockDim; k++) {
-            if ((k & 15) < 2 && (k >> 4) < 2) {
-              // Leave out the 2x2 corner.
-              continue;
-            }
-            // Not a correct approximation. Let's pretend that they
-            // are 8x8 dct coefficients with x/2,y/2 indexing:
-            int dct_8x8_x = (k & 0xf) >> 1;
-            int dct_8x8_y = (k >> 5);
-            int respective_ix_in_8x8_dct = dct_8x8_y * 8 + dct_8x8_x;
-            float mul =
-                GetQuant64Dct(natural_coeff_order_8[respective_ix_in_8x8_dct]);
-            float val = mul * dct16x16[k] * kWeights[c];
-            val *= max_quant;
-            float v = fabsf(val) * kDiscretizationFactor;
-            entropy += 1 + kDiff - pow(kPow, v) - kDiff * pow(kPow2, v);
-          }
-          dct16x16_entropy += kColorWeights[c] * entropy;
-        }
-
-        if (dct16x16_entropy < kFavor8x8Dct * dct8x8_entropy) {
-          return AcStrategy::Type::DCT16X16;
-        }
-      }
-      return AcStrategy::Type::DCT;
+    }
+  };
+  const auto find_block_strategy = [&](int bx, int by) SIMD_ATTR {
+    const int32_t* natural_coeff_order_8 = NaturalCoeffOrder();
+    constexpr float kWeights[3] = {1. / kXybRadius[0], 1. / kXybRadius[1],
+                                   1. / kXybRadius[2]};
+    // The quantized symbol distribution contracts with the increasing
+    // butteraugli_target.
+    const float discretization_factor =
+        100 * (6.9654004856811754) / butteraugli_target;
+    // A value below 1.0 to favor 8x8s when all things are equal.
+    // 16x16 has wider reach of oscillations and this part of the
+    // computation is not aware of visual masking. Inhomogeneous
+    // visual masking will propagate accuracy further with 16x16 than
+    // with 8x8 dcts.
+    const float kFavor8x8Dct = 0.97022476956774629;
+    const float kFavor8x8DctOver32x32 = 0.86098331750000001;
+    static const double kColorWeights[3] = {
+      0.37190083410056468,
+      1.0,
+      2.5316749591824266,
     };
-    ImageB raw_ac_strategy(xsize_blocks, ysize_blocks);
-    RunOnPool(pool, 0, ysize_blocks, [&](int y, int _) {
-      uint8_t* PIK_RESTRICT row = raw_ac_strategy.Row(y);
-      for (size_t x = 0; x < xsize_blocks; x++) {
-        row[x] = static_cast<uint8_t>(find_block_strategy(x, y));
+    // DCT4X4
+    {
+      double minval = 1e30;
+      double maxval = -1e30;
+      // 4x4 DCT needs less focus on B channel, since at that resolution
+      // blue needs to be correct only by average.
+      static const double kColorWeights4x4[3] = {
+        0.37190083410056468,
+        1.0,
+        0.2,
+      };
+      for (int ix = 0; ix < 4; ++ix) {
+        double total_sum = 0;
+        int offx = (ix & 1) * 4;
+        int offy = (ix & 2) * 2;
+        for (size_t c = 0; c < src.kNumPlanes; c++) {
+          double sum = 0;
+          for (size_t iy = 0; iy < 3; iy++) {
+            const float* row0 =
+                src.ConstPlaneRow(c, by * kBlockDim + offy + iy);
+            const float* row1 =
+                src.ConstPlaneRow(c, by * kBlockDim + offy + iy + 1);
+            for (size_t dx = 0; dx < 3; dx++) {
+              int x = bx * kBlockDim + offx + dx;
+              sum += fabs(row0[x] - row0[x + 1]) +
+                     fabs(row0[x] - row1[x]);
+            }
+            {
+              int x = bx * kBlockDim + offx + 3;
+              sum += fabs(row0[x] - row1[x]);
+            }
+          }
+          int iy = 3;
+          const float* row0 =
+              src.ConstPlaneRow(c, by * kBlockDim + offy + iy);
+          for (size_t dx = 0; dx < 3; dx++) {
+            int x = bx * kBlockDim + offx + dx;
+            sum += fabs(row0[x] - row0[x + 1]);
+          }
+          total_sum += kColorWeights4x4[c] * sum;
+        }
+        minval = std::min(minval, total_sum);
+        maxval = std::max(maxval, total_sum);
       }
-    });
-    ac_strategy->SetFromRaw(Rect(raw_ac_strategy), raw_ac_strategy);
-    if (aux_out != nullptr) {
-      aux_out->num_dct16_blocks =
-          ac_strategy->CountBlocks(AcStrategy::Type::DCT16X16);
-      aux_out->num_dct32_blocks =
-          ac_strategy->CountBlocks(AcStrategy::Type::DCT32X32);
+      if (maxval / (minval + 0.01) >= 0.5 * butteraugli_target + 5) {
+        return AcStrategy::Type::DCT4X4;
+      }
     }
-    if (ac_strategy->CountBlocks(AcStrategy::Type::DCT) ==
-        xsize_blocks * ysize_blocks) {
-      *ac_strategy = AcStrategyImage(xsize_blocks, ysize_blocks);
+    const auto apply_identity = [](const double butteraugli_target,
+                                   const Image3F* img,
+                                   const ImageF* quant_field,
+                                   size_t block_width, size_t block_height,
+                                   int bx, int by,
+                                   const double* kQuant) SIMD_ATTR {
+      int non_zeros = 0;
+      int zeros = 0;
+      const double low_limit = 1.0 / butteraugli_target;
+      const double high_limit = 5.0 / butteraugli_target;
+      for (size_t c = 0; c < img->kNumPlanes; c++) {
+        double ave[4] = {0};
+        for (size_t iy = 0; iy < block_height; iy++) {
+          const float* row = img->ConstPlaneRow(c, by * block_height + iy);
+          for (size_t ix = 0; ix < block_width; ix++) {
+            int aveix = ((iy >> 2) * 2 + (ix >> 2)) & 3;
+            ave[aveix] += row[bx * block_width + ix];
+          }
+        }
+        ave[0] *= 1.0 / 16;
+        ave[1] *= 1.0 / 16;
+        ave[2] *= 1.0 / 16;
+        ave[3] *= 1.0 / 16;
+        for (size_t iy = 0; iy < block_height; iy++) {
+          const float* row = img->ConstPlaneRow(c, by * block_height + iy);
+          for (size_t ix = 0; ix < block_width; ix++) {
+            int aveix = ((iy >> 2) * 2 + (ix >> 2)) & 3;
+            float val = fabs(row[bx * block_width + ix] - ave[aveix]);
+            if (val < low_limit) {
+              zeros++;
+            }
+            if (c == 1 && val > high_limit) {
+              non_zeros++;
+            }
+          }
+        }
+      }
+      if (non_zeros == 0) {
+        return 0;
+      }
+      return zeros;
+    };
+    int identity_score =
+        apply_identity(butteraugli_target, &src, quant_field, kBlockDim,
+                       kBlockDim, bx, by, kQuant64Identity);
+    if (identity_score > 3 * 49) {
+      return AcStrategy::Type::IDENTITY;
     }
-  }
+    const double kPow = 0.89978799825439681;
+    const double kPow2 = 3.3440552419343303e-06;
+    // DCT32
+    if (!disable_dct32[by * xsize_blocks + bx] &&
+        bx + 3 < xsize_blocks && by + 3 < ysize_blocks && (bx & 3) == 0 &&
+        (by & 3) == 0) {
+      static const double kDiff = 0.17023516028338581;
+      double dct8x8_entropy = 0;
+      for (size_t c = 0; c < coeffs.kNumPlanes; c++) {
+        double entropy = 0;
+        for (size_t iy = 0; iy < 4; iy++) {
+          const float* row = coeffs.ConstPlaneRow(c, by + iy);
+          int bx_actual = bx;
+          for (size_t ix = 1; ix < kBlockDim * kBlockDim * 4; ix++) {
+            // Skip the dc values at 0 and 64.
+            if ((ix & 63) == 0) {
+              bx_actual++;
+              continue;
+            }
+            float mul = GetQuant64Dct(natural_coeff_order_8[ix & 63]);
+            float val =
+                mul * row[bx * kBlockDim * kBlockDim + ix] * kWeights[c];
+            val *= quant_field->ConstRow(by + iy)[bx_actual];
+            float v = fabsf(val) * discretization_factor;
+            entropy += 1 + kDiff - pow(kPow, v) - kDiff * pow(kPow2, v);
+          }
+        }
+        dct8x8_entropy += kColorWeights[c] * entropy;
+      }
+      float quant_inhomogeneity = 0;
+      float max_quant = -1e30;
+      for (int dy = 0; dy < 4; ++dy) {
+        for (int dx = 0; dx < 4; ++dx) {
+          float quant = quant_field->ConstRow(by + dy)[bx + dx];
+          max_quant = std::max(max_quant, quant);
+          quant_inhomogeneity -= quant;
+        }
+      }
+      quant_inhomogeneity += 16 * max_quant;
+      double kMulInho = (-47.780 * (7.8075571028999997)) / butteraugli_target;
+      dct8x8_entropy += kMulInho * quant_inhomogeneity;
+      double dct32x32_entropy = 0;
+      for (size_t c = 0; c < src.kNumPlanes; c++) {
+        double entropy = 0;
+        SIMD_ALIGN float dct32x32[16 * kBlockDim * kBlockDim] = {};
+        ComputeTransposedScaledDCT<4 * kBlockDim>()(
+            FromLines<4 * kBlockDim>(
+                src.PlaneRow(c, kBlockDim * by) + kBlockDim * bx,
+                src.PixelsPerRow()),
+            ScaleToBlock<4 * kBlockDim>(dct32x32));
+        for (size_t k = 0; k < 16 * kBlockDim * kBlockDim; k++) {
+          if ((k & 31) < 4 && (k >> 5) < 4) {
+            // Leave out the 4x4 corner.
+            continue;
+          }
+          // Not a correct approximation. Let's pretend that they
+          // are 8x8 dct coefficients with x/2,y/2 indexing:
+          int dct_8x8_x = (k & 0x1f) >> 2;
+          int dct_8x8_y = (k >> 7);
+          int respective_ix_in_8x8_dct = dct_8x8_y * 8 + dct_8x8_x;
+          float mul =
+              GetQuant64Dct(natural_coeff_order_8[respective_ix_in_8x8_dct]);
+          float val = mul * dct32x32[k] * kWeights[c];
+          val *= max_quant;
+          float v = fabsf(val) * discretization_factor;
+          entropy += 1 + kDiff - pow(kPow, v) - kDiff * pow(kPow2, v);
+        }
+        dct32x32_entropy += kColorWeights[c] * entropy;
+      }
+      if (dct32x32_entropy < kFavor8x8DctOver32x32 * dct8x8_entropy) {
+        return AcStrategy::Type::DCT32X32;
+      }
+    }
 
+    // DCT16
+    if (!disable_dct16[by * xsize_blocks + bx] &&
+        bx + 1 < xsize_blocks && by + 1 < ysize_blocks && (bx & 1) == 0 &&
+        (by & 1) == 0) {
+      static const double kDiff = 0.10873821113104205;
+      double dct8x8_entropy = 0;
+      for (size_t c = 0; c < coeffs.kNumPlanes; c++) {
+        double entropy = 0;
+        for (size_t iy = 0; iy < 2; iy++) {
+          const float* row = coeffs.ConstPlaneRow(c, by + iy);
+          int bx_actual = bx;
+          for (size_t ix = 1; ix < kBlockDim * kBlockDim * 2; ix++) {
+            // Skip the dc values at 0 and 64.
+            if (ix == 64) {
+              bx_actual++;
+              continue;
+            }
+            float mul = GetQuant64Dct(natural_coeff_order_8[ix & 63]);
+            float val =
+                mul * row[bx * kBlockDim * kBlockDim + ix] * kWeights[c];
+            val *= quant_field->ConstRow(by + iy)[bx_actual];
+            float v = fabsf(val) * discretization_factor;
+            entropy += 1 + kDiff - pow(kPow, v) - kDiff * pow(kPow2, v);
+          }
+        }
+        dct8x8_entropy += kColorWeights[c] * entropy;
+      }
+      float max_quant = std::max<double>(
+          std::max<double>(quant_field->ConstRow(by)[bx],
+                           quant_field->ConstRow(by)[bx + 1]),
+          std::max<double>(quant_field->ConstRow(by + 1)[bx],
+                           quant_field->ConstRow(by + 1)[bx + 1]));
+      float quant_inhomogeneity =
+          4 * max_quant -
+          (quant_field->ConstRow(by)[bx] + quant_field->ConstRow(by)[bx + 1] +
+           quant_field->ConstRow(by + 1)[bx] +
+           quant_field->ConstRow(by + 1)[bx + 1]);
+      double kMulInho = (-47.780 * (2.1328696219249883)) / butteraugli_target;
+      dct8x8_entropy += kMulInho * quant_inhomogeneity;
+      double dct16x16_entropy = 0;
+      for (size_t c = 0; c < src.kNumPlanes; c++) {
+        double entropy = 0;
+        SIMD_ALIGN float dct16x16[4 * kBlockDim * kBlockDim] = {};
+        ComputeTransposedScaledDCT<2 * kBlockDim>()(
+            FromLines<2 * kBlockDim>(
+                src.PlaneRow(c, kBlockDim * by) + kBlockDim * bx,
+                src.PixelsPerRow()),
+            ScaleToBlock<2 * kBlockDim>(dct16x16));
+        for (size_t k = 2; k < 4 * kBlockDim * kBlockDim; k++) {
+          if ((k & 15) < 2 && (k >> 4) < 2) {
+            // Leave out the 2x2 corner.
+            continue;
+          }
+          // Not a correct approximation. Let's pretend that they
+          // are 8x8 dct coefficients with x/2,y/2 indexing:
+          int dct_8x8_x = (k & 0xf) >> 1;
+          int dct_8x8_y = (k >> 5);
+          int respective_ix_in_8x8_dct = dct_8x8_y * 8 + dct_8x8_x;
+          float mul =
+              GetQuant64Dct(natural_coeff_order_8[respective_ix_in_8x8_dct]);
+          float val = mul * dct16x16[k] * kWeights[c];
+          val *= max_quant;
+          float v = fabsf(val) * discretization_factor;
+          entropy += 1 + kDiff - pow(kPow, v) - kDiff * pow(kPow2, v);
+        }
+        dct16x16_entropy += kColorWeights[c] * entropy;
+      }
+      if (dct16x16_entropy < kFavor8x8Dct * dct8x8_entropy) {
+        return AcStrategy::Type::DCT16X16;
+      }
+    }
+    return AcStrategy::Type::DCT;
+  };
+  ImageB raw_ac_strategy(xsize_blocks, ysize_blocks);
+  RunOnPool(pool, 0, ysize_blocks, [&](int y, int _) {
+    for (size_t x = 0; x < xsize_blocks; x++) {
+      disable_large_transforms(x, y);
+    }
+  });
+  RunOnPool(pool, 0, ysize_blocks, [&](int y, int _) {
+    uint8_t* PIK_RESTRICT row = raw_ac_strategy.Row(y);
+    for (size_t x = 0; x < xsize_blocks; x++) {
+      row[x] = static_cast<uint8_t>(find_block_strategy(x, y));
+    }
+  });
+  ac_strategy->SetFromRaw(Rect(raw_ac_strategy), raw_ac_strategy);
+  if (aux_out != nullptr) {
+    aux_out->num_dct4_blocks =
+        ac_strategy->CountBlocks(AcStrategy::Type::DCT4X4);
+    aux_out->num_dct16_blocks =
+        ac_strategy->CountBlocks(AcStrategy::Type::DCT16X16);
+    aux_out->num_dct32_blocks =
+        ac_strategy->CountBlocks(AcStrategy::Type::DCT32X32);
+  }
+  if (ac_strategy->CountBlocks(AcStrategy::Type::DCT) ==
+      xsize_blocks * ysize_blocks) {
+    *ac_strategy = AcStrategyImage(xsize_blocks, ysize_blocks);
+  }
   if (WantDebugOutput(aux_out)) {
     aux_out->DumpImage("ac_strategy_type", ac_strategy->ConstRaw());
   }

@@ -83,12 +83,9 @@ struct EncCache {
 };
 
 struct DecCache {
-  // Only used in encoder loop.
-  Image3S quantized_ac;
-
   // Dequantized output produced by DecodeFromBitstream, DequantImage or
   // ExtractGroupDC.
-  // TODO(user): replace the DC with a pointer + a rect to avoid copies.
+  // TODO(veluca): replace the DC with a pointer + a rect to avoid copies.
   Image3F dc;
   Image3F ac;
 };

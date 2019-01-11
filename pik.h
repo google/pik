@@ -7,17 +7,13 @@
 #ifndef PIK_H_
 #define PIK_H_
 
+// Top-level interface for PIK encoding/decoding.
+
 #include "codec.h"
-#include "compressed_image.h"
 #include "data_parallel.h"
-#include "headers.h"
-#include "multipass_handler.h"
-#include "noise.h"
 #include "padded_bytes.h"
 #include "pik_info.h"
 #include "pik_params.h"
-#include "pik_pass.h"
-#include "quantizer.h"
 #include "status.h"
 
 namespace pik {

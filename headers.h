@@ -141,11 +141,8 @@ struct GroupHeader {
 enum class ImageEncoding : uint32_t {
   kPasses = 0,   // PIK
   kProgressive,  // FUIF
-  kLosslessGray8,
-  kLosslessGray16,
-  kLosslessColor8,
-  kLosslessColor16,
-  // TODO(user): extend amount of possible values
+  kLossless,
+  // TODO(lode): extend amount of possible values
   // Future extensions: [6]
 };
 
@@ -237,13 +234,18 @@ struct PassHeader {
       }
     }
 
+    if (visitor->Conditional(encoding == ImageEncoding::kLossless)) {
+      visitor->Bool(false, &lossless_grayscale);
+      visitor->Bool(false, &lossless_16_bits);
+    }
+
     visitor->BeginExtensions(&extensions);
     // Extensions: in chronological order of being added to the format.
     return visitor->EndExtensions();
   }
 
   // Relative to START of (byte-aligned) PassHeader. Used to seek to next pass.
-  // TODO(user): how do we compute this?
+  // TODO(veluca): how do we compute this?
   uint64_t size;  // [bytes]
   bool has_alpha;
 
@@ -252,6 +254,10 @@ struct PassHeader {
   FrameInfo frame;
 
   ImageEncoding encoding;
+
+  // Lossless encoding flags: grayscale mode, 16 (true) or 8 bit (false) mode.
+  bool lossless_grayscale;
+  bool lossless_16_bits;
 
   uint32_t resampling_factor2;
   uint32_t flags;

@@ -6,8 +6,11 @@
 
 #include "gradient_map.h"
 
-#include "brotli.h"
+#include "bit_reader.h"
+#include "entropy_coder.h"
+#include "image.h"
 #include "opsin_params.h"
+#include "padded_bytes.h"
 
 namespace pik {
 namespace {
@@ -21,28 +24,6 @@ double Interpolate(double v00, double v01, double v10, double v11, double x,
                    double y) {
   return v00 * (1 - x) * (1 - y) + v10 * x * (1 - y) + v01 * (1 - x) * y +
          v11 * x * y;
-}
-
-PaddedBytes CompressBytes(const PaddedBytes& v) {
-  PaddedBytes result;
-  PIK_CHECK(BrotliCompress(11, v, &result));
-  return result;
-}
-
-Status DecompressBytes(const uint8_t* in, size_t max_in_size,
-                       size_t expected_result_size, size_t* pos,
-                       PaddedBytes* out) {
-  size_t bytes_read = 0;
-  size_t max_decoded_size = expected_result_size;
-  if (*pos >= max_in_size) {
-    return PIK_FAILURE("Gradient: invalid position");
-  }
-  if (!BrotliDecompress(in + *pos, max_in_size - *pos, max_decoded_size,
-                        &bytes_read, out)) {
-    return PIK_FAILURE("Gradient: invalid brotli stream");
-  }
-  *pos += bytes_read;
-  return true;
 }
 
 // Computes the max of the horizontal and vertical second derivative for each
@@ -290,12 +271,10 @@ Image3F ComputeGradientImage(const GradientMap& gradient) {
   return upscaled;
 }
 
-PaddedBytes Quantize(const GradientMap& gradient, const Rect& map_rect,
-                     const Quantizer& quantizer) {
-  PaddedBytes bytes(map_rect.xsize() * map_rect.ysize() *
-                    (gradient.grayscale ? 1 : 3));
+Image3S Quantize(const GradientMap& gradient, const Rect& map_rect,
+                 const Quantizer& quantizer) {
   const Image3F& image = gradient.gradient;
-  size_t pos = 0;
+  Image3S out(map_rect.xsize(), map_rect.ysize());
   for (int c = 0; c < 3; c++) {
     if (gradient.grayscale && c != 1) continue;
     const float step = quantizer.inv_quant_dc() *
@@ -306,21 +285,21 @@ PaddedBytes Quantize(const GradientMap& gradient, const Rect& map_rect,
     float mul = steps / range;
 
     for (size_t y = 0; y < map_rect.ysize(); y++) {
-      const auto* row = map_rect.ConstPlaneRow(image, c, y);
+      const float* PIK_RESTRICT row = map_rect.ConstPlaneRow(image, c, y);
+      int16_t* PIK_RESTRICT row_out = out.PlaneRow(c, y);
       for (size_t x = 0; x < map_rect.xsize(); x++) {
         int value = std::round((row[x] - kXybMin[c]) * mul);
         value = std::min(std::max(0, value), steps - 1);
-        bytes[pos++] = value;
+        row_out[x] = value;
       }
     }
   }
-  return bytes;
+  return out;
 }
 
-void Dequantize(const Quantizer& quantizer, const PaddedBytes& bytes,
+void Dequantize(const Quantizer& quantizer, const Image3S& quant,
                 GradientMap* gradient) {
   gradient->gradient = Image3F(gradient->xsize, gradient->ysize);
-  size_t pos = 0;
   for (int c = 0; c < 3; c++) {
     if (gradient->grayscale && c != 1) continue;
     const float step = quantizer.inv_quant_dc() *
@@ -331,10 +310,10 @@ void Dequantize(const Quantizer& quantizer, const PaddedBytes& bytes,
     float mul = range / steps;
 
     for (size_t y = 0; y < gradient->ysize; y++) {
-      auto* row_out = gradient->gradient.PlaneRow(c, y);
+      float* PIK_RESTRICT row_out = gradient->gradient.PlaneRow(c, y);
+      const int16_t* PIK_RESTRICT row = quant.PlaneRow(c, y);
       for (size_t x = 0; x < gradient->xsize; x++) {
-        int byte = bytes[pos++];
-        float v = byte * mul + kXybMin[c];
+        float v = row[x] * mul + kXybMin[c];
         row_out[x] = v;
       }
     }
@@ -369,9 +348,9 @@ void InitGradientMap(size_t xsize_dc, size_t ysize_dc, bool grayscale,
 // Serializes and deserializes the gradient image so it has the values the
 // decoder will see.
 void AccountForQuantization(const Quantizer& quantizer, GradientMap* gradient) {
-  PaddedBytes bytes = Quantize(
+  Image3S quantized = Quantize(
       *gradient, Rect(0, 0, gradient->xsize, gradient->ysize), quantizer);
-  Dequantize(quantizer, bytes, gradient);
+  Dequantize(quantizer, quantized, gradient);
 }
 }  // namespace
 
@@ -483,8 +462,10 @@ void SerializeGradientMap(const GradientMap& gradient, const Rect& rect,
   Rect map_rect(rect.x0() / kNumBlocks, rect.y0() / kNumBlocks,
                 DivCeil(rect.xsize() - 1, kNumBlocks) + 1,
                 DivCeil(rect.ysize() - 1, kNumBlocks) + 1);
-  PaddedBytes encoded = Quantize(gradient, map_rect, quantizer);
-  encoded = CompressBytes(encoded);
+  Image3S quantized = Quantize(gradient, map_rect, quantizer);
+  Image3S residuals(map_rect.xsize(), map_rect.ysize());
+  ShrinkDC(map_rect, quantized, &residuals);
+  std::string encoded = EncodeImageData(Rect(residuals), residuals, nullptr);
   size_t pos = compressed->size();
   compressed->resize(compressed->size() + encoded.size());
   for (size_t i = 0; i < encoded.size(); i++) {
@@ -497,15 +478,26 @@ Status DeserializeGradientMap(size_t xsize_dc, size_t ysize_dc, bool grayscale,
                               const PaddedBytes& compressed, size_t* byte_pos,
                               GradientMap* gradient) {
   InitGradientMap(xsize_dc, ysize_dc, grayscale, gradient);
-  size_t encoded_size = gradient->xsize * gradient->ysize * (grayscale ? 1 : 3);
-  PaddedBytes encoded;
-  PIK_RETURN_IF_ERROR(DecompressBytes(compressed.data(), compressed.size(),
-                                      encoded_size, byte_pos, &encoded));
-  if (encoded.size() != encoded_size) {
-    return PIK_FAILURE("Gradient: invalid size");
+
+  BitReader reader(compressed.data() + *byte_pos,
+                   compressed.size() - *byte_pos);
+
+  ImageS gmap_y_tmp(gradient->xsize, gradient->ysize);
+  ImageS gmap_xz_res_tmp(gradient->xsize * 2, gradient->ysize);
+  ImageS gmap_xz_exp_tmp(gradient->xsize * 2, gradient->ysize);
+
+  Image3S gmap_quant(gradient->xsize, gradient->ysize);
+
+  if (!DecodeImage(&reader, Rect(gmap_quant), &gmap_quant)) {
+    return PIK_FAILURE("Failed to decode gradient map");
   }
 
-  Dequantize(quantizer, encoded, gradient);
+  *byte_pos += reader.Position();
+
+  ExpandDC(Rect(gmap_quant), &gmap_quant, &gmap_y_tmp, &gmap_xz_res_tmp,
+           &gmap_xz_exp_tmp);
+
+  Dequantize(quantizer, gmap_quant, gradient);
 
   return true;  // success
 }

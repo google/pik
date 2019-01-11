@@ -460,7 +460,7 @@ static inline double Gamma(double v) {
   // to get values above 255.0.
   // GammaPolynomial is faster but may only be used if the maximum input value
   // is 255.0.
-  // TODO(user): allow pik to specify which to use depending on the intensity
+  // TODO(lode): allow pik to specify which to use depending on the intensity
   //             target.
   return SimpleGamma(v);
   // return GammaPolynomial(v);

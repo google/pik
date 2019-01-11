@@ -15,10 +15,13 @@
 #include "pik_info.h"
 #include "quantizer.h"
 
+// DC handling functions: encoding and decoding of DC to and from bitstream, and
+// related function to initialize the per-group decoder cache.
+
 namespace pik {
 
-// Encodes the DC-related information in pass_enc_cache: quantized dc itself and
-// gradient map.
+// Encodes the DC-related information from pass_enc_cache: quantized dc itself
+// and gradient map.
 PaddedBytes EncodeDC(const Quantizer& quantizer,
                      const PassEncCache& pass_enc_cache, ThreadPool* pool,
                      PikImageSizeInfo* dc_info);

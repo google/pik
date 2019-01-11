@@ -7,6 +7,8 @@
 #ifndef STATUS_H_
 #define STATUS_H_
 
+// Error handling: Status return type + helper macros.
+
 #include <cstdio>
 #include <cstdlib>
 

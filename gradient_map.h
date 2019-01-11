@@ -7,6 +7,10 @@
 #ifndef GRADIENT_MAP_H_
 #define GRADIENT_MAP_H_
 
+// The gradient map is a low resolution image (1/8th by 1/8th of the DC, that is
+// 1/64th by 1/64th of the image) with finer quantization of the DC. It is used
+// to selectively remove banding caused by DC quantization.
+
 #include "compressed_image_fwd.h"
 #include "data_parallel.h"
 #include "image.h"
@@ -15,7 +19,7 @@
 
 namespace pik {
 
-// TODO(user): Add unit tests. Verify that
+// TODO(robryk): Add unit tests. Verify that
 // ComputeGradientMap(ApplyGradientMap(map)) == map.
 
 // For encoding

@@ -7,6 +7,8 @@
 #ifndef PADDED_BYTES_H_
 #define PADDED_BYTES_H_
 
+// std::vector replacement with padding to reduce bounds checks in WriteBits
+
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>

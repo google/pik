@@ -763,7 +763,7 @@ std::string WriteTokens(const std::vector<Token>& tokens,
 }
 
 namespace {
-// TODO(user): check if this upper bound can be improved.
+// TODO(veluca): check if this upper bound can be improved.
 const constexpr int kRleSymStart = 18;
 }  // namespace
 

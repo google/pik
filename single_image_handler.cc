@@ -40,7 +40,7 @@ void SingleImageManager::SetDecodedPass(CodecInOut* io) {
   previous_pass_ =
       PadImageToMultiple(OpsinDynamicsImage(io, Rect(io->color())), kBlockDim);
   if (current_header_.gaborish != GaborishStrength::kOff) {
-    previous_pass_ = SlowGaborishInverse(previous_pass_, 0.92718927264540152);
+    previous_pass_ = GaborishInverse(previous_pass_, 0.92718927264540152);
   }
   num_passes_++;
 }
@@ -65,9 +65,10 @@ void SingleImageManager::RestoreOpsin(Image3F* img) {
 
 void SingleImageManager::GetColorCorrelationMap(const Image3F& opsin,
                                                 ColorCorrelationMap* cmap) {
-  if (num_passes_ == 0) {
+  if (!has_cmap_) {
     cmap_ = std::move(*cmap);
     FindBestColorCorrelationMap(opsin, &cmap_);
+    has_cmap_ = true;
   }
   *cmap = cmap_.Copy();
 }
@@ -77,9 +78,10 @@ void SingleImageManager::GetAcStrategy(float butteraugli_target,
                                        const Image3F& src, ThreadPool* pool,
                                        AcStrategyImage* ac_strategy,
                                        PikInfo* aux_out) {
-  if (num_passes_ == 0) {
+  if (!has_ac_strategy_) {
     FindBestAcStrategy(butteraugli_target, quant_field, src, pool,
                        &ac_strategy_, aux_out);
+    has_ac_strategy_ = true;
   }
   *ac_strategy = ac_strategy_.Copy();
 }
@@ -91,7 +93,7 @@ std::shared_ptr<Quantizer> SingleImageManager::GetQuantizer(
     const GroupHeader& header, const ColorCorrelationMap& cmap,
     const AcStrategyImage& ac_strategy, ImageF& quant_field, ThreadPool* pool,
     PikInfo* aux_out) {
-  if (num_passes_ == 0) {
+  if (!has_quantizer_) {
     PassHeader hdr = pass_header;
     if (use_adaptive_reconstruction_) {
       hdr.have_adaptive_reconstruction = true;
@@ -99,6 +101,7 @@ std::shared_ptr<Quantizer> SingleImageManager::GetQuantizer(
     quantizer_ = FindBestQuantizer(
         cparams, xsize_blocks, ysize_blocks, opsin_orig, opsin, noise_params,
         hdr, header, cmap, ac_strategy, quant_field, pool, aux_out, this);
+    has_quantizer_ = true;
   }
   return quantizer_;
 }
@@ -247,12 +250,14 @@ void SingleImageHandler::SaveQuantField(const ImageI& qf) {
 }
 
 const AcStrategyImage* SingleImageHandler::HintAcStrategy() {
-  if (manager_->num_passes_ == 0) return nullptr;
+  if (ac_strategy_hint_.xsize() == 0 || ac_strategy_hint_.ysize() == 0)
+    return nullptr;
   return &ac_strategy_hint_;
 }
 
 const ImageI* SingleImageHandler::HintQuantField() {
-  if (manager_->num_passes_ == 0) return nullptr;
+  if (quant_field_hint_.xsize() == 0 || quant_field_hint_.ysize() == 0)
+    return nullptr;
   return &quant_field_hint_;
 }
 
@@ -270,7 +275,7 @@ Status SingleImageHandler::GetPreviousPass(const ColorEncoding& color_encoding,
   io.SetFromImage(std::move(linear),
                   ctx.c_linear_srgb[color_encoding.IsGray()]);
   PIK_RETURN_IF_ERROR(io.TransformTo(color_encoding, pool));
-  // TODO(user): avoid this copy.
+  // TODO(veluca): avoid this copy.
   *out = CopyImage(io.color());
   return true;
 }

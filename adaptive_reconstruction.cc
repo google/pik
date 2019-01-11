@@ -90,7 +90,7 @@ struct ARStats {
 // coefficients of the original image (i.e. `correction`) to an interval whose
 // size depends on the values in the non-smoothed image. The interval is
 // scaled according to `interval_scale`.
-// TODO(user): cleanup by removing `bias`, and all the related methods
+// TODO(veluca): cleanup by removing `bias`, and all the related methods
 // everywhere.
 template <int c>
 SIMD_ATTR PIK_INLINE void AsymmetricClamp(

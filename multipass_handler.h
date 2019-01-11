@@ -20,13 +20,15 @@
 #include "quantizer.h"
 #include "status.h"
 
+// Defines how multi-pass images should be encoded and decoded.
+
 namespace pik {
 
 class MultipassManager;
 
-/* MultipassHandler is a child object of MultipassManager. It is bound to
-   specific group (see GetGroupHandler) and is used to perform operations over
-   that group region. */
+// MultipassHandler is a child object of MultipassManager. It is bound to
+// specific group (see GetGroupHandler) and is used to perform operations over
+// that group region.
 class MultipassHandler {
  public:
   virtual ~MultipassHandler() = default;
@@ -59,10 +61,10 @@ class MultipassHandler {
   Quantizer quantizer_{kBlockDim, 0, 0, 0};
 };
 
-/* MultipassManager holds information about passes and manages
-   MultipassHandlers. It is assumed that parallelization goes below the manager
-   level (at group level), so all the methods of MultipassManager should be
-   invoked from single thread. */
+// MultipassManager holds information about passes and manages
+// MultipassHandlers. It is assumed that parallelization goes below the manager
+// level (at group level), so all the methods of MultipassManager should be
+// invoked from a single thread.
 class MultipassManager {
  public:
   virtual ~MultipassManager() = default;

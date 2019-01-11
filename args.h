@@ -4,6 +4,8 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT.
 
+// Helpers for parsing command line arguments. No include guard needed.
+
 #include "pik_params.h"  // Override
 
 #include <stdio.h>

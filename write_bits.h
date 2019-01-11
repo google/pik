@@ -7,6 +7,8 @@
 #ifndef WRITE_BITS_H_
 #define WRITE_BITS_H_
 
+// Unbuffered writes to the bitstream using unaligned 64-bit stores.
+
 #include <stdint.h>
 #include <string.h>  // memcpy
 #include <cstddef>

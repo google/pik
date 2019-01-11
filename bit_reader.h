@@ -7,6 +7,8 @@
 #ifndef BIT_READER_H_
 #define BIT_READER_H_
 
+// Bounds-checked bit reader; 64-bit buffer with support for deferred refills.
+
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>  // memcpy

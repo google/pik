@@ -109,6 +109,7 @@ int main(int argc, char** argv) {
   }
 
   view.setWindowFlags(view.windowFlags() | Qt::Window);
+  view.setWindowState(Qt::WindowMaximized);
   view.show();
 
   return application.exec();

@@ -47,7 +47,7 @@ struct LossFunction {
     for (int i = 0; i < result.size(); i++) {
       sumsq += result[i] * result[i];
     }
-    // TODO(user): This is not operator norm, nor an upper bound: it's a
+    // TODO(robryk): This is not operator norm, nor an upper bound: it's a
     // lower bound on operator norm and an upper bound for operator norm * C(n),
     // where n is sum of filter sizes. We should actually optimize for operator
     // norm here.

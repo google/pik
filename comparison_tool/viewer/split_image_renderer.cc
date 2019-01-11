@@ -26,6 +26,7 @@ SplitImageRenderer::SplitImageRenderer(QWidget* const parent)
   setAutoFillBackground(true);
   setMouseTracking(true);
   setFocusPolicy(Qt::WheelFocus);
+  grabKeyboard();
 }
 
 void SplitImageRenderer::setLeftImage(QImage image) {
@@ -71,6 +72,10 @@ void SplitImageRenderer::keyPressEvent(QKeyEvent* const event) {
     case Qt::Key_Down:
       mode_ = SplitImageRenderingMode::MIDDLE;
       emit renderingModeChanged(mode_);
+      break;
+
+    case Qt::Key_Escape:
+      QCoreApplication::quit();
       break;
 
     case Qt::Key_ZoomIn:

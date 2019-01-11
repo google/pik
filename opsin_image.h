@@ -7,6 +7,8 @@
 #ifndef OPSIN_IMAGE_H_
 #define OPSIN_IMAGE_H_
 
+// Converts to XYB color space.
+
 #include <stdint.h>
 #include <cstdlib>
 #include <vector>

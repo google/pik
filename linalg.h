@@ -7,6 +7,8 @@
 #ifndef LINALG_H_
 #define LINALG_H_
 
+// Linear algebra.
+
 #include <stddef.h>
 #include <cmath>
 #include <vector>

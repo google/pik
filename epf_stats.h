@@ -7,6 +7,8 @@
 #ifndef EPF_STATS_H_
 #define EPF_STATS_H_
 
+// Statistics/debug info for epf.h.
+
 #include <stdio.h>
 #include <stdlib.h>
 

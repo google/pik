@@ -7,6 +7,8 @@
 #ifndef DCT_H_
 #define DCT_H_
 
+// Fast SIMD floating-point DCT8-32.
+
 #include <cmath>
 #include <cstring>
 #include "block.h"

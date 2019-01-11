@@ -4,7 +4,7 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT.
 
-// TODO(user): Lehmer coding takes up to 5% of the decoding time on very
+// TODO(veluca): Lehmer coding takes up to 5% of the decoding time on very
 // small images (32x32 pixels), and up to 1.5% for moderate-sized images (such
 // as set14/6.png). However, since computing and reversing Lehmer coding can be
 // seen as a variation of the Fisher-Yates shuffle, we can reduce the time

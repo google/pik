@@ -7,6 +7,8 @@
 #ifndef BUTTERAUGLI_DISTANCE_H_
 #define BUTTERAUGLI_DISTANCE_H_
 
+// Facade for returning Butteraugli distance between two images.
+
 #include "codec.h"
 
 namespace pik {

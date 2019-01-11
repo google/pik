@@ -4,12 +4,12 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT.
 
+#ifndef LEHMER_CODE_H_
+#define LEHMER_CODE_H_
+
 // Library to compute the Lehmer code of a permutation and to reconstruct the
 // permutation from its Lehmer code. For more details on Lehmer codes, see
 // http://en.wikipedia.org/wiki/Lehmer_code
-
-#ifndef LEHMER_CODE_H_
-#define LEHMER_CODE_H_
 
 #include <cstring>
 #include <memory>

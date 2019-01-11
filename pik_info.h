@@ -7,6 +7,8 @@
 #ifndef PIK_INFO_H_
 #define PIK_INFO_H_
 
+// Optional output information for debugging and analyzing size usage.
+
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -73,6 +75,7 @@ struct PikInfo {
       layers[i].Assimilate(victim.layers[i]);
     }
     num_blocks += victim.num_blocks;
+    num_dct4_blocks += victim.num_dct4_blocks;
     num_dct16_blocks += victim.num_dct16_blocks;
     num_dct32_blocks += victim.num_dct32_blocks;
     entropy_estimate += victim.entropy_estimate;
@@ -121,6 +124,7 @@ struct PikInfo {
   std::vector<PikImageSizeInfo> layers;
   size_t num_blocks = 0;
   // Number of blocks that use larger DCT. Only set in the encoder.
+  size_t num_dct4_blocks = 0;
   size_t num_dct16_blocks = 0;
   size_t num_dct32_blocks = 0;
   // Estimate of compressed size according to entropy-given lower bounds.

@@ -7,6 +7,8 @@
 #ifndef OPSIN_INVERSE_H_
 #define OPSIN_INVERSE_H_
 
+// XYB -> linear sRGB.
+
 #include "data_parallel.h"
 #include "image.h"
 #include "simd/simd.h"

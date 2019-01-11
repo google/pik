@@ -7,6 +7,8 @@
 #ifndef COMMON_H_
 #define COMMON_H_
 
+// Shared constants and helper functions.
+
 #include <stddef.h>
 #include <memory>  // unique_ptr
 

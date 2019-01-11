@@ -7,6 +7,8 @@
 #ifndef CACHE_ALIGNED_H_
 #define CACHE_ALIGNED_H_
 
+// Memory allocator with support for alignment + misalignment.
+
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>

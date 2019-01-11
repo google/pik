@@ -7,6 +7,8 @@
 #ifndef BLOCK_H_
 #define BLOCK_H_
 
+// Adapters for DCT input/output: from/to contiguous blocks or image rows.
+
 #include "common.h"
 #include "compiler_specific.h"
 #include "simd/simd.h"

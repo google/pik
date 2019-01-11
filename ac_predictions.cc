@@ -282,13 +282,13 @@ SIMD_ATTR void UpSample4x4BlurDCT(const Rect& dc_rect, const ImageF& img,
   constexpr size_t N = kBlockDim;
   constexpr size_t block_size = N * N;
 
-  // TODO(user): There's no good reason to compute the full DCT here. It's
+  // TODO(robryk): There's no good reason to compute the full DCT here. It's
   // fine if the output is in pixel space, we just need to zero out top 2x2
   // DCT coefficients. We can do that by computing a "partial DCT" and
   // subtracting (we can have two outputs: a positive pixel-space output and a
   // negative DCT-space output).
 
-  // TODO(user): Failing that, merge the blur and DCT into a single linear
+  // TODO(robryk): Failing that, merge the blur and DCT into a single linear
   // operation, if feasible.
 
   const size_t bx0 = dc_rect.x0();
@@ -345,7 +345,7 @@ SIMD_ATTR void UpSample4x4BlurDCT(const Rect& dc_rect, const ImageF& img,
         AcStrategy acs = ac_strategy_row[bx0 + bx];
         if (!acs.IsFirstBlock()) continue;
         // Skip high frequency predictions for identity-coded blocks.
-        // TODO(user): add a method to decide when to skip?
+        // TODO(veluca): add a method to decide when to skip?
         for (int idy = 0; idy < acs.covered_blocks_y(); idy++) {
           const float* PIK_RESTRICT row0d = blur_x.ConstRow(2 * (by + idy));
           const float* PIK_RESTRICT row1d = row0d + blur_stride;

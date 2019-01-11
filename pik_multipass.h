@@ -14,14 +14,11 @@
 #include "pik_params.h"
 #include "pik_pass.h"
 
-namespace pik {
+// Encodes a sequence of images as a PIK multipass image. During decoding, this
+// simply decodes passes as long as they are present. During encoding, this
+// encodes a pass and then decodes it to update the manager.
 
-// Encodes a stream of images as a PIK multipass image. The first pass, and then
-// other frames at an interval of kKeyFrameInterval passes, are stored as normal
-// PIK images. Other passes are stored as their difference (in xyb color space),
-// PIK-encoded, with respect to the previous pass. More in detail, after
-// encoding each frame, the encoder runs a step of the decoder and stores the
-// resulting image as a reference for the following pass.
+namespace pik {
 class PikMultipassEncoder {
  public:
   PikMultipassEncoder(const FileHeader& container, PaddedBytes* output,

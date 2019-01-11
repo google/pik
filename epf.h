@@ -7,6 +7,8 @@
 #ifndef EPF_H_
 #define EPF_H_
 
+// Fast SIMD edge preserving filter (adaptive, nonlinear).
+
 #include <stdio.h>
 #include "ac_strategy.h"
 #include "field_encodings.h"

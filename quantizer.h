@@ -23,6 +23,10 @@
 #include "robust_statistics.h"
 #include "simd/simd.h"
 
+// Quantizes DC and AC coefficients, with separate quantization tables according
+// to the quant_kind (which is currently computed from the AC strategy and the
+// block index inside that strategy).
+
 namespace pik {
 
 static const int kGlobalScaleDenom = 1 << 16;
@@ -38,14 +42,14 @@ static constexpr float kZeroBiasDefault[3] = {0.65f, 0.6f, 0.7f};
 // The residuals of AC coefficients that we quantize are not uniformly
 // distributed. Numerical experiments show that they have a distribution with
 // the "shape" of 1/(1+x^2) [up to some coefficients]. This means that the
-// expected value of a coefficient that gets quantized to a will not be a
+// expected value of a coefficient that gets quantized to x will not be x
 // itself, but (at least with reasonable approximation):
-// - 0 if a is 0
-// - a * (1 - kOneBias[c]) if a is 1 or -1
-// - a - kBiasNumerator/a otherwise
+// - 0 if x is 0
+// - x * (1 - kOneBias[c]) if x is 1 or -1
+// - x - kBiasNumerator/x otherwise
 // This follows from computing the distribution of the quantization bias, which
-// can be approximated fairly well by <constant>/a when |a| is at least two. If
-// |a| is 1, kZeroBias creates a different bias for each channel, thus we look
+// can be approximated fairly well by <constant>/x when |x| is at least two. If
+// |x| is 1, kZeroBias creates a different bias for each channel, thus we look
 // it up in the kOneBias LUT.
 static constexpr float kOneBias[3] = {
     0.05465007330715401f, 0.07005449891748593f, 0.049935103337343655f};

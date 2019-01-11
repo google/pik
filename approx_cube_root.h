@@ -7,6 +7,8 @@
 #ifndef APPROX_CUBE_ROOT_H_
 #define APPROX_CUBE_ROOT_H_
 
+// Fast cube root for XYB color space.
+
 #include <string.h>
 
 #include "compiler_specific.h"

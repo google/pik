@@ -28,7 +28,7 @@ namespace pik {
 
 namespace {
 
-// TODO(user): check if those upper bounds can be improved.
+// TODO(veluca): check if those upper bounds can be improved.
 const constexpr int kRleSymStart[2] = {10, 18};
 
 }  // namespace

@@ -48,7 +48,7 @@ size_t decodeVarInt(const uint8_t* input, size_t inputSize, size_t* pos) {
 }
 
 // Entropy encode with pik ANS
-// TODO(user): move this to ans_encode.h
+// TODO(lode): move this to ans_encode.h
 bool EntropyEncode(const uint8_t* data, size_t size,
                    std::vector<uint8_t>* result) {
   static const int kAlphabetSize = 256;
@@ -89,7 +89,7 @@ bool EntropyEncode(const uint8_t* data, size_t size,
 }
 
 // Entropy decode with pik ANS
-// TODO(user): move this to ans_decode.h
+// TODO(lode): move this to ans_decode.h
 bool EntropyDecode(const uint8_t* data, size_t size,
                    std::vector<uint8_t>* result) {
   static const int kContext = 0;
@@ -98,7 +98,7 @@ bool EntropyDecode(const uint8_t* data, size_t size,
   if (pos >= size) {
     return PIK_FAILURE("lossless8");
   }
-  // TODO(user): instead take expected decoded size as function parameter
+  // TODO(lode): instead take expected decoded size as function parameter
   if (num_symbols > 16777216) {
     // Avoid large allocations, we never expect this many symbols for
     // the limited group sizes.
@@ -134,7 +134,7 @@ static bool IsRLECompressible(const uint8_t* data, size_t size) {
   return true;
 }
 
-// TODO(user): avoid the copying between std::vector and data.
+// TODO(lode): avoid the copying between std::vector and data.
 // Entropy encode with pik ANS
 static bool EntropyEncode(const uint8_t* data, size_t size, size_t out_capacity,
                           uint8_t* out, size_t* out_size) {
@@ -210,7 +210,7 @@ static const int WITHSIGN = 7, NUMCONTEXTS = 8 + WITHSIGN + 2, kGroupSize = 512,
                  kGroupSize2plus = kGroupSize * kGroupSize * 9 / 8;
 static const int MAXERROR = 101, MaxSumErrors = MAXERROR * 7 + 1, NumRuns = 1;
 
-// TODO(user): split state variables needed for encoder from those for decoder
+// TODO(lode): split state variables needed for encoder from those for decoder
 //             and perform one-time global initialization where possible.
 struct State {
   const int PBits = 3,  // SET ME TO ZERO FOR A FASTER VERSION WITH NO ROUNDING!

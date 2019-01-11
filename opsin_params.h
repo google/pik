@@ -7,6 +7,8 @@
 #ifndef OPSIN_PARAMS_H_
 #define OPSIN_PARAMS_H_
 
+// Constants that define the XYB color space.
+
 #include <stdlib.h>
 
 #include "simd/simd.h"  // SIMD_ALIGN
