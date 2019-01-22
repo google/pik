@@ -12,7 +12,6 @@
 #include "data_parallel.h"
 #include "headers.h"
 #include "multipass_handler.h"
-#include "noise.h"
 #include "padded_bytes.h"
 #include "pik_info.h"
 #include "pik_params.h"

@@ -18,7 +18,7 @@ namespace pik {
 
 struct EpfParams {
   EpfParams();
-  constexpr const char* Name() const { return "EpfParams"; }
+  static const char* Name() { return "EpfParams"; }
 
   template <class Visitor>
   Status VisitFields(Visitor* PIK_RESTRICT visitor) {
@@ -86,8 +86,8 @@ struct EdgePreservingFilter {
   void operator()(const Image3F& in_guide, const Image3F& in,
                   const ImageI* ac_quant, float quant_scale,
                   const AcStrategyImage& ac_strategy,
-                  const EpfParams& epf_params, Image3F* smoothed,
-                  EpfStats* epf_stats) const;
+                  const EpfParams& epf_params, ThreadPool* pool,
+                  Image3F* smoothed, EpfStats* epf_stats) const;
 
   // Fixed sigma in [kMinSigma, kMaxSigma] for generating training data;
   // sigma == 0 skips filtering and copies "in" to "smoothed".

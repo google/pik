@@ -7,7 +7,7 @@
 #include "color_management.h"
 
 #include <mutex>
-#include "third_party/lcms/include/lcms2.h"
+#include "lcms2.h"
 
 #include "rational_polynomial.h"
 #include "simd/simd.h"

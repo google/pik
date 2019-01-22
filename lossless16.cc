@@ -15,7 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "entropy_coder.h"
+#include "lossless_entropy.h"
 
 namespace pik {
 
@@ -34,140 +34,6 @@ enum PlaneMethods {
   SubtractFirstPlane = 1,
   SubtractAverageOfTwoPlanes = 2,
 };
-
-size_t encodeVarInt(size_t value, uint8_t* output) {
-  size_t outputSize = 0;
-  // While more than 7 bits of data are left,
-  // store 7 bits and set the next byte flag
-  while (value > 127) {
-    // |128: Set the next byte flag
-    output[outputSize++] = ((uint8_t)(value & 127)) | 128;
-    // Remove the seven bits we just wrote
-    value >>= 7;
-  }
-  output[outputSize++] = ((uint8_t)value) & 127;
-  return outputSize;
-}
-
-size_t decodeVarInt(const uint8_t* input, size_t inputSize, size_t* pos) {
-  size_t i, ret = 0;
-  for (i = 0; *pos + i < inputSize && i < 10; ++i) {
-    ret |= uint64_t(input[*pos + i] & 127) << uint64_t(7 * i);
-    // If the next-byte flag is not set, stop
-    if ((input[*pos + i] & 128) == 0) break;
-  }
-  // TODO: Return a decoding error if i == 10.
-  *pos += i + 1;
-  return ret;
-}
-
-// Entropy encode with pik ANS
-// TODO(lode): move this to ans_encode.h
-bool EntropyEncode(const uint8_t* data, size_t size,
-                   std::vector<uint8_t>* result) {
-  static const int kAlphabetSize = 256;
-  static const int kContext = 0;
-
-  std::vector<int> histogram(kAlphabetSize, 0);
-  for (size_t i = 0; i < size; i++) {
-    histogram[data[i]]++;
-  }
-  size_t cost_bound =
-      1000 + 4 * size + 8 +
-      ((size_t)ANSPopulationCost(histogram.data(), kAlphabetSize, size) + 7) /
-          8;
-  result->resize(cost_bound, 0);
-
-  uint8_t* storage = result->data();
-  size_t pos = 0;
-
-  pos += encodeVarInt(size, storage + pos);
-
-  std::vector<ANSEncodingData> encoding_codes(1);
-  size_t bitpos = 0;
-  encoding_codes[0].BuildAndStore(&histogram[0], histogram.size(), &bitpos,
-                                  storage + pos);
-
-  std::vector<uint8_t> dummy_context_map;
-  dummy_context_map.push_back(0);  // only 1 histogram
-  ANSSymbolWriter writer(encoding_codes, dummy_context_map, &bitpos,
-                         storage + pos);
-  for (size_t i = 0; i < size; i++) {
-    writer.VisitSymbol(data[i], kContext);
-  }
-  writer.FlushToBitStream();
-  pos += ((bitpos + 7) >> 3);
-  result->resize(pos);
-
-  return true;
-}
-
-// Entropy decode with pik ANS
-// TODO(lode): move this to ans_decode.h
-bool EntropyDecode(const uint8_t* data, size_t size,
-                   std::vector<uint8_t>* result) {
-  static const int kAlphabetSize = 256;
-  static const int kContext = 0;
-  size_t pos = 0;
-  size_t num_symbols = decodeVarInt(data, size, &pos);
-  if (pos >= size) {
-    return PIK_FAILURE("lossless16");
-  }
-  // TODO(lode): instead take expected decoded size as function parameter
-  if (num_symbols > 16777216) {
-    // Avoid large allocations, we never expect this many symbols for
-    // the limited group sizes.
-    return PIK_FAILURE("lossless16");
-  }
-
-  BitReader br(data + pos, size - pos);
-  ANSCode codes;
-  if (!DecodeANSCodes(1, kAlphabetSize, &br, &codes)) {
-    return PIK_FAILURE("lossless16");
-  }
-
-  result->resize(num_symbols);
-  ANSSymbolReader reader(&codes);
-  for (size_t i = 0; i < num_symbols; i++) {
-    br.FillBitBuffer();
-    int read_symbol = reader.ReadSymbol(kContext, &br);
-    (*result)[i] = read_symbol;
-  }
-  if (!reader.CheckANSFinalState()) {
-    return PIK_FAILURE("lossless16");
-  }
-
-  return true;
-}
-
-// TODO(lode): avoid the copying between std::vector and data.
-// Entropy encode with pik ANS
-static size_t EntropyEncode(const uint8_t* data, size_t size, uint8_t* out,
-                            size_t out_capacity) {
-  std::vector<uint8_t> result;
-  if (!EntropyEncode(data, size, &result)) {
-    return 0;  // Encoding error
-  }
-  if (result.size() > out_capacity) {
-    return 0;  // Error: not enough capacity
-  }
-  memcpy(out, result.data(), result.size());
-  return result.size();
-}
-
-// Entropy decode with pik ANS
-static size_t EntropyDecode(const uint8_t* data, size_t size, uint8_t* out,
-                            size_t out_capacity) {
-  std::vector<uint8_t> result;
-  if (!EntropyDecode(data, size, &result)) {
-    return 0;  // Decoding error
-  }
-  if (result.size() > out_capacity) {
-    return 0;  // Error: not enough capacity
-  }
-  memcpy(out, result.data(), result.size());
-  return result.size();
-}
 
 // TODO(lode): split state variables needed for encoder from those for decoder
 //             and perform one-time global initialization where possible.
@@ -304,15 +170,21 @@ struct State {
     return true;
   }
 
+  // TODO(lode): move this to lossless_entropy.cc
   bool compressWithEntropyCode(size_t* pos, size_t S, uint8_t* compressedBuf) {
+    if (S == 0) {
+      *pos += encodeVarInt(0, &compressedBuf[*pos]);
+      return true;
+    }
     uint8_t* src = &compressedBuf[*pos + 8];
     size_t cs;
     if (IsRLE(src, S)) {
       cs = 1;  // use RLE encoding instead
     } else {
-      cs = EntropyEncode(src, S, &compressedDataTmpBuf[0],
-                         sizeof(compressedDataTmpBuf));
-      if (!cs) return PIK_FAILURE("lossless16");  // error
+      if (!MaybeEntropyEncode(src, S, sizeof(compressedDataTmpBuf),
+                              &compressedDataTmpBuf[0], &cs)) {
+        return PIK_FAILURE("lossless16 entropy encode");
+      }
     }
     if (cs >= S) cs = 0;  // EntropyCode worse than original, use memcpy.
     *pos += encodeVarInt(cs <= 1 ? (S - 1) * 3 + 1 + cs : cs * 3,
@@ -327,29 +199,39 @@ struct State {
     return true;
   }
 
-  // Returns decompressed size, or 0 on error.
-  size_t decompressWithEntropyCode(uint8_t* dst, size_t dst_capacity,
-                                   const uint8_t* src, size_t src_capacity,
-                                   size_t cs, size_t* pos) {
-    size_t mode = cs % 3, ds;
+  // TODO(lode): move this to lossless_entropy.cc
+  // ds = decompressed size output
+  bool decompressWithEntropyCode(uint8_t* dst, size_t dst_capacity,
+                                 const uint8_t* src, size_t src_capacity,
+                                 size_t* ds, size_t* pos) {
+    size_t cs = decodeVarInt(src, src_capacity, pos);
+    if (cs == 0) {
+      *ds = 0;
+      return true;
+    }
+    size_t mode = cs % 3;
     cs /= 3;
     if (mode == 2) {
-      if (*pos >= src_capacity) return 0;
-      if (cs + 1 > dst_capacity) return 0;
+      if (*pos >= src_capacity) return PIK_FAILURE("entropy decode failed");
+      if (cs + 1 > dst_capacity) return PIK_FAILURE("entropy decode failed");
       memset(dst, src[(*pos)++], ++cs);
-      return cs;
-    }
-    if (mode == 1) {
-      if (*pos + cs + 1 > src_capacity) return 0;
-      if (cs + 1 > dst_capacity) return 0;
+      *ds = cs;
+    } else if (mode == 1) {
+      if (*pos + cs + 1 > src_capacity)
+        return PIK_FAILURE("entropy decode failed");
+      if (cs + 1 > dst_capacity) return PIK_FAILURE("entropy decode failed");
       memcpy(dst, &src[*pos], ++cs);
       *pos += cs;
-      return cs;
+      *ds = cs;
+    } else {
+      if (*pos + cs > src_capacity) return PIK_FAILURE("entropy decode failed");
+      if (!MaybeEntropyDecode(&src[*pos], cs, dst_capacity, dst, ds)) {
+        return PIK_FAILURE("entropy decode failed");
+      }
+      *pos += cs;
     }
-    if (*pos + cs > src_capacity) return 0;
-    ds = EntropyDecode(&src[*pos], cs, dst, dst_capacity);
-    *pos += cs;
-    return ds;
+
+    return true;
   }
 
 #define Update_Errors_0_1_2_3                                  \
@@ -455,6 +337,7 @@ struct State {
           for (int i = 0; i < NUMCONTEXTS_1; ++i) {
             size_t S = esize[i];
             if (S == 0) {
+              // This means uncompressed size 0.
               pos += encodeVarInt(0, &compressedData[pos]);
               continue;
             }
@@ -542,20 +425,20 @@ struct State {
             decodeVarInt(compressedData, compressedSize, &pos);
           }
           for (int i = 0; i < NUMCONTEXTS_1; ++i) {
-            size_t cs = decodeVarInt(compressedData, compressedSize, &pos), ds,
-                   ds1, ds2, ds3;
-            if (cs == 0) continue;
+            size_t ds, ds1, ds2, ds3;
             // first, decompress MSBs (most significant bytes)
-            ds1 = decompressWithEntropyCode((uint8_t*)&edata[i][0],
-                                            maxDecodedSize, compressedData,
-                                            compressedSize, cs, &pos);
-            if (!ds1) return PIK_FAILURE("lossless16");
-
+            if (!decompressWithEntropyCode((uint8_t*)&edata[i][0],
+                                           maxDecodedSize, compressedData,
+                                           compressedSize, &ds1, &pos)) {
+              return PIK_FAILURE("lossless16");
+            }
+            if (!ds1) continue;
             if (i > 9 || ds1 < 128) {  // All LSBs at once
-              cs = decodeVarInt(compressedData, compressedSize, &pos);
-              ds2 = decompressWithEntropyCode(&compressedDataTmpBuf[0],
-                                              maxDecodedSize2, compressedData,
-                                              compressedSize, cs, &pos);
+              if (!decompressWithEntropyCode(&compressedDataTmpBuf[0],
+                                             maxDecodedSize2, compressedData,
+                                             compressedSize, &ds2, &pos)) {
+                return PIK_FAILURE("lossless16");
+              }
               if (ds1 != ds2) return PIK_FAILURE("lossless16");
               uint16_t* dst = &edata[i][0];
               uint8_t* p = (uint8_t*)dst;
@@ -572,20 +455,20 @@ struct State {
                   ++ds2;
 
               if (ds2) {  // LSBs such that MSB==0
-                cs = decodeVarInt(compressedData, compressedSize, &pos);
-                ds = decompressWithEntropyCode(&compressedDataTmpBuf[0],
+                if (!decompressWithEntropyCode(&compressedDataTmpBuf[0],
                                                maxDecodedSize2, compressedData,
-                                               compressedSize, cs, &pos);
-                if (!ds) return PIK_FAILURE("lossless16");
+                                               compressedSize, &ds, &pos)) {
+                  return PIK_FAILURE("lossless16");
+                }
                 if (ds != ds2) return PIK_FAILURE("lossless16");
               }
 
               if (ds3) {  // LSBs such that MSB!=0
-                cs = decodeVarInt(compressedData, compressedSize, &pos);
-                ds = decompressWithEntropyCode(&compressedDataTmpBuf[ds2],
+                if (!decompressWithEntropyCode(&compressedDataTmpBuf[ds2],
                                                maxDecodedSize2, compressedData,
-                                               compressedSize, cs, &pos);
-                if (!ds) return PIK_FAILURE("lossless16");
+                                               compressedSize, &ds, &pos)) {
+                  return PIK_FAILURE("lossless16");
+                }
                 if (ds != ds3) return PIK_FAILURE("lossless16");
               }
               uint8_t *p2 = &compressedDataTmpBuf[ds2 - 1],
@@ -695,13 +578,14 @@ struct State {
     memset(esize, 0, sizeof(esize));
     size_t decompressedSize = 0;  // is used only for the assert()
     for (int i = 0; i < NUMCONTEXTS_3; ++i) {
-      size_t cs = decodeVarInt(compressedData, compressedSize, &pos), ds, ds1,
-             ds2, ds3;
-      if (cs == 0) continue;
+      size_t ds, ds1, ds2, ds3;
       // first, decompress MSBs (most significant bytes)
-      ds1 = decompressWithEntropyCode((uint8_t*)&edata[i][0], maxDecodedSize,
-                                      compressedData, compressedSize, cs, &pos);
-      if (!ds1) return PIK_FAILURE("lossless16");
+      if (!decompressWithEntropyCode((uint8_t*)&edata[i][0], maxDecodedSize,
+                                     compressedData, compressedSize, &ds1,
+                                     &pos)) {
+        return PIK_FAILURE("lossless16");
+      }
+      if (!ds1) continue;
       uint32_t freq[256];
       memset(freq, 0, sizeof(freq));
       uint16_t* dst = &edata[i][0];
@@ -709,10 +593,11 @@ struct State {
       for (int j = 0; j < ds1; ++j) ++freq[p[j]];
 
       if (ds1 < 120 || freq[0] < 120) {  // All LSBs at once
-        cs = decodeVarInt(compressedData, compressedSize, &pos);
-        ds2 =
-            decompressWithEntropyCode(&compressedDataTmpBuf[0], maxDecodedSize2,
-                                      compressedData, compressedSize, cs, &pos);
+        if (!decompressWithEntropyCode(&compressedDataTmpBuf[0],
+                                       maxDecodedSize2, compressedData,
+                                       compressedSize, &ds2, &pos)) {
+          return PIK_FAILURE("lossless16");
+        }
         if (ds1 != ds2) return PIK_FAILURE("lossless16");
         for (int j = ds1 - 1; j >= 0; --j)
           dst[j] = p[j] * 256 + compressedDataTmpBuf[j];  // MSB*256 + LSB
@@ -721,19 +606,20 @@ struct State {
         ds2 = freq[0] + (c == 2 ? freq[1] : 0);
         ds3 = ds1 - ds2;
         if (ds2) {  // LSBs such that MSB==0
-          cs = decodeVarInt(compressedData, compressedSize, &pos);
-          ds = decompressWithEntropyCode(&compressedDataTmpBuf[0],
+          if (!decompressWithEntropyCode(&compressedDataTmpBuf[0],
                                          maxDecodedSize2, compressedData,
-                                         compressedSize, cs, &pos);
-          if (!ds) return PIK_FAILURE("lossless16");
+                                         compressedSize, &ds, &pos)) {
+            return PIK_FAILURE("lossless16");
+          }
           if (ds != ds2) return PIK_FAILURE("lossless16");
         }
 
         if (ds3) {  // LSBs such that MSB!=0
-          cs = decodeVarInt(compressedData, compressedSize, &pos);
-          ds = decompressWithEntropyCode(&compressedDataTmpBuf[ds2],
+          if (!decompressWithEntropyCode(&compressedDataTmpBuf[ds2],
                                          maxDecodedSize2, compressedData,
-                                         compressedSize, cs, &pos);
+                                         compressedSize, &ds, &pos)) {
+            return PIK_FAILURE("lossless16");
+          }
           if (!ds) return PIK_FAILURE("lossless16");
           if (ds != ds3) return PIK_FAILURE("lossless16");
         }
@@ -815,6 +701,8 @@ struct State {
     for (int run = 0; run < NumRuns; ++run) {
       size_t pos = pos0;
       if (xsize * ysize > 256 * 256) {  // TODO: smarter decision making here
+        if (pos >= compressedSize)
+          return PIK_FAILURE("lossless16: out of bounds");
         const uint8_t* p = &compressedData[pos];
         imageMethod = *p++;
         if (imageMethod) {
@@ -1050,6 +938,7 @@ struct State {
       size_t c = 0, S = esize[i];
 
       if (S == 0) {
+        // This means uncompressed size 0.
         pos += encodeVarInt(0, &compressedOutput[pos]);
         continue;
       }

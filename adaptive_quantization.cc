@@ -134,7 +134,7 @@ SIMD_ATTR void DctModulation(const ImageF& xyb, ImageF* out) {
         const float scale = dct_rescale[i];
         double v = dct[i] * scale;
         v *= v;
-        static const double kPow = 2.0342324068208075;
+        static const double kPow = 1.923527252414339;
         double q = pow(kQuant64[k], kPow);
         entropyQL2 += q * v;
         v *= v;
@@ -146,11 +146,11 @@ SIMD_ATTR void DctModulation(const ImageF& xyb, ImageF* out) {
       entropyQL4 = std::sqrt(std::sqrt(entropyQL4));
       entropyQL8 = std::pow(entropyQL8, 0.125);
       static const double mulQL2 = -0.00072185944355851461;
-      static const double mulQL4 = -1.2720066904790563;
-      static const double mulQL8 = 0.67396125167218279;
+      static const double mulQL4 = -1.256628388930916;
+      static const double mulQL8 = 0.18899851100262555;
       double v =
           mulQL2 * entropyQL2 + mulQL4 * entropyQL4 + mulQL8 * entropyQL8;
-      double kMul = 1.2932505590583181;
+      double kMul = 1.2840706752955837;
       row_out[x / 8] += kMul * v;
     }
   }
@@ -178,7 +178,7 @@ void RangeModulation(const ImageF& xyb, ImageF* out) {
         }
       }
       float range = maxval - minval;
-      static const double mul = 0.29271759124131524;
+      static const double mul = 0.60277139175670691;
       row_out[x / 8] += mul * range;
     }
   }
@@ -262,7 +262,7 @@ static double RatioOfCubicRootToSimpleGamma(double v) {
   return v / SimpleGamma(v * v * v);
 }
 
-ImageF DiffPrecompute(const ImageF& xyb, float cutoff) {
+ImageF DiffPrecompute(const Image3F& xyb, float cutoff) {
   PROFILER_ZONE("aq DiffPrecompute");
   PIK_ASSERT(xyb.xsize() > 1);
   PIK_ASSERT(xyb.ysize() > 1);
@@ -293,9 +293,9 @@ ImageF DiffPrecompute(const ImageF& xyb, float cutoff) {
     } else {
       y1 = y;
     }
-    const float* PIK_RESTRICT row_in = xyb.Row(y);
-    const float* PIK_RESTRICT row_in1 = xyb.Row(y1);
-    const float* PIK_RESTRICT row_in2 = xyb.Row(y2);
+    const float* PIK_RESTRICT row_in = xyb.PlaneRow(1, y);
+    const float* PIK_RESTRICT row_in1 = xyb.PlaneRow(1, y1);
+    const float* PIK_RESTRICT row_in2 = xyb.PlaneRow(1, y2);
     float* const PIK_RESTRICT row_out = result.Row(y);
     for (size_t x = 0; x + 1 < xyb.xsize(); ++x) {
       if (x + 1 < xyb.xsize()) {
@@ -332,7 +332,7 @@ ImageF DiffPrecompute(const ImageF& xyb, float cutoff) {
   // Last row.
   {
     const size_t y = xyb.ysize() - 1;
-    const float* const PIK_RESTRICT row_in = xyb.Row(y);
+    const float* const PIK_RESTRICT row_in = xyb.PlaneRow(1, y);
     float* const PIK_RESTRICT row_out = result.Row(y);
     for (size_t x = 0; x + 1 < xyb.xsize(); ++x) {
       const size_t x2 = x + 1;
@@ -395,7 +395,7 @@ ImageF Expand(const ImageF& img, size_t out_xsize, size_t out_ysize) {
 }
 
 ImageF ComputeMask(const ImageF& diffs) {
-  static const float kBase = 1.1352029431638126;
+  static const float kBase = 1.1786692762035098;
   static const float kMul1 = 0.011134087946508579;
   static const float kOffset1 = 0.0070057082516685083;
   static const float kMul2 = -0.20545785980711334;
@@ -585,8 +585,6 @@ Image3F RoundtripImage(const CompressParams& cparams,
   PassDecCache pass_dec_cache;
   pass_dec_cache.ac_strategy = ac_strategy.Copy();
   PIK_ASSERT(opsin.ysize() % kBlockDim == 0);
-  pass_dec_cache.biases =
-      Image3F(opsin.xsize() * kBlockDim, opsin.ysize() / kBlockDim);
   pass_dec_cache.raw_quant_field = CopyImage(quantizer.RawQuantField());
 
   const size_t xsize_groups = DivCeil(opsin.xsize(), kGroupWidth);
@@ -599,9 +597,6 @@ Image3F RoundtripImage(const CompressParams& cparams,
 
   pass_dec_cache.dc = CopyImage(pass_enc_cache.dc_dec);
   pass_dec_cache.gradient = std::move(pass_enc_cache.gradient);
-  if (pass_header.flags & PassHeader::kGradientMap) {
-    ApplyGradientMap(pass_dec_cache.gradient, quantizer, &pass_dec_cache.dc);
-  }
 
   std::vector<MultipassHandler*> handlers(num_groups);
   for (size_t group_index = 0; group_index < num_groups; ++group_index) {
@@ -637,28 +632,15 @@ Image3F RoundtripImage(const CompressParams& cparams,
     InitializeDecCache(pass_dec_cache, group_rect, &dec_cache);
     DequantImageAC(quant, cmap, cache.ac, pool, &dec_cache, &pass_dec_cache,
                    group_rect);
-    Image3F recon =
-        ReconOpsinImage(pass_header, header, quant, block_group_rect,
-                        &dec_cache, &pass_dec_cache);
-    for (size_t c = 0; c < 3; c++) {
-      for (size_t y = 0; y < group_rect.ysize(); y++) {
-        const float* PIK_RESTRICT row = recon.ConstPlaneRow(c, y);
-        float* PIK_RESTRICT output_row = group_rect.PlaneRow(&idct, c, y);
-        for (size_t x = 0; x < group_rect.xsize(); x++) {
-          output_row[x] = row[x];
-        }
-      }
-    }
+    ReconOpsinImage(pass_header, header, quant, block_group_rect, &dec_cache,
+                    &pass_dec_cache, &idct, group_rect);
   };
   RunOnPool(pool, 0, num_groups, process_group, "PixelsToPikPass");
 
   multipass_manager->RestoreOpsin(&idct);
-  multipass_manager->UpdateBiases(&pass_dec_cache.biases);
-  idct = FinalizePassDecoding(std::move(idct), pass_header, quantizer,
-                              &pass_dec_cache);
-
   Image3F linear(opsin_orig.xsize(), opsin_orig.ysize());
-  OpsinToLinear(idct, pool, &linear);
+  FinalizePassDecoding(std::move(idct), pass_header, NoiseParams(), quantizer,
+                       pool, &pass_dec_cache, &linear);
   return linear;
 }
 
@@ -689,6 +671,17 @@ void FindBestQuantization(const Image3F& opsin_orig, const Image3F& opsin_arg,
   ImageF initial_quant_field = CopyImage(quant_field);
   ImageF last_quant_field = CopyImage(initial_quant_field);
   ImageF last_tile_distmap_localopt;
+
+  float initial_qf_min, initial_qf_max;
+  ImageMinMax(initial_quant_field, &initial_qf_min, &initial_qf_max);
+  float initial_qf_ratio = initial_qf_max / initial_qf_min;
+  float qf_max_deviation_low = std::sqrt(250 / initial_qf_ratio);
+  float asymmetry = 2;
+  if (qf_max_deviation_low < asymmetry) asymmetry = qf_max_deviation_low;
+  float qf_lower = initial_qf_min / (asymmetry * qf_max_deviation_low);
+  float qf_higher = initial_qf_max * (qf_max_deviation_low / asymmetry);
+
+  PIK_ASSERT(qf_higher / qf_lower < 253);
 
   constexpr int kOriginalComparisonRound = 5;
   constexpr float kMaximumDistanceIncreaseFactor = 1.015;
@@ -786,6 +779,8 @@ void FindBestQuantization(const Image3F& opsin_orig, const Image3F& opsin_arg,
           double clamp = kOneMinusInitMul * row_q[x] + kInitMul * row_init[x];
           if (row_q[x] < clamp) {
             row_q[x] = clamp;
+            if (row_q[x] > qf_higher) row_q[x] = qf_higher;
+            if (row_q[x] < qf_lower) row_q[x] = qf_lower;
           }
         }
       }
@@ -808,6 +803,8 @@ void FindBestQuantization(const Image3F& opsin_orig, const Image3F& opsin_arg,
           if (diff >= 1.0f) {
             row_q[x] *= diff;
           }
+          if (row_q[x] > qf_higher) row_q[x] = qf_higher;
+          if (row_q[x] < qf_lower) row_q[x] = qf_lower;
         }
       }
     } else {
@@ -821,6 +818,8 @@ void FindBestQuantization(const Image3F& opsin_orig, const Image3F& opsin_arg,
           } else {
             row_q[x] *= diff;
           }
+          if (row_q[x] > qf_higher) row_q[x] = qf_higher;
+          if (row_q[x] < qf_lower) row_q[x] = qf_lower;
         }
       }
     }
@@ -960,9 +959,7 @@ void FindBestQuantizationHQ(
   quantizer->SetQuantField(best_quant_dc, QuantField(best_quant_field));
 }
 
-}  // namespace
-
-ImageF AdaptiveQuantizationMap(const ImageF& img, const ImageF& img_ac,
+ImageF AdaptiveQuantizationMap(const Image3F& img, const ImageF& img_ac,
                                const CompressParams& cparams) {
   PROFILER_ZONE("aq AdaptiveQuantMap");
   static const int kResolution = 8;
@@ -1009,6 +1006,8 @@ ImageF IntensityAcEstimate(const ImageF& image, float multiplier,
   return retval;
 }
 
+}  // namespace
+
 ImageF InitialQuantField(double butteraugli_target, double intensity_multiplier,
                          const Image3F& opsin_orig,
                          const CompressParams& cparams, ThreadPool* pool,
@@ -1017,19 +1016,19 @@ ImageF InitialQuantField(double butteraugli_target, double intensity_multiplier,
   const float quant_ac = intensity_multiplier3 * kAcQuant / butteraugli_target;
   ImageF intensity_ac =
       IntensityAcEstimate(opsin_orig.Plane(1), intensity_multiplier3, pool);
-  ImageF quant_field = ScaleImage(
-      quant_ac * (float)rescale,
-      AdaptiveQuantizationMap(opsin_orig.Plane(1), intensity_ac, cparams));
+  ImageF quant_field =
+      ScaleImage(quant_ac * (float)rescale,
+                 AdaptiveQuantizationMap(opsin_orig, intensity_ac, cparams));
   return quant_field;
 }
 
 std::shared_ptr<Quantizer> FindBestQuantizer(
     const CompressParams& cparams, size_t xsize_blocks, size_t ysize_blocks,
     const Image3F& opsin_orig, const Image3F& opsin,
-    const NoiseParams& noise_params, const PassHeader& pass_header,
-    const GroupHeader& header, const ColorCorrelationMap& cmap,
-    const AcStrategyImage& ac_strategy, ImageF& quant_field, ThreadPool* pool,
-    PikInfo* aux_out, MultipassManager* multipass_manager, double rescale) {
+    const PassHeader& pass_header, const GroupHeader& header,
+    const ColorCorrelationMap& cmap, const AcStrategyImage& ac_strategy,
+    ImageF& quant_field, ThreadPool* pool, PikInfo* aux_out,
+    MultipassManager* multipass_manager, double rescale) {
   int quant_template = kQuantDefault;
   std::shared_ptr<Quantizer> quantizer = std::make_shared<Quantizer>(
       kBlockDim, quant_template, xsize_blocks, ysize_blocks);

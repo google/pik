@@ -12,73 +12,80 @@
 #include <string>
 
 #include "status.h"
+#include "codec.h"
 
 namespace pik {
 
-static inline bool ParseOverride(const int argc, char* argv[], int* i,
-                                 Override* out) {
-  *i += 1;
-  if (*i >= argc) {
-    fprintf(stderr, "Expected an override argument.\n");
-    return PIK_FAILURE("Args");
-  }
-
-  const std::string arg(argv[*i]);
-  if (arg == "1") {
+static inline bool ParseOverride(const char* arg, Override* out) {
+  const std::string s_arg(arg);
+  if (s_arg == "1") {
     *out = Override::kOn;
     return true;
   }
-  if (arg == "0") {
+  if (s_arg == "0") {
     *out = Override::kOff;
     return true;
   }
-  fprintf(stderr, "Invalid flag, must be 0 or 1\n");
+  fprintf(stderr, "Invalid flag, %s must be 0 or 1\n", arg);
   return PIK_FAILURE("Args");
 }
 
-static inline bool ParseUnsigned(const int argc, char* argv[], int* i,
-                                 size_t* out) {
-  *i += 1;
-  if (*i >= argc) {
-    fprintf(stderr, "Expected an unsigned integer argument.\n");
-    return PIK_FAILURE("Args");
-  }
-
+static inline bool ParseUnsigned(const char* arg, size_t* out) {
   char* end;
-  *out = static_cast<size_t>(strtoull(argv[*i], &end, 0));
+  *out = static_cast<size_t>(strtoull(arg, &end, 0));
   if (end[0] != '\0') {
-    fprintf(stderr, "Unable to interpret as unsigned integer: %s.\n", argv[*i]);
+    fprintf(stderr, "Unable to interpret as unsigned integer: %s.\n", arg);
     return PIK_FAILURE("Args");
   }
   return true;
 }
 
-static inline bool ParseFloat(const int argc, char* argv[], int* i,
-                              float* out) {
-  *i += 1;
-  if (*i >= argc) {
-    fprintf(stderr, "Expected a floating-point argument.\n");
+static inline bool ParseGaborishStrength(const char* arg,
+                                         GaborishStrength* out) {
+  size_t strength;
+  if (!ParseUnsigned(arg, &strength)) return false;
+  if (strength >= static_cast<size_t>(GaborishStrength::kMaxValue)) {
+    fprintf(stderr, "Invalid GaborishStrenght value: %s.\n", arg);
     return PIK_FAILURE("Args");
   }
+  *out = static_cast<GaborishStrength>(strength);
+  return true;
+}
 
+static inline bool ParseFloat(const char* arg, float* out) {
   char* end;
-  *out = static_cast<float>(strtod(argv[*i], &end));
+  *out = static_cast<float>(strtod(arg, &end));
   if (end[0] != '\0') {
-    fprintf(stderr, "Unable to interpret as double: %s.\n", argv[*i]);
+    fprintf(stderr, "Unable to interpret as double: %s.\n", arg);
     return PIK_FAILURE("Args");
   }
   return true;
 }
 
-static inline bool ParseString(const int argc, char* argv[], int* i,
-                               std::string* out) {
-  *i += 1;
-  if (*i >= argc) {
-    fprintf(stderr, "Expected a string argument.\n");
-    return PIK_FAILURE("Args");
+static inline bool ParseAndAppendKeyValue(const char* arg, DecoderHints* out) {
+  const char* eq = strchr(arg, '=');
+  if (!eq) {
+    fprintf(stderr, "Expected argument as 'key=value' but received '%s'\n",
+            arg);
+    return false;
   }
+  std::string key(arg, eq);
+  out->Add(key, std::string(eq + 1));
+  return true;
+}
 
-  out->assign(argv[*i]);
+static inline bool ParseString(const char* arg, std::string* out) {
+  out->assign(arg);
+  return true;
+}
+
+static inline bool ParseCString(const char* arg, const char** out) {
+  *out = arg;
+  return true;
+}
+
+static inline bool SetBooleanTrue(bool* out) {
+  *out = true;
   return true;
 }
 

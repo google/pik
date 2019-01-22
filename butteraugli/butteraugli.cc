@@ -924,9 +924,9 @@ void ButteraugliComparator::DiffmapPsychoImage(const PsychoImage& pi1,
     return;
   }
   Image3F block_diff_dc(xsize_, ysize_);
-  FillImage(0.0f, &block_diff_dc);
+  ZeroFillImage(&block_diff_dc);
   Image3F block_diff_ac(xsize_, ysize_);
-  FillImage(0.0f, &block_diff_ac);
+  ZeroFillImage(&block_diff_ac);
   static const double wUhfMalta = 6.03816489582;
   static const double norm1Uhf = 59.752242104;
   MaltaDiffMap(pi0_.uhf[1], pi1.uhf[1], wUhfMalta * hf_asymmetry_,

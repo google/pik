@@ -89,8 +89,8 @@ struct CompressParams {
 
   // Input and output file name. Will be used to provide pluggable saliency
   // extractor with paths.
-  std::string file_in;
-  std::string file_out;
+  const char* file_in = nullptr;
+  const char* file_out = nullptr;
 
   // Whether to keep temporary files (used e.g. to communicate with external
   // saliency extractor).
@@ -162,7 +162,7 @@ struct DecompressParams {
 
 // Enable features for distances >= these thresholds:
 static constexpr float kMinButteraugliForNoise = 99.0f;     // disabled
-static constexpr float kMinButteraugliForGradient = 99.0f;  // disabled
+static constexpr float kMinButteraugliForGradient = 1.85f;
 static constexpr float kMinButteraugliForAdaptiveReconstruction = 0.0f;
 
 }  // namespace pik

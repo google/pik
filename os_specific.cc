@@ -154,20 +154,22 @@ Status SetThreadAffinity(ThreadAffinity* affinity) {
 std::vector<int> AvailableCPUs() {
   std::vector<int> cpus;
   cpus.reserve(64);
-  const ThreadAffinity* const affinity = OriginalThreadAffinity();
 #if OS_WIN
+  const ThreadAffinity* const affinity = OriginalThreadAffinity();
   for (int cpu = 0; cpu < 64; ++cpu) {
     if (affinity->mask & (1ULL << cpu)) {
       cpus.push_back(cpu);
     }
   }
 #elif OS_LINUX
+  const ThreadAffinity* const affinity = OriginalThreadAffinity();
   for (size_t cpu = 0; cpu < sizeof(cpu_set_t) * 8; ++cpu) {
     if (CPU_ISSET(cpu, &affinity->set)) {
       cpus.push_back(cpu);
     }
   }
 #elif OS_FREEBSD
+  const ThreadAffinity* const affinity = OriginalThreadAffinity();
   for (size_t cpu = 0; cpu < sizeof(cpuset_t) * 8; ++cpu) {
     if (CPU_ISSET(cpu, &affinity->set)) {
       cpus.push_back(cpu);

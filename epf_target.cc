@@ -561,18 +561,19 @@ class WeightedSum {
                                             const size_t y,
                                             Image3F* SIMD_RESTRICT out) {
     for (size_t iy = 0; iy < kBlockDim; ++iy) {
-      CopyBlockRow(in.Plane(0), x, y + iy, out->MutablePlane(0));
-      CopyBlockRow(in.Plane(1), x, y + iy, out->MutablePlane(1));
-      CopyBlockRow(in.Plane(2), x, y + iy, out->MutablePlane(2));
+      CopyBlockRow(in, 0, x, y + iy, out);
+      CopyBlockRow(in, 1, x, y + iy, out);
+      CopyBlockRow(in, 2, x, y + iy, out);
     }
   }
 
  private:
-  static SIMD_INLINE void CopyBlockRow(const ImageF& in, const size_t x,
-                                       const size_t y,
-                                       ImageF* SIMD_RESTRICT out) {
-    const float* SIMD_RESTRICT in_row = in.ConstRow(y + kBorder) + kBorder;
-    float* SIMD_RESTRICT out_row = out->Row(y);
+  static SIMD_INLINE void CopyBlockRow(const Image3F& in, const size_t c,
+                                       const size_t x, const size_t y,
+                                       Image3F* SIMD_RESTRICT out) {
+    const float* SIMD_RESTRICT in_row =
+        in.ConstPlaneRow(c, y + kBorder) + kBorder;
+    float* SIMD_RESTRICT out_row = out->PlaneRow(c, y);
     memcpy(out_row + x, in_row + x, kBlockDim * sizeof(*in_row));
   }
 
@@ -1015,7 +1016,7 @@ SIMD_ATTR void MinMax(const Image3F& in, ThreadPool* pool,
 // each pixel.
 SIMD_ATTR Image3B MakeGuide(const Image3F& padded,
                             const std::array<float, 3>& min,
-                            const std::array<float, 3>& max) {
+                            const std::array<float, 3>& max, ThreadPool* pool) {
   const size_t xsize = padded.xsize();
   const size_t ysize = padded.ysize();
   Image3B guide(xsize, ysize);
@@ -1024,34 +1025,37 @@ SIMD_ATTR Image3B MakeGuide(const Image3F& padded,
   const SIMD_FULL(uint32_t) du;
   const SIMD_PART(uint8_t, df.N) d8;
 
+  float c_min[3];
+  float c_mul[3];
+
 #if EPF_INDEP_RANGE
   const float channel_scale[3] = {1.0f / 16, 1.0f / 4, 1.0f};
-#else
-  const float all_max = *std::max_element(max.begin(), max.end());
-  const float all_min = *std::min_element(min.begin(), min.end());
-  const float range = all_max - all_min;
-  const auto vmul = set1(df, 255.0f / range);
-  const auto vmin = set1(df, all_min);
-#endif
-
   for (size_t c = 0; c < 3; ++c) {
     PIK_CHECK(max[c] >= min[c]);
-#if EPF_INDEP_RANGE
     float range = max[c] - min[c];
     if (range == 0.0f) {
       // Prevent division by zero. Guide is zero because we subtract min.
       range = 1.0f;
     }
-    const auto vmul = set1(df, 255.0f * channel_scale[c] / range);
-    const auto vmin = set1(df, min[c]);
+    c_mul[c] = 255.0f * channel_scale[c] / range;
+    c_min[c] = min[c];
+  }
+#else
+  const float all_max = *std::max_element(max.begin(), max.end());
+  const float all_min = *std::min_element(min.begin(), min.end());
+  const float range = all_max - all_min;
+  c_mul[0] = c_mul[1] = c_mul[2] = range == 0.0f ? 1.0f : 255.0f / range;
+  c_min[0] = c_min[1] = c_min[2] = all_min;
 #endif
 
-    const ImageF& padded_plane = padded.Plane(c);
-    ImageB* PIK_RESTRICT guide_plane = guide.MutablePlane(c);
+  RunOnPool(pool, 0, ysize, [&](const int task, const int thread) SIMD_ATTR {
+    const size_t y = task;
+    for (size_t c = 0; c < 3; ++c) {
+      const float* SIMD_RESTRICT padded_row = padded.ConstPlaneRow(c, y);
+      uint8_t* SIMD_RESTRICT guide_row = guide.PlaneRow(c, y);
 
-    for (size_t y = 0; y < ysize; ++y) {
-      const float* SIMD_RESTRICT padded_row = padded_plane.ConstRow(y);
-      uint8_t* SIMD_RESTRICT guide_row = guide_plane->Row(y);
+      const auto vmul = set1(df, c_mul[c]);
+      const auto vmin = set1(df, c_min[c]);
 
       size_t x = 0;
       for (; x < xsize; x += df.N) {
@@ -1066,8 +1070,9 @@ SIMD_ATTR Image3B MakeGuide(const Image3F& padded,
       for (; x < xsize + 16 - 11; x += df.N) {
         store(setzero(d8), d8, guide_row + x);
       }
-    }
-  }
+
+    }  // c
+  });  // y
 
   return guide;
 }
@@ -1098,10 +1103,14 @@ static PIK_INLINE int SigmaFromQuant(float signal, float stretch,
 #endif
   float unscaled_sigma;
   if (signal <= min_signal) {
+#if EPF_ENABLE_STATS
     stats->less += 1;
+#endif
     unscaled_sigma = lut[0];
   } else if (signal >= max_signal) {
+#if EPF_ENABLE_STATS
     stats->greater += 1;
+#endif
     unscaled_sigma = lut[kTableSize - 1];
   } else {
     const float pos = (signal - min_signal) * mul_signal;
@@ -1120,8 +1129,8 @@ static PIK_INLINE int SigmaFromQuant(float signal, float stretch,
 SIMD_ATTR void AdaptiveFilter(const Image3F& in_guide, const Image3F& in,
                               const ImageI* ac_quant, float quant_scale,
                               const AcStrategyImage& ac_strategy,
-                              const EpfParams& epf_params, Image3F* smoothed,
-                              EpfStats* epf_stats) {
+                              const EpfParams& epf_params, ThreadPool* pool,
+                              Image3F* smoothed, EpfStats* epf_stats) {
   PIK_ASSERT(SameSize(in, *smoothed));
   const size_t xsize = smoothed->xsize();
   const size_t ysize = smoothed->ysize();
@@ -1135,14 +1144,12 @@ SIMD_ATTR void AdaptiveFilter(const Image3F& in_guide, const Image3F& in,
   std::array<float, 3> min, max;
 
   Image3F padded_in(xsize + 2 * kBorder, ysize + 2 * kBorder);
-  MinMax(in, /*pool=*/nullptr, &min, &max, &padded_in);
+  MinMax(in, pool, &min, &max, &padded_in);
 
-  const size_t padded_in_stride = padded_in.Plane(0).bytes_per_row();
-  PIK_CHECK(padded_in_stride == padded_in.Plane(1).bytes_per_row());
-  PIK_CHECK(padded_in_stride == padded_in.Plane(2).bytes_per_row());
+  const size_t padded_in_stride = padded_in.bytes_per_row();
 
   Image3F padded_guide(xsize + 2 * kBorder, ysize + 2 * kBorder);
-  MinMax(epf_params.use_sharpened ? in : in_guide, /*pool=*/nullptr, &min, &max,
+  MinMax(epf_params.use_sharpened ? in : in_guide, pool, &min, &max,
          &padded_guide);
   if (epf_stats != nullptr) {
     for (int c = 0; c < 3; ++c) {
@@ -1151,14 +1158,12 @@ SIMD_ATTR void AdaptiveFilter(const Image3F& in_guide, const Image3F& in,
   }
   const float all_max = *std::max_element(max.begin(), max.end());
   const float all_min = *std::min_element(min.begin(), min.end());
-  const float stretch = 255.0f / (all_max - all_min);
+  const float stretch = all_min == all_max ? 1.f : 255.0f / (all_max - all_min);
 
-  Image3B guide = MakeGuide(padded_guide, min, max);
-  const size_t guide_stride = guide.Plane(0).bytes_per_row();
-  PIK_CHECK(guide_stride == guide.Plane(1).bytes_per_row());
-  PIK_CHECK(guide_stride == guide.Plane(2).bytes_per_row());
+  Image3B guide = MakeGuide(padded_guide, min, max, pool);
+  const size_t guide_stride = guide.bytes_per_row();
 
-#if DUMP_SIGMA
+#if EPF_DUMP_SIGMA
   ImageB dump(DivCeil(xsize, kBlockDim), ysize_blocks);
 #endif
 
@@ -1166,71 +1171,83 @@ SIMD_ATTR void AdaptiveFilter(const Image3F& in_guide, const Image3F& in,
   quant_scale = 0.039324273f;
 #endif
 
-  WeightFast weight_func;
-  EpfStats stats;
-  for (size_t by = 0; by < ysize_blocks; ++by) {
-    const int* SIMD_RESTRICT ac_quant_row = ac_quant->Row(by);
-    AcStrategyRow ac_strategy_row = ac_strategy.ConstRow(by);
-#if DUMP_SIGMA
-    uint8_t* dump_row = dump.Row(by);
+  std::vector<EpfStats> all_stats(NumThreads(pool));
+
+  RunOnPool(
+      pool, 0, ysize_blocks, [&](const int task, const int thread) SIMD_ATTR {
+        const size_t by = task;
+        EpfStats& stats = all_stats[thread];
+        const int* SIMD_RESTRICT ac_quant_row = ac_quant->Row(by);
+        AcStrategyRow ac_strategy_row = ac_strategy.ConstRow(by);
+#if EPF_DUMP_SIGMA
+        uint8_t* dump_row = dump.Row(by);
 #endif
 
-    for (size_t bx = 0; bx < xsize; bx += kBlockDim) {
-      const float ac_q = ac_quant_row[bx / kBlockDim];
-      const AcStrategy ac_strategy = ac_strategy_row[bx / kBlockDim];
-      const float scale = ac_strategy.ARQuantScale();
-      // fprintf(stderr, "%d %d %g (%g %g)\n", by, bx, ac_q, scale,
-      // quant_scale);
-      const float quant = ac_q * scale * quant_scale;
-      const int sigma = SigmaFromQuant(quant, stretch, &stats);
-      stats.s_sigma.Notify(sigma);
-      stats.s_quant.Notify(quant);
-#if DUMP_SIGMA
-      dump_row[bx / kBlockDim] = std::min(std::max(0, sigma), 255);
+        WeightFast weight_func;
+
+        for (size_t bx = 0; bx < xsize; bx += kBlockDim) {
+          const float ac_q = ac_quant_row[bx / kBlockDim];
+          const AcStrategy ac_strategy = ac_strategy_row[bx / kBlockDim];
+          const float scale = ac_strategy.ARQuantScale();
+          // fprintf(stderr, "%d %d %g (%g %g)\n", by, bx, ac_q, scale,
+          // quant_scale);
+          const float quant = ac_q * scale * quant_scale;
+          const int sigma = SigmaFromQuant(quant, stretch, &stats);
+#if EPF_ENABLE_STATS
+          stats.s_sigma.Notify(sigma);
+          stats.s_quant.Notify(quant);
+          stats.total += 1;
 #endif
-      stats.total += 1;
-      if (sigma < kMinSigma) {
-        WeightedSum::CopyOriginalBlock(padded_in, bx, by * kBlockDim, smoothed);
-        stats.skipped += 1;
-        continue;
-      }
-      weight_func.SetSigma(sigma);
+#if EPF_DUMP_SIGMA
+          dump_row[bx / kBlockDim] = std::min(std::max(0, sigma), 255);
+#endif
+          if (sigma < kMinSigma) {
+            WeightedSum::CopyOriginalBlock(padded_in, bx, by * kBlockDim,
+                                           smoothed);
+#if EPF_ENABLE_STATS
+            stats.skipped += 1;
+#endif
+            continue;
+          }
+          weight_func.SetSigma(sigma);
 
-      for (size_t iy = 0; iy < kBlockDim; ++iy) {
-        const size_t y = by * kBlockDim + iy;
-        // "guide_m4" and "in_m3" are 4 and 3 rows above the current pixel.
-        const uint8_t* SIMD_RESTRICT guide_m4_r =
-            guide.ConstPlaneRow(0, y + kBorder - 4) + kBorder;
-        const uint8_t* SIMD_RESTRICT guide_m4_g =
-            guide.ConstPlaneRow(1, y + kBorder - 4) + kBorder;
-        const uint8_t* SIMD_RESTRICT guide_m4_b =
-            guide.ConstPlaneRow(2, y + kBorder - 4) + kBorder;
-        const float* SIMD_RESTRICT in_m3_r =
-            padded_in.ConstPlaneRow(0, y - 3 + kBorder) + kBorder;
-        const float* SIMD_RESTRICT in_m3_g =
-            padded_in.ConstPlaneRow(1, y - 3 + kBorder) + kBorder;
-        const float* SIMD_RESTRICT in_m3_b =
-            padded_in.ConstPlaneRow(2, y - 3 + kBorder) + kBorder;
-        float* SIMD_RESTRICT out_r = smoothed->PlaneRow(0, y);
-        float* SIMD_RESTRICT out_g = smoothed->PlaneRow(1, y);
-        float* SIMD_RESTRICT out_b = smoothed->PlaneRow(2, y);
+          for (size_t iy = 0; iy < kBlockDim; ++iy) {
+            const size_t y = by * kBlockDim + iy;
+            // "guide_m4" and "in_m3" are 4 and 3 rows above the current pixel.
+            const uint8_t* SIMD_RESTRICT guide_m4_r =
+                guide.ConstPlaneRow(0, y + kBorder - 4) + kBorder;
+            const uint8_t* SIMD_RESTRICT guide_m4_g =
+                guide.ConstPlaneRow(1, y + kBorder - 4) + kBorder;
+            const uint8_t* SIMD_RESTRICT guide_m4_b =
+                guide.ConstPlaneRow(2, y + kBorder - 4) + kBorder;
+            const float* SIMD_RESTRICT in_m3_r =
+                padded_in.ConstPlaneRow(0, y - 3 + kBorder) + kBorder;
+            const float* SIMD_RESTRICT in_m3_g =
+                padded_in.ConstPlaneRow(1, y - 3 + kBorder) + kBorder;
+            const float* SIMD_RESTRICT in_m3_b =
+                padded_in.ConstPlaneRow(2, y - 3 + kBorder) + kBorder;
+            float* SIMD_RESTRICT out_r = smoothed->PlaneRow(0, y);
+            float* SIMD_RESTRICT out_g = smoothed->PlaneRow(1, y);
+            float* SIMD_RESTRICT out_b = smoothed->PlaneRow(2, y);
 
-        for (size_t ix = 0; ix < kBlockDim; ++ix) {
-          const size_t x = bx + ix;
-          WeightedSum::Compute(guide_m4_r + x, guide_m4_g + x, guide_m4_b + x,
-                               guide_stride, in_m3_r + x, in_m3_g + x,
-                               in_m3_b + x, padded_in_stride, weight_func,
-                               out_r + x, out_g + x, out_b + x);
-        }  // ix
-      }    // iy
-    }      // bx
-  }        // by
+            for (size_t ix = 0; ix < kBlockDim; ++ix) {
+              const size_t x = bx + ix;
+              WeightedSum::Compute(
+                  guide_m4_r + x, guide_m4_g + x, guide_m4_b + x, guide_stride,
+                  in_m3_r + x, in_m3_g + x, in_m3_b + x, padded_in_stride,
+                  weight_func, out_r + x, out_g + x, out_b + x);
+            }  // ix
+          }    // iy
+        }      // bx
+      });      // by
 
   if (epf_stats != nullptr) {
-    epf_stats->Assimilate(stats);
+    for (EpfStats& stats : all_stats) {
+      epf_stats->Assimilate(stats);
+    }
   }
 
-#if DUMP_SIGMA
+#if EPF_DUMP_SIGMA
   WriteImage(ImageFormatPNG(), dump, "/tmp/out/sigma.png");
 #endif
 }
@@ -1247,13 +1264,9 @@ class FilterWorkers {
         // Must use out because in is padded.
         xsize_(out->xsize()),
         ysize_(out->ysize()) {
-    guide_stride_ = guide.Plane(0).bytes_per_row();
-    PIK_CHECK(guide_stride_ == guide.Plane(1).bytes_per_row());
-    PIK_CHECK(guide_stride_ == guide.Plane(2).bytes_per_row());
+    guide_stride_ = guide.bytes_per_row();
 
-    in_stride_ = in.Plane(0).bytes_per_row();
-    PIK_CHECK(in_stride_ == in.Plane(1).bytes_per_row());
-    PIK_CHECK(in_stride_ == in.Plane(2).bytes_per_row());
+    in_stride_ = in.bytes_per_row();
 
     PIK_ASSERT(kMinSigma <= sigma && sigma <= kMaxSigma);
     weight_func_.SetSigma(sigma);
@@ -1332,9 +1345,9 @@ void Filter(const Image3F& in_guide, const Image3F& in,
 
   const float all_max = *std::max_element(max.begin(), max.end());
   const float all_min = *std::min_element(min.begin(), min.end());
-  *stretch = 255.0f / (all_max - all_min);
+  *stretch = all_min == all_max ? 1.0f : 255.0f / (all_max - all_min);
 
-  Image3B guide = MakeGuide(padded_guide, min, max);
+  Image3B guide = MakeGuide(padded_guide, min, max, /*pool=*/nullptr);
 
   FilterWorkers workers(1, guide, padded_in, epf_params.sigma, smoothed);
   for (size_t y = 0; y < ysize_blocks; ++y) {
@@ -1354,9 +1367,10 @@ template <>
 void EdgePreservingFilter::operator()<SIMD_TARGET>(
     const Image3F& in_guide, const Image3F& in, const ImageI* ac_quant,
     float sigma_mul, const AcStrategyImage& ac_strategy,
-    const EpfParams& epf_params, Image3F* smoothed, EpfStats* epf_stats) const {
+    const EpfParams& epf_params, ThreadPool* pool, Image3F* smoothed,
+    EpfStats* epf_stats) const {
   SIMD_NAMESPACE::AdaptiveFilter(in_guide, in, ac_quant, sigma_mul, ac_strategy,
-                                 epf_params, smoothed, epf_stats);
+                                 epf_params, pool, smoothed, epf_stats);
 }
 
 template <>

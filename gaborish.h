@@ -21,9 +21,10 @@ enum class GaborishStrength : uint32_t {
   k500,
   k750,
   k875,
-  k1000
+  k1000,
 
   // Future extensions: [5, 6]
+  kMaxValue
 };
 
 // Used in encoder to reduce the impact of the decoder's smoothing.

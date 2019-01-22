@@ -13,7 +13,7 @@ ifeq ($(origin CC),default)
   CC = clang
 endif
 
-INC_FLAGS = -I. -I../ -Ithird_party/brotli/c/include/
+INC_FLAGS = -I. -I../ -Ithird_party/brotli/c/include/ -Ithird_party/lcms/include/ -Ithird_party/
 
 # Clang-specific flags, tested with 6.0.1
 # -Xclang -mprefer-vector-width=128 would decrease likelihood of undesired and
@@ -82,6 +82,7 @@ PIK_OBJS := $(addprefix obj/, \
 	linalg.o \
 	lossless16.o \
 	lossless8.o \
+	lossless_entropy.o \
 	pik.o \
 	pik_info.o \
 	pik_pass.o \
@@ -122,13 +123,17 @@ third_party/lcms/src/.libs/liblcms2.a:
 	cd third_party/lcms; ./configure; cd ..
 	$(MAKE) -C third_party/lcms
 
+third_party/FiniteStateEntropy/libfse.a: $(FSE_OBJS)
+	$(MAKE) -C third_party fse
+
 THIRD_PARTY := \
 	third_party/brotli/libbrotli.a \
 	third_party/lcms/src/.libs/liblcms2.a \
-	third_party/lodepng/lodepng.o
+	third_party/lodepng/lodepng.o \
+	third_party/FiniteStateEntropy/libfse.a
 
-bin/cpik: obj/cpik.o $(PIK_OBJS) $(THIRD_PARTY)
-bin/dpik: obj/dpik.o $(PIK_OBJS) $(THIRD_PARTY)
+bin/cpik: obj/cpik_main.o obj/cpik.o obj/cmdline.o $(PIK_OBJS) $(THIRD_PARTY)
+bin/dpik: obj/dpik_main.o obj/dpik.o obj/cmdline.o $(PIK_OBJS) $(THIRD_PARTY)
 bin/butteraugli_main: obj/butteraugli_main.o $(PIK_OBJS) $(THIRD_PARTY)
 bin/decode_and_encode: obj/decode_and_encode.o $(PIK_OBJS) $(THIRD_PARTY)
 

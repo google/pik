@@ -12,6 +12,7 @@ namespace pik {
 // kQuantWeights[N * N * c + N * y + x] is the relative weight of the (x, y)
 // coefficient in component c. Higher weights correspond to finer quantization
 // intervals and more bits spent in encoding.
+const double* GetQuantWeightsDCT2();
 const double* GetQuantWeightsDCT4(double* mul01, double* mul11);
 const double* GetQuantWeightsDCT8();
 const double* GetQuantWeightsDCT16();

@@ -49,6 +49,7 @@
 #include "profiler.h"
 #include "quantizer.h"
 #include "resample.h"
+#include "resize.h"
 #include "simd/simd.h"
 #include "status.h"
 #include "upscaler.h"
@@ -523,12 +524,13 @@ class Dequant {
   // Dequantizes and inverse color-transforms one tile, i.e. the window
   // `rect` (in block units) within the entire output image `dec_cache->ac`.
   // Reads the rect `rect16` (in block units) in `img_ac16`. Reads and write
-  // only to the `block_group_rect` part of biases/ac_strategy/quant_field.
+  // only to the `block_group_rect` part of ac_strategy/quant_field.
   SIMD_ATTR void DoAC(const Rect& rect16, const Image3S& img_ac16,
                       const Rect& rect, const Rect& block_group_rect,
                       const ImageI& img_ytox, const ImageI& img_ytob,
                       DecCache* PIK_RESTRICT dec_cache,
                       PassDecCache* PIK_RESTRICT pass_dec_cache) const {
+    PROFILER_FUNC;
     PIK_ASSERT(SameSize(rect, rect16));
     constexpr size_t N = kBlockDim;
     constexpr size_t block_size = N * N;
@@ -553,7 +555,6 @@ class Dequant {
     const size_t x0_cmap = rect.x0() / kColorTileDimInBlocks;
     const size_t y0_cmap = rect.y0() / kColorTileDimInBlocks;
     const size_t x0_dct = rect.x0() * block_size;
-    const size_t x0_dct_group = block_tile_group_rect.x0() * block_size;
     const size_t x0_dct16 = rect16.x0() * block_size;
 
     for (size_t by = 0; by < ysize; ++by) {
@@ -563,9 +564,6 @@ class Dequant {
           block_tile_group_rect.ConstRow(pass_dec_cache->raw_quant_field, by);
       float* PIK_RESTRICT row_y =
           dec_cache->ac.PlaneRow(1, rect.y0() + by) + x0_dct;
-      float* PIK_RESTRICT row_y_biases =
-          pass_dec_cache->biases.PlaneRow(1, block_tile_group_rect.y0() + by) +
-          x0_dct_group;
       AcStrategyRow ac_strategy_row =
           pass_dec_cache->ac_strategy.ConstRow(block_tile_group_rect, by);
       for (size_t bx = 0; bx < xsize; ++bx) {
@@ -587,9 +585,7 @@ class Dequant {
           const auto quantized_y =
               convert_to(d, convert_to(d32, quantized_y16));
 
-          const auto debiased_y = AdjustQuantBias<1>(quantized_y);
-          store(quantized_y - debiased_y, d, row_y_biases + x);
-          const auto dequant_y = debiased_y * y_mul;
+          const auto dequant_y = AdjustQuantBias<1>(quantized_y) * y_mul;
           store(dequant_y, d, row_y + x);
         }
       }
@@ -609,10 +605,6 @@ class Dequant {
             dec_cache->ac.ConstPlaneRow(1, rect.y0() + by) + x0_dct;
         float* PIK_RESTRICT row_xb =
             dec_cache->ac.PlaneRow(c, rect.y0() + by) + x0_dct;
-        float* PIK_RESTRICT row_xb_biases =
-            pass_dec_cache->biases.PlaneRow(c,
-                                            block_tile_group_rect.y0() + by) +
-            x0_dct_group;
 
         AcStrategyRow ac_strategy_row =
             pass_dec_cache->ac_strategy.ConstRow(block_tile_group_rect, by);
@@ -640,10 +632,7 @@ class Dequant {
 
               const auto out_y = load(d, row_y + x);
 
-              const auto debiased_xb = AdjustQuantBias<0>(quantized_xb);
-              store(quantized_xb - debiased_xb, d, row_xb_biases + x);
-              const auto dequant_xb = debiased_xb * xb_mul;
-
+              const auto dequant_xb = AdjustQuantBias<0>(quantized_xb) * xb_mul;
               store(mul_add(y_mul, out_y, dequant_xb), d, row_xb + x);
             }
           } else {
@@ -660,10 +649,7 @@ class Dequant {
 
               const auto out_y = load(d, row_y + x);
 
-              const auto debiased_xb = AdjustQuantBias<2>(quantized_xb);
-              store(quantized_xb - debiased_xb, d, row_xb_biases + x);
-              const auto dequant_xb = debiased_xb * xb_mul;
-
+              const auto dequant_xb = AdjustQuantBias<2>(quantized_xb) * xb_mul;
               store(mul_add(y_mul, out_y, dequant_xb), d, row_xb + x);
             }
           }
@@ -862,7 +848,7 @@ void DequantImageAC(const Quantizer& quantizer, const ColorCorrelationMap& cmap,
 static SIMD_ATTR void InverseIntegralTransform(
     const size_t xsize_blocks, const size_t ysize_blocks,
     const Image3F& ac_image, const AcStrategyImage& ac_strategy,
-    const Rect& acs_rect, Image3F* PIK_RESTRICT idct) {
+    const Rect& acs_rect, Image3F* PIK_RESTRICT idct, const Rect& idct_rect) {
   PROFILER_ZONE("IDCT");
 
   constexpr size_t N = kBlockDim;
@@ -870,14 +856,12 @@ static SIMD_ATTR void InverseIntegralTransform(
   const size_t idct_stride = idct->PixelsPerRow();
 
   for (int c = 0; c < 3; ++c) {
-    const ImageF& ac_plane = ac_image.Plane(c);
-    const size_t ac_per_row = ac_plane.PixelsPerRow();
-    ImageF* PIK_RESTRICT idct_plane = idct->MutablePlane(c);
+    const size_t ac_per_row = ac_image.PixelsPerRow();
 
     for (size_t by = 0; by < ysize_blocks; ++by) {
-      const float* PIK_RESTRICT ac_row = ac_plane.ConstRow(by);
+      const float* PIK_RESTRICT ac_row = ac_image.ConstPlaneRow(c, by);
       const AcStrategyRow& acs_row = ac_strategy.ConstRow(acs_rect, by);
-      float* PIK_RESTRICT idct_row = idct_plane->Row(by * N);
+      float* PIK_RESTRICT idct_row = idct_rect.PlaneRow(idct, c, by * N);
 
       for (size_t bx = 0; bx < xsize_blocks; ++bx) {
         const float* PIK_RESTRICT ac_pos = ac_row + bx * block_size;
@@ -890,10 +874,11 @@ static SIMD_ATTR void InverseIntegralTransform(
   }
 }
 
-Image3F ReconOpsinImage(const PassHeader& pass_header,
-                        const GroupHeader& header, const Quantizer& quantizer,
-                        const Rect& block_group_rect, DecCache* dec_cache,
-                        PassDecCache* pass_dec_cache, PikInfo* pik_info) {
+void ReconOpsinImage(const PassHeader& pass_header, const GroupHeader& header,
+                     const Quantizer& quantizer, const Rect& block_group_rect,
+                     DecCache* dec_cache, PassDecCache* pass_dec_cache,
+                     Image3F* PIK_RESTRICT idct, const Rect& idct_rect,
+                     PikInfo* pik_info) {
   PROFILER_ZONE("ReconOpsinImage");
   constexpr size_t N = kBlockDim;
   const size_t xsize_blocks = block_group_rect.xsize();
@@ -933,10 +918,11 @@ Image3F ReconOpsinImage(const PassHeader& pass_header,
     PredictLf(pass_dec_cache->ac_strategy, block_group_rect, llf,
               pred2x2.MutablePlane(0), &lf2x2);
   }
-  FillImage(0.0f, &pred2x2);
+  ZeroFillImage(&pred2x2);
 
   // Compute the border of pred2x2.
   if (predict_hf) {
+    PROFILER_ZONE("Predict HF");
     AcStrategy acs(AcStrategy::Type::DCT, 0);
     const size_t pred2x2_stride = pred2x2.PixelsPerRow();
     if (predict_lf) {
@@ -999,19 +985,22 @@ Image3F ReconOpsinImage(const PassHeader& pass_header,
   ImageB tile_stage(xsize_tiles + 1, ysize_tiles + 1);
 
   for (size_t c = 0; c < dec_cache->ac.kNumPlanes; c++) {
+    PROFILER_ZONE("Reset tile stages");
     // Reset tile stages.
-    for (size_t ty = 0; ty < ysize_tiles + 1; ++ty) {
-      uint8_t* tile_stage_row = tile_stage.Row(ty);
-      for (size_t tx = 0; tx < xsize_tiles + 1; ++tx) {
-        bool is_sentinel = (ty >= ysize_tiles) || (tx >= xsize_tiles);
-        tile_stage_row[tx] = is_sentinel ? 255 : 0;
-      }
+    for (size_t ty = 0; ty < ysize_tiles; ++ty) {
+      uint8_t* PIK_RESTRICT tile_stage_row = tile_stage.Row(ty);
+      memset(tile_stage_row, 0, xsize_tiles * sizeof(uint8_t));
+      tile_stage_row[xsize_tiles] = 255;
     }
+    uint8_t* PIK_RESTRICT tile_stage_row = tile_stage.Row(ysize_tiles);
+    memset(tile_stage_row, 255, (xsize_tiles + 1) * sizeof(uint8_t));
 
     const ImageF& llf_plane = llf.Plane(c);
-    ImageF* ac64_plane = ac64->MutablePlane(c);
-    ImageF* pred2x2_plane = predict_hf ? pred2x2.MutablePlane(c) : nullptr;
-    ImageF* lf2x2_plane = predict_lf ? lf2x2.MutablePlane(c) : nullptr;
+    ImageF* PIK_RESTRICT ac64_plane = ac64->MutablePlane(c);
+    ImageF* PIK_RESTRICT pred2x2_plane =
+        predict_hf ? pred2x2.MutablePlane(c) : nullptr;
+    ImageF* PIK_RESTRICT lf2x2_plane =
+        predict_lf ? lf2x2.MutablePlane(c) : nullptr;
     for (size_t ty = 0; ty < ysize_tiles; ++ty) {
       for (size_t tx = 0; tx < xsize_tiles; ++tx) {
         for (size_t lfty = ty; lfty < ty + 2; ++lfty) {
@@ -1041,10 +1030,11 @@ Image3F ReconOpsinImage(const PassHeader& pass_header,
                    &dec_cache->ac);
   }
 
-  Image3F idct(xsize_blocks * N, ysize_blocks * N);
+  PIK_ASSERT(idct_rect.xsize() == xsize_blocks * N);
+  PIK_ASSERT(idct_rect.ysize() == ysize_blocks * N);
   InverseIntegralTransform(xsize_blocks, ysize_blocks, dec_cache->ac,
-                           pass_dec_cache->ac_strategy, block_group_rect,
-                           &idct);
+                           pass_dec_cache->ac_strategy, block_group_rect, idct,
+                           idct_rect);
 
   if (pik_info && pik_info->testing_aux.ac_prediction != nullptr) {
     PROFILER_ZONE("Subtract ac_prediction");
@@ -1052,40 +1042,60 @@ Image3F ReconOpsinImage(const PassHeader& pass_header,
              pik_info->testing_aux.ac_prediction);
     ZeroDcValues(pik_info->testing_aux.ac_prediction);
   }
-
-  return idct;
 }
 
-Image3F FinalizePassDecoding(Image3F&& idct, const PassHeader& pass_header,
-                             const Quantizer& quantizer,
-                             PassDecCache* pass_dec_cache, PikInfo* pik_info) {
-  Image3F copy;
-  const Image3F* non_smoothed = &idct;
-  if (pass_header.gaborish != GaborishStrength::kOff) {
-    // AdaptiveReconstruction needs a copy before smoothing.
-    // TODO(janwas): remove
-    if (pass_header.have_adaptive_reconstruction) {
-      PROFILER_ZONE("CopyForAR");
-      copy = CopyImage(idct);
-      non_smoothed = &copy;
+namespace {
 
-      idct = ConvolveGaborish(std::move(idct), pass_header.gaborish,
-                              /*pool=*/nullptr);
-    }
+Image3F DoAdaptiveReconstruction(Image3F&& idct, const PassHeader& pass_header,
+                                 const Quantizer& quantizer, ThreadPool* pool,
+                                 PassDecCache* pass_dec_cache,
+                                 PikInfo* pik_info) {
+  if (!pass_header.have_adaptive_reconstruction) return std::move(idct);
+
+  AdaptiveReconstructionAux* ar_aux =
+      pik_info ? &pik_info->adaptive_reconstruction_aux : nullptr;
+
+  // If no gaborish, the smoothed and non-smoothed inputs are the same.
+  if (pass_header.gaborish == GaborishStrength::kOff) {
+    return AdaptiveReconstruction(
+        &idct, idct, quantizer, pass_dec_cache->raw_quant_field,
+        pass_dec_cache->ac_strategy, pass_header.epf_params, pool, ar_aux);
   }
 
-  if (pass_header.have_adaptive_reconstruction) {
-    AdaptiveReconstructionAux* ar_aux =
-        pik_info ? &pik_info->adaptive_reconstruction_aux : nullptr;
-    idct = AdaptiveReconstruction(
-        &idct, *non_smoothed, quantizer, pass_dec_cache->raw_quant_field,
-        pass_dec_cache->ac_strategy, pass_dec_cache->biases,
-        pass_header.epf_params, ar_aux);
+  // Else: we need both the non-smoothed and smoothed (Gaborish output).
+  // NOTE: this doesn't actually move from idct because gaborish != kOff.
+  Image3F smoothed =
+      ConvolveGaborish(std::move(idct), pass_header.gaborish, pool);
+
+  return AdaptiveReconstruction(
+      &smoothed, idct, quantizer, pass_dec_cache->raw_quant_field,
+      pass_dec_cache->ac_strategy, pass_header.epf_params, pool, ar_aux);
+}
+
+}  // namespace
+
+void FinalizePassDecoding(Image3F&& idct, const PassHeader& pass_header,
+                          const NoiseParams& noise_params,
+                          const Quantizer& quantizer, ThreadPool* pool,
+                          PassDecCache* pass_dec_cache,
+                          Image3F* PIK_RESTRICT linear, PikInfo* pik_info) {
+  idct = DoAdaptiveReconstruction(std::move(idct), pass_header, quantizer, pool,
+                                  pass_dec_cache, pik_info);
+
+  idct = ConvolveGaborish(std::move(idct), pass_header.gaborish, pool);
+
+  if (pass_header.flags & PassHeader::kNoise) {
+    PROFILER_ZONE("AddNoise");
+    AddNoise(noise_params, &idct);
   }
 
-  idct = ConvolveGaborish(std::move(idct), pass_header.gaborish,
-                          /*pool=*/nullptr);
-  return std::move(idct);
+  if (pass_header.resampling_factor2 != 2) {
+    PROFILER_ZONE("UpsampleImage");
+    idct = UpsampleImage(idct, idct.xsize(), idct.ysize(),
+                         pass_header.resampling_factor2);
+  }
+
+  OpsinToLinear(idct, pool, linear);
 }
 
 }  // namespace pik

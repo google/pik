@@ -15,163 +15,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "entropy_coder.h"
+#include "lossless_entropy.h"
 
 namespace pik {
 
 namespace {
-
-size_t encodeVarInt(size_t value, uint8_t* output) {
-  size_t outputSize = 0;
-  // While more than 7 bits of data are left,
-  // store 7 bits and set the next byte flag
-  while (value > 127) {
-    // |128: Set the next byte flag
-    output[outputSize++] = ((uint8_t)(value & 127)) | 128;
-    // Remove the seven bits we just wrote
-    value >>= 7;
-  }
-  output[outputSize++] = ((uint8_t)value) & 127;
-  return outputSize;
-}
-
-size_t decodeVarInt(const uint8_t* input, size_t inputSize, size_t* pos) {
-  size_t i, ret = 0;
-  for (i = 0; *pos + i < inputSize && i < 10; ++i) {
-    ret |= uint64_t(input[*pos + i] & 127) << uint64_t(7 * i);
-    // If the next-byte flag is not set, stop
-    if ((input[*pos + i] & 128) == 0) break;
-  }
-  // TODO: Return a decoding error if i == 10.
-  *pos += i + 1;
-  return ret;
-}
-
-// Entropy encode with pik ANS
-// TODO(lode): move this to ans_encode.h
-bool EntropyEncode(const uint8_t* data, size_t size,
-                   std::vector<uint8_t>* result) {
-  static const int kAlphabetSize = 256;
-  static const int kContext = 0;
-
-  std::vector<int> histogram(kAlphabetSize, 0);
-  for (size_t i = 0; i < size; i++) {
-    histogram[data[i]]++;
-  }
-  size_t cost_bound =
-      1000 + 4 * size + 8 +
-      ((size_t)ANSPopulationCost(histogram.data(), kAlphabetSize, size) + 7) /
-          8;
-  result->resize(cost_bound, 0);
-
-  uint8_t* storage = result->data();
-  size_t pos = 0;
-
-  pos += encodeVarInt(size, storage + pos);
-
-  std::vector<ANSEncodingData> encoding_codes(1);
-  size_t bitpos = 0;
-  encoding_codes[0].BuildAndStore(&histogram[0], histogram.size(), &bitpos,
-                                  storage + pos);
-
-  std::vector<uint8_t> dummy_context_map;
-  dummy_context_map.push_back(0);  // only 1 histogram
-  ANSSymbolWriter writer(encoding_codes, dummy_context_map, &bitpos,
-                         storage + pos);
-  for (size_t i = 0; i < size; i++) {
-    writer.VisitSymbol(data[i], kContext);
-  }
-  writer.FlushToBitStream();
-  pos += ((bitpos + 7) >> 3);
-  result->resize(pos);
-
-  return true;
-}
-
-// Entropy decode with pik ANS
-// TODO(lode): move this to ans_decode.h
-bool EntropyDecode(const uint8_t* data, size_t size,
-                   std::vector<uint8_t>* result) {
-  static const int kContext = 0;
-  size_t pos = 0;
-  size_t num_symbols = decodeVarInt(data, size, &pos);
-  if (pos >= size) {
-    return PIK_FAILURE("lossless8");
-  }
-  // TODO(lode): instead take expected decoded size as function parameter
-  if (num_symbols > 16777216) {
-    // Avoid large allocations, we never expect this many symbols for
-    // the limited group sizes.
-    return PIK_FAILURE("lossless8");
-  }
-
-  BitReader br(data + pos, size - pos);
-  ANSCode codes;
-  if (!DecodeANSCodes(1, 256, &br, &codes)) {
-    return PIK_FAILURE("lossless8");
-  }
-
-  result->resize(num_symbols);
-  ANSSymbolReader reader(&codes);
-  for (size_t i = 0; i < num_symbols; i++) {
-    br.FillBitBuffer();
-    int read_symbol = reader.ReadSymbol(kContext, &br);
-    (*result)[i] = read_symbol;
-  }
-  if (!reader.CheckANSFinalState()) {
-    return PIK_FAILURE("lossless8");
-  }
-
-  return true;
-}
-
-static bool IsRLECompressible(const uint8_t* data, size_t size) {
-  if (size < 4) return false;
-  uint8_t first = data[0];
-  for (size_t i = 1; i < size; i++) {
-    if (data[i] != first) return false;
-  }
-  return true;
-}
-
-// TODO(lode): avoid the copying between std::vector and data.
-// Entropy encode with pik ANS
-static bool EntropyEncode(const uint8_t* data, size_t size, size_t out_capacity,
-                          uint8_t* out, size_t* out_size) {
-  if (IsRLECompressible(data, size)) {
-    *out_size = 1;  // Indicate the codec should use RLE instead,
-    return true;
-  }
-  std::vector<uint8_t> result;
-  if (!EntropyEncode(data, size, &result)) {
-    return PIK_FAILURE("lossless8");  // Encoding error
-  }
-  if (result.size() > size) {
-    *out_size = 0;  // Indicate the codec should use uncompressed mode instead.
-    return true;
-  }
-  if (result.size() > out_capacity) {
-    return PIK_FAILURE("lossless8");  // Error: not enough capacity
-  }
-  memcpy(out, result.data(), result.size());
-  *out_size = result.size();
-  return true;
-}
-
-// Entropy decode with pik ANS
-static bool EntropyDecode(const uint8_t* data, size_t size, size_t out_capacity,
-                          uint8_t* out, size_t* out_size) {
-  std::vector<uint8_t> result;
-  if (!EntropyDecode(data, size, &result)) {
-    return PIK_FAILURE("lossless8");  // Decoding error
-  }
-  if (result.size() > out_capacity) {
-    return PIK_FAILURE("lossless8");  // Error: not enough capacity
-  }
-  memcpy(out, result.data(), result.size());
-  *out_size = result.size();
-  return true;
-}
 
 static const int mulWeights0and1_R_[] = {
     34, 36,  // when errors are small,
@@ -209,6 +57,12 @@ static const int mulWeights3teNE_N_[] = {
 static const int WITHSIGN = 7, NUMCONTEXTS = 8 + WITHSIGN + 2, kGroupSize = 512,
                  kGroupSize2plus = kGroupSize * kGroupSize * 9 / 8;
 static const int MAXERROR = 101, MaxSumErrors = MAXERROR * 7 + 1, NumRuns = 1;
+
+// Left shift a signed integer by the shift amount.
+static int LshInt(int value, unsigned shift) {
+  // Cast to unsigned and back to avoid undefined behavior of signed left shift.
+  return static_cast<int>(static_cast<unsigned>(value) << shift);
+}
 
 // TODO(lode): split state variables needed for encoder from those for decoder
 //             and perform one-time global initialization where possible.
@@ -325,7 +179,7 @@ struct State {
     prediction0 =
         (x <= 1 ? prediction1
                 : prediction1 +
-                      ((rowImg[x - 1] - rowImg[x - 2]) << PBits) * 5 / 16);
+                      LshInt(rowImg[x - 1] - rowImg[x - 2], PBits) * 5 / 16);
     return (prediction0 < 0 ? 0 : prediction0 > pb255 ? pb255 : prediction0);
   }
 
@@ -385,10 +239,10 @@ struct State {
     prediction2 = W + NE - N;
     int t = (teNE * 3 + teNW * 4 + 7) >> 5;
     prediction3 = N + (N - (rowPP[x] << PBits)) * 23 / 32 + (W - NW) / 16 - t;
-    assert(-255 << PBits <= prediction0 && prediction0 <= 510 << PBits);
-    assert(-255 << PBits <= prediction1 && prediction1 <= 510 << PBits);
-    assert(-255 << PBits <= prediction2 && prediction2 <= 510 << PBits);
-    assert(-255 << PBits <= prediction3 && prediction3 <= 510 << PBits);
+    assert(LshInt(-255, PBits) <= prediction0 && prediction0 <= 510 << PBits);
+    assert(LshInt(-255, PBits) <= prediction1 && prediction1 <= 510 << PBits);
+    assert(LshInt(-255, PBits) <= prediction2 && prediction2 <= 510 << PBits);
+    assert(LshInt(-255, PBits) <= prediction3 && prediction3 <= 510 << PBits);
 
     int sumWeights = weight0 + weight1 + weight2 + weight3;
     // assert(sumWeights>0);  // true if min(error2weight)*min(mulWeights**_R_)
@@ -456,10 +310,10 @@ struct State {
     prediction2 = W + NE - N;
     prediction3 =
         N + ((N - (rowPP[x] << PBits)) >> 1) + ((W - NW) * 19 - teNW * 13) / 64;
-    assert(-255 << PBits <= prediction0 && prediction0 <= 510 << PBits);
-    assert(-255 << PBits <= prediction1 && prediction1 <= 510 << PBits);
-    assert(-255 << PBits <= prediction2 && prediction2 <= 510 << PBits);
-    assert(-255 << PBits <= prediction3 && prediction3 <= 510 << PBits);
+    assert(LshInt(-255, PBits) <= prediction0 && prediction0 <= 510 << PBits);
+    assert(LshInt(-255, PBits) <= prediction1 && prediction1 <= 510 << PBits);
+    assert(LshInt(-255, PBits) <= prediction2 && prediction2 <= 510 << PBits);
+    assert(LshInt(-255, PBits) <= prediction3 && prediction3 <= 510 << PBits);
 
     int sumWeights = weight0 + weight1 + weight2 + weight3;
     // assert(sumWeights>0);  // true if min(error2weight)*min(mulWeights**_W_)
@@ -525,10 +379,10 @@ struct State {
         W - ((teW * 2 + teNW) >> 2);  // pr's 0 & 1 rely on true errors
     prediction2 = W + NE - N;
     prediction3 = N + ((N - (rowPP[x] << PBits)) * 47) / 64 - (teN >> 2);
-    assert(-255 << PBits <= prediction0 && prediction0 <= 510 << PBits);
-    assert(-255 << PBits <= prediction1 && prediction1 <= 510 << PBits);
-    assert(-255 << PBits <= prediction2 && prediction2 <= 510 << PBits);
-    assert(-255 << PBits <= prediction3 && prediction3 <= 510 << PBits);
+    assert(LshInt(-255, PBits) <= prediction0 && prediction0 <= 510 << PBits);
+    assert(LshInt(-255, PBits) <= prediction1 && prediction1 <= 510 << PBits);
+    assert(LshInt(-255, PBits) <= prediction2 && prediction2 <= 510 << PBits);
+    assert(LshInt(-255, PBits) <= prediction3 && prediction3 <= 510 << PBits);
 
     int sumWeights = weight0 + weight1 + weight2 + weight3;
     // assert(sumWeights>0);  // true if min(error2weight)*min(mulWeights**_N_)
@@ -736,9 +590,9 @@ struct State {
               // size_t cs = FSE_compress(&compressedDataTmpBuf[0],
               // sizeof(compressedDataTmpBuf), &edata[i][0], esize[i]);
               size_t cs;
-              if (!EntropyEncode(&edata[i][0], esize[i],
-                                 sizeof(compressedDataTmpBuf),
-                                 &compressedDataTmpBuf[0], &cs)) {
+              if (!MaybeEntropyEncode(&edata[i][0], esize[i],
+                                      sizeof(compressedDataTmpBuf),
+                                      &compressedDataTmpBuf[0], &cs)) {
                 return PIK_FAILURE("lossless8");
               }
               size_t s = (cs <= 1 ? (esize[i] - 1) * 3 + 1 + cs : cs * 3);
@@ -845,8 +699,8 @@ struct State {
             } else {
               if (pos + cs > compressedSize) return PIK_FAILURE("lossless8");
               size_t ds;
-              if (!EntropyDecode(&compressedData[pos], cs, maxDecodedSize,
-                                 &edata[i][0], &ds)) {
+              if (!MaybeEntropyDecode(&compressedData[pos], cs, maxDecodedSize,
+                                      &edata[i][0], &ds)) {
                 return PIK_FAILURE("lossless8");
               }
               pos += cs;
@@ -979,8 +833,8 @@ struct State {
       } else {
         if (pos + cs > compressedSize) return PIK_FAILURE("lossless8");
         size_t ds;
-        if (!EntropyDecode(&compressedData[pos], cs, maxDecodedSize,
-                           &edata[i][0], &ds)) {
+        if (!MaybeEntropyDecode(&compressedData[pos], cs, maxDecodedSize,
+                                &edata[i][0], &ds)) {
           return PIK_FAILURE("lossless8");
         }
         pos += cs;
@@ -1047,6 +901,8 @@ struct State {
     for (int run = 0; run < NumRuns; ++run) {
       size_t pos = pos0;
       if (xsize * ysize > 4 * 0x100) {  // TODO: smarter decision making here
+        if (pos >= compressedSize)
+          return PIK_FAILURE("lossless8: out of bounds");
         const uint8_t* p = &compressedData[pos];
         imageMethod = *p++;
         if (imageMethod) {
@@ -1303,8 +1159,9 @@ struct State {
         // size_t cs = FSE_compress(&compressedDataTmpBuf[0],
         // sizeof(compressedDataTmpBuf), &edata[i][0], esize[i]);
         size_t cs;
-        if (!EntropyEncode(&edata[i][0], esize[i], sizeof(compressedDataTmpBuf),
-                           &compressedDataTmpBuf[0], &cs)) {
+        if (!MaybeEntropyEncode(&edata[i][0], esize[i],
+                                sizeof(compressedDataTmpBuf),
+                                &compressedDataTmpBuf[0], &cs)) {
           return PIK_FAILURE("lossless8");
         }
 

@@ -89,18 +89,17 @@ void SingleImageManager::GetAcStrategy(float butteraugli_target,
 std::shared_ptr<Quantizer> SingleImageManager::GetQuantizer(
     const CompressParams& cparams, size_t xsize_blocks, size_t ysize_blocks,
     const Image3F& opsin_orig, const Image3F& opsin,
-    const NoiseParams& noise_params, const PassHeader& pass_header,
-    const GroupHeader& header, const ColorCorrelationMap& cmap,
-    const AcStrategyImage& ac_strategy, ImageF& quant_field, ThreadPool* pool,
-    PikInfo* aux_out) {
+    const PassHeader& pass_header, const GroupHeader& header,
+    const ColorCorrelationMap& cmap, const AcStrategyImage& ac_strategy,
+    ImageF& quant_field, ThreadPool* pool, PikInfo* aux_out) {
   if (!has_quantizer_) {
     PassHeader hdr = pass_header;
     if (use_adaptive_reconstruction_) {
       hdr.have_adaptive_reconstruction = true;
     }
     quantizer_ = FindBestQuantizer(
-        cparams, xsize_blocks, ysize_blocks, opsin_orig, opsin, noise_params,
-        hdr, header, cmap, ac_strategy, quant_field, pool, aux_out, this);
+        cparams, xsize_blocks, ysize_blocks, opsin_orig, opsin, hdr, header,
+        cmap, ac_strategy, quant_field, pool, aux_out, this);
     has_quantizer_ = true;
   }
   return quantizer_;
@@ -109,10 +108,6 @@ std::shared_ptr<Quantizer> SingleImageManager::GetQuantizer(
 void SingleImageManager::StripInfo(EncCache* cache) {
   const constexpr size_t kBlockSize = kBlockDim * kBlockDim;
   switch (mode_) {
-    case ProgressiveMode::kDcOnly: {
-      FillImage(int16_t(0), &cache->ac);
-      break;
-    }
     case ProgressiveMode::kLfOnly: {
       for (size_t c = 0; c < cache->ac.kNumPlanes; c++) {
         for (size_t by = 0; by < cache->ac_strategy.ysize(); by++) {
@@ -168,9 +163,6 @@ void SingleImageManager::StripInfo(EncCache* cache) {
 void SingleImageManager::StripInfoBeforePredictions(EncCache* cache) {
   const constexpr size_t kBlockSize = kBlockDim * kBlockDim;
   switch (mode_) {
-    case ProgressiveMode::kDcOnly: {
-      break;
-    }
     case ProgressiveMode::kLfOnly: {
       break;
     }
@@ -206,36 +198,19 @@ void SingleImageManager::StripInfoBeforePredictions(EncCache* cache) {
 
 void SingleImageManager::StripDCInfo(PassEncCache* cache) {
   switch (mode_) {
-    case ProgressiveMode::kDcOnly: {
-      break;
-    }
     case ProgressiveMode::kLfOnly: {
-      FillImage(0.0f, &cache->dc_dec);
-      FillImage(int16_t(0), &cache->dc);
       break;
     }
     case ProgressiveMode::kHfOnly:
     case ProgressiveMode::kNonSalientHfOnly:
     case ProgressiveMode::kSalientHfOnly: {
-      FillImage(0.0f, &cache->dc_dec);
-      FillImage(int16_t(0), &cache->dc);
+      ZeroFillImage(&cache->dc_dec);
+      ZeroFillImage(&cache->dc);
       break;
     }
     case ProgressiveMode::kFull: {
       break;
     }
-  }
-}
-
-void SingleImageManager::UpdateBiases(Image3F* PIK_RESTRICT biases) {
-  PROFILER_ZONE("SingleImage UpdateBiases");
-  if (num_passes_ == 0) return;
-  AddTo(last_pass_biases_, biases);
-}
-
-void SingleImageManager::StoreBiases(const Image3F& PIK_RESTRICT biases) {
-  if (!IsLastPass()) {
-    last_pass_biases_ = CopyImage(biases);
   }
 }
 

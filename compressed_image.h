@@ -86,19 +86,22 @@ void DequantImageAC(const Quantizer& quantizer, const ColorCorrelationMap& cmap,
                     const Rect& group_rect);
 
 // Applies predictions to de-quantized AC coefficients, copies DC coefficients
-// into AC, and does IDCT.
-Image3F ReconOpsinImage(const PassHeader& pass_header,
-                        const GroupHeader& header, const Quantizer& quantizer,
-                        const Rect& block_group_rect, DecCache* cache,
-                        PassDecCache* pass_dec_cache,
-                        PikInfo* pik_info = nullptr);
+// into AC, and does IDCT. Writes opsin IDCT values into `idct:idct_rect`.
+void ReconOpsinImage(const PassHeader& pass_header, const GroupHeader& header,
+                     const Quantizer& quantizer, const Rect& block_group_rect,
+                     DecCache* cache, PassDecCache* pass_dec_cache,
+                     Image3F* PIK_RESTRICT idct, const Rect& idct_rect,
+                     PikInfo* pik_info = nullptr);
 
 // Finalizes the decoding of a pass by running per-pass post processing:
-// smoothing and adaptive reconstruction.
-Image3F FinalizePassDecoding(Image3F&& idct, const PassHeader& pass_header,
-                             const Quantizer& quantizer,
-                             PassDecCache* pass_dec_cache,
-                             PikInfo* pik_info = nullptr);
+// smoothing and adaptive reconstruction. Writes linear sRGB to `linear`.
+// TODO(janwas): move NoiseParams into PassHeader.
+void FinalizePassDecoding(Image3F&& idct, const PassHeader& pass_header,
+                          const NoiseParams& noise_params,
+                          const Quantizer& quantizer, ThreadPool* pool,
+                          PassDecCache* pass_dec_cache,
+                          Image3F* PIK_RESTRICT linear,
+                          PikInfo* pik_info = nullptr);
 
 }  // namespace pik
 

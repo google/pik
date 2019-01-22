@@ -15,7 +15,6 @@
 #include "data_parallel.h"
 #include "headers.h"
 #include "image.h"
-#include "noise.h"
 #include "pik_params.h"
 #include "quantizer.h"
 #include "status.h"
@@ -76,10 +75,6 @@ class MultipassManager {
   // Inverse of DecorrelateOpsin.
   virtual void RestoreOpsin(Image3F* img) = 0;
 
-  // Updates/stores biases for AR on the final pass.
-  virtual void UpdateBiases(Image3F* PIK_RESTRICT biases) {}
-  virtual void StoreBiases(const Image3F& PIK_RESTRICT biases) {}
-
   // Called at the start of each pass.
   virtual void StartPass(const PassHeader& header) = 0;
 
@@ -111,10 +106,9 @@ class MultipassManager {
   virtual std::shared_ptr<Quantizer> GetQuantizer(
       const CompressParams& cparams, size_t xsize_blocks, size_t ysize_blocks,
       const Image3F& opsin_orig, const Image3F& opsin,
-      const NoiseParams& noise_params, const PassHeader& pass_header,
-      const GroupHeader& header, const ColorCorrelationMap& cmap,
-      const AcStrategyImage& ac_strategy, ImageF& quant_field, ThreadPool* pool,
-      PikInfo* aux_out) = 0;
+      const PassHeader& pass_header, const GroupHeader& header,
+      const ColorCorrelationMap& cmap, const AcStrategyImage& ac_strategy,
+      ImageF& quant_field, ThreadPool* pool, PikInfo* aux_out) = 0;
 
   // Remove information from the image, just before encoding.
   virtual void StripInfo(EncCache* cache) {}

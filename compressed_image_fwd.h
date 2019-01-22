@@ -100,11 +100,6 @@ struct PassDecCache {
 
   bool grayscale;
 
-  // Bias that was used for dequantization of the corresponding coefficient.
-  // Note that the code that stores the biases relies on the fact that DC biases
-  // are 0.
-  Image3F biases;
-
   // Full DC of the pass. Note that this will be split in *AC* group sized
   // chunks for AC predictions (DC group size != AC group size).
   Image3F dc;

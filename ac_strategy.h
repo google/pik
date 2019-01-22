@@ -43,28 +43,36 @@ class AcStrategy {
     DCT = 0,
     // Encode pixels without transforming (value matches kQuantKind)
     IDENTITY = 1,
+    // Use 2-by-2 DCT (value matches kQuantKind)
+    DCT2X2 = 2,
     // Use 4-by-4 DCT (value matches kQuantKind)
-    DCT4X4 = 2,
+    DCT4X4 = 3,
     // Use 16-by-16 DCT
-    DCT16X16 = 3,
+    DCT16X16 = 4,
     // Use 32-by-32 DCT
-    DCT32X32 = 4,
+    DCT32X32 = 5,
+    // Use 8-by-8 DCT, no HF prediction
+    DCT_NOHF = 6,
+    // Use 4-by-4 DCT, no HF prediction
+    DCT4X4_NOHF = 7,
   };
 
   // Returns true if this block is the first 8x8 block (i.e. top-left) of a
   // possibly multi-block strategy.
-  bool IsFirstBlock() const { return block_ == 0; }
+  PIK_INLINE bool IsFirstBlock() const { return block_ == 0; }
 
   // Returns the raw strategy value. Should only be used for tokenization.
-  uint8_t RawStrategy() const { return static_cast<uint8_t>(strategy_); }
+  PIK_INLINE uint8_t RawStrategy() const {
+    return static_cast<uint8_t>(strategy_);
+  }
 
-  Type Strategy() const { return strategy_; }
+  PIK_INLINE Type Strategy() const { return strategy_; }
 
   // Inverse check
-  static bool IsRawStrategyValid(uint8_t raw_strategy) {
-    return raw_strategy <= 4;
+  static PIK_INLINE bool IsRawStrategyValid(uint8_t raw_strategy) {
+    return raw_strategy <= 8;
   }
-  static AcStrategy FromRawStrategy(uint8_t raw_strategy) {
+  static PIK_INLINE AcStrategy FromRawStrategy(uint8_t raw_strategy) {
     return AcStrategy((Type)raw_strategy, 0);
   }
 
@@ -89,29 +97,39 @@ class AcStrategy {
 #endif
       return block + kQuantKindDCT32Start;
     }
+    if (strategy_ == Type::DCT_NOHF) return kQuantKindDCT8;
+    if (strategy_ == Type::DCT4X4_NOHF) return kQuantKindDCT4;
 
     static_assert(kQuantKindDCT8 == size_t(Type::DCT), "QuantKind != type");
     static_assert(kQuantKindID == size_t(Type::IDENTITY), "QuantKind != type");
     static_assert(kQuantKindDCT4 == size_t(Type::DCT4X4), "QuantKind != type");
+    static_assert(kQuantKindDCT2 == size_t(Type::DCT2X2), "QuantKind != type");
     return static_cast<size_t>(strategy_);
   }
 
-  float ARQuantScale() const {
+  PIK_INLINE float ARQuantScale() const {
     if (strategy_ == Type::DCT32X32) return 0.71122376f;
     if (strategy_ == Type::DCT16X16) return 0.827516904f;
-    // TODO(veluca): find better value.
-    if (strategy_ == Type::DCT4X4) return 1.2f;
+    // TODO(veluca): find better values.
+    if (strategy_ == Type::DCT4X4 || strategy_ == Type::DCT4X4_NOHF)
+      return 1.2f;
+    if (strategy_ == Type::DCT2X2) return 1.0098134203870499;
     return 1.0f;
+  }
+
+  PIK_INLINE bool PredictHF() const {
+    return strategy_ != Type::DCT2X2 && strategy_ != Type::IDENTITY &&
+           strategy_ != Type::DCT_NOHF && strategy_ != Type::DCT4X4_NOHF;
   }
 
   // Number of 8x8 blocks that this strategy will cover. 0 for non-top-left
   // blocks inside a multi-block transform.
-  size_t covered_blocks_x() const {
+  PIK_INLINE size_t covered_blocks_x() const {
     if (strategy_ == Type::DCT32X32) return block_ == 0 ? 4 : 0;
     if (strategy_ == Type::DCT16X16) return block_ == 0 ? 2 : 0;
     return 1;
   }
-  size_t covered_blocks_y() const {
+  PIK_INLINE size_t covered_blocks_y() const {
     if (strategy_ == Type::DCT32X32) return block_ == 0 ? 4 : 0;
     if (strategy_ == Type::DCT16X16) return block_ == 0 ? 2 : 0;
     return 1;
@@ -119,7 +137,7 @@ class AcStrategy {
 
   // 1 / covered_block_x() / covered_block_y(), for fast division.
   // Should only be called with block_ == 0.
-  float inverse_covered_blocks() const {
+  PIK_INLINE float inverse_covered_blocks() const {
 #ifdef ADDRESS_SANITIZER
     PIK_ASSERT(block_ == 0);
 #endif
@@ -128,7 +146,7 @@ class AcStrategy {
     return 1.0f;
   }
 
-  float InverseNumACCoefficients() const {
+  PIK_INLINE float InverseNumACCoefficients() const {
 #ifdef ADDRESS_SANITIZER
     PIK_ASSERT(block_ == 0);
 #endif
@@ -139,9 +157,12 @@ class AcStrategy {
 
   float ARLowestFrequencyScale(size_t bx, size_t by) {
     switch (strategy_) {
+      case Type::DCT2X2:
       case Type::IDENTITY:
       case Type::DCT:
       case Type::DCT4X4:
+      case Type::DCT_NOHF:
+      case Type::DCT4X4_NOHF:
         return 1.0f;
       case Type::DCT16X16: {
         return 2 * kBlockDim * IDCTScales<2 * kBlockDim>()[bx] *
@@ -188,12 +209,14 @@ class AcStrategy {
                                          size_t dc2x2_stride, float* block,
                                          size_t block_stride) const;
 
-  AcStrategy(Type strategy, uint32_t block)
+  PIK_INLINE AcStrategy(Type strategy, uint32_t block)
       : strategy_(strategy), block_(block) {
+#ifdef ADDRESS_SANITIZER
     PIK_ASSERT(strategy == Type::DCT16X16 || strategy == Type::DCT32X32 ||
                block == 0);
     PIK_ASSERT(strategy == Type::DCT32X32 || block < 4);
     PIK_ASSERT(block < 16);
+#endif
   }
 
  private:

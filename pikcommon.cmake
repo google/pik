@@ -121,6 +121,8 @@ add_library(pikcommon STATIC
   ${CMAKE_CURRENT_LIST_DIR}/lossless16.h
   ${CMAKE_CURRENT_LIST_DIR}/lossless8.cc
   ${CMAKE_CURRENT_LIST_DIR}/lossless8.h
+  ${CMAKE_CURRENT_LIST_DIR}/lossless_entropy.cc
+  ${CMAKE_CURRENT_LIST_DIR}/lossless_entropy.h
   ${CMAKE_CURRENT_LIST_DIR}/metadata.cc
   ${CMAKE_CURRENT_LIST_DIR}/metadata.h
   ${CMAKE_CURRENT_LIST_DIR}/multipass_handler.h
@@ -173,14 +175,14 @@ add_library(pikcommon STATIC
 target_include_directories(pikcommon
     PUBLIC "${CMAKE_CURRENT_LIST_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_options(pikcommon PUBLIC -mavx2)
-add_dependencies(pikcommon LCMS2)
 
 target_link_libraries(pikcommon PRIVATE
   brotlicommon-static
   brotlienc-static
   brotlidec-static
+  fse
   lodepng
-  "${LCMS2_INSTALL_DIR}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}lcms2${CMAKE_STATIC_LIBRARY_SUFFIX}"
+  lcms2
   Threads::Threads
   "${CMAKE_DL_LIBS}"
 )

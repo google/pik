@@ -275,7 +275,7 @@ void Upsample23(size_t n, const From& from, const To& to) {
 
 }  // namespace
 
-Image3F DownsampleImage32(Image3F& src) {
+static inline Image3F DownsampleImage32(Image3F& src) {
   size_t w = src.xsize();
   size_t h = src.ysize();
   PIK_ASSERT(w % 3 == 0);
@@ -301,7 +301,8 @@ Image3F DownsampleImage32(Image3F& src) {
   return dst;
 }
 
-Image3F UpsampleImage23(Image3F& src, size_t orig_xsize, size_t orig_ysize) {
+static inline Image3F UpsampleImage23(Image3F& src, size_t orig_xsize,
+                                      size_t orig_ysize) {
   PIK_ASSERT(orig_xsize % 3 == 0);
   PIK_ASSERT(orig_ysize % 3 == 0);
   size_t w = (orig_xsize / 3) * 2;
@@ -331,7 +332,7 @@ Image3F UpsampleImage23(Image3F& src, size_t orig_xsize, size_t orig_ysize) {
   return dst;
 }
 
-Image3F DownsampleImage2N(Image3F& src, size_t factor) {
+static inline Image3F DownsampleImage2N(Image3F& src, size_t factor) {
   size_t w = src.xsize();
   size_t h = src.ysize();
   PIK_ASSERT(w % factor == 0);
@@ -378,8 +379,8 @@ Image3F DownsampleImage2N(Image3F& src, size_t factor) {
   return dst;
 }
 
-Image3F UpsampleImage2N(Image3F& src, size_t factor, size_t orig_xsize,
-                        size_t orig_ysize) {
+static inline Image3F UpsampleImage2N(Image3F& src, size_t factor,
+                                      size_t orig_xsize, size_t orig_ysize) {
   PIK_ASSERT(orig_xsize % factor == 0);
   PIK_ASSERT(orig_ysize % factor == 0);
   size_t w = orig_xsize / factor;
@@ -427,7 +428,8 @@ Image3F UpsampleImage2N(Image3F& src, size_t factor, size_t orig_xsize,
   return dst;
 }
 
-Image3F PadImage(const Image3F& in, size_t min_padding, size_t factor) {
+static inline Image3F PadImage(const Image3F& in, size_t min_padding,
+                               size_t factor) {
   const size_t xsize = DivCeil(in.xsize() + 2 * min_padding, factor) * factor;
   const size_t ysize = DivCeil(in.ysize() + 2 * min_padding, factor) * factor;
   const size_t left_padding = (xsize - in.xsize()) / 2;
@@ -463,8 +465,9 @@ Image3F PadImage(const Image3F& in, size_t min_padding, size_t factor) {
   return out;
 }
 
-Image3F UnpadImage(const Image3F& in, size_t min_padding, size_t factor,
-                   size_t orig_xsize, size_t orig_ysize) {
+static inline Image3F UnpadImage(const Image3F& in, size_t min_padding,
+                                 size_t factor, size_t orig_xsize,
+                                 size_t orig_ysize) {
   PIK_ASSERT(in.xsize() % factor == 0);
   PIK_ASSERT(in.ysize() % factor == 0);
   const size_t left_padding = (in.xsize() - orig_xsize) / 2;
@@ -481,9 +484,9 @@ Image3F UnpadImage(const Image3F& in, size_t min_padding, size_t factor,
   return out;
 }
 
-uint32_t ResizePadding(size_t factor2) { return 1u; }
+static inline uint32_t ResizePadding(size_t factor2) { return 1u; }
 
-ImageSize DownsampledImageSize(ImageSize src, size_t factor2) {
+static inline ImageSize DownsampledImageSize(ImageSize src, size_t factor2) {
   PIK_ASSERT(factor2 == 2 || factor2 == 3 || factor2 == 4 || factor2 == 8);
   ImageSize dst;
   uint32_t min_padding = ResizePadding(factor2);
@@ -501,7 +504,7 @@ ImageSize DownsampledImageSize(ImageSize src, size_t factor2) {
   return dst;
 }
 
-Image3F DownsampleImage(Image3F& src, size_t factor2) {
+static inline Image3F DownsampleImage(Image3F& src, size_t factor2) {
   PIK_ASSERT(factor2 == 3 || factor2 == 4 || factor2 == 8);
   size_t min_padding = ResizePadding(factor2);
   size_t factor = (factor2 == 3) ? 3 : (factor2 / 2);
@@ -510,8 +513,8 @@ Image3F DownsampleImage(Image3F& src, size_t factor2) {
                         : DownsampleImage2N(padded, factor);
 }
 
-Image3F UpsampleImage(Image3F& src, size_t orig_xsize, size_t orig_ysize,
-                      size_t factor2) {
+static inline Image3F UpsampleImage(Image3F& src, size_t orig_xsize,
+                                    size_t orig_ysize, size_t factor2) {
   PIK_ASSERT(factor2 == 3 || factor2 == 4 || factor2 == 8);
   size_t factor = (factor2 == 3) ? 3 : (factor2 / 2);
   size_t min_padding = ResizePadding(factor2);

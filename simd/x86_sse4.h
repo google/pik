@@ -2474,9 +2474,9 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<int16_t> mpsadbw(
 }
 
 // For u32/i32/f32.
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> horz_sum_impl(char (&sizeof_t)[4],
-                                                     const vec_sse4<T> v3210) {
+template <typename T, size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, N> horz_sum_impl(
+    char (&sizeof_t)[4], const vec_sse4<T, N> v3210) {
   const vec_sse4<T> v1032 = shuffle_1032(v3210);
   const vec_sse4<T> v31_20_31_20 = v3210 + v1032;
   const vec_sse4<T> v20_31_20_31 = shuffle_0321(v31_20_31_20);
@@ -2484,16 +2484,16 @@ SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> horz_sum_impl(char (&sizeof_t)[4],
 }
 
 // For u64/i64/f64.
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> horz_sum_impl(char (&sizeof_t)[8],
-                                                     const vec_sse4<T> v10) {
+template <typename T, size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, N> horz_sum_impl(
+    char (&sizeof_t)[8], const vec_sse4<T, N> v10) {
   const vec_sse4<T> v01 = shuffle_01(v10);
   return v10 + v01;
 }
 
 // Supported for u/i/f 32/64. Returns the sum in each lane.
-template <typename T>
-SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T> sum_of_lanes(const vec_sse4<T> v) {
+template <typename T, size_t N>
+SIMD_ATTR_SSE4 SIMD_INLINE vec_sse4<T, N> sum_of_lanes(const vec_sse4<T, N> v) {
   char sizeof_t[sizeof(T)];
   return horz_sum_impl(sizeof_t, v);
 }

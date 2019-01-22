@@ -30,14 +30,14 @@ float ButteraugliDistanceLinearSRGB(const Image3F& rgb0, const Image3F& rgb1,
 // (gamma-compressed) grayscale background color, alpha image represents
 // weights of the sRGB colors in the [0 .. (1 << bit_depth) - 1] interval,
 // output image is in linear space.
-void AlphaBlend(const ImageF& in, float background_linear255,
-                const ImageU& alpha, const uint16_t opaque, ImageF* out) {
+void AlphaBlend(const Image3F& in, const size_t c, float background_linear255,
+                const ImageU& alpha, const uint16_t opaque, Image3F* out) {
   const float background = LinearToSrgb8Direct(background_linear255);
 
   for (size_t y = 0; y < out->ysize(); ++y) {
     const uint16_t* PIK_RESTRICT row_a = alpha.ConstRow(y);
-    const float* PIK_RESTRICT row_i = in.ConstRow(y);
-    float* PIK_RESTRICT row_o = out->Row(y);
+    const float* PIK_RESTRICT row_i = in.ConstPlaneRow(c, y);
+    float* PIK_RESTRICT row_o = out->PlaneRow(c, y);
     for (size_t x = 0; x < out->xsize(); ++x) {
       const uint16_t a = row_a[x];
       if (a == 0) {
@@ -62,12 +62,9 @@ const Image3F* AlphaBlend(const CodecInOut& io, const Image3F& linear,
 
   *copy = Image3F(linear.xsize(), linear.ysize());
   const uint16_t opaque = (1U << io.AlphaBits()) - 1;
-  AlphaBlend(linear.Plane(0), background_linear255, io.alpha(), opaque,
-             copy->MutablePlane(0));
-  AlphaBlend(linear.Plane(1), background_linear255, io.alpha(), opaque,
-             copy->MutablePlane(1));
-  AlphaBlend(linear.Plane(2), background_linear255, io.alpha(), opaque,
-             copy->MutablePlane(2));
+  for (size_t c = 0; c < 3; ++c) {
+    AlphaBlend(linear, c, background_linear255, io.alpha(), opaque, copy);
+  }
   return copy;
 }
 

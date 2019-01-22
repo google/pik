@@ -40,9 +40,8 @@ bool Image3SCompress(const Image3S& img, const Rect& rect, bool grayscale,
     if (grayscale) {
       ImageB image(rect.xsize(), rect.ysize());
       for (size_t y = 0; y < rect.ysize(); ++y) {
-        const int16_t* const PIK_RESTRICT row_in =
-            rect.ConstPlaneRow(img, 1, y);
-        uint8_t* const PIK_RESTRICT row_out = image.Row(y);
+        const int16_t* PIK_RESTRICT row_in = rect.ConstPlaneRow(img, 1, y);
+        uint8_t* PIK_RESTRICT row_out = image.Row(y);
         for (size_t x = 0; x < img.xsize(); ++x) {
           row_out[x] = static_cast<uint8_t>(row_in[x] - min[1]);
         }
@@ -52,9 +51,8 @@ bool Image3SCompress(const Image3S& img, const Rect& rect, bool grayscale,
       Image3B image(rect.xsize(), rect.ysize());
       for (int c = 0; c < 3; ++c) {
         for (size_t y = 0; y < rect.ysize(); ++y) {
-          const int16_t* const PIK_RESTRICT row_in =
-              rect.ConstPlaneRow(img, c, y);
-          uint8_t* const PIK_RESTRICT row_out = image.PlaneRow(c, y);
+          const int16_t* PIK_RESTRICT row_in = rect.ConstPlaneRow(img, c, y);
+          uint8_t* PIK_RESTRICT row_out = image.PlaneRow(c, y);
           for (size_t x = 0; x < img.xsize(); ++x) {
             row_out[x] = static_cast<uint8_t>(row_in[x] - min[c]);
           }
@@ -66,9 +64,8 @@ bool Image3SCompress(const Image3S& img, const Rect& rect, bool grayscale,
     if (grayscale) {
       ImageU image(rect.xsize(), rect.ysize());
       for (size_t y = 0; y < rect.ysize(); ++y) {
-        const int16_t* const PIK_RESTRICT row_in =
-            rect.ConstPlaneRow(img, 1, y);
-        uint16_t* const PIK_RESTRICT row_out = image.Row(y);
+        const int16_t* PIK_RESTRICT row_in = rect.ConstPlaneRow(img, 1, y);
+        uint16_t* PIK_RESTRICT row_out = image.Row(y);
         for (size_t x = 0; x < img.xsize(); ++x) {
           row_out[x] = static_cast<uint16_t>(row_in[x] - min[1]);
         }
@@ -78,9 +75,8 @@ bool Image3SCompress(const Image3S& img, const Rect& rect, bool grayscale,
       Image3U image(rect.xsize(), rect.ysize());
       for (int c = 0; c < 3; ++c) {
         for (size_t y = 0; y < rect.ysize(); ++y) {
-          const int16_t* const PIK_RESTRICT row_in =
-              rect.ConstPlaneRow(img, c, y);
-          uint16_t* const PIK_RESTRICT row_out = image.PlaneRow(c, y);
+          const int16_t* PIK_RESTRICT row_in = rect.ConstPlaneRow(img, c, y);
+          uint16_t* PIK_RESTRICT row_out = image.PlaneRow(c, y);
           for (size_t x = 0; x < img.xsize(); ++x) {
             row_out[x] = static_cast<uint16_t>(row_in[x] - min[c]);
           }
@@ -110,14 +106,16 @@ bool Image3SDecompress(const PaddedBytes& bytes, bool grayscale, size_t* pos,
         return PIK_FAILURE("Failed to decode DC");
       }
       *result = Image3S(image.xsize(), image.ysize());
-      FillImage<int16_t>(0, result->MutablePlane(0));
-      FillImage<int16_t>(0, result->MutablePlane(2));
       for (size_t y = 0; y < result->ysize(); ++y) {
-        const uint8_t* const PIK_RESTRICT row_in = image.Row(y);
-        int16_t* const PIK_RESTRICT row_out = result->MutablePlane(1)->Row(y);
+        const uint8_t* PIK_RESTRICT row_in = image.Row(y);
+        int16_t* PIK_RESTRICT row_out0 = result->PlaneRow(0, y);
+        int16_t* PIK_RESTRICT row_out1 = result->PlaneRow(1, y);
+        int16_t* PIK_RESTRICT row_out2 = result->PlaneRow(2, y);
+        std::fill(row_out0, row_out0 + image.xsize(), 0);
         for (size_t x = 0; x < image.xsize(); ++x) {
-          row_out[x] = static_cast<int16_t>(row_in[x]) + min[1];
+          row_out1[x] = static_cast<int16_t>(row_in[x]) + min[1];
         }
+        std::fill(row_out2, row_out2 + image.xsize(), 0);
       }
     } else {
       Image3B image;
@@ -127,8 +125,8 @@ bool Image3SDecompress(const PaddedBytes& bytes, bool grayscale, size_t* pos,
       *result = Image3S(image.xsize(), image.ysize());
       for (int c = 0; c < 3; ++c) {
         for (size_t y = 0; y < result->ysize(); ++y) {
-          const uint8_t* const PIK_RESTRICT row_in = image.PlaneRow(c, y);
-          int16_t* const PIK_RESTRICT row_out = result->MutablePlane(c)->Row(y);
+          const uint8_t* PIK_RESTRICT row_in = image.PlaneRow(c, y);
+          int16_t* PIK_RESTRICT row_out = result->PlaneRow(c, y);
           for (size_t x = 0; x < image.xsize(); ++x) {
             row_out[x] = static_cast<int16_t>(row_in[x]) + min[c];
           }
@@ -142,14 +140,16 @@ bool Image3SDecompress(const PaddedBytes& bytes, bool grayscale, size_t* pos,
         return PIK_FAILURE("Failed to decode DC");
       }
       *result = Image3S(image.xsize(), image.ysize());
-      FillImage<int16_t>(0, result->MutablePlane(0));
-      FillImage<int16_t>(0, result->MutablePlane(2));
       for (size_t y = 0; y < result->ysize(); ++y) {
-        const uint16_t* const PIK_RESTRICT row_in = image.Row(y);
-        int16_t* const PIK_RESTRICT row_out = result->MutablePlane(1)->Row(y);
+        const uint16_t* PIK_RESTRICT row_in = image.Row(y);
+        int16_t* PIK_RESTRICT row_out0 = result->PlaneRow(0, y);
+        int16_t* PIK_RESTRICT row_out1 = result->PlaneRow(1, y);
+        int16_t* PIK_RESTRICT row_out2 = result->PlaneRow(2, y);
+        std::fill(row_out0, row_out0 + image.xsize(), 0);
         for (size_t x = 0; x < image.xsize(); ++x) {
-          row_out[x] = static_cast<int16_t>(row_in[x]) + min[1];
+          row_out1[x] = static_cast<int16_t>(row_in[x]) + min[1];
         }
+        std::fill(row_out2, row_out2 + image.xsize(), 0);
       }
     } else {
       Image3U image;
@@ -159,8 +159,8 @@ bool Image3SDecompress(const PaddedBytes& bytes, bool grayscale, size_t* pos,
       *result = Image3S(image.xsize(), image.ysize());
       for (int c = 0; c < 3; ++c) {
         for (size_t y = 0; y < result->ysize(); ++y) {
-          const uint16_t* const PIK_RESTRICT row_in = image.PlaneRow(c, y);
-          int16_t* const PIK_RESTRICT row_out = result->MutablePlane(c)->Row(y);
+          const uint16_t* PIK_RESTRICT row_in = image.PlaneRow(c, y);
+          int16_t* PIK_RESTRICT row_out = result->PlaneRow(c, y);
           for (size_t x = 0; x < image.xsize(); ++x) {
             row_out[x] = static_cast<int16_t>(row_in[x]) + min[c];
           }
@@ -192,8 +192,7 @@ SIMD_ATTR void DequantDC(const Image3S& img_dc16, const Rect& rect,
 
   for (size_t by = 0; by < ysize; ++by) {
     const int16_t* PIK_RESTRICT row_y16 = img_dc16.ConstPlaneRow(1, by);
-    float* PIK_RESTRICT row_y =
-        rect.Row(pass_dec_cache->dc.MutablePlane(1), by);
+    float* PIK_RESTRICT row_y = rect.PlaneRow(&pass_dec_cache->dc, 1, by);
 
     for (size_t bx = 0; bx < xsize; bx += d.N) {
       const auto quantized_y16 = load(d16, row_y16 + bx);
@@ -209,9 +208,8 @@ SIMD_ATTR void DequantDC(const Image3S& img_dc16, const Rect& rect,
     for (size_t by = 0; by < ysize; ++by) {
       const int16_t* PIK_RESTRICT row_xb16 = img_dc16.ConstPlaneRow(c, by);
       const float* PIK_RESTRICT row_y =
-          rect.ConstRow(pass_dec_cache->dc.Plane(1), by);
-      float* PIK_RESTRICT row_xb =
-          rect.Row(pass_dec_cache->dc.MutablePlane(c), by);
+          rect.ConstPlaneRow(pass_dec_cache->dc, 1, by);
+      float* PIK_RESTRICT row_xb = rect.PlaneRow(&pass_dec_cache->dc, c, by);
 
       for (size_t bx = 0; bx < xsize; bx += d.N) {
         const auto quantized_xb16 = load(d16, row_xb16 + bx);

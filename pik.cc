@@ -29,6 +29,31 @@
 
 namespace pik {
 
+namespace {
+static const uint8_t kBrunsliMagic[] = {
+  0x0A, 0x04, 'B', 0xd2, 0xd5, 'N', 0x12
+};
+
+// TODO(user): use VerifySignature, when brunsli codebase is attached.
+bool IsBrunsliFile(const PaddedBytes& compressed) {
+  const size_t magic_size = sizeof(kBrunsliMagic);
+  if (compressed.size() < magic_size) {
+    return false;
+  }
+  if (memcmp(compressed.data(), kBrunsliMagic, magic_size) != 0) {
+    return false;
+  }
+  return true;
+}
+
+Status BrunsliToPixels(const DecompressParams& dparams,
+                       const PaddedBytes& compressed, CodecInOut* io,
+                       PikInfo* aux_out, ThreadPool* pool) {
+  return PIK_FAILURE("Brunsli decoding is not implemented yet.");
+}
+
+}  // namespace
+
 Status PixelsToPik(const CompressParams& cparams, const CodecInOut* io,
                    PaddedBytes* compressed, PikInfo* aux_out,
                    ThreadPool* pool) {
@@ -102,21 +127,15 @@ Status PixelsToPik(const CompressParams& cparams, const CodecInOut* io,
     p.adaptive_reconstruction = Override::kOff;
     pass_params.is_last = false;
 
-    // DC pass.
-    transform.SetProgressiveMode(ProgressiveMode::kDcOnly);
+    // DC + Low frequency pass.
+    transform.SetProgressiveMode(ProgressiveMode::kLfOnly);
     PIK_RETURN_IF_ERROR(encoder.AddPass(p, pass_params, io, pool));
 
     // Disable gradient map from here on.
     p.gradient = Override::kOff;
 
-    // DC is 0, low frequency predictions are useless.
+    // DC + LF are 0, predictions are useless.
     p.predict_lf = false;
-
-    // Low frequency pass.
-    transform.SetProgressiveMode(ProgressiveMode::kLfOnly);
-    PIK_RETURN_IF_ERROR(encoder.AddPass(p, pass_params, io, pool));
-
-    // DC + LF are 0, high frequency predictions are useless.
     p.predict_hf = false;
 
     // Optional salient-regions high frequency pass.
@@ -152,6 +171,10 @@ Status PikToPixels(const DecompressParams& dparams,
                    const PaddedBytes& compressed, CodecInOut* io,
                    PikInfo* aux_out, ThreadPool* pool) {
   PROFILER_ZONE("PikToPixels uninstrumented");
+
+  if (IsBrunsliFile(compressed)) {
+    return BrunsliToPixels(dparams, compressed, io, aux_out, pool);
+  }
 
   // To avoid the complexity of file I/O and buffering, we assume the bitstream
   // is loaded (or for large images/sequences: mapped into) memory.

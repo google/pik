@@ -119,62 +119,6 @@ double ButteraugliFuzzyInverse(double seek);
 #define BUTTERAUGLI_ASSUME_ALIGNED(ptr, align) (ptr)
 #endif  // BUTTERAUGLI_HAS_ASSUME_ALIGNED
 
-// Compacts a padded image into a preallocated packed vector.
-template <typename T>
-static inline void CopyToPacked(const Image<T> &from, std::vector<T> *to) {
-  const size_t xsize = from.xsize();
-  const size_t ysize = from.ysize();
-#if BUTTERAUGLI_ENABLE_CHECKS
-  if (to->size() < xsize * ysize) {
-    printf("%zu x %zu exceeds %zu capacity\n", xsize, ysize, to->size());
-    abort();
-  }
-#endif
-  for (size_t y = 0; y < ysize; ++y) {
-    const float *PIK_RESTRICT row_from = from.Row(y);
-    float *PIK_RESTRICT row_to = to->data() + y * xsize;
-    memcpy(row_to, row_from, xsize * sizeof(T));
-  }
-}
-// Expands a packed vector into a preallocated padded image.
-template <typename T>
-static inline void CopyFromPacked(const std::vector<T> &from, Image<T> *to) {
-  const size_t xsize = to->xsize();
-  const size_t ysize = to->ysize();
-  assert(from.size() == xsize * ysize);
-  for (size_t y = 0; y < ysize; ++y) {
-    const float *PIK_RESTRICT row_from = from.data() + y * xsize;
-    float *PIK_RESTRICT row_to = to->Row(y);
-    memcpy(row_to, row_from, xsize * sizeof(T));
-  }
-}
-
-template <typename T>
-static inline Image3<T> PlanesFromPacked(
-    const size_t xsize, const size_t ysize,
-    const std::vector<std::vector<T>> &packed) {
-  Image3<T> planes(xsize, ysize);
-  CopyFromPacked(packed[0], planes.MutablePlane(0));
-  CopyFromPacked(packed[1], planes.MutablePlane(1));
-  CopyFromPacked(packed[2], planes.MutablePlane(2));
-  return planes;
-}
-
-template <typename T>
-static inline std::vector<std::vector<T>> PackedFromPlanes(
-    const Image3<T> &planes) {
-  const size_t num_pixels = planes.xsize() * planes.ysize();
-  std::vector<std::vector<T>> packed;
-  packed.reserve(3);
-  packed.push_back(std::vector<T>(num_pixels));
-  CopyToPacked(planes.Plane(0), &packed.back());
-  packed.push_back(std::vector<T>(num_pixels));
-  CopyToPacked(planes.Plane(1), &packed.back());
-  packed.push_back(std::vector<T>(num_pixels));
-  CopyToPacked(planes.Plane(2), &packed.back());
-  return packed;
-}
-
 struct PsychoImage {
   ImageF uhf[2];  // XY
   ImageF hf[2];   // XY

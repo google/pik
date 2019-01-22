@@ -29,7 +29,7 @@ ButteraugliComparator::ButteraugliComparator(const Image3F& opsin,
       distance_(0.0),
       multiplier_(multiplier),
       distmap_(xsize_, ysize_) {
-  FillImage(0.0f, &distmap_);
+  ZeroFillImage(&distmap_);
 }
 
 void ButteraugliComparator::Compare(const Image3F& linear_rgb) {

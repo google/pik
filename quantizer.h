@@ -83,6 +83,7 @@ SIMD_ATTR PIK_INLINE SIMD_FULL(float)::V
 enum QuantKinds {
   kQuantKindDCT8 = 0,
   kQuantKindID,
+  kQuantKindDCT2,
   kQuantKindDCT4,
   kQuantKindDCT16Start,
   kQuantKindDCT16_1,
@@ -315,8 +316,8 @@ class Quantizer {
     for (size_t k = 0; k < block_size; k += 2 * df.N) {
       const auto val_a = load(df, block_in + k);
       const auto val_b = load(df, block_in + k + df.N);
-      const auto scale_a = load(df, scales + k);
-      const auto scale_b = load(df, scales + k + df.N);
+      const auto scale_a = load_unaligned(df, scales + k);
+      const auto scale_b = load_unaligned(df, scales + k + df.N);
       const auto scaled_a = val_a * scale_a;
       const auto scaled_b = val_b * scale_b;
       const auto abs_scaled_a = scaled_a & clear_sign;
@@ -355,7 +356,7 @@ class Quantizer {
     const auto thres = set1(df, zero_bias_[c]);
     for (size_t k = 0; k < block_size; k += df.N) {
       const auto val = load(df, in + k);
-      const auto scale = load(df, scales + k);
+      const auto scale = load_unaligned(df, scales + k);
       const auto inv_scale = load(df, dequant_matrix + k);
       const auto scaled = val * scale;
       const auto abs_scaled = scaled & clear_sign;
@@ -420,6 +421,7 @@ class Quantizer {
     bq_cache_ = &bq_library_.back();
   }
 
+  // WARNING: the returned pointer is unaligned.
   const float* GetBlockQuantizer(int quant, size_t quant_kind) const {
     int map_position = kNumQuantKinds * quant + quant_kind;
     if (bq_cache_->map_.size() <= map_position) {
@@ -478,10 +480,6 @@ class Quantizer {
 const float* DequantMatrix(int id, size_t quant_kind, int c);
 
 Image3S QuantizeCoeffsDC(const Image3F& in, const Quantizer& quantizer);
-
-// Returns NxN coefficients per block.
-ImageF QuantizeRoundtrip(const Quantizer& quantizer, int c,
-                         const ImageF& coeffs);
 
 // Input is already 1 DC per block!
 ImageF QuantizeRoundtripDC(const Quantizer& quantizer, int c, const ImageF& dc);

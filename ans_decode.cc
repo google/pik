@@ -14,21 +14,6 @@
 namespace pik {
 namespace {
 
-Status ANSBuildMapTable(const std::vector<int>& counts,
-                        ANSSymbolInfo map[ANS_TAB_SIZE]) {
-  int i;
-  int pos = 0;
-  for (i = 0; i < counts.size(); ++i) {
-    int j;
-    for (j = 0; j < counts[i]; ++j, ++pos) {
-      map[pos].symbol_ = i;
-      map[pos].freq_ = counts[i];
-      map[pos].offset_ = j;
-    }
-  }
-  return (pos == ANS_TAB_SIZE);
-}
-
 // Decodes a number in the range [0..65535], by reading 1 - 20 bits.
 inline int DecodeVarLenUint16(BitReader* input) {
   if (input->ReadBits(1)) {

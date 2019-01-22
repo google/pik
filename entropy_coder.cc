@@ -27,6 +27,7 @@
 #include "dc_predictor.h"
 #include "fast_log.h"
 #include "image.h"
+#include "profiler.h"
 #include "status.h"
 #include "write_bits.h"
 
@@ -125,8 +126,8 @@ void ShrinkDC(const Rect& rect_dc, const Image3S& dc,
 
   // Interleave X and Z into XZ for ShrinkXB.
   for (size_t y = 0; y < ysize; ++y) {
-    const int16_t* PIK_RESTRICT row_x = rect_dc.ConstRow(dc.Plane(0), y);
-    const int16_t* PIK_RESTRICT row_z = rect_dc.ConstRow(dc.Plane(2), y);
+    const int16_t* PIK_RESTRICT row_x = rect_dc.ConstPlaneRow(dc, 0, y);
+    const int16_t* PIK_RESTRICT row_z = rect_dc.ConstPlaneRow(dc, 2, y);
     int16_t* PIK_RESTRICT row_xz = tmp_xz.Row(y);
 
     for (size_t x = 0; x < xsize; ++x) {
@@ -163,8 +164,8 @@ void ExpandDC(const Rect& rect_dc, Image3S* PIK_RESTRICT dc,
 
   // The predictor expects a single image with interleaved X and Z.
   for (size_t y = 0; y < ysize; ++y) {
-    const int16_t* PIK_RESTRICT row0 = rect_dc.ConstRow(dc->Plane(0), y);
-    const int16_t* PIK_RESTRICT row2 = rect_dc.ConstRow(dc->Plane(2), y);
+    const int16_t* PIK_RESTRICT row0 = rect_dc.ConstPlaneRow(*dc, 0, y);
+    const int16_t* PIK_RESTRICT row2 = rect_dc.ConstPlaneRow(*dc, 2, y);
     int16_t* PIK_RESTRICT row_xz = tmp_xz_residuals->Row(y);
 
     for (size_t x = 0; x < xsize; ++x) {
@@ -181,7 +182,7 @@ void ExpandDC(const Rect& rect_dc, Image3S* PIK_RESTRICT dc,
   } else {
     for (size_t y = 0; y < ysize; ++y) {
       const int16_t* PIK_RESTRICT row_from = tmp_y->ConstRow(y);
-      int16_t* PIK_RESTRICT row_to = rect_dc.Row(dc->MutablePlane(1), y);
+      int16_t* PIK_RESTRICT row_to = rect_dc.PlaneRow(dc, 1, y);
       memcpy(row_to, row_from, xsize * sizeof(row_to[0]));
     }
   }
@@ -189,8 +190,8 @@ void ExpandDC(const Rect& rect_dc, Image3S* PIK_RESTRICT dc,
   // Deinterleave |tmp_xz_expanded| and copy into |dc|.
   for (size_t y = 0; y < ysize; ++y) {
     const int16_t* PIK_RESTRICT row_xz = tmp_xz_expanded->ConstRow(y);
-    int16_t* PIK_RESTRICT row_out0 = rect_dc.Row(dc->MutablePlane(0), y);
-    int16_t* PIK_RESTRICT row_out2 = rect_dc.Row(dc->MutablePlane(2), y);
+    int16_t* PIK_RESTRICT row_out0 = rect_dc.PlaneRow(dc, 0, y);
+    int16_t* PIK_RESTRICT row_out2 = rect_dc.PlaneRow(dc, 2, y);
 
     for (size_t x = 0; x < xsize; ++x) {
       row_out0[x] = row_xz[2 * x + 0];
@@ -827,6 +828,7 @@ std::string EncodeImageData(const Rect& rect, const Image3S& img,
 bool DecodeHistograms(BitReader* br, const size_t num_contexts,
                       const size_t max_alphabet_size, ANSCode* code,
                       std::vector<uint8_t>* context_map) {
+  PROFILER_FUNC;
   size_t num_histograms = 1;
   context_map->resize(num_contexts);
   if (num_contexts > 1) {
@@ -944,6 +946,7 @@ bool DecodeQuantField(BitReader* PIK_RESTRICT br,
                       const AcStrategyImage& PIK_RESTRICT ac_strategy,
                       ImageI* PIK_RESTRICT quant_field,
                       const ImageI* PIK_RESTRICT hint) {
+  PROFILER_FUNC;
   const size_t xsize = rect_qf.xsize();
   const size_t ysize = rect_qf.ysize();
   const size_t stride = quant_field->PixelsPerRow();
@@ -1042,6 +1045,7 @@ bool DecodeAcStrategy(BitReader* PIK_RESTRICT br,
                       const std::vector<uint8_t>& context_map, const Rect& rect,
                       AcStrategyImage* PIK_RESTRICT ac_strategy,
                       const AcStrategyImage* PIK_RESTRICT hint) {
+  PROFILER_FUNC;
   const size_t ctx = context_map[AcStrategyContext()];
 
   const size_t xsize = rect.xsize();
@@ -1106,6 +1110,7 @@ bool DecodeAC(const std::vector<uint8_t>& context_map,
               BitReader* PIK_RESTRICT br, ANSSymbolReader* decoder,
               Image3S* PIK_RESTRICT ac, const Rect& rect,
               Image3I* PIK_RESTRICT tmp_num_nzeroes) {
+  PROFILER_FUNC;
   constexpr int N = kBlockDim;
   constexpr int block_size = N * N;
 

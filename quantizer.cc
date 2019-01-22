@@ -41,7 +41,7 @@ const float* NewDequantMatrices() {
   static_assert(kNumQuantTables == 1,
                 "Update this function when adding quantization tables.");
 
-  static_assert(kNumQuantKinds == 23,
+  static_assert(kNumQuantKinds == 24,
                 "Update this function when adding new quantization kinds.");
 
   // DCT8 (quant_kind 0)
@@ -73,6 +73,18 @@ const float* NewDequantMatrices() {
 
   // DCT4 (quant_kind 2)
   {
+    const double* quant_weights = GetQuantWeightsDCT2();
+    for (size_t c = 0; c < 3; c++) {
+      for (size_t i = 0; i < N * N; i++) {
+        double weight = quant_weights[c * block_size + i];
+        table[DequantMatrixOffset(0, kQuantKindDCT2, c) * block_size + i] =
+            1.0f / weight;
+      }
+    }
+  }
+
+  // DCT4 (quant_kind 3)
+  {
     double weight01[3] = {};
     double weight11[3] = {};
     const double* quant_weights = GetQuantWeightsDCT4(weight01, weight11);
@@ -92,7 +104,7 @@ const float* NewDequantMatrices() {
     }
   }
 
-  // DCT16 (quant_kind 3 to 6)
+  // DCT16 (quant_kind 4 to 7)
   {
     const double* quant_weights = GetQuantWeightsDCT16();
     for (size_t c = 0; c < 3; c++) {
@@ -112,7 +124,7 @@ const float* NewDequantMatrices() {
     }
   }
 
-  // DCT32 (quant_kind 7 to 22)
+  // DCT32 (quant_kind 8 to 23)
   {
     const double* quant_weights = GetQuantWeightsDCT32();
     for (size_t c = 0; c < 3; c++) {
@@ -193,6 +205,8 @@ bool Quantizer::Decode(BitReader* br) {
   quant_dc_ = br->ReadBits(8) + 1;
   global_scale_ = (global_scale_and_template_id & 0x7FFF) + 1;
   template_id_ = global_scale_and_template_id >> 15;
+  if (template_id_ >= kNumQuantTables)
+    return PIK_FAILURE("template_id is too big");
   RecomputeFromGlobalScale();
   inv_quant_dc_ = inv_global_scale_ / quant_dc_;
   initialized_ = true;

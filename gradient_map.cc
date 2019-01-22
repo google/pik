@@ -31,15 +31,15 @@ double Interpolate(double v00, double v01, double v10, double v11, double x,
 // delta and right delta (top/bottom for vertical direction).
 // The radius over which the derivative is computed is only 1 pixel and it only
 // checks two angles (hor and ver), but this approximation works well enough.
-ImageF Gradient2(const ImageF& image) {
+ImageF Gradient2(const Image3F& image, const size_t c) {
   size_t xsize = image.xsize();
   size_t ysize = image.ysize();
   ImageF image2(image.xsize(), image.ysize());
   for (size_t y = 1; y + 1 < ysize; y++) {
-    const auto* PIK_RESTRICT row0 = image.Row(y - 1);
-    const auto* PIK_RESTRICT row1 = image.Row(y);
-    const auto* PIK_RESTRICT row2 = image.Row(y + 1);
-    auto* row_out = image2.Row(y);
+    const float* PIK_RESTRICT row0 = image.PlaneRow(c, y - 1);
+    const float* PIK_RESTRICT row1 = image.PlaneRow(c, y);
+    const float* PIK_RESTRICT row2 = image.PlaneRow(c, y + 1);
+    float* row_out = image2.Row(y);
     for (int x = 1; x + 1 < xsize; x++) {
       float ddx = (row1[x] - row1[x - 1]) - (row1[x + 1] - row1[x]);
       float ddy = (row1[x] - row0[x]) - (row2[x] - row1[x]);
@@ -48,19 +48,19 @@ ImageF Gradient2(const ImageF& image) {
   }
   // Copy to the borders
   if (ysize > 2) {
-    auto* PIK_RESTRICT row0 = image2.Row(0);
-    const auto* PIK_RESTRICT row1 = image2.Row(1);
-    const auto* PIK_RESTRICT row2 = image2.Row(ysize - 2);
-    auto* PIK_RESTRICT row3 = image2.Row(ysize - 1);
+    float* PIK_RESTRICT row0 = image2.Row(0);
+    const float* PIK_RESTRICT row1 = image2.Row(1);
+    const float* PIK_RESTRICT row2 = image2.Row(ysize - 2);
+    float* PIK_RESTRICT row3 = image2.Row(ysize - 1);
     for (size_t x = 1; x + 1 < xsize; x++) {
       row0[x] = row1[x];
       row3[x] = row2[x];
     }
   } else {
-    const auto* row0_in = image.Row(0);
-    const auto* row1_in = image.Row(ysize - 1);
-    auto* row0_out = image2.Row(0);
-    auto* row1_out = image2.Row(ysize - 1);
+    const float* row0_in = image.PlaneRow(c, 0);
+    const float* row1_in = image.PlaneRow(c, ysize - 1);
+    float* row0_out = image2.Row(0);
+    float* row1_out = image2.Row(ysize - 1);
     for (size_t x = 1; x + 1 < xsize; x++) {
       // Image too narrow, take first derivative instead
       row0_out[x] = row1_out[x] = fabsf(row0_in[x] - row1_in[x]);
@@ -68,14 +68,14 @@ ImageF Gradient2(const ImageF& image) {
   }
   if (xsize > 2) {
     for (size_t y = 0; y < ysize; y++) {
-      auto* row = image2.Row(y);
+      float* row = image2.Row(y);
       row[0] = row[1];
       row[xsize - 1] = row[xsize - 2];
     }
   } else {
     for (size_t y = 0; y < ysize; y++) {
-      const auto* PIK_RESTRICT row_in = image.Row(y);
-      auto* row_out = image2.Row(y);
+      const float* PIK_RESTRICT row_in = image.PlaneRow(c, y);
+      float* row_out = image2.Row(y);
       // Image too narrow, take first derivative instead
       row_out[0] = row_out[xsize - 1] = fabsf(row_in[0] - row_in[xsize - 1]);
     }
@@ -133,7 +133,7 @@ void DilateImage(std::vector<int>& image, size_t w, size_t h, int r) {
 std::vector<int> ThresholdImage(const ImageF& image, float v) {
   std::vector<int> result(image.xsize() * image.ysize());
   for (int y = 0; y < image.ysize(); y++) {
-    const auto* row = image.Row(y);
+    const float* row = image.Row(y);
     for (int x = 0; x < image.xsize(); x++) {
       // Smaller is included, larger excluded.
       result[y * image.xsize() + x] = (row[x] > v) ? 0 : 1;
@@ -241,8 +241,8 @@ Image3F ComputeGradientImage(const GradientMap& gradient) {
   Image3F upscaled(gradient.xsize_dc, gradient.ysize_dc);
   for (size_t by = 0; by < gradient.ysize - 1; ++by) {
     for (int c = 0; c < 3; c++) {
-      const auto* row0 = gradient.gradient.PlaneRow(c, by);
-      const auto* row1 = gradient.gradient.PlaneRow(c, by + 1);
+      const float* row0 = gradient.gradient.PlaneRow(c, by);
+      const float* row1 = gradient.gradient.PlaneRow(c, by + 1);
       for (size_t bx = 0; bx + 1 < gradient.xsize; bx++) {
         float v00 = row0[bx];
         float v01 = row1[bx];
@@ -259,7 +259,7 @@ Image3F ComputeGradientImage(const GradientMap& gradient) {
         float dx = x1 - x0;
         float dy = y1 - y0;
         for (size_t y = y0; y <= yend; y++) {
-          auto* row_out = upscaled.PlaneRow(c, y);
+          float* row_out = upscaled.PlaneRow(c, y);
           for (size_t x = x0; x <= xend; x++) {
             row_out[x] =
                 Interpolate(v00, v01, v10, v11, (x - x0) / dx, (y - y0) / dy);
@@ -369,10 +369,10 @@ void ComputeGradientMap(const Image3F& opsin, bool grayscale,
   const auto compute_gradient_channel = [&](const int task, const int thread) {
     static const float kExclude = 999999;
     static const float kMaxDiff[3] = {0.001, 0.01, 0.05};
-    const int c = task;
+    const size_t c = task;
     if (grayscale && c != 1) return;
     std::vector<float> points(ysize_dc * xsize_dc, kExclude);
-    ImageF gradient2 = Gradient2(opsin.Plane(c));
+    ImageF gradient2 = Gradient2(opsin, c);
     std::vector<int> apply = ThresholdImage(gradient2, kMaxDiff[c]);
     DilateImage(apply, xsize_dc, ysize_dc, -8);
     DilateImage(apply, xsize_dc, ysize_dc, 8);

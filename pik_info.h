@@ -75,6 +75,7 @@ struct PikInfo {
       layers[i].Assimilate(victim.layers[i]);
     }
     num_blocks += victim.num_blocks;
+    num_dct2_blocks += victim.num_dct2_blocks;
     num_dct4_blocks += victim.num_dct4_blocks;
     num_dct16_blocks += victim.num_dct16_blocks;
     num_dct32_blocks += victim.num_dct32_blocks;
@@ -124,6 +125,7 @@ struct PikInfo {
   std::vector<PikImageSizeInfo> layers;
   size_t num_blocks = 0;
   // Number of blocks that use larger DCT. Only set in the encoder.
+  size_t num_dct2_blocks = 0;
   size_t num_dct4_blocks = 0;
   size_t num_dct16_blocks = 0;
   size_t num_dct32_blocks = 0;

@@ -12,6 +12,7 @@
 #include "ac_strategy.h"
 #include "block.h"
 #include "common.h"
+#include "data_parallel.h"
 #include "dct.h"
 #include "dct_util.h"
 #include "entropy_coder.h"
@@ -30,7 +31,8 @@ namespace {
 Image3F DoDenoise(const Image3F& opsin, const Image3F& opsin_sharp,
                   const Quantizer& quantizer, const ImageI& raw_quant_field,
                   const AcStrategyImage& ac_strategy,
-                  const EpfParams& epf_params, AdaptiveReconstructionAux* aux) {
+                  const EpfParams& epf_params, ThreadPool* pool,
+                  AdaptiveReconstructionAux* aux) {
   if (aux != nullptr) {
     aux->quant_scale = quantizer.Scale();
   }
@@ -41,7 +43,7 @@ Image3F DoDenoise(const Image3F& opsin, const Image3F& opsin_sharp,
   if (epf_params.enable_adaptive) {
     Dispatch(TargetBitfield().Best(), EdgePreservingFilter(), opsin,
              opsin_sharp, &raw_quant_field, quant_scale, ac_strategy,
-             epf_params, &smoothed, aux ? &aux->epf_stats : nullptr);
+             epf_params, pool, &smoothed, aux ? &aux->epf_stats : nullptr);
   } else {
     float stretch;
     Dispatch(TargetBitfield().Best(), EdgePreservingFilter(), opsin,
@@ -71,12 +73,13 @@ struct ARStats {
     }
   }
 
-  static uint32_t Total(const uint32_t* PIK_RESTRICT from) {
+  static SIMD_ATTR uint32_t Total(const uint32_t* PIK_RESTRICT from) {
     const DU d;
-    return get_part(d, ext::sum_of_lanes(load_unaligned(d, from)));
+    const SIMD_PART(uint32_t, 1) d1;
+    return get_part(d1, ext::sum_of_lanes(load_unaligned(d, from)));
   }
 
-  static void Add(const VU add, uint32_t* PIK_RESTRICT to) {
+  static SIMD_ATTR void Add(const VU add, uint32_t* PIK_RESTRICT to) {
     const DU d;
     store_unaligned(load_unaligned(d, to) + add, d, to);
   }
@@ -90,14 +93,12 @@ struct ARStats {
 // coefficients of the original image (i.e. `correction`) to an interval whose
 // size depends on the values in the non-smoothed image. The interval is
 // scaled according to `interval_scale`.
-// TODO(veluca): cleanup by removing `bias`, and all the related methods
-// everywhere.
 template <int c>
-SIMD_ATTR PIK_INLINE void AsymmetricClamp(
-    const VF interval_scale, const VF bias, const VF values, const float asym,
-    float* PIK_RESTRICT block, float* PIK_RESTRICT min_ratio,
-    float* PIK_RESTRICT lower_bounds, float* PIK_RESTRICT upper_bounds,
-    ARStats* PIK_RESTRICT stats) {
+SIMD_ATTR PIK_INLINE void AsymmetricClamp(const VF interval_scale,
+                                          const VF values, const float asym,
+                                          float* PIK_RESTRICT block,
+                                          float* PIK_RESTRICT min_ratio,
+                                          ARStats* PIK_RESTRICT stats) {
   const DF df;
   const auto half = set1(df, 0.161406708f);
   const auto small = set1(df, asym);
@@ -110,13 +111,8 @@ SIMD_ATTR PIK_INLINE void AsymmetricClamp(
   const auto lower_bound = select(neghalf, negsmall, is_pos) * interval_scale;
 
   const auto correction = load(df, block);
-  const auto lo = lower_bound;
-  const auto hi = upper_bound;
-  // Store for later clamping. The mul-by-min_ratio cannot be used in some
-  // cases (zero or sign changes).
-  store(lo, df, lower_bounds);
-  store(hi, df, upper_bounds);
-  const auto clamped = min(max(lo, correction), hi);
+  // Note: this clamping is only for purposes of determining `min_ratio`.
+  const auto clamped = min(max(lower_bound, correction), upper_bound);
 
   // Integer comparisons are faster than float.
   const SIMD_FULL(uint32_t) du;
@@ -137,7 +133,8 @@ SIMD_ATTR PIK_INLINE void AsymmetricClamp(
 #endif
 
   // ratio := clamped/correction: small if 'correction' was clamped a lot.
-  // If correction == 0, ratio will be large and min_ratio not updated.
+  // If correction == 0, ratio will be large and min_ratio not updated (fine
+  // because zero definitely lies within the quantization interval.)
   const auto divisor = select(correction, set1(df, 1E-7f), correction_is_zero);
 
   const auto clamp_ratio = clamped / divisor;
@@ -156,16 +153,13 @@ SIMD_ATTR PIK_INLINE void AsymmetricClamp(
 // does not get too far away from the values in the corresponding block of the
 // original image, pointed to by `original`. Instead of computing the difference
 // of the DCT of the two images, we compute the DCT of the difference as DCT is
-// a linear operator and this saves some work. `biases` contains the
-// dequantization bias that was used for the current block.
+// a linear operator and this saves some work.
 template <int c>
 SIMD_ATTR PIK_INLINE void UpdateMinRatioOfClampToOriginalDCT(
     const float* PIK_RESTRICT original, size_t stride,
-    const float* PIK_RESTRICT biases, const size_t biases_stride,
     const float* PIK_RESTRICT dequant_matrix, const float inv_quant_ac,
     const float dc_mul, AcStrategy acs, const float* PIK_RESTRICT filt,
-    float* PIK_RESTRICT min_ratio, float* PIK_RESTRICT lower_bounds,
-    float* PIK_RESTRICT upper_bounds, float* PIK_RESTRICT block,
+    float* PIK_RESTRICT min_ratio, float* PIK_RESTRICT block,
     ARStats* PIK_RESTRICT stats) {
   const SIMD_FULL(float) df;
   const SIMD_PART(float, 1) d1;
@@ -222,13 +216,13 @@ SIMD_ATTR PIK_INLINE void UpdateMinRatioOfClampToOriginalDCT(
         }
       }
     }
-    float sum = get_part(d1, ext::sum_of_lanes(sums));
-    sum *= acs.InverseNumACCoefficients();
-    sum = std::sqrt(sum);
-    sum *= 0.057592392f;
-    sum += 0.044037713396095239f;
+    const auto sum = ext::sum_of_lanes(sums);
+    const auto avg = sum * set1(df, acs.InverseNumACCoefficients());
+    const auto mul = set1(df, 0.057592392f);
+    const auto add = set1(df, 0.044037713396095239f);
+    const auto max_asym = mul_add(sqrt(avg), mul, add);
     // Smaller sum -> sharper image.
-    asym = std::min<float>(sum, asym);
+    asym = std::min<float>(asym, get_part(d1, max_asym));
   }
 
   // TODO(janwas): template, make covered_blocks* constants
@@ -236,30 +230,23 @@ SIMD_ATTR PIK_INLINE void UpdateMinRatioOfClampToOriginalDCT(
     for (size_t bx = 0; bx < acs.covered_blocks_x(); bx++) {
       const size_t block_offset =
           (by * acs.covered_blocks_x() + bx) * kBlockDim * kBlockDim;
-      const size_t biases_offset =
-          by * biases_stride + bx * kBlockDim * kBlockDim;
       // First iteration: skip lowest-frequency coefficient.
-      const auto bias = load(df, biases + biases_offset);
       const auto values = load(df, block2 + block_offset);
       const auto ac_mul =
           load(df, dequant_matrix + block_offset) * set1(df, inv_quant_ac);
       const float cur_dc_mul = acs.ARLowestFrequencyScale(bx, by) * dc_mul;
       const auto interval_scale =
           select(ac_mul, set1(df, cur_dc_mul), only_lane0);
-      AsymmetricClamp<c>(interval_scale, bias, values, asym,
-                         block + block_offset, min_ratio + block_offset,
-                         lower_bounds + block_offset,
-                         upper_bounds + block_offset, stats);
+      AsymmetricClamp<c>(interval_scale, values, asym, block + block_offset,
+                         min_ratio + block_offset, stats);
 
       for (size_t k = df.N; k < kBlockDim * kBlockDim; k += df.N) {
         const size_t ofs = block_offset + k;
-        const auto bias = load(df, biases + biases_offset + k);
         const auto values = load(df, block2 + ofs);
         const auto interval_scale =
             load(df, dequant_matrix + ofs) * set1(df, inv_quant_ac);
-        AsymmetricClamp<c>(interval_scale, bias, values, asym, block + ofs,
-                           min_ratio + ofs, lower_bounds + ofs,
-                           upper_bounds + ofs, stats);
+        AsymmetricClamp<c>(interval_scale, values, asym, block + ofs,
+                           min_ratio + ofs, stats);
       }
     }
   }
@@ -267,28 +254,23 @@ SIMD_ATTR PIK_INLINE void UpdateMinRatioOfClampToOriginalDCT(
 
 // Clamp by multiplying block[k] by min_ratio[k], then IDCT.
 // DoMul allows disabling the scaling for X as an experiment (disabled).
-template <bool DoMul, bool DoClamp>
+template <bool DoMul>
 SIMD_ATTR PIK_INLINE void ClampAndIDCT(
     float* PIK_RESTRICT block, const size_t block_width,
     const size_t block_height, const float* PIK_RESTRICT min_ratio,
-    const float* PIK_RESTRICT lower_bounds,
-    const float* PIK_RESTRICT upper_bounds, const AcStrategy acs,
-    const float* PIK_RESTRICT original, float* PIK_RESTRICT filt,
-    size_t stride) {
+    const AcStrategy acs, const float* PIK_RESTRICT original,
+    float* PIK_RESTRICT filt, size_t stride) {
 #ifdef ADDRESS_SANITIZER
-  for (size_t k = 0; k < AcStrategy::kMaxCoeffArea; ++k) {
+  for (size_t k = 0; k < block_width * block_height; ++k) {
     PIK_ASSERT(min_ratio[k] >= 0.0f);
   }
 #endif
 
   const SIMD_FULL(float) df;
-  for (size_t k = 0; k < AcStrategy::kMaxCoeffArea; k += df.N) {
+  for (size_t k = 0; k < block_width * block_height; k += df.N) {
     const auto mul = DoMul ? load(df, min_ratio + k) : set1(df, 1.0f);
     const auto scaled = load(df, block + k) * mul;
-    const auto clamped = DoClamp ? min(max(load(df, lower_bounds + k), scaled),
-                                       load(df, upper_bounds + k))
-                                 : scaled;
-    store(clamped, df, block + k);
+    store(scaled, df, block + k);
   }
 
   // IDCT
@@ -317,36 +299,29 @@ void ComputeResidualSlow(const Image3F& in, const Image3F& smoothed,
   }
 }
 
+// TODO(janwas): template, use actual max_coefs from acs as size.
+struct ARBlocks {
+  float x[AcStrategy::kMaxCoeffArea];
+  uint8_t pad1[CacheAligned::kAlignment];
+  float y[AcStrategy::kMaxCoeffArea];
+  uint8_t pad2[CacheAligned::kAlignment];
+  float b[AcStrategy::kMaxCoeffArea];
+  uint8_t pad3[CacheAligned::kAlignment];
+  float min_ratio[AcStrategy::kMaxCoeffArea];
+};
+
 }  // namespace
 
 SIMD_ATTR Image3F AdaptiveReconstruction(
     Image3F* in, const Image3F& non_smoothed, const Quantizer& quantizer,
     const ImageI& raw_quant_field, const AcStrategyImage& ac_strategy,
-    const Image3F& biases, const EpfParams& epf_params,
+    const EpfParams& epf_params, ThreadPool* pool,
     AdaptiveReconstructionAux* aux) {
   PROFILER_FUNC;
   // Input image should have an integer number of blocks.
   PIK_ASSERT(in->xsize() % kBlockDim == 0 && in->ysize() % kBlockDim == 0);
   const size_t xsize_blocks = in->xsize() / kBlockDim;
   const size_t ysize_blocks = in->ysize() / kBlockDim;
-
-  for (size_t c = 0; c < 3; c++) {
-    size_t base = DequantMatrixOffset(0, kQuantKindDCT16Start, c);
-    (void)base;  // Unused if asserts disabled.
-    PIK_ASSERT(DequantMatrixOffset(0, kQuantKindDCT16Start + 1, c) == base + 1);
-    PIK_ASSERT(DequantMatrixOffset(0, kQuantKindDCT16Start + 2, c) == base + 2);
-    PIK_ASSERT(DequantMatrixOffset(0, kQuantKindDCT16Start + 3, c) == base + 3);
-  }
-
-  // Modified below (clamped).
-  Image3F filt = DoDenoise(*in, non_smoothed, quantizer, raw_quant_field,
-                           ac_strategy, epf_params, aux);
-
-  const size_t stride = filt.PlaneRow(0, 1) - filt.PlaneRow(0, 0);
-  const size_t biases_stride = biases.PixelsPerRow();
-  PIK_ASSERT(stride == in->PlaneRow(0, 1) - in->PlaneRow(0, 0));
-
-  ARStats stats;
 
   // Dequantization matrices.
   const float* PIK_RESTRICT dequant_matrices =
@@ -356,94 +331,99 @@ SIMD_ATTR Image3F AdaptiveReconstruction(
     dc_mul[c] = quantizer.inv_quant_dc() *
                 dequant_matrices[DequantMatrixOffset(0, kQuantKindDCT8, c) *
                                  kDCTBlockSize];
+
+    size_t base = DequantMatrixOffset(0, kQuantKindDCT16Start, c);
+    (void)base;  // Unused if asserts disabled.
+    PIK_ASSERT(DequantMatrixOffset(0, kQuantKindDCT16Start + 1, c) == base + 1);
+    PIK_ASSERT(DequantMatrixOffset(0, kQuantKindDCT16Start + 2, c) == base + 2);
+    PIK_ASSERT(DequantMatrixOffset(0, kQuantKindDCT16Start + 3, c) == base + 3);
   }
 
-  for (size_t by = 0; by < ysize_blocks; ++by) {
-    const int32_t* PIK_RESTRICT row_quant = raw_quant_field.ConstRow(by);
-    const AcStrategyRow ac_strategy_row = ac_strategy.ConstRow(by);
+  // Modified below (clamped).
+  Image3F filt = DoDenoise(*in, non_smoothed, quantizer, raw_quant_field,
+                           ac_strategy, epf_params, pool, aux);
 
-    const float* PIK_RESTRICT row_original_x =
-        non_smoothed.ConstPlaneRow(0, by * kBlockDim);
-    const float* PIK_RESTRICT row_original_y =
-        non_smoothed.ConstPlaneRow(1, by * kBlockDim);
-    const float* PIK_RESTRICT row_original_b =
-        non_smoothed.ConstPlaneRow(2, by * kBlockDim);
+  const size_t stride = filt.PlaneRow(0, 1) - filt.PlaneRow(0, 0);
+  PIK_ASSERT(stride == in->PlaneRow(0, 1) - in->PlaneRow(0, 0));
 
-    const float* PIK_RESTRICT row_biases_x = biases.ConstPlaneRow(0, by);
-    const float* PIK_RESTRICT row_biases_y = biases.ConstPlaneRow(1, by);
-    const float* PIK_RESTRICT row_biases_b = biases.ConstPlaneRow(2, by);
+  ARStats stats;
 
-    float* PIK_RESTRICT row_filt_x = filt.PlaneRow(0, by * kBlockDim);
-    float* PIK_RESTRICT row_filt_y = filt.PlaneRow(1, by * kBlockDim);
-    float* PIK_RESTRICT row_filt_b = filt.PlaneRow(2, by * kBlockDim);
+  RunOnPool(
+      pool, 0, ysize_blocks, [&](const int task, const int thread) SIMD_ATTR {
+        const size_t by = task;
+        const int32_t* PIK_RESTRICT row_quant = raw_quant_field.ConstRow(by);
+        const AcStrategyRow ac_strategy_row = ac_strategy.ConstRow(by);
 
-    for (size_t bx = 0; bx < xsize_blocks; ++bx) {
-      const int32_t qac = row_quant[bx];
-      const float inv_quant_ac = quantizer.inv_quant_ac(qac);
-      const AcStrategy acs = ac_strategy_row[bx];
-      if (!acs.IsFirstBlock()) continue;
+        const float* PIK_RESTRICT row_original_x =
+            non_smoothed.ConstPlaneRow(0, by * kBlockDim);
+        const float* PIK_RESTRICT row_original_y =
+            non_smoothed.ConstPlaneRow(1, by * kBlockDim);
+        const float* PIK_RESTRICT row_original_b =
+            non_smoothed.ConstPlaneRow(2, by * kBlockDim);
 
-      // TODO(janwas): hoist/precompute
-      const float* dequant_matrix_x =
-          dequant_matrices +
-          kDCTBlockSize * DequantMatrixOffset(0, acs.GetQuantKind(), /*c=*/0);
-      const float* dequant_matrix_y =
-          dequant_matrices +
-          kDCTBlockSize * DequantMatrixOffset(0, acs.GetQuantKind(), /*c=*/1);
-      const float* dequant_matrix_b =
-          dequant_matrices +
-          kDCTBlockSize * DequantMatrixOffset(0, acs.GetQuantKind(), /*c=*/2);
+        float* PIK_RESTRICT row_filt_x = filt.PlaneRow(0, by * kBlockDim);
+        float* PIK_RESTRICT row_filt_y = filt.PlaneRow(1, by * kBlockDim);
+        float* PIK_RESTRICT row_filt_b = filt.PlaneRow(2, by * kBlockDim);
 
-      const size_t block_ofs = bx * kBlockDim;
-      const float* PIK_RESTRICT pos_original_x = row_original_x + block_ofs;
-      const float* PIK_RESTRICT pos_original_y = row_original_y + block_ofs;
-      const float* PIK_RESTRICT pos_original_b = row_original_b + block_ofs;
-      float* PIK_RESTRICT pos_filt_x = row_filt_x + block_ofs;
-      float* PIK_RESTRICT pos_filt_y = row_filt_y + block_ofs;
-      float* PIK_RESTRICT pos_filt_b = row_filt_b + block_ofs;
+        for (size_t bx = 0; bx < xsize_blocks; ++bx) {
+          const int32_t qac = row_quant[bx];
+          const float inv_quant_ac = quantizer.inv_quant_ac(qac);
+          const AcStrategy acs = ac_strategy_row[bx];
+          if (!acs.IsFirstBlock()) continue;
 
-      SIMD_ALIGN float min_ratio[AcStrategy::kMaxCoeffArea];
-      const SIMD_FULL(float) df;
-      for (size_t k = 0; k < AcStrategy::kMaxCoeffArea; k += df.N) {
-        store(set1(df, 1.0f), df, min_ratio + k);
-      }
+          // TODO(janwas): hoist/precompute
+          const float* dequant_matrix_x =
+              dequant_matrices +
+              kDCTBlockSize *
+                  DequantMatrixOffset(0, acs.GetQuantKind(), /*c=*/0);
+          const float* dequant_matrix_y =
+              dequant_matrices +
+              kDCTBlockSize *
+                  DequantMatrixOffset(0, acs.GetQuantKind(), /*c=*/1);
+          const float* dequant_matrix_b =
+              dequant_matrices +
+              kDCTBlockSize *
+                  DequantMatrixOffset(0, acs.GetQuantKind(), /*c=*/2);
 
-      SIMD_ALIGN float block_x[AcStrategy::kMaxCoeffArea];
-      SIMD_ALIGN float block_y[AcStrategy::kMaxCoeffArea];
-      SIMD_ALIGN float block_b[AcStrategy::kMaxCoeffArea];
-      SIMD_ALIGN float lo_x[AcStrategy::kMaxCoeffArea];
-      SIMD_ALIGN float hi_x[AcStrategy::kMaxCoeffArea];
-      SIMD_ALIGN float lo_y[AcStrategy::kMaxCoeffArea];
-      SIMD_ALIGN float hi_y[AcStrategy::kMaxCoeffArea];
-      SIMD_ALIGN float lo_b[AcStrategy::kMaxCoeffArea];
-      SIMD_ALIGN float hi_b[AcStrategy::kMaxCoeffArea];
+          const size_t block_ofs = bx * kBlockDim;
+          const float* PIK_RESTRICT pos_original_x = row_original_x + block_ofs;
+          const float* PIK_RESTRICT pos_original_y = row_original_y + block_ofs;
+          const float* PIK_RESTRICT pos_original_b = row_original_b + block_ofs;
+          float* PIK_RESTRICT pos_filt_x = row_filt_x + block_ofs;
+          float* PIK_RESTRICT pos_filt_y = row_filt_y + block_ofs;
+          float* PIK_RESTRICT pos_filt_b = row_filt_b + block_ofs;
 
-      UpdateMinRatioOfClampToOriginalDCT<0>(
-          pos_original_x, stride, row_biases_x + bx * kDCTBlockSize,
-          biases_stride, dequant_matrix_x, inv_quant_ac, dc_mul[0], acs,
-          pos_filt_x, min_ratio, lo_x, hi_x, block_x, &stats);
-      UpdateMinRatioOfClampToOriginalDCT<1>(
-          pos_original_y, stride, row_biases_y + bx * kDCTBlockSize,
-          biases_stride, dequant_matrix_y, inv_quant_ac, dc_mul[1], acs,
-          pos_filt_y, min_ratio, lo_y, hi_y, block_y, &stats);
-      UpdateMinRatioOfClampToOriginalDCT<2>(
-          pos_original_b, stride, row_biases_b + bx * kDCTBlockSize,
-          biases_stride, dequant_matrix_b, inv_quant_ac, dc_mul[2], acs,
-          pos_filt_b, min_ratio, lo_b, hi_b, block_b, &stats);
+          const size_t block_width = kBlockDim * acs.covered_blocks_x();
+          const size_t block_height = kBlockDim * acs.covered_blocks_y();
 
-      const size_t block_width = kBlockDim * acs.covered_blocks_x();
-      const size_t block_height = kBlockDim * acs.covered_blocks_y();
-      ClampAndIDCT<true, true>(block_x, block_width, block_height, min_ratio,
-                               lo_x, hi_x, acs, pos_original_x, pos_filt_x,
-                               stride);
-      ClampAndIDCT<true, true>(block_y, block_width, block_height, min_ratio,
-                               lo_y, hi_y, acs, pos_original_y, pos_filt_y,
-                               stride);
-      ClampAndIDCT<true, true>(block_b, block_width, block_height, min_ratio,
-                               lo_b, hi_b, acs, pos_original_b, pos_filt_b,
-                               stride);
-    }  // bx
-  }    // by
+          SIMD_ALIGN ARBlocks blocks;
+          const SIMD_FULL(float) df;
+          for (size_t k = 0; k < block_width * block_height; k += df.N) {
+            store(set1(df, 1.0f), df, blocks.min_ratio + k);
+          }
+
+          UpdateMinRatioOfClampToOriginalDCT<0>(
+              pos_original_x, stride, dequant_matrix_x, inv_quant_ac, dc_mul[0],
+              acs, pos_filt_x, blocks.min_ratio, blocks.x, &stats);
+          UpdateMinRatioOfClampToOriginalDCT<1>(
+              pos_original_y, stride, dequant_matrix_y, inv_quant_ac, dc_mul[1],
+              acs, pos_filt_y, blocks.min_ratio, blocks.y, &stats);
+          UpdateMinRatioOfClampToOriginalDCT<2>(
+              pos_original_b, stride, dequant_matrix_b, inv_quant_ac, dc_mul[2],
+              acs, pos_filt_b, blocks.min_ratio, blocks.b, &stats);
+
+          ClampAndIDCT<true>(blocks.b, block_width, block_height,
+                             blocks.min_ratio, acs, pos_original_b, pos_filt_b,
+                             stride);
+
+          ClampAndIDCT<true>(blocks.x, block_width, block_height,
+                             blocks.min_ratio, acs, pos_original_x, pos_filt_x,
+                             stride);
+          ClampAndIDCT<true>(blocks.y, block_width, block_height,
+                             blocks.min_ratio, acs, pos_original_y, pos_filt_y,
+                             stride);
+        }  // bx
+      });  // by
 
 #if PIK_AR_PRINT_STATS
   printf("Lo/Hi clamped: %5u %5u; %5u %5u; %5u %5u (pixels: %zu)\n",

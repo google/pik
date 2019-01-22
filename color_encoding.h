@@ -135,7 +135,7 @@ static inline bool Is2100(const TransferFunction tf) {
 // only 10 bits. Stored in Metadata.
 struct ColorEncoding {
   ColorEncoding();
-  constexpr const char* Name() const { return "ColorEncoding"; }
+  static const char* Name() { return "ColorEncoding"; }
 
   bool IsGray() const { return color_space == ColorSpace::kGray; }
   size_t Channels() const { return IsGray() ? 1 : 3; }

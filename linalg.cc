@@ -93,7 +93,7 @@ void ConvertToTridiagonal(const ImageD& A, ImageD* const PIK_RESTRICT T,
   for (size_t k = 0; k + 2 < N; ++k) {
     if (DotProduct(N - k - 2, &T->Row(k)[k + 2], &T->Row(k)[k + 2]) > 1e-15) {
       ImageD u(N, 1);
-      FillImage(0.0, &u);
+      ZeroFillImage(&u);
       HouseholderReflector(N - k - 1, &T->Row(k)[k + 1], &u.Row(0)[k + 1]);
       ImageD v = MatMul(*T, u);
       double scale = DotProduct(u, v);

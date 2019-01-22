@@ -59,7 +59,8 @@ std::string Stats::ToString(int exclude) const {
   int ret;  // snprintf - bytes written or negative for error.
 
   if ((exclude & kNoCount) == 0) {
-    ret = snprintf(buf + pos, sizeof(buf) - pos, "Count=%6ld ", Count());
+    ret = snprintf(buf + pos, sizeof(buf) - pos, "Count=%6zu ",
+                   static_cast<size_t>(Count()));
     PIK_ASSERT(ret > 0);
     pos += ret;
   }

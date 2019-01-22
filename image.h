@@ -549,6 +549,14 @@ void FillImage(const T value, Image<T>* image) {
   }
 }
 
+template <typename T>
+void ZeroFillImage(Image<T>* image) {
+  for (size_t y = 0; y < image->ysize(); ++y) {
+    T* const PIK_RESTRICT row = image->Row(y);
+    memset(row, 0, image->xsize() * sizeof(T));
+  }
+}
+
 
 // Mirrors out of bounds coordinates and returns valid coordinates unchanged.
 // We assume the radius (distance outside the image) is small compared to the
@@ -890,11 +898,6 @@ class Image3 {
     planes_[2] = std::move(plane2);
   }
 
-  // More convenient for call sites that initialize planes in a loop.
-  Image3(std::array<PlaneT, kNumPlanes>& planes)
-      : Image3(std::move(planes[0]), std::move(planes[1]),
-               std::move(planes[2])) {}
-
   // Copy construction/assignment is forbidden to avoid inadvertent copies,
   // which can be very expensive. Use copy = CopyImage(image) instead.
   Image3(const Image3& other) = delete;
@@ -954,6 +957,7 @@ class Image3 {
   PIK_INLINE size_t xsize() const { return planes_[0].xsize(); }
   PIK_INLINE size_t ysize() const { return planes_[0].ysize(); }
   PIK_INLINE intptr_t PixelsPerRow() const { return planes_[0].PixelsPerRow(); }
+  PIK_INLINE size_t bytes_per_row() const { return planes_[0].bytes_per_row(); }
 
  private:
   PlaneT planes_[kNumPlanes];
@@ -1269,36 +1273,6 @@ Image3<T> Image3FromInterleaved(const T* const interleaved, const size_t xsize,
   }
   return image3;
 }
-
-template <typename T>
-void PrintImageStats(const std::string& desc, const Image<T>& img) {
-  T mn, mx;
-  ImageMinMax(img, &mn, &mx);
-  T avg = ImageAverage(img);
-  fprintf(stderr, "Image %s: min=%f, max=%f, avg=%f\n", desc.c_str(),
-          double(mn), double(mx), double(avg));
-}
-
-template <typename T>
-void PrintImageStats(const std::string& desc, const Image3<T>& img) {
-  for (int c = 0; c < 3; ++c) {
-    std::string plane_desc = desc + " plane ";
-    plane_desc += ('0' + c);
-    PrintImageStats(plane_desc, img.Plane(c));
-  }
-}
-
-template <typename T>
-void PrintImageStats(const std::string& desc,
-                     const Image<std::complex<T>>& img) {
-  PrintImageStats(desc + " real", Real(img));
-  PrintImageStats(desc + " imag", Imag(img));
-}
-#define PRINT_IMAGE_STATS_S(x) #x
-#define PRINT_IMAGE_STATS_SS(x) PRINT_IMAGE_STATS_S(x)
-#define PRINT_IMAGE_STATS(img)                                                 \
-  ::pik::PrintImageStats(#img "@" __FILE__ ":" PRINT_IMAGE_STATS_SS(__LINE__), \
-                         img)
 
 // First, image is padded horizontally, with the rightmost value.
 // Next, image is padded vertically, by repeating the last line.

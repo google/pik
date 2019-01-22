@@ -47,8 +47,9 @@ Status ProduceSaliencyMapWithoutCleanup(const CompressParams& cparams,
                                         &transform));
   }
   const std::string filename_partially_constructed_image =
-      cparams.file_out + kPartialSuffix;
-  const std::string filename_heatmap = cparams.file_out + kHeatmapSuffix;
+      std::string(cparams.file_out) + kPartialSuffix;
+  const std::string filename_heatmap =
+      std::string(cparams.file_out) + kHeatmapSuffix;
 
   if (!io_partial.EncodeToFile(io->dec_c_original,
                                io->original_bits_per_sample(),
@@ -92,8 +93,8 @@ Status ProduceSaliencyMap(const CompressParams& cparams,
                                                 out_heatmap);
   if (!cparams.keep_tempfiles) {
     // Ignore (benign) failures.
-    unlink((cparams.file_out + kPartialSuffix).c_str());
-    unlink((cparams.file_out + kHeatmapSuffix).c_str());
+    unlink((std::string(cparams.file_out) + kPartialSuffix).c_str());
+    unlink((std::string(cparams.file_out) + kHeatmapSuffix).c_str());
   }
   return ret;
 }

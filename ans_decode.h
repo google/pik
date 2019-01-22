@@ -19,18 +19,12 @@
 #include "byte_order.h"
 
 namespace pik {
-
 struct ANSSymbolInfo {
-  uint16_t offset_;
-  uint16_t freq_;
-  uint8_t symbol_;
+  uint16_t offset;
+  uint16_t freq;
 };
 
 struct ANSCode {
-  struct ANSSymbolInfo {
-    uint16_t offset;
-    uint16_t freq;
-  };
   std::vector<uint16_t> map;
   // indexed by (entropy_code_id << ANS_LOG_TAB_SIZE) + symbol.
   std::vector<ANSSymbolInfo> info;

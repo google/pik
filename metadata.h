@@ -22,7 +22,7 @@ namespace pik {
 // Optional metadata about the original image source.
 struct Transcoded {
   Transcoded();
-  constexpr const char* Name() const { return "Transcoded"; }
+  static const char* Name() { return "Transcoded"; }
 
   template <class Visitor>
   Status VisitFields(Visitor* PIK_RESTRICT visitor) {
@@ -48,7 +48,7 @@ struct Transcoded {
 
 struct Metadata {
   Metadata();
-  constexpr const char* Name() const { return "Metadata"; }
+  static const char* Name() { return "Metadata"; }
 
   template <class Visitor>
   Status VisitFields(Visitor* PIK_RESTRICT visitor) {

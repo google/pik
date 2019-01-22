@@ -35,7 +35,7 @@ constexpr size_t kNumProjectiveTransformParams = 8;
 
 struct ProjectiveTransformParams {
   ProjectiveTransformParams();
-  constexpr const char* Name() const { return "ProjectiveTransformParams"; }
+  static const char* Name() { return "ProjectiveTransformParams"; }
 
   template <class Visitor>
   Status VisitFields(Visitor* PIK_RESTRICT visitor) {
@@ -51,7 +51,7 @@ struct ProjectiveTransformParams {
 
 struct TileHeader {
   TileHeader();
-  constexpr const char* Name() const { return "TileHeader"; }
+  static const char* Name() { return "TileHeader"; }
 
   template <class Visitor>
   Status VisitFields(Visitor* PIK_RESTRICT visitor) {
@@ -82,7 +82,7 @@ struct TileHeader {
 // TODO(janwas): add analogous depth-image support
 struct Alpha {
   Alpha();
-  constexpr const char* Name() const { return "Alpha"; }
+  static const char* Name() { return "Alpha"; }
 
   template <class Visitor>
   Status VisitFields(Visitor* PIK_RESTRICT visitor) {
@@ -105,7 +105,7 @@ constexpr size_t kNumTilesPerGroup = (kGroupWidthInBlocks / kTileDimInBlocks) *
 
 struct GroupHeader {
   GroupHeader();
-  constexpr const char* Name() const { return "GroupHeader"; }
+  static const char* Name() { return "GroupHeader"; }
 
   template <class Visitor>
   Status VisitFields(Visitor* PIK_RESTRICT visitor) {
@@ -148,7 +148,7 @@ enum class ImageEncoding : uint32_t {
 
 struct FrameInfo {
   FrameInfo();
-  constexpr const char* Name() const { return "FrameInfo"; }
+  static const char* Name() { return "FrameInfo"; }
 
   template <class Visitor>
   Status VisitFields(Visitor* PIK_RESTRICT visitor) {
@@ -196,7 +196,7 @@ struct PassHeader {
   };
 
   PassHeader();
-  constexpr const char* Name() const { return "PassHeader"; }
+  static const char* Name() { return "PassHeader"; }
 
   template <class Visitor>
   Status VisitFields(Visitor* PIK_RESTRICT visitor) {
@@ -287,7 +287,7 @@ struct PassHeader {
 
 struct Preview {
   Preview();
-  constexpr const char* Name() const { return "Preview"; }
+  static const char* Name() { return "Preview"; }
 
   template <class Visitor>
   Status VisitFields(Visitor* PIK_RESTRICT visitor) {
@@ -309,7 +309,7 @@ struct Preview {
 
 struct Animation {
   Animation();
-  constexpr const char* Name() const { return "Animation"; }
+  static const char* Name() { return "Animation"; }
 
   template <class Visitor>
   Status VisitFields(Visitor* PIK_RESTRICT visitor) {
@@ -334,7 +334,7 @@ struct Animation {
 // Followed by an unbounded stream of interleaved PassHeader+payloads.
 struct FileHeader {
   FileHeader();
-  constexpr const char* Name() const { return "FileHeader"; }
+  static const char* Name() { return "FileHeader"; }
 
   template <class Visitor>
   Status VisitFields(Visitor* PIK_RESTRICT visitor) {

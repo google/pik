@@ -512,8 +512,8 @@ class BytesCoder {
 //   VisitFields(v) member function that calls v->U32/Bool etc. for each field,
 //   specifying their default values. The ctor must call Bundle::Init(this).
 //
-// - print a trace of visitors: ensure each bundle has a Name member function,
-//   and #define PIK_FIELDS_TRACE 1.
+// - print a trace of visitors: ensure each bundle has a static Name() member
+//   function, and #define PIK_FIELDS_TRACE 1.
 //
 // - optional fields: in VisitFields, add if (v->Conditional(your_condition))
 //   { v->U32(dist, default, &field); }. This prevents reading/writing field
@@ -658,7 +658,7 @@ class Bundle {
 #if PIK_FIELDS_TRACE
       char format[10];
       snprintf(format, sizeof(format), "%%%zus%%s\n", depth_ * 2);
-      printf(format, "", t->Name());
+      printf(format, "", T::Name());
 #endif
 
       depth_ += 1;

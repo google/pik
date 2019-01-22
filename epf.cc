@@ -14,7 +14,12 @@
 #include <stdio.h>
 #include <numeric>  // std::accumulate
 
-#define DUMP_SIGMA 0
+#ifndef EPF_DUMP_SIGMA
+#define EPF_DUMP_SIGMA 0
+#endif
+#ifndef EPF_ENABLE_STATS
+#define EPF_ENABLE_STATS 0
+#endif
 
 #undef PROFILER_ENABLED
 #define PROFILER_ENABLED 1
@@ -25,7 +30,7 @@
 #include "profiler.h"
 #include "simd/simd.h"
 #include "status.h"
-#if DUMP_SIGMA
+#if EPF_DUMP_SIGMA
 #include "image_io.h"
 #endif
 

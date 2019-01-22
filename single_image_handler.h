@@ -25,7 +25,6 @@ namespace pik {
 
 enum class ProgressiveMode {
   kFull,
-  kDcOnly,
   kLfOnly,
   kSalientHfOnly,
   kNonSalientHfOnly,
@@ -79,9 +78,6 @@ class SingleImageManager : public MultipassManager {
   void DecorrelateOpsin(Image3F* img) override;
   void RestoreOpsin(Image3F* img) override;
 
-  void UpdateBiases(Image3F* PIK_RESTRICT biases) override;
-  void StoreBiases(const Image3F& PIK_RESTRICT biases) override;
-
   void SetDecodedPass(const Image3F& opsin) override;
   void SetDecodedPass(CodecInOut* io) override;
 
@@ -110,10 +106,9 @@ class SingleImageManager : public MultipassManager {
   std::shared_ptr<Quantizer> GetQuantizer(
       const CompressParams& cparams, size_t xsize_blocks, size_t ysize_blocks,
       const Image3F& opsin_orig, const Image3F& opsin,
-      const NoiseParams& noise_params, const PassHeader& pass_header,
-      const GroupHeader& header, const ColorCorrelationMap& cmap,
-      const AcStrategyImage& ac_strategy, ImageF& quant_field, ThreadPool* pool,
-      PikInfo* aux_out) override;
+      const PassHeader& pass_header, const GroupHeader& header,
+      const ColorCorrelationMap& cmap, const AcStrategyImage& ac_strategy,
+      ImageF& quant_field, ThreadPool* pool, PikInfo* aux_out) override;
 
   void StripInfo(EncCache* cache) override;
   void StripInfoBeforePredictions(EncCache* cache) override;
@@ -127,7 +122,6 @@ class SingleImageManager : public MultipassManager {
   PassHeader current_header_;
   size_t num_passes_ = 0;
   Image3F previous_pass_;
-  Image3F last_pass_biases_;
   ProgressiveMode mode_ = ProgressiveMode::kFull;
   bool use_adaptive_reconstruction_ = false;
 

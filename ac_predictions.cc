@@ -344,8 +344,7 @@ SIMD_ATTR void UpSample4x4BlurDCT(const Rect& dc_rect, const ImageF& img,
       for (int bx = 0; bx < bxs; ++bx) {
         AcStrategy acs = ac_strategy_row[bx0 + bx];
         if (!acs.IsFirstBlock()) continue;
-        // Skip high frequency predictions for identity-coded blocks.
-        // TODO(veluca): add a method to decide when to skip?
+        if (!acs.PredictHF()) continue;
         for (int idy = 0; idy < acs.covered_blocks_y(); idy++) {
           const float* PIK_RESTRICT row0d = blur_x.ConstRow(2 * (by + idy));
           const float* PIK_RESTRICT row1d = row0d + blur_stride;
@@ -439,7 +438,6 @@ SIMD_ATTR void PredictLf(const AcStrategyImage& ac_strategy,
   // Plane-wise transforms require 2*4DC*4 = 128KiB active memory. Would be
   // further subdivided into 2 or more stripes to reduce memory pressure.
   for (size_t c = 0; c < lf2x2->kNumPlanes; c++) {
-    const ImageF& llf_plane = llf.Plane(c);
     ImageF* lf2x2_plane = lf2x2->MutablePlane(c);
 
     // Computes the initial DC2x2 from the lowest-frequency coefficients.
@@ -448,7 +446,7 @@ SIMD_ATTR void PredictLf(const AcStrategyImage& ac_strategy,
       AcStrategyRow ac_strategy_row =
           ac_strategy.ConstRow(acs_rect, is_border_y ? 0 : by - 1);
       float* tmp2x2_row = tmp2x2->Row(2 * by);
-      const float* llf_row = llf_plane.Row(by);
+      const float* llf_row = llf.PlaneRow(c, by);
       for (size_t bx = 0; bx < xsize; bx++) {
         const bool is_border = is_border_y || (bx == 0 || bx == xsize - 1);
         AcStrategy acs = is_border ? AcStrategy(AcStrategy::Type::DCT, 0)
@@ -549,18 +547,19 @@ SIMD_ATTR void PredictLfForEncoder(bool predict_lf, bool predict_hf,
       float cmap_factor[3] = {
           ColorCorrelationMap::YtoX(1.0f, cmap.ytox_map.ConstRow(ty)[tx]), 0.0f,
           ColorCorrelationMap::YtoB(1.0f, cmap.ytob_map.ConstRow(ty)[tx])};
+      const int32_t quant = bx == 0 ? row_quant[0] : row_quant[bx - 1];
       ComputeDecoderBlockAnd2x2DC<1>(
           is_border, predict_lf, predict_hf, acs, ac_stride, lf2x2_stride,
-          dc2x2_stride, bx, quantizer, row_quant[bx - 1], cmap_factor,
-          lf2x2_row, ac_row, dc2x2_row, dc_row, y_residuals_dec);
+          dc2x2_stride, bx, quantizer, quant, cmap_factor, lf2x2_row, ac_row,
+          dc2x2_row, dc_row, y_residuals_dec);
       ComputeDecoderBlockAnd2x2DC<0>(
           is_border, predict_lf, predict_hf, acs, ac_stride, lf2x2_stride,
-          dc2x2_stride, bx, quantizer, row_quant[bx - 1], cmap_factor,
-          lf2x2_row, ac_row, dc2x2_row, dc_row, y_residuals_dec);
+          dc2x2_stride, bx, quantizer, quant, cmap_factor, lf2x2_row, ac_row,
+          dc2x2_row, dc_row, y_residuals_dec);
       ComputeDecoderBlockAnd2x2DC<2>(
           is_border, predict_lf, predict_hf, acs, ac_stride, lf2x2_stride,
-          dc2x2_stride, bx, quantizer, row_quant[bx - 1], cmap_factor,
-          lf2x2_row, ac_row, dc2x2_row, dc_row, y_residuals_dec);
+          dc2x2_stride, bx, quantizer, quant, cmap_factor, lf2x2_row, ac_row,
+          dc2x2_row, dc_row, y_residuals_dec);
     }
   }
 }

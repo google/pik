@@ -265,16 +265,20 @@ class Y4MReader {
     if (memcmp(line_, "FRAME", 5)) {
       return PIK_FAILURE("Invalid frame header");
     }
-    std::array<ImageU, 3> planes;
+    *yuv = Image3U(xsize_, ysize_);
+    Image3U yuv_down;
+    if (chroma_subsample_) {
+      yuv_down = Image3U((xsize_ + 1) / 2, (ysize_ + 1) / 2);
+    }
     int byte_depth = (bit_depth_ + 7) / 8;
     int limit = (1 << bit_depth_) - 1;
     PIK_ASSERT(byte_depth == 1 || byte_depth == 2);
     for (int c = 0; c < 3; ++c) {
       int pxsize = (c == 0 || !chroma_subsample_) ? xsize_ : (xsize_ + 1) / 2;
       int pysize = (c == 0 || !chroma_subsample_) ? ysize_ : (ysize_ + 1) / 2;
-      planes[c] = ImageU(pxsize, pysize);
+      Image3U* tmp_yuv = (c != 0 && chroma_subsample_) ? &yuv_down : yuv;
       for (int y = 0; y < pysize; ++y) {
-        uint16_t* const PIK_RESTRICT row = planes[c].Row(y);
+        uint16_t* PIK_RESTRICT row = tmp_yuv->PlaneRow(c, y);
         for (int x = 0; x < pxsize; ++x) {
           if (byte_depth == 1) {
             uint8_t val;
@@ -292,9 +296,8 @@ class Y4MReader {
       }
     }
     if (chroma_subsample_) {
-      *yuv = SuperSampleChroma(planes[0], planes[1], planes[2], bit_depth_);
-    } else {
-      *yuv = Image3U(planes);
+      *yuv = SuperSampleChroma(yuv->Plane(0), yuv_down.Plane(1),
+                               yuv_down.Plane(2), bit_depth_);
     }
     return true;
   }
