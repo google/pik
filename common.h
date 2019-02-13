@@ -12,6 +12,8 @@
 #include <stddef.h>
 #include <memory>  // unique_ptr
 
+#include "compiler_specific.h"
+
 namespace pik {
 
 constexpr size_t kBitsPerByte = 8;  // more clear than CHAR_BIT
@@ -35,14 +37,10 @@ constexpr size_t kDCTBlockSize = kBlockDim * kBlockDim;
 // Group is the rectangular grid of blocks that can be decoded in parallel. This
 // is different for DC.
 constexpr size_t kDcGroupDimInBlocks = 256;
-constexpr size_t kGroupWidth = 512;
-constexpr size_t kGroupHeight = 512;
-static_assert(kGroupWidth % kBlockDim == 0,
-              "Group width should be divisible by block dim");
-static_assert(kGroupHeight % kBlockDim == 0,
-              "Group height should be divisible by block dim");
-constexpr size_t kGroupWidthInBlocks = kGroupWidth / kBlockDim;
-constexpr size_t kGroupHeightInBlocks = kGroupHeight / kBlockDim;
+constexpr size_t kGroupDim = 512;
+static_assert(kGroupDim % kBlockDim == 0,
+              "Group dim should be divisible by block dim");
+constexpr size_t kGroupDimInBlocks = kGroupDim / kBlockDim;
 
 // We split groups into tiles to increase locality and cache hits.
 const constexpr size_t kTileDim = 64;
@@ -51,13 +49,21 @@ static_assert(kTileDim % kBlockDim == 0,
               "Tile dim should be divisible by block dim");
 constexpr size_t kTileDimInBlocks = kTileDim / kBlockDim;
 
-static_assert(kGroupWidthInBlocks % kTileDimInBlocks == 0,
+static_assert(kGroupDimInBlocks % kTileDimInBlocks == 0,
               "Group dim should be divisible by tile dim");
 
 // Can't rely on C++14 yet.
 template <typename T, typename... Args>
 std::unique_ptr<T> make_unique(Args&&... args) {
   return std::unique_ptr<T>(new T(std::forward<Args>(args)...));
+}
+
+// This leads to somewhat better code than pointer arithmetic.
+template <typename T>
+PIK_INLINE T* PIK_RESTRICT ByteOffset(T* PIK_RESTRICT base,
+                                      const intptr_t byte_offset) {
+  const uintptr_t base_addr = reinterpret_cast<uintptr_t>(base);
+  return reinterpret_cast<T*>(base_addr + byte_offset);
 }
 
 }  // namespace pik

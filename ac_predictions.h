@@ -47,6 +47,7 @@ SIMD_ATTR void PredictLfForEncoder(bool predict_lf, bool predict_hf,
                                    const Image3F& dc,
                                    const AcStrategyImage& ac_strategy,
                                    const ColorCorrelationMap& cmap,
+                                   const Rect& cmap_rect,
                                    const Quantizer& quantizer,
                                    Image3F* PIK_RESTRICT ac64, Image3F* dc2x2);
 void ComputePredictionResiduals(const Image3F& pred2x2,
@@ -58,12 +59,15 @@ void ComputePredictionResiduals(const Image3F& pred2x2,
 SIMD_ATTR void UpdateLfForDecoder(const Rect& tile, bool predict_lf,
                                   bool predict_hf,
                                   const AcStrategyImage& ac_strategy,
-                                  const Rect& acs_rect, const ImageF& llf_plane,
-                                  ImageF* ac64_plane, ImageF* dc2x2_plane,
-                                  ImageF* lf2x2_plane);
+                                  const Rect& acs_rect, const Image3F& llf,
+                                  Image3F* PIK_RESTRICT ac64,
+                                  Image3F* PIK_RESTRICT dc2x2,
+                                  Image3F* PIK_RESTRICT lf2x2, size_t c);
 
+// `blur_x` is preallocated by GroupDecCache.
 void AddPredictions(const Image3F& pred2x2, const AcStrategyImage& ac_strategy,
-                    const Rect& acs_rect, Image3F* PIK_RESTRICT dcoeffs);
+                    const Rect& acs_rect, ImageF* PIK_RESTRICT blur_x,
+                    Image3F* PIK_RESTRICT dcoeffs);
 
 }  // namespace pik
 

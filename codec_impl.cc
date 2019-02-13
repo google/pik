@@ -43,15 +43,14 @@ std::array<ColorEncoding, 2> MakeC2(const Primaries pr,
   return c2;
 }
 
-template <typename T>
 Status FromSRGB(const size_t xsize, const size_t ysize, const bool is_gray,
-                const bool has_alpha, const bool big_endian, const T* pixels,
-                const T* end, ThreadPool* pool, CodecInOut* io) {
+                const bool has_alpha, const bool is_16bit,
+                const bool big_endian, const uint8_t* pixels,
+                const uint8_t* end, ThreadPool* pool, CodecInOut* io) {
   const ColorEncoding& c = io->Context()->c_srgb[is_gray];
-  const size_t bits_per_sample = sizeof(T) * kBitsPerByte;
-  const uint8_t* bytes = reinterpret_cast<const uint8_t*>(pixels);
+  const size_t bits_per_sample = (is_16bit ? 2 : 1) * kBitsPerByte;
+  const uint8_t* bytes = pixels;
   const uint8_t* bytes_end = reinterpret_cast<const uint8_t*>(end);
-  // TODO(lode): must use different value for bits_per_alpha?
   const ExternalImage external(xsize, ysize, c, has_alpha,
                                /*alpha_bits=*/ bits_per_sample,
                                bits_per_sample, big_endian, bytes, bytes_end);
@@ -183,16 +182,10 @@ Codec CodecFromExtension(const std::string& extension) {
   return Codec::kUnknown;
 }
 
-CodecContext::CodecContext(size_t ignored)
+CodecContext::CodecContext()
     : c_srgb(MakeC2(Primaries::kSRGB, TransferFunction::kSRGB)),
       c_linear_srgb(MakeC2(Primaries::kSRGB, TransferFunction::kLinear)) {
-  // For all supported targets:
-  TargetBitfield supported;
-  do {
-    const Target target = supported.Best();
-    Dispatch(target, InitEdgePreservingFilter());
-    supported.Clear(target);
-  } while (supported.Any());
+  TargetBitfield().Foreach(InitEdgePreservingFilter());
 }
 
 void CodecInOut::SetFromImage(Image3F&& color, const ColorEncoding& c_current) {
@@ -203,17 +196,30 @@ void CodecInOut::SetFromImage(Image3F&& color, const ColorEncoding& c_current) {
 Status CodecInOut::SetFromSRGB(size_t xsize, size_t ysize, bool is_gray,
                                bool has_alpha, const uint8_t* pixels,
                                const uint8_t* end, ThreadPool* pool) {
-  const bool big_endian = false;
-  return FromSRGB(xsize, ysize, is_gray, has_alpha, big_endian, pixels, end,
-                  pool, this);
+  const bool big_endian = false;  // don't care since each sample is a byte
+  SetOriginalBitsPerSample(8);
+  return FromSRGB(xsize, ysize, is_gray, has_alpha, /*is_16bit=*/false,
+                  big_endian, pixels, end, pool, this);
 }
 
 Status CodecInOut::SetFromSRGB(size_t xsize, size_t ysize, bool is_gray,
-                               bool has_alpha, bool big_endian,
-                               const uint16_t* pixels, const uint16_t* end,
-                               ThreadPool* pool) {
-  return FromSRGB(xsize, ysize, is_gray, has_alpha, big_endian, pixels, end,
-                  pool, this);
+                               bool has_alpha, const uint16_t* pixels,
+                               const uint16_t* end, ThreadPool* pool) {
+  SetOriginalBitsPerSample(16);
+  const uint8_t* bytes = reinterpret_cast<const uint8_t*>(pixels);
+  const uint8_t* bytes_end = reinterpret_cast<const uint8_t*>(end);
+  // Given as uint16_t, so is in native order.
+  const bool big_endian = !IsLittleEndian();
+  return FromSRGB(xsize, ysize, is_gray, has_alpha, /*is_16bit=*/true,
+                  big_endian, bytes, bytes_end, pool, this);
+}
+
+Status CodecInOut::SetFromSRGB(size_t xsize, size_t ysize,
+    bool is_gray, bool has_alpha, bool is_16bit, bool big_endian,
+    const uint8_t* pixels, const uint8_t* end, ThreadPool* pool) {
+  SetOriginalBitsPerSample(is_16bit ? 16 : 8);
+  return FromSRGB(xsize, ysize, is_gray, has_alpha, is_16bit,
+                  big_endian, pixels, end, pool, this);
 }
 
 Status CodecInOut::SetFromBytes(const PaddedBytes& bytes, ThreadPool* pool) {

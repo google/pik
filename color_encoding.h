@@ -60,8 +60,9 @@ enum TransferFunction : uint32_t {
   kPQ,  // from BT.2100
   kUnknown,
   k709,
+  kAdobe,
   kHLG,  // from BT.2100
-  // Future extensions: [6, 10]
+  // Future extensions: [7, 10]
 };
 
 enum class RenderingIntent : uint32_t {
@@ -203,6 +204,7 @@ static inline bool ApproxEq(const double a, const double b) {
 static inline constexpr double GammaUnknown() { return 0.0; }
 static inline constexpr double GammaLinear() { return 1.0; }
 static inline constexpr double GammaSRGB() { return 1.0 / 2.2; }
+static inline constexpr double GammaAdobe() { return 1.0 / 2.19921875; }
 static inline constexpr double Gamma709() { return 1.0 / 2.0; }
 static inline constexpr double GammaPQ() { return 0.15; }
 static inline constexpr double GammaHLG() { return 0.125; }

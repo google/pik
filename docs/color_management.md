@@ -4,7 +4,7 @@
 
 <!--*
 # Document freshness: For more information, see go/fresh-source.
-freshness: { owner: 'janwas' reviewed: '2018-08-05' }
+freshness: { owner: 'janwas' reviewed: '2019-02-01' }
 *-->
 
 ## Why
@@ -41,7 +41,10 @@ the common sRGB case in ICC v4 profiles. ArgyllCMS does not support v4. The
 other popular open-source CMS is LittleCMS. It is also used by color-managed
 editors (Krita/darktable), which increases the chances of interoperability.
 However, LCMS has race conditions and overflow issues that prevent fuzzing. We
-will later switch to the newer skcms.
+will later switch to the newer skcms. Note that this library does not intend to
+support multiProcessElements, so HDR transfer functions cannot be represented
+accurately. Thus in the long term, we will probably migrate away from ICC
+profiles entirely.
 
 ## Which viewer
 

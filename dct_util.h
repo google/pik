@@ -14,36 +14,41 @@
 namespace pik {
 
 // Scatter/gather a SX*SY block into (SX/kBlockDim)*(SY/kBlockDim)
-// kBlockDim*kBlockDim blocks. `block` should be contiguous, SX*SY-sized. Output
-// Each kBlockDim*kBlockDim block should be contiguous, and the same "block row"
-// should be too, but different block rows are at a distance of `stride` pixels.
-// This only copies the top KX times KY pixels, and assumes block to be a KX*KY
-// block.
-template <size_t SX, size_t SY, size_t KX = SX, size_t KY = SY>
-void ScatterBlock(const float* PIK_RESTRICT block, float* PIK_RESTRICT row,
-                  size_t stride) {
+// kBlockDim*kBlockDim blocks. `block` should be composed of SY rows of SX
+// contiguous blocks. In the output, each kBlockDim*kBlockDim block should be
+// contiguous, and the same "block row" should be too, but different block rows
+// are at a distance of `stride` pixels.
+template <size_t SX, size_t SY, typename T>
+void ScatterBlock(const T* PIK_RESTRICT block, size_t block_stride,
+                  T* PIK_RESTRICT row, size_t stride) {
   constexpr size_t xblocks = SX / kBlockDim;
   constexpr size_t yblocks = SY / kBlockDim;
-  for (size_t y = 0; y < KY; y++) {
-    float* PIK_RESTRICT current_row =
+  for (size_t y = 0; y < SY; y++) {
+    T* PIK_RESTRICT current_row =
         row + (y & (yblocks - 1)) * stride + (y / yblocks) * kBlockDim;
-    for (size_t x = 0; x < KX; x++) {
+    for (size_t x = 0; x < SX; x++) {
+      size_t block_pos = y * SX + x;
+      size_t block_row = block_pos / (xblocks * kDCTBlockSize);
+      size_t block_idx = block_pos & (xblocks * kDCTBlockSize - 1);
       current_row[(x & (xblocks - 1)) * kDCTBlockSize + (x / xblocks)] =
-          block[y * KX + x];
+          block[block_row * block_stride + block_idx];
     }
   }
 }
 
-template <size_t SX, size_t SY, size_t KX = SX, size_t KY = SY>
-void GatherBlock(const float* PIK_RESTRICT row, size_t stride,
-                 float* PIK_RESTRICT block) {
+template <size_t SX, size_t SY, typename T>
+void GatherBlock(const T* PIK_RESTRICT row, size_t stride,
+                 T* PIK_RESTRICT block, size_t block_stride) {
   constexpr size_t xblocks = SX / kBlockDim;
   constexpr size_t yblocks = SY / kBlockDim;
-  for (size_t y = 0; y < KY; y++) {
-    const float* PIK_RESTRICT current_row =
+  for (size_t y = 0; y < SY; y++) {
+    const T* PIK_RESTRICT current_row =
         row + (y & (yblocks - 1)) * stride + (y / yblocks) * kBlockDim;
-    for (size_t x = 0; x < KX; x++) {
-      block[y * KX + x] =
+    for (size_t x = 0; x < SX; x++) {
+      size_t block_pos = y * SX + x;
+      size_t block_row = block_pos / (xblocks * kDCTBlockSize);
+      size_t block_idx = block_pos & (xblocks * kDCTBlockSize - 1);
+      block[block_row * block_stride + block_idx] =
           current_row[(x & (xblocks - 1)) * kDCTBlockSize + (x / xblocks)];
     }
   }

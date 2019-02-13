@@ -3,8 +3,6 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT.
-//
-// Disclaimer: This is not an official Google product.
 
 #ifndef CODEC_H_
 #define CODEC_H_
@@ -35,13 +33,12 @@ struct CodecInterval {
 
 using CodecIntervals = std::array<CodecInterval, 4>;  // RGB[A] or Y[A]
 
-// Shared const data available to each CodecInOut.
-// TODO(janwas): move into ColorManagement, magic static; remove all Context
+// Shared (read-only, no need for thread_local) data. Prefer reusing a single
+// instance to avoid regenerating the color profiles.
 struct CodecContext {
-  // The parameter used to specify the number of threads to create.
-  CodecContext(size_t ignored = 0);
+  CodecContext();
 
-  // Index with IsGray().
+  // Index with CodecInOut.IsGray().
   const std::array<ColorEncoding, 2> c_srgb;
   const std::array<ColorEncoding, 2> c_linear_srgb;
 };
@@ -97,8 +94,9 @@ Codec CodecFromExtension(const std::string& extension);
 class CodecInOut {
  public:
   // "codec_context" must remain valid throughout the lifetime of this instance.
-  explicit CodecInOut(CodecContext* codec_context) : context_(codec_context) {}
-  CodecContext* Context() const { return context_; }
+  explicit CodecInOut(const CodecContext* codec_context)
+      : context_(codec_context) {}
+  const CodecContext* Context() const { return context_; }
 
   // Move-only (allows storing in std::vector).
   CodecInOut(CodecInOut&&) = default;
@@ -118,12 +116,33 @@ class CodecInOut {
   // If c_current.IsGray(), all planes must be identical.
   void SetFromImage(Image3F&& color, const ColorEncoding& c_current);
 
+  // Sets image data from 8-bit sRGB pixel array in bytes.
+  // Amount of input bytes per pixel must be:
+  // (is_gray ? 1 : 3) + (has_alpha ? 1 : 0)
   Status SetFromSRGB(size_t xsize, size_t ysize, bool is_gray, bool has_alpha,
                      const uint8_t* pixels, const uint8_t* end,
                      ThreadPool* pool = nullptr);
+
+  // Sets image data from 16-bit sRGB data.
+  // Amount of input uint16_t's per pixel must be:
+  // (is_gray ? 1 : 3) + (has_alpha ? 1 : 0)
   Status SetFromSRGB(size_t xsize, size_t ysize, bool is_gray, bool has_alpha,
-                     bool big_endian, const uint16_t* pixels,
-                     const uint16_t* end, ThreadPool* pool = nullptr);
+                     const uint16_t* pixels, const uint16_t* end,
+                     ThreadPool* pool = nullptr);
+
+  // Sets image data from sRGB pixel array in bytes.
+  // This low-level function supports both 8-bit and 16-bit data in bytes to
+  // provide efficient access to arbitrary byte order.
+  // Amount of input bytes per pixel must be:
+  // ((is_gray ? 1 : 3) + (has_alpha ? 1 : 0)) * (is_16bit ? 2 : 1)
+  // The ordering of the channels is interleaved RGBA or gray+alpha in that
+  // order.
+  // The 16-bit byte order is given by big_endian, and this has no effect when
+  // is_16bit is false.
+  Status SetFromSRGB(size_t xsize, size_t ysize, bool is_gray, bool has_alpha,
+                     bool is_16bit, bool big_endian,
+                     const uint8_t* pixels, const uint8_t* end,
+                     ThreadPool* pool = nullptr);
 
   // Decodes "bytes". Sets dec_c_original to c_current (for later encoding).
   // dec_hints may specify the "color_space" (otherwise, defaults to sRGB).
@@ -247,7 +266,7 @@ class CodecInOut {
 
  private:
   // Initialized by ctor:
-  CodecContext* context_;  // Not owned, must remain valid throughout lifetime.
+  const CodecContext* context_;  // Not owned, must remain valid.
 
   // Initialized by Set*:
   Image3F color_;  // In c_current color space; all planes equal if IsGray().

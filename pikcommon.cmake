@@ -26,12 +26,16 @@ add_library(pikcommon STATIC
   ${CMAKE_CURRENT_LIST_DIR}/ans_encode.h
   ${CMAKE_CURRENT_LIST_DIR}/ans_params.h
   ${CMAKE_CURRENT_LIST_DIR}/approx_cube_root.h
+  ${CMAKE_CURRENT_LIST_DIR}/ar_control_field.cc
+  ${CMAKE_CURRENT_LIST_DIR}/ar_control_field.h
   ${CMAKE_CURRENT_LIST_DIR}/arch_specific.cc
   ${CMAKE_CURRENT_LIST_DIR}/arch_specific.h
   ${CMAKE_CURRENT_LIST_DIR}/args.h
   ${CMAKE_CURRENT_LIST_DIR}/bit_reader.h
   ${CMAKE_CURRENT_LIST_DIR}/bits.h
   ${CMAKE_CURRENT_LIST_DIR}/block.h
+  ${CMAKE_CURRENT_LIST_DIR}/block_dictionary.h
+  ${CMAKE_CURRENT_LIST_DIR}/block_dictionary.cc
   ${CMAKE_CURRENT_LIST_DIR}/brotli.cc
   ${CMAKE_CURRENT_LIST_DIR}/brotli.h
   ${CMAKE_CURRENT_LIST_DIR}/butteraugli/butteraugli.cc
@@ -41,6 +45,7 @@ add_library(pikcommon STATIC
   ${CMAKE_CURRENT_LIST_DIR}/butteraugli_distance.cc
   ${CMAKE_CURRENT_LIST_DIR}/butteraugli_distance.h
   ${CMAKE_CURRENT_LIST_DIR}/byte_order.h
+  ${CMAKE_CURRENT_LIST_DIR}/cache_aligned.cc
   ${CMAKE_CURRENT_LIST_DIR}/cache_aligned.h
   ${CMAKE_CURRENT_LIST_DIR}/cluster.h
   ${CMAKE_CURRENT_LIST_DIR}/codec.h
@@ -78,7 +83,6 @@ add_library(pikcommon STATIC
   ${CMAKE_CURRENT_LIST_DIR}/dct_simd_any.h
   ${CMAKE_CURRENT_LIST_DIR}/dct_util.cc
   ${CMAKE_CURRENT_LIST_DIR}/dct_util.h
-  ${CMAKE_CURRENT_LIST_DIR}/decode_and_encode.cc
   ${CMAKE_CURRENT_LIST_DIR}/deconvolve.cc
   ${CMAKE_CURRENT_LIST_DIR}/deconvolve.h
   ${CMAKE_CURRENT_LIST_DIR}/descriptive_statistics.cc
@@ -111,8 +115,6 @@ add_library(pikcommon STATIC
   ${CMAKE_CURRENT_LIST_DIR}/huffman_encode.h
   ${CMAKE_CURRENT_LIST_DIR}/image.cc
   ${CMAKE_CURRENT_LIST_DIR}/image.h
-  ${CMAKE_CURRENT_LIST_DIR}/image_io.cc
-  ${CMAKE_CURRENT_LIST_DIR}/image_io.h
   ${CMAKE_CURRENT_LIST_DIR}/lehmer_code.cc
   ${CMAKE_CURRENT_LIST_DIR}/lehmer_code.h
   ${CMAKE_CURRENT_LIST_DIR}/linalg.cc
@@ -161,15 +163,16 @@ add_library(pikcommon STATIC
   ${CMAKE_CURRENT_LIST_DIR}/single_image_handler.cc
   ${CMAKE_CURRENT_LIST_DIR}/single_image_handler.h
   ${CMAKE_CURRENT_LIST_DIR}/size_coder.h
+  ${CMAKE_CURRENT_LIST_DIR}/status.cc
   ${CMAKE_CURRENT_LIST_DIR}/status.h
-  ${CMAKE_CURRENT_LIST_DIR}/tile_flow.cc
-  ${CMAKE_CURRENT_LIST_DIR}/tile_flow.h
   ${CMAKE_CURRENT_LIST_DIR}/tsc_timer.h
   ${CMAKE_CURRENT_LIST_DIR}/upscaler.cc
   ${CMAKE_CURRENT_LIST_DIR}/upscaler.h
   ${CMAKE_CURRENT_LIST_DIR}/write_bits.h
   ${CMAKE_CURRENT_LIST_DIR}/yuv_convert.cc
   ${CMAKE_CURRENT_LIST_DIR}/yuv_convert.h
+  ${CMAKE_CURRENT_LIST_DIR}/yuv_opsin_convert.cc
+  ${CMAKE_CURRENT_LIST_DIR}/yuv_opsin_convert.h
 )
 
 target_include_directories(pikcommon

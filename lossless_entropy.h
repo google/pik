@@ -15,6 +15,8 @@ size_t encodeVarInt(size_t value, uint8_t* output);
 
 size_t decodeVarInt(const uint8_t* input, size_t inputSize, size_t* pos);
 
+// TODO(janwas): output to PaddedBytes for compatibility with brotli.h.
+
 // Output size can have special meaning, in each case you must encode the
 // data differently yourself and EntropyDecode will not be able to decode it.
 // If 0, then compression was not able to reduce size and you should output

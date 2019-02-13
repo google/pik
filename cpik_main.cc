@@ -18,7 +18,7 @@
 namespace pik {
 namespace {
 
-int CompressMain(int argc, char** argv) {
+int CompressMain(int argc, const char** argv) {
   CompressArgs args;
   tools::CommandLineParser cmdline;
   PIK_ASSERT(args.AddCommandLineOptions(&cmdline));
@@ -51,4 +51,4 @@ int CompressMain(int argc, char** argv) {
 }  // namespace
 }  // namespace pik
 
-int main(int argc, char** argv) { return pik::CompressMain(argc, argv); }
+int main(int argc, const char** argv) { return pik::CompressMain(argc, argv); }

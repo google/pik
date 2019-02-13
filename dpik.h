@@ -62,10 +62,9 @@ class DecompressStats {
   std::vector<double> elapsed_;
 };
 
-
-Status Decompress(CodecContext* codec_context, const PaddedBytes& compressed,
-                  const DecompressParams& params, ThreadPool* pool,
-                  CodecInOut* PIK_RESTRICT io,
+Status Decompress(const CodecContext* codec_context,
+                  const PaddedBytes& compressed, const DecompressParams& params,
+                  ThreadPool* pool, CodecInOut* PIK_RESTRICT io,
                   DecompressStats* PIK_RESTRICT stats);
 
 Status WriteOutput(const DecompressArgs& args, const CodecInOut& io);

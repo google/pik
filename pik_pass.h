@@ -25,13 +25,12 @@
 namespace pik {
 
 struct PassParams {
-  bool is_last;
   FrameInfo frame_info;
 };
 
 // These process each group in parallel.
 
-// Encodes an input image `io` in a byte stream, without adding a container.
+// Encodes an input image `io` in a byte stream, without adding a file header.
 // `pos` represents the bit position in the output data that we should
 // start writing to.
 Status PixelsToPikPass(CompressParams params, const PassParams& pass_params,
@@ -39,13 +38,14 @@ Status PixelsToPikPass(CompressParams params, const PassParams& pass_params,
                        PaddedBytes* compressed, size_t& pos, PikInfo* aux_out,
                        MultipassManager* multipass_manager);
 
-// Decodes an input image from a byte stream, using the provided container
-// information. See PikToPixels for explanation of `io` color space.
+// Decodes an input image from a byte stream, using `file_header`.
+// See PikToPixels for explanation of `io` color space.
 Status PikPassToPixels(const DecompressParams& params,
                        const PaddedBytes& compressed,
-                       const FileHeader& container, ThreadPool* pool,
+                       const FileHeader& file_header, ThreadPool* pool,
                        BitReader* reader, CodecInOut* io, PikInfo* aux_out,
-                       MultipassManager* multipass_manager);
+                       MultipassManager* multipass_manager,
+                       size_t downsample = 1);
 
 }  // namespace pik
 

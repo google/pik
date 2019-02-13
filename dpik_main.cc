@@ -4,12 +4,11 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT.
 
-#include "dpik.h"
-
 #undef PROFILER_ENABLED
 #define PROFILER_ENABLED 1
-
+#include "cache_aligned.h"
 #include "cmdline.h"
+#include "dpik.h"
 #include "file_io.h"
 #include "os_specific.h"
 #include "padded_bytes.h"
@@ -18,7 +17,7 @@
 namespace pik {
 namespace {
 
-int DecompressMain(int argc, char* argv[]) {
+int DecompressMain(int argc, const char* argv[]) {
   DecompressArgs args;
   tools::CommandLineParser cmdline;
   args.AddCommandLineOptions(&cmdline);
@@ -66,11 +65,13 @@ int DecompressMain(int argc, char* argv[]) {
   if (args.print_profile == Override::kOn) {
     PROFILER_PRINT_RESULTS();
   }
-
+  CacheAligned::PrintStats();
   return 0;
 }
 
 }  // namespace
 }  // namespace pik
 
-int main(int argc, char* argv[]) { return pik::DecompressMain(argc, argv); }
+int main(int argc, const char* argv[]) {
+  return pik::DecompressMain(argc, argv);
+}

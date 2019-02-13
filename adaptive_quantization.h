@@ -9,6 +9,7 @@
 
 #include <stddef.h>
 
+#include "block_dictionary.h"
 #include "color_correlation.h"
 #include "headers.h"
 #include "image.h"
@@ -40,9 +41,11 @@ std::shared_ptr<Quantizer> FindBestQuantizer(
     const CompressParams& cparams, size_t xsize_blocks, size_t ysize_blocks,
     const Image3F& opsin_orig, const Image3F& opsin,
     const PassHeader& pass_header, const GroupHeader& header,
-    const ColorCorrelationMap& cmap, const AcStrategyImage& ac_strategy,
-    ImageF& quant_field, ThreadPool* pool, PikInfo* aux_out,
-    MultipassManager* multipass_manager, double rescale = 1.0);
+    const ColorCorrelationMap& cmap, const BlockDictionary& block_dictionary,
+    const AcStrategyImage& ac_strategy, const ImageB& ar_sigma_lut_ids,
+    const DequantMatrices* dequant, ImageF& quant_field, ThreadPool* pool,
+    PikInfo* aux_out, MultipassManager* multipass_manager,
+    double rescale = 1.0);
 
 }  // namespace pik
 

@@ -31,6 +31,10 @@ namespace {
 // TODO(veluca): check if those upper bounds can be improved.
 const constexpr int kRleSymStart[2] = {10, 18};
 
+const constexpr int kMaxRleBits = 31;
+const constexpr int kMaxRleLength =
+    DecodeVarLenUint(kMaxRleBits, (1u << kMaxRleBits) - 1);
+
 }  // namespace
 
 Status EncodeAlpha(const CompressParams& params, const ImageU& plane,
@@ -84,7 +88,9 @@ Status EncodeAlpha(const CompressParams& params, const ImageU& plane,
           PIK_ASSERT(nbits < rle_sym_start);
           tokens[0].emplace_back(Token(0, nbits, nbits, bits));
         } else {
-          cnt++;
+          if (++cnt == kMaxRleLength) {
+            encode_cnt();
+          }
         }
       }
     }
@@ -139,6 +145,9 @@ Status DecodeAlpha(const DecompressParams& params, const Alpha& alpha,
       if (s > 0) {
         if (s >= rle_sym_start) {
           s -= rle_sym_start;
+          if (s > kMaxRleBits) {
+            return PIK_FAILURE("Invalid rle nbits");
+          }
           int bits = bit_reader.ReadBits(s);
           s = DecodeVarLenUint(s, bits);
           skip = s;

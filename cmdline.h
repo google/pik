@@ -43,7 +43,7 @@ class CommandLineParser {
 
     // Parses the option. The passed i points to the argument with the flag
     // that matches either the short or the long name.
-    virtual bool Parse(const int argc, char* argv[], int* i) = 0;
+    virtual bool Parse(const int argc, const char* argv[], int* i) = 0;
   };
 
   // Add a positional argument. Returns the id of the added option or
@@ -87,7 +87,7 @@ class CommandLineParser {
   void PrintHelp() const;
 
   // Parse the command line.
-  bool Parse(int argc, char* argv[]);
+  bool Parse(int argc, const char* argv[]);
 
   // Return the remaining positional args
   std::vector<const char*> PositionalArgs() const;
@@ -111,7 +111,7 @@ class CommandLineParser {
       return !matched_ && arg[0] != '-';
     }
 
-    bool Parse(const int argc, char* argv[], int* i) override {
+    bool Parse(const int argc, const char* argv[], int* i) override {
       *storage_ = argv[*i];
       (*i)++;
       matched_ = true;
@@ -176,7 +176,7 @@ class CommandLineParser {
       return MatchShort(arg) || MatchLong(arg);
     }
 
-    bool Parse(const int argc, char* argv[], int* i) override {
+    bool Parse(const int argc, const char* argv[], int* i) override {
       matched_ = true;
       if (MatchLong(argv[*i])) {
         const char* arg = argv[*i] + 2 + long_name_len_;

@@ -6,6 +6,7 @@
 
 #include "opsin_inverse.h"
 
+#include <mutex>
 #undef PROFILER_ENABLED
 #define PROFILER_ENABLED 1
 #include "compiler_specific.h"
@@ -17,18 +18,16 @@ namespace {
 
 SIMD_ALIGN float inverse_matrix[9 * SIMD_FULL(float)::N];
 
-// Called from non-local static initializer for convenience.
-SIMD_ATTR int InitInverseMatrix() {
+SIMD_ATTR void InitInverseMatrix() {
+  // Prevent tsan warnings just in case this is called by concurrent decoders.
+  static std::mutex mutex;
+  std::lock_guard<std::mutex> guard(mutex);
   const SIMD_FULL(float) d;
   const float* PIK_RESTRICT inverse = GetOpsinAbsorbanceInverseMatrix();
   for (size_t i = 0; i < 9; ++i) {
     store(set1(d, inverse[i]), d, &inverse_matrix[i * d.N]);
   }
-
-  return 0;
 }
-
-int dummy = InitInverseMatrix();
 
 // Inverts the pixel-wise RGB->XYB conversion in OpsinDynamicsImage() (including
 // the gamma mixing and simple gamma). Avoids clamping to [0, 255] - out of
@@ -90,43 +89,34 @@ SIMD_ATTR PIK_INLINE void XybToRgb(D d, const V opsin_x, const V opsin_y,
 
 }  // namespace
 
-SIMD_ATTR void OpsinToLinear(const Image3F& opsin, ThreadPool* pool,
-                             Image3F* linear) {
-  PIK_CHECK(linear->xsize() != 0);
+SIMD_ATTR void OpsinToLinear(Image3F* PIK_RESTRICT inout, ThreadPool* pool) {
   PROFILER_FUNC;
-  // Opsin is padded to blocks; only produce valid output pixels.
-  const size_t xsize = linear->xsize();
-  const size_t ysize = linear->ysize();
-
+  InitInverseMatrix();
+  const size_t xsize = inout->xsize();  // not padded
   RunOnPool(
-      pool, 0, ysize,
+      pool, 0, inout->ysize(),
       [&](const int task, const int thread) SIMD_ATTR {
         const size_t y = task;
 
         // Faster than adding via ByteOffset at end of loop.
-        const float* row_opsin_x = opsin.ConstPlaneRow(0, y);
-        const float* row_opsin_y = opsin.ConstPlaneRow(1, y);
-        const float* row_opsin_b = opsin.ConstPlaneRow(2, y);
-
-        // Potentially aliased with input.
-        float* row_linear_r = linear->PlaneRow(0, y);
-        float* row_linear_g = linear->PlaneRow(1, y);
-        float* row_linear_b = linear->PlaneRow(2, y);
+        float* PIK_RESTRICT row0 = inout->PlaneRow(0, y);
+        float* PIK_RESTRICT row1 = inout->PlaneRow(1, y);
+        float* PIK_RESTRICT row2 = inout->PlaneRow(2, y);
 
         const SIMD_FULL(float) d;
 
         for (size_t x = 0; x < xsize; x += d.N) {
-          const auto in_opsin_x = load(d, row_opsin_x + x);
-          const auto in_opsin_y = load(d, row_opsin_y + x);
-          const auto in_opsin_b = load(d, row_opsin_b + x);
+          const auto in_opsin_x = load(d, row0 + x);
+          const auto in_opsin_y = load(d, row1 + x);
+          const auto in_opsin_b = load(d, row2 + x);
           PIK_COMPILER_FENCE;
           SIMD_FULL(float)::V linear_r, linear_g, linear_b;
           XybToRgb(d, in_opsin_x, in_opsin_y, in_opsin_b, inverse_matrix,
                    &linear_r, &linear_g, &linear_b);
 
-          store(linear_r, d, row_linear_r + x);
-          store(linear_g, d, row_linear_g + x);
-          store(linear_b, d, row_linear_b + x);
+          store(linear_r, d, row0 + x);
+          store(linear_g, d, row1 + x);
+          store(linear_b, d, row2 + x);
         }
       },
       "OpsinToLinear");
@@ -135,6 +125,7 @@ SIMD_ATTR void OpsinToLinear(const Image3F& opsin, ThreadPool* pool,
 SIMD_ATTR void OpsinToLinear(const Image3F& opsin, const Rect& rect_out,
                              Image3F* PIK_RESTRICT linear) {
   PROFILER_ZONE("OpsinToLinear(Rect)");
+  InitInverseMatrix();
   PIK_ASSERT(linear->xsize() != 0);
   // Opsin is padded to blocks; only produce valid output pixels.
   const size_t xsize = rect_out.xsize();

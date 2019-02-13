@@ -7,9 +7,12 @@
 #ifndef CPIK_H_
 #define CPIK_H_
 
+#include <utility>
+
 #include "cmdline.h"
 #include "codec.h"
 #include "padded_bytes.h"
+#include "pik_inspection.h"
 #include "pik_params.h"
 #include "status.h"
 
@@ -18,6 +21,10 @@ namespace pik {
 struct CompressArgs {
   // Initialize non-static default options.
   CompressArgs();
+
+  void SetInspectorImage3F(InspectorImage3F inspector) {
+    inspector_image3f = inspector;
+  }
 
   // Add all the command line options to the CommandLineParser. Note that the
   // options are tied to the instance that this was called on.
@@ -33,6 +40,9 @@ struct CompressArgs {
   size_t num_threads = 0;
   bool got_num_threads = false;
   Override print_profile = Override::kDefault;
+
+  // Will get passed on to PikInfo.
+  InspectorImage3F inspector_image3f;
 
   // References (ids) of specific options to check if they were matched.
   tools::CommandLineParser::OptionId opt_distance_id = -1;

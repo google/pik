@@ -14,6 +14,44 @@
 
 namespace pik {
 
+Status BrotliCompress(int quality, const uint8_t* in, const size_t in_size,
+                      uint8_t* PIK_RESTRICT out,
+                      size_t* PIK_RESTRICT total_out_size) {
+  std::unique_ptr<BrotliEncoderState, decltype(BrotliEncoderDestroyInstance)*>
+      enc(BrotliEncoderCreateInstance(nullptr, nullptr, nullptr),
+          BrotliEncoderDestroyInstance);
+  if (!enc) return PIK_FAILURE("BrotliEncoderCreateInstance failed");
+
+  BrotliEncoderSetParameter(enc.get(), BROTLI_PARAM_QUALITY, quality);
+  BrotliEncoderSetParameter(enc.get(), BROTLI_PARAM_LGWIN, 24);
+  BrotliEncoderSetParameter(enc.get(), BROTLI_PARAM_LGBLOCK, 0);
+
+  const size_t kBufferSize = 128 * 1024;
+  PaddedBytes temp_buffer(kBufferSize);
+
+  size_t avail_in = in_size;
+  const uint8_t* next_in = in;
+
+  size_t total_out = 0;
+
+  while (1) {
+    size_t out_size;
+    size_t avail_out = kBufferSize;
+    uint8_t* next_out = temp_buffer.data();
+    if (!BrotliEncoderCompressStream(enc.get(), BROTLI_OPERATION_FINISH,
+                                     &avail_in, &next_in, &avail_out, &next_out,
+                                     &total_out)) {
+      return PIK_FAILURE("Brotli compression failed");
+    }
+    out_size = next_out - temp_buffer.data();
+    memcpy(out + *total_out_size, temp_buffer.data(), out_size);
+    *total_out_size += out_size;
+    if (BrotliEncoderIsFinished(enc.get())) break;
+  }
+
+  return true;
+}
+
 Status BrotliCompress(int quality, const PaddedBytes& in,
                       PaddedBytes* PIK_RESTRICT out) {
   std::unique_ptr<BrotliEncoderState, decltype(BrotliEncoderDestroyInstance)*>

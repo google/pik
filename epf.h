@@ -23,9 +23,6 @@ struct EpfParams {
   template <class Visitor>
   Status VisitFields(Visitor* PIK_RESTRICT visitor) {
     visitor->Bool(true, &enable_adaptive);
-    if (visitor->Conditional(enable_adaptive)) {
-      visitor->U32(kU32Direct3Plus4, 0, &lut);
-    }
     if (visitor->Conditional(!enable_adaptive)) {
       visitor->U32(0x0A090880, 0, &sigma);
     }
@@ -35,9 +32,6 @@ struct EpfParams {
 
   // If false, use hardcoded sigma for each block.
   bool enable_adaptive;
-
-  // Only if enable_adaptive:
-  uint32_t lut;  // Index of quant->sigma lookup table [0, 3]
 
   // Only if !enable_adaptive:
   uint32_t sigma;  // ignored if !enable_adaptive, otherwise >= kMinSigma.
@@ -85,7 +79,7 @@ struct EdgePreservingFilter {
   template <class Target>
   void operator()(const Image3F& in_guide, const Image3F& in,
                   const ImageI* ac_quant, float quant_scale,
-                  const AcStrategyImage& ac_strategy,
+                  const ImageB& lut_ids, const AcStrategyImage& ac_strategy,
                   const EpfParams& epf_params, ThreadPool* pool,
                   Image3F* smoothed, EpfStats* epf_stats) const;
 

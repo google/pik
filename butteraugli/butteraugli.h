@@ -4,8 +4,6 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT.
 //
-// Disclaimer: This is not an official Google product.
-//
 // Author: Jyrki Alakuijala (jyrki.alakuijala@gmail.com)
 
 #ifndef BUTTERAUGLI_BUTTERAUGLI_H_
@@ -146,11 +144,11 @@ class ButteraugliComparator {
  private:
   void MaltaDiffMapLF(const ImageF &y0, const ImageF &y1, double w_0gt1,
                       double w_0lt1, double normalization,
-                      ImageF *PIK_RESTRICT block_diff_ac) const;
+                      Image3F *PIK_RESTRICT block_diff_ac, size_t c) const;
 
   void MaltaDiffMap(const ImageF &y0, const ImageF &y1, double w_0gt1,
                     double w_0lt1, double normalization,
-                    ImageF *PIK_RESTRICT block_diff_ac) const;
+                    Image3F *PIK_RESTRICT block_diff_ac, size_t c) const;
 
   ImageF CombineChannels(const Image3F &scale_xyb, const Image3F &scale_xyb_dc,
                          const Image3F &block_diff_dc,

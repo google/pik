@@ -29,113 +29,82 @@
 
 namespace pik {
 namespace {
-// Adds or subtracts block to/from "add_to",
-// except elements 0,H,V,D. May overwrite parts of "block".
+// Adds or subtracts block to/from "add_to", except low and lowest frequencies.
+// `block` is assumed to be contiguous, `add_to` has `ysize` slices of
+// `xsize`*kBlockDim*kBlockDim coefficients with a stride of `stride`.
 template <bool add>
-SIMD_ATTR void AddBlockExcept0HVDTo(const float* PIK_RESTRICT block,
-                                    float* PIK_RESTRICT add_to) {
-  constexpr int N = kBlockDim;
-
-  const SIMD_PART(float, SIMD_MIN(SIMD_FULL(float)::N, 8)) d;
-
-#if SIMD_TARGET_VALUE == SIMD_NONE
-  // Fallback because SIMD version assumes at least two lanes.
-  block[0] = 0.0f;
-  block[1] = 0.0f;
-  block[N] = 0.0f;
-  block[N + 1] = 0.0f;
-  if (!add) {
-    for (size_t i = 0; i < N * N; ++i) {
-      add_to[i] -= block[i];
-    }
-  } else {
-    for (size_t i = 0; i < N * N; ++i) {
-      add_to[i] += block[i];
+SIMD_ATTR void AddBlockExceptLFAndLLFTo(const float* PIK_RESTRICT block,
+                                        size_t xsize, size_t ysize,
+                                        float* PIK_RESTRICT add_to,
+                                        size_t stride) {
+  // TODO(veluca): SIMD-fy
+  PIK_ASSERT(ysize <= 4);
+  // Rows with LF and LLF coefficients.
+  for (size_t y = 0; y < 2 * ysize; y++) {
+    for (size_t x = 2 * xsize; x < xsize * kBlockDim; x++) {
+      if (add) {
+        add_to[y * xsize * kBlockDim + x] += block[y * xsize * kBlockDim + x];
+      } else {
+        add_to[y * xsize * kBlockDim + x] -= block[y * xsize * kBlockDim + x];
+      }
     }
   }
-#else
-  // Negated to enable default zero-initialization of upper lanes.
-  SIMD_ALIGN uint32_t mask2[d.N] = {~0u, ~0u};
-  const auto only_01 = load(d, reinterpret_cast<float*>(mask2));
-
-  // First block row: don't add block[0, 1].
-  auto prev = load(d, add_to + 0);
-  auto coefs = load(d, block + 0);
-  auto masked_coefs = andnot(only_01, coefs);
-  auto sum = add ? prev + masked_coefs : prev - masked_coefs;
-  store(sum, d, add_to + 0);
-  // Handle remnants of DCT row (for 128-bit SIMD, or N > 8)
-  for (size_t ix = d.N; ix < N; ix += d.N) {
-    prev = load(d, add_to + ix);
-    coefs = load(d, block + ix);
-    sum = add ? prev + coefs : prev - coefs;
-    store(sum, d, add_to + ix);
+  size_t block_shift =
+      NumZeroBitsBelowLSBNonzero(kBlockDim * kBlockDim * xsize);
+  for (size_t y = 2 * ysize; y < ysize * kBlockDim; y++) {
+    size_t line_start = y * xsize * kBlockDim;
+    size_t block_off = line_start >> block_shift;
+    size_t block_idx = line_start & (xsize * kBlockDim * kBlockDim - 1);
+    line_start = block_off * stride + block_idx;
+    for (size_t x = 0; x < xsize * kBlockDim; x++) {
+      if (add) {
+        add_to[line_start + x] += block[y * xsize * kBlockDim + x];
+      } else {
+        add_to[line_start + x] -= block[y * xsize * kBlockDim + x];
+      }
+    }
   }
-
-  // Second block row: don't add block[V, D].
-  prev = load(d, add_to + N);
-  coefs = load(d, block + N);
-  masked_coefs = andnot(only_01, coefs);
-  sum = add ? prev + masked_coefs : prev - masked_coefs;
-  store(sum, d, add_to + N);
-  // Handle remnants of DCT row (for 128-bit SIMD, or N > 8)
-  for (size_t ix = d.N; ix < N; ix += d.N) {
-    prev = load(d, add_to + N + ix);
-    coefs = load(d, block + N + ix);
-    sum = add ? prev + coefs : prev - coefs;
-    store(sum, d, add_to + N + ix);
-  }
-
-  for (size_t i = 2 * N; i < N * N; i += d.N) {
-    prev = load(d, add_to + i);
-    coefs = load(d, block + i);
-    sum = add ? prev + coefs : prev - coefs;
-    store(sum, d, add_to + i);
-  }
-#endif
 }
 
 // Un-color-correlates, quantizes, dequantizes and color-correlates the
 // specified coefficients inside the given block, using or storing the y-channel
 // values in y_block. Used by predictors to compute the decoder-side values to
-// compute predictions on. Coefficients are specified as a bit array.
+// compute predictions on. Coefficients are specified as a bit array. Assumes
+// that `block` and `y_block` have the same stride.
 template <size_t c>
 SIMD_ATTR PIK_INLINE void ComputeDecoderCoefficients(
     const float cmap_factor, const Quantizer& quantizer, const int32_t quant_ac,
-    const float inv_quant_ac, const uint8_t quant_kind, const float* block_src,
-    uint64_t coefficients, float* block, float* y_block) {
-  constexpr size_t N = kBlockDim;
-  for (uint64_t bits = coefficients; bits != 0; bits &= bits - 1) {
-    size_t idx = NumZeroBitsBelowLSBNonzero(bits);
-    block[idx] = block_src[idx];
+    const float inv_quant_ac, const uint8_t quant_kind, size_t xsize,
+    size_t ysize, const float* block_src, size_t block_stride,
+    uint64_t coefficients, float* block, size_t out_stride, float* y_block) {
+  PIK_ASSERT(coefficients < 0x1000);
+  PIK_ASSERT(ysize <= 4);
+  for (size_t i = 0; i < ysize; i++) {
+    memcpy(block + out_stride * i, block_src + block_stride * i,
+           sizeof(float) * xsize * kBlockDim * kBlockDim);
   }
   if (c != 1) {
-    for (uint64_t bits = coefficients; bits != 0; bits &= bits - 1) {
-      size_t idx = NumZeroBitsBelowLSBNonzero(bits);
-      block[idx] -= y_block[idx] * cmap_factor;
+    for (size_t y = 0; y < ysize; y++) {
+      for (size_t i = 0; i < xsize * kBlockDim * kBlockDim; i++) {
+        block[y * xsize * kBlockDim * kBlockDim + i] -=
+            y_block[y * xsize * kBlockDim * kBlockDim + i] * cmap_factor;
+      }
     }
   }
-  int16_t qblock[N * N];
-  quantizer.QuantizeBlockCoefficients(quant_ac, quant_kind, c, block, qblock,
-                                      coefficients);
-  const float* PIK_RESTRICT dequant_matrix =
-      quantizer.DequantMatrix(c, quant_kind);
-  for (uint64_t bits = coefficients; bits != 0; bits &= bits - 1) {
-    size_t idx = NumZeroBitsBelowLSBNonzero(bits);
-    block[idx] =
-        AdjustQuantBias<c>(qblock[idx]) * (dequant_matrix[idx] * inv_quant_ac);
-  }
+  quantizer.QuantizeRoundtripBlockCoefficients<c>(
+      quant_ac, quant_kind, xsize, ysize, block, out_stride, block, out_stride,
+      coefficients);
   if (c != 1) {
-    // Restore color correlation in the coefficients, as they will be
-    // un-correlated later.
-    for (uint64_t bits = coefficients; bits != 0; bits &= bits - 1) {
-      size_t idx = NumZeroBitsBelowLSBNonzero(bits);
-      block[idx] += y_block[idx] * cmap_factor;
+    for (size_t y = 0; y < ysize; y++) {
+      for (size_t i = 0; i < xsize * kBlockDim * kBlockDim; i++) {
+        block[y * xsize * kBlockDim * kBlockDim + i] +=
+            y_block[y * xsize * kBlockDim * kBlockDim + i] * cmap_factor;
+      }
     }
   } else {
-    for (uint64_t bits = coefficients; bits != 0; bits &= bits - 1) {
-      size_t idx = NumZeroBitsBelowLSBNonzero(bits);
-      y_block[idx] = block[idx];
+    for (size_t i = 0; i < ysize; i++) {
+      memcpy(y_block + out_stride * i, block + out_stride * i,
+             sizeof(float) * xsize * kBlockDim * kBlockDim);
     }
   }
 }
@@ -170,41 +139,42 @@ SIMD_ATTR void ComputeDecoderBlockAnd2x2DC(
     float* PIK_RESTRICT y_residuals_dec) {
   PROFILER_FUNC;
   constexpr size_t N = kBlockDim;
-  float decoder_coeffs[AcStrategy::kMaxCoeffArea] = {};
+  float* block_start = residuals[c] + N * N * (bx - 1);
+  const float* pred_start = pred[c] + 2 * bx;
+  SIMD_ALIGN float decoder_coeffs[AcStrategy::kMaxCoeffArea] = {};
   if (!is_border) {
-    for (size_t iby = 0; iby < acs.covered_blocks_y(); iby++) {
-      for (size_t ibx = 0; ibx < acs.covered_blocks_x(); ibx++) {
-        float* current =
-            residuals[c] + N * N * (bx + ibx - 1) + residuals_stride * iby;
-        const float* pred_current =
-            pred[c] + 2 * (bx + ibx) + pred_stride * 2 * iby;
-        float* y_current =
-            y_residuals_dec + N * N * (acs.covered_blocks_x() * iby + ibx);
-        float* decoder_current =
-            decoder_coeffs + N * N * (acs.covered_blocks_x() * iby + ibx);
-
-        if (predict_lf) {
-          // Remove prediction
-          current[1] -= pred_current[1];
-          current[N] -= pred_current[pred_stride];
-          current[N + 1] -= pred_current[pred_stride + 1];
+    if (predict_lf) {
+      // Remove prediction
+      for (size_t y = 0; y < 2 * acs.covered_blocks_y(); y++) {
+        size_t start = y < acs.covered_blocks_y() ? acs.covered_blocks_x() : 0;
+        for (size_t x = start; x < 2 * acs.covered_blocks_x(); x++) {
+          block_start[y * acs.covered_blocks_x() * kBlockDim + x] -=
+              pred_start[y * pred_stride + x];
         }
+      }
+    }
 
-        // Quantization roundtrip
-        const size_t kind =
-            acs.GetQuantKind(iby * acs.covered_blocks_x() + ibx);
-        const float inv_quant_ac = quantizer.inv_quant_ac(quant_ac);
-        // 0x302 has bits 1, 8, 9 set.
-        ComputeDecoderCoefficients<c>(cmap_factor[c], quantizer, quant_ac,
-                                      inv_quant_ac, kind, current, 0x302,
-                                      decoder_current, y_current);
+    // Quantization roundtrip
+    const size_t kind = acs.GetQuantKind();
+    const float inv_quant_ac = quantizer.inv_quant_ac(quant_ac);
+    // 0x302 has bits 1, 8, 9 set.
+    ComputeDecoderCoefficients<c>(
+        cmap_factor[c], quantizer, quant_ac, inv_quant_ac, kind,
+        acs.covered_blocks_x(), acs.covered_blocks_y(), block_start,
+        residuals_stride, 0x302, decoder_coeffs,
+        acs.covered_blocks_x() * kBlockDim * kBlockDim, y_residuals_dec);
 
-        decoder_current[0] = current[0];
-        if (predict_lf) {
-          // Add back prediction
-          decoder_current[1] += pred_current[1];
-          decoder_current[N] += pred_current[pred_stride];
-          decoder_current[N + 1] += pred_current[pred_stride + 1];
+    if (predict_lf) {
+      // Add back prediction
+      for (size_t y = 0; y < 2 * acs.covered_blocks_y(); y++) {
+        size_t start = y < acs.covered_blocks_y() ? acs.covered_blocks_x() : 0;
+        for (size_t x = 0; x < start; x++) {
+          decoder_coeffs[y * acs.covered_blocks_x() * kBlockDim + x] =
+              block_start[y * acs.covered_blocks_x() * kBlockDim + x];
+        }
+        for (size_t x = start; x < 2 * acs.covered_blocks_x(); x++) {
+          decoder_coeffs[y * acs.covered_blocks_x() * kBlockDim + x] +=
+              pred_start[y * pred_stride + x];
         }
       }
     }
@@ -223,20 +193,31 @@ SIMD_ATTR void ComputeDecoderBlockAnd2x2DC(
 }
 
 // Copies the lowest-frequency coefficients from DC- to AC-sized image.
-SIMD_ATTR void CopyLlf(const Image3F& llf, Image3F* PIK_RESTRICT ac64) {
+SIMD_ATTR void CopyLlf(const Image3F& llf, const AcStrategyImage& ac_strategy,
+                       Image3F* PIK_RESTRICT ac64) {
   PROFILER_FUNC;
   constexpr size_t N = kBlockDim;
   constexpr size_t block_size = N * N;
   const size_t xsize = llf.xsize() - 2;
   const size_t ysize = llf.ysize() - 2;
+  const size_t llf_stride = llf.PixelsPerRow();
 
   // Copy (reinterpreted) DC values to 0-th block values.
   for (size_t c = 0; c < ac64->kNumPlanes; c++) {
     for (size_t by = 0; by < ysize; ++by) {
       const float* llf_row = llf.ConstPlaneRow(c, by + 1);
       float* ac_row = ac64->PlaneRow(c, by);
+      AcStrategyRow strategy_row = ac_strategy.ConstRow(by);
       for (size_t bx = 0; bx < xsize; bx++) {
-        ac_row[block_size * bx] = llf_row[bx + 1];
+        AcStrategy strategy = strategy_row[bx];
+        if (!strategy.IsFirstBlock()) continue;
+        for (size_t y = 0; y < strategy.covered_blocks_y(); y++) {
+          for (size_t x = 0; x < strategy.covered_blocks_x(); x++) {
+            ac_row[block_size * bx +
+                   strategy.covered_blocks_y() * kBlockDim * y + x] =
+                llf_row[bx + 1 + llf_stride * y + x];
+          }
+        }
       }
     }
   }
@@ -277,7 +258,9 @@ template <bool add>
 SIMD_ATTR void UpSample4x4BlurDCT(const Rect& dc_rect, const ImageF& img,
                                   const Ub4Kernel& kernel,
                                   const AcStrategyImage& ac_strategy,
-                                  const Rect& acs_rect, ImageF* add_to) {
+                                  const Rect& acs_rect,
+                                  ImageF* PIK_RESTRICT blur_x,
+                                  ImageF* PIK_RESTRICT add_to) {
   PROFILER_FUNC;
   constexpr size_t N = kBlockDim;
   constexpr size_t block_size = N * N;
@@ -315,10 +298,10 @@ SIMD_ATTR void UpSample4x4BlurDCT(const Rect& dc_rect, const ImageF& img,
   V vw2[4] = {set1(d, kernel[2][0]), set1(d, kernel[2][1]),
               set1(d, kernel[2][2]), set1(d, kernel[2][3])};
 
-  ImageF blur_x(xs * 4, ys + 2);
+  PIK_ASSERT(blur_x->xsize() == xs * 4 && blur_x->ysize() == ys + 2);
   for (size_t y = 0; y < ys + 2; ++y) {
     const float* PIK_RESTRICT row = img.ConstRow(y + 1);
-    float* const PIK_RESTRICT row_out = blur_x.Row(y);
+    float* const PIK_RESTRICT row_out = blur_x->Row(y);
     for (int x = 0; x < xs; ++x) {
       const float v0 = row[x + 1];
       const float v1 = row[x + 2];
@@ -335,9 +318,9 @@ SIMD_ATTR void UpSample4x4BlurDCT(const Rect& dc_rect, const ImageF& img,
     for (size_t by = 0; by < bys; ++by) {
       const D d;
       SIMD_ALIGN float block[AcStrategy::kMaxCoeffArea];
-      SIMD_ALIGN float temp_block[AcStrategy::kMaxCoeffArea];
+      SIMD_ALIGN float coeffs[AcStrategy::kMaxCoeffArea];
       const size_t out_stride = add_to->PixelsPerRow();
-      const size_t blur_stride = blur_x.PixelsPerRow();
+      const size_t blur_stride = blur_x->PixelsPerRow();
 
       float* PIK_RESTRICT row_out = add_to->Row(by0 + by);
       AcStrategyRow ac_strategy_row = ac_strategy.ConstRow(acs_rect, by0 + by);
@@ -346,7 +329,7 @@ SIMD_ATTR void UpSample4x4BlurDCT(const Rect& dc_rect, const ImageF& img,
         if (!acs.IsFirstBlock()) continue;
         if (!acs.PredictHF()) continue;
         for (int idy = 0; idy < acs.covered_blocks_y(); idy++) {
-          const float* PIK_RESTRICT row0d = blur_x.ConstRow(2 * (by + idy));
+          const float* PIK_RESTRICT row0d = blur_x->ConstRow(2 * (by + idy));
           const float* PIK_RESTRICT row1d = row0d + blur_stride;
           const float* PIK_RESTRICT row2d = row1d + blur_stride;
           const float* PIK_RESTRICT row3d = row2d + blur_stride;
@@ -374,18 +357,11 @@ SIMD_ATTR void UpSample4x4BlurDCT(const Rect& dc_rect, const ImageF& img,
           }
         }
 
-        acs.TransformFromPixels(block, AcStrategy::kMaxBlockDim, temp_block,
-                                AcStrategy::kMaxCoeffBlocks * block_size);
-        for (size_t iby = 0; iby < acs.covered_blocks_y(); iby++) {
-          for (size_t ibx = 0; ibx < acs.covered_blocks_x(); ibx++) {
-            const float* PIK_RESTRICT in =
-                temp_block +
-                block_size * (AcStrategy::kMaxCoeffBlocks * iby + ibx);
-            float* PIK_RESTRICT out =
-                row_out + block_size * (bx0 + bx + ibx) + out_stride * iby;
-            AddBlockExcept0HVDTo<add>(in, out);
-          }
-        }
+        acs.TransformFromPixels(block, AcStrategy::kMaxBlockDim, coeffs,
+                                acs.covered_blocks_x() * kBlockDim * kBlockDim);
+        AddBlockExceptLFAndLLFTo<add>(
+            coeffs, acs.covered_blocks_x(), acs.covered_blocks_y(),
+            row_out + block_size * (bx0 + bx), out_stride);
       }
     }
   }
@@ -403,7 +379,7 @@ SIMD_ATTR void ComputeLlf(const Image3F& dc, const AcStrategyImage& ac_strategy,
   const size_t dc_stride = dc.PixelsPerRow();
   const size_t llf_stride = llf->PixelsPerRow();
 
-  // Copy (reinterpreted) DC values to 0-th block values.
+  // Copy (reinterpreted) DC values to LLF image.
   for (size_t c = 0; c < llf->kNumPlanes; c++) {
     for (size_t by = 0; by < ysize; ++by) {
       const bool is_border_y = by == 0 || by == ysize - 1;
@@ -438,7 +414,7 @@ SIMD_ATTR void PredictLf(const AcStrategyImage& ac_strategy,
   // Plane-wise transforms require 2*4DC*4 = 128KiB active memory. Would be
   // further subdivided into 2 or more stripes to reduce memory pressure.
   for (size_t c = 0; c < lf2x2->kNumPlanes; c++) {
-    ImageF* lf2x2_plane = lf2x2->MutablePlane(c);
+    ImageF* PIK_RESTRICT lf2x2_plane = const_cast<ImageF*>(&lf2x2->Plane(c));
 
     // Computes the initial DC2x2 from the lowest-frequency coefficients.
     for (size_t by = 0; by < ysize; ++by) {
@@ -495,6 +471,7 @@ SIMD_ATTR void PredictLfForEncoder(bool predict_lf, bool predict_hf,
                                    const Image3F& dc,
                                    const AcStrategyImage& ac_strategy,
                                    const ColorCorrelationMap& cmap,
+                                   const Rect& cmap_rect,
                                    const Quantizer& quantizer,
                                    Image3F* PIK_RESTRICT ac64, Image3F* dc2x2) {
   PROFILER_FUNC;
@@ -510,9 +487,9 @@ SIMD_ATTR void PredictLfForEncoder(bool predict_lf, bool predict_hf,
     if (predict_lf) {
       // dc2x2 plane is borrowed for temporary storage.
       PredictLf(ac_strategy, Rect(ac_strategy.ConstRaw()), llf,
-                dc2x2->MutablePlane(0), &lf2x2);
+                const_cast<ImageF*>(&dc2x2->Plane(0)), &lf2x2);
     }
-    CopyLlf(llf, ac64);
+    CopyLlf(llf, ac_strategy, ac64);
   }
   const size_t lf2x2_stride = lf2x2.PixelsPerRow();
 
@@ -545,8 +522,11 @@ SIMD_ATTR void PredictLfForEncoder(bool predict_lf, bool predict_hf,
       size_t tx = (is_border ? 0 : bx - 1) / kColorTileDimInBlocks;
       size_t ty = (is_border ? 0 : by - 1) / kColorTileDimInBlocks;
       float cmap_factor[3] = {
-          ColorCorrelationMap::YtoX(1.0f, cmap.ytox_map.ConstRow(ty)[tx]), 0.0f,
-          ColorCorrelationMap::YtoB(1.0f, cmap.ytob_map.ConstRow(ty)[tx])};
+          ColorCorrelationMap::YtoX(1.0f,
+                                    cmap_rect.ConstRow(cmap.ytox_map, ty)[tx]),
+          0.0f,
+          ColorCorrelationMap::YtoB(1.0f,
+                                    cmap_rect.ConstRow(cmap.ytob_map, ty)[tx])};
       const int32_t quant = bx == 0 ? row_quant[0] : row_quant[bx - 1];
       ComputeDecoderBlockAnd2x2DC<1>(
           is_border, predict_lf, predict_hf, acs, ac_stride, lf2x2_stride,
@@ -568,24 +548,34 @@ SIMD_ATTR void PredictLfForEncoder(bool predict_lf, bool predict_hf,
 SIMD_ATTR void UpdateLfForDecoder(const Rect& tile, bool predict_lf,
                                   bool predict_hf,
                                   const AcStrategyImage& ac_strategy,
-                                  const Rect& acs_rect, const ImageF& llf_plane,
-                                  ImageF* ac64_plane, ImageF* dc2x2_plane,
-                                  ImageF* lf2x2_plane) {
+                                  const Rect& acs_rect, const Image3F& llf,
+                                  Image3F* PIK_RESTRICT ac64,
+                                  Image3F* PIK_RESTRICT dc2x2,
+                                  Image3F* PIK_RESTRICT lf2x2, size_t c) {
   constexpr size_t N = kBlockDim;
   constexpr size_t block_size = N * N;
   const size_t bx0 = tile.x0();
   const size_t bx1 = bx0 + tile.xsize();
   const size_t by0 = tile.y0();
   const size_t by1 = by0 + tile.ysize();
-  const size_t ac_stride = ac64_plane->PixelsPerRow();
-  const size_t dc2x2_stride = predict_hf ? dc2x2_plane->PixelsPerRow() : 0;
-  const size_t lf2x2_stride = predict_lf ? lf2x2_plane->PixelsPerRow() : 0;
+  const size_t ac_stride = ac64->PixelsPerRow();
+  const size_t dc2x2_stride = predict_hf ? dc2x2->PixelsPerRow() : 0;
+  const size_t lf2x2_stride = predict_lf ? lf2x2->PixelsPerRow() : 0;
+  const size_t llf_stride = llf.PixelsPerRow();
 
   for (size_t by = by0; by < by1; ++by) {
-    const float* llf_row = llf_plane.ConstRow(by + 1);
-    float* ac_row = ac64_plane->Row(by);
+    const float* llf_row = llf.ConstPlaneRow(c, by + 1);
+    float* ac_row = ac64->PlaneRow(c, by);
+    AcStrategyRow acs_row = ac_strategy.ConstRow(acs_rect, by);
     for (size_t bx = bx0; bx < bx1; bx++) {
-      ac_row[block_size * bx] = llf_row[bx + 1];
+      AcStrategy acs = acs_row[bx];
+      if (!acs.IsFirstBlock()) continue;
+      for (size_t y = 0; y < acs.covered_blocks_y(); y++) {
+        for (size_t x = 0; x < acs.covered_blocks_x(); x++) {
+          ac_row[block_size * bx + acs.covered_blocks_x() * kBlockDim * y + x] =
+              llf_row[bx + 1 + llf_stride * y + x];
+        }
+      }
     }
   }
 
@@ -595,20 +585,21 @@ SIMD_ATTR void UpdateLfForDecoder(const Rect& tile, bool predict_lf,
   if (predict_lf) {
     for (size_t by = by0; by < by1; ++by) {
       AcStrategyRow ac_strategy_row = ac_strategy.ConstRow(acs_rect, by);
-      float* ac_row = ac64_plane->Row(by);
-      const float* lf2x2_row = lf2x2_plane->ConstRow(2 * (by + 1));
+      float* PIK_RESTRICT ac_row = ac64->PlaneRow(c, by);
+      const float* PIK_RESTRICT lf2x2_row =
+          lf2x2->ConstPlaneRow(c, 2 * (by + 1));
       for (size_t bx = bx0; bx < bx1; bx++) {
         AcStrategy acs = ac_strategy_row[bx];
+        float* PIK_RESTRICT ac_pos = ac_row + bx * block_size;
+        const float* PIK_RESTRICT lf2x2_pos = lf2x2_row + (bx + 1) * 2;
         if (!acs.IsFirstBlock()) continue;
         if (predict_lf) {
-          for (size_t iy = 0; iy < acs.covered_blocks_y(); iy++) {
-            for (size_t ix = 0; ix < acs.covered_blocks_x(); ix++) {
-              float* ac_pos = ac_row + ac_stride * iy + (bx + ix) * block_size;
-              const float* lf2x2_pos =
-                  lf2x2_row + lf2x2_stride * iy * 2 + (bx + 1 + ix) * 2;
-              ac_pos[1] += lf2x2_pos[1];
-              ac_pos[N] += lf2x2_pos[lf2x2_stride];
-              ac_pos[N + 1] += lf2x2_pos[lf2x2_stride + 1];
+          for (size_t y = 0; y < 2 * acs.covered_blocks_y(); y++) {
+            size_t start =
+                y < acs.covered_blocks_y() ? acs.covered_blocks_x() : 0;
+            for (size_t x = start; x < 2 * acs.covered_blocks_x(); x++) {
+              ac_pos[y * acs.covered_blocks_x() * kBlockDim + x] +=
+                  lf2x2_pos[y * lf2x2_stride + x];
             }
           }
         }
@@ -619,8 +610,8 @@ SIMD_ATTR void UpdateLfForDecoder(const Rect& tile, bool predict_lf,
   if (predict_hf) {
     for (size_t by = by0; by < by1; ++by) {
       AcStrategyRow ac_strategy_row = ac_strategy.ConstRow(acs_rect, by);
-      float* dc2x2_row = dc2x2_plane->Row(2 * (by + 1));
-      const float* ac_row = ac64_plane->Row(by);
+      const float* PIK_RESTRICT ac_row = ac64->PlaneRow(c, by);
+      float* PIK_RESTRICT dc2x2_row = dc2x2->PlaneRow(c, 2 * (by + 1));
       for (size_t bx = bx0; bx < bx1; bx++) {
         AcStrategy acs = ac_strategy_row[bx];
         if (!acs.IsFirstBlock()) continue;
@@ -638,15 +629,17 @@ SIMD_ATTR void ComputePredictionResiduals(const Image3F& pred2x2,
   Rect acs_rect(0, 0, ac_strategy.xsize(), ac_strategy.ysize());
   Ub4Kernel kernel;
   ComputeUb4Kernel(k4x4BlurStrength, &kernel);
+  ImageF blur_x(dc_rect.xsize() * 8, dc_rect.ysize() * 2 + 2);
   for (int c = 0; c < coeffs->kNumPlanes; ++c) {
     UpSample4x4BlurDCT</*add=*/false>(dc_rect, pred2x2.Plane(c), kernel,
-                                      ac_strategy, acs_rect,
-                                      coeffs->MutablePlane(c));
+                                      ac_strategy, acs_rect, &blur_x,
+                                      const_cast<ImageF*>(&coeffs->Plane(c)));
   }
 }
 
 void AddPredictions(const Image3F& pred2x2, const AcStrategyImage& ac_strategy,
-                    const Rect& acs_rect, Image3F* PIK_RESTRICT dcoeffs) {
+                    const Rect& acs_rect, ImageF* PIK_RESTRICT blur_x,
+                    Image3F* PIK_RESTRICT dcoeffs) {
   PROFILER_FUNC;
   Rect dc_rect(0, 0, pred2x2.xsize() / 2 - 2, pred2x2.ysize() / 2 - 2);
   Ub4Kernel kernel;
@@ -654,8 +647,8 @@ void AddPredictions(const Image3F& pred2x2, const AcStrategyImage& ac_strategy,
   for (int c = 0; c < dcoeffs->kNumPlanes; ++c) {
     // Updates dcoeffs _except_ 0HVD.
     UpSample4x4BlurDCT</*add=*/true>(dc_rect, pred2x2.Plane(c), kernel,
-                                     ac_strategy, acs_rect,
-                                     dcoeffs->MutablePlane(c));
+                                     ac_strategy, acs_rect, blur_x,
+                                     const_cast<ImageF*>(&dcoeffs->Plane(c)));
   }
 }
 

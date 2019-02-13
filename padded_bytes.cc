@@ -12,7 +12,7 @@ void PaddedBytes::IncreaseCapacityTo(size_t capacity) {
   PIK_ASSERT(capacity > capacity_);
 
   // write_bits.h writes up to 7 bytes past the end.
-  CacheAlignedUniquePtr new_data = AllocateArray(capacity + 7);
+  CacheAlignedUniquePtr new_data = AllocateArray(capacity + 8);
   if (new_data == nullptr) {
     // Allocation failed, discard all data to ensure this is noticed.
     size_ = capacity_ = 0;

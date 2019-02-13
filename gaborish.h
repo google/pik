@@ -11,29 +11,18 @@
 
 #include "data_parallel.h"
 #include "image.h"
+#include "pik_params.h"
 
 namespace pik {
-
-// Additional smoothing helps for medium/low-quality.
-enum class GaborishStrength : uint32_t {
-  // Serialized, do not change enumerator values.
-  kOff = 0,
-  k500,
-  k750,
-  k875,
-  k1000,
-
-  // Future extensions: [5, 6]
-  kMaxValue
-};
 
 // Used in encoder to reduce the impact of the decoder's smoothing.
 // This is approximate and slow (unoptimized 5x5 convolution).
 Image3F GaborishInverse(const Image3F& opsin, double mul);
 
-// Returns "in" unchanged if strength == kOff (need rvalue to avoid copying).
-Image3F ConvolveGaborish(Image3F&& in, GaborishStrength strength,
-                         ThreadPool* pool);
+// Does not accept strength of GaborishStrength::kOff. For those cases it's
+// cheaper and simpler to just not do the convolve.
+Status ConvolveGaborish(const Image3F& in, GaborishStrength strength,
+                        ThreadPool* pool, Image3F* PIK_RESTRICT out);
 
 }  // namespace pik
 

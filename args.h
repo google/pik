@@ -11,8 +11,8 @@
 #include <stdio.h>
 #include <string>
 
-#include "status.h"
 #include "codec.h"
+#include "status.h"
 
 namespace pik {
 
@@ -40,21 +40,40 @@ static inline bool ParseUnsigned(const char* arg, size_t* out) {
   return true;
 }
 
-static inline bool ParseGaborishStrength(const char* arg,
-                                         GaborishStrength* out) {
+static inline bool ParseSigned(const char* arg, int* out) {
+  char* end;
+  *out = static_cast<int>(strtol(arg, &end, 0));
+  if (end[0] != '\0') {
+    fprintf(stderr, "Unable to interpret as signed integer: %s.\n", arg);
+    return PIK_FAILURE("Args");
+  }
+  return true;
+}
+
+static inline bool ParseGaborishStrength(const char* arg, int* out) {
   size_t strength;
   if (!ParseUnsigned(arg, &strength)) return false;
   if (strength >= static_cast<size_t>(GaborishStrength::kMaxValue)) {
-    fprintf(stderr, "Invalid GaborishStrenght value: %s.\n", arg);
+    fprintf(stderr, "Invalid GaborishStrength value: %s.\n", arg);
     return PIK_FAILURE("Args");
   }
-  *out = static_cast<GaborishStrength>(strength);
+  *out = strength;
   return true;
 }
 
 static inline bool ParseFloat(const char* arg, float* out) {
   char* end;
   *out = static_cast<float>(strtod(arg, &end));
+  if (end[0] != '\0') {
+    fprintf(stderr, "Unable to interpret as float: %s.\n", arg);
+    return PIK_FAILURE("Args");
+  }
+  return true;
+}
+
+static inline bool ParseDouble(const char* arg, double* out) {
+  char* end;
+  *out = static_cast<double>(strtod(arg, &end));
   if (end[0] != '\0') {
     fprintf(stderr, "Unable to interpret as double: %s.\n", arg);
     return PIK_FAILURE("Args");
@@ -86,6 +105,11 @@ static inline bool ParseCString(const char* arg, const char** out) {
 
 static inline bool SetBooleanTrue(bool* out) {
   *out = true;
+  return true;
+}
+
+static inline bool SetBooleanFalse(bool* out) {
+  *out = false;
   return true;
 }
 

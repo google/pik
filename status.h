@@ -20,22 +20,32 @@ namespace pik {
 #define PIK_ENABLE_ASSERT 1
 #endif
 
+// Exits the program after printing file/line plus a formatted string.
+PIK_FORMAT(3, 4) bool Abort(const char* f, int l, const char* format, ...);
+
+// Emits a warning to standard error. Will be replaced with proper error
+// reporting in the future.
+PIK_FORMAT(1, 2) void Warning(const char* format, ...);
+
+#define PIK_ABORT(...) Abort(__FILE__, __LINE__, __VA_ARGS__)
+
+// Does not guarantee running the code, use only for debug mode checks.
 #if PIK_ENABLE_ASSERT || defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION)
-#define PIK_ASSERT(condition)                                            \
-  while (!(condition)) {                                                 \
-    fprintf(stderr, "Pik assert failed at %s:%d\n", __FILE__, __LINE__); \
-    abort();                                                             \
+#define PIK_ASSERT(condition)                           \
+  while (!(condition)) {                                \
+    Abort(__FILE__, __LINE__, "Assert %s", #condition); \
   }
 #else
 #define PIK_ASSERT(condition)
 #endif
 
-#define PIK_CHECK(condition)                                            \
-  while (!(condition)) {                                                \
-    fprintf(stderr, "Pik check failed at %s:%d\n", __FILE__, __LINE__); \
-    abort();                                                            \
+// Always runs the condition, so can be used for non-debug calls.
+#define PIK_CHECK(condition)                           \
+  while (!(condition)) {                               \
+    Abort(__FILE__, __LINE__, "Check %s", #condition); \
   }
 
+// Always runs the condition, so can be used for non-debug calls.
 #define PIK_RETURN_IF_ERROR(condition) \
   while (!(condition)) return false
 
@@ -43,20 +53,12 @@ namespace pik {
 // Error codes are too unspecific to pinpoint the exact location, so we
 // add a build flag that crashes and dumps stack at the actual error source.
 #ifdef PIK_CRASH_ON_ERROR
-inline bool PikFailure(const char* f, int l, const char* msg) {
-  for (;;) {
-    fprintf(stderr, "Pik failure at %s:%d: %s\n", f, l, msg);
-    abort();
-  }
-  return false;
-}
 #define PIK_NOTIFY_ERROR(message_string) \
-  (void)PikFailure(__FILE__, __LINE__, message_string)
-#define PIK_FAILURE(message_string) \
-  PikFailure(__FILE__, __LINE__, message_string)
+  (void)Abort(__FILE__, __LINE__, message_string)
+#define PIK_FAILURE(...) Abort(__FILE__, __LINE__, __VA_ARGS__)
 #else
 #define PIK_NOTIFY_ERROR(message_string)
-#define PIK_FAILURE(message_string) false
+#define PIK_FAILURE(...) false
 #endif
 
 // Drop-in replacement for bool that raises compiler warnings if not used

@@ -5,16 +5,26 @@
 // https://opensource.org/licenses/MIT.
 
 #include "lossless_entropy.h"
+#include "padded_bytes.h"
 
-#ifndef USE_FSE
-#define USE_FSE 1  // 1 for using FiniteStateEntropy, 0 for pik's ANS coder
-#endif  // USE_FSE
+#define PIK_ENTROPY_CODER_FSE 1  // tANS; smallest results for DC
+#define PIK_ENTROPY_CODER_PIK 2  // rANS
+// Potentially helpful for synthetic images but not DC
+#define PIK_ENTROPY_CODER_BROTLI 3
 
-#if (USE_FSE == 1)
+#ifndef PIK_ENTROPY_CODER
+#define PIK_ENTROPY_CODER PIK_ENTROPY_CODER_FSE
+#endif
+
+#if PIK_ENTROPY_CODER == PIK_ENTROPY_CODER_FSE
 #include "fse_wrapper.h"
 #include "FiniteStateEntropy/lib/fse.h"
-#else
+#elif PIK_ENTROPY_CODER == PIK_ENTROPY_CODER_PIK
 #include "entropy_coder.h"
+#elif PIK_ENTROPY_CODER == PIK_ENTROPY_CODER_BROTLI
+#include "brotli.h"
+#else
+#error "Add include for entropy coder"
 #endif
 
 namespace pik {
@@ -45,7 +55,8 @@ size_t decodeVarInt(const uint8_t* input, size_t inputSize, size_t* pos) {
   return ret;
 }
 
-#if (USE_FSE == 1)
+#if PIK_ENTROPY_CODER == PIK_ENTROPY_CODER_FSE
+
 bool MaybeEntropyEncode(const uint8_t* data, size_t size, size_t out_capacity,
                         uint8_t* out, size_t* out_size) {
   size_t cs = FSE_compress2(out, out_capacity, data, size, 255,
@@ -69,7 +80,7 @@ bool MaybeEntropyDecode(const uint8_t* data, size_t size, size_t out_capacity,
   return true;
 }
 
-#else  // (USE_FSE == 1)
+#elif PIK_ENTROPY_CODER == PIK_ENTROPY_CODER_PIK
 
 // Entropy encode with pik ANS
 bool EntropyEncodePikANS(const uint8_t* data, size_t size,
@@ -194,6 +205,32 @@ bool MaybeEntropyDecode(const uint8_t* data, size_t size, size_t out_capacity,
   *out_size = result.size();
   return true;
 }
-#endif  // (USE_FSE == 1)
+
+#elif PIK_ENTROPY_CODER == PIK_ENTROPY_CODER_BROTLI
+
+bool MaybeEntropyEncode(const uint8_t* data, size_t size, size_t out_capacity,
+                        uint8_t* out, size_t* out_size) {
+  *out_size = 0;
+  PIK_RETURN_IF_ERROR(BrotliCompress(11, data, size, out, out_size));
+  if (*out_size > out_capacity) {
+    return PIK_FAILURE("MaybeEntropyEncode exceeded buffer");
+  }
+  return true;
+}
+
+bool MaybeEntropyDecode(const uint8_t* data, size_t size, size_t out_capacity,
+                        uint8_t* out, size_t* out_size) {
+  size_t bytes_read = 0;
+  PaddedBytes padded_out;
+  PIK_RETURN_IF_ERROR(
+      BrotliDecompress(data, size, out_capacity, &bytes_read, &padded_out));
+  *out_size = padded_out.size();
+  memcpy(out, padded_out.data(), padded_out.size());
+  return true;
+}
+
+#else
+#error "Implement all PIK_ENTROPY_CODER"
+#endif
 
 }  // namespace pik

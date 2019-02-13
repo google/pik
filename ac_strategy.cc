@@ -8,15 +8,248 @@
 #include "block.h"
 #include "common.h"
 #include "dct.h"
-#include "dct_util.h"
 #include "entropy_coder.h"
 #include "image.h"
 #include "opsin_params.h"
 #include "profiler.h"
+#include "quantizer.h"
 #include "simd/simd.h"
+
+#define ENABLE_DIAGONAL_LINES_EXPERIMENT 0
 
 namespace pik {
 namespace {
+
+// 1-dimensional DCT's of different sizes (Except DCT2x2)
+// TODO(lode): SIMDify and place in dct_simd_any.h
+template <class V>
+void DCT2(V& i0, V& i1) {
+  V r0 = (i0 + i1) * 0.5;
+  V r1 = (i0 - i1) * 0.5;
+  i0 = r0;
+  i1 = r1;
+}
+
+template <class V>
+void IDCT2(V& i0, V& i1) {
+  V r0 = (i0 + i1);
+  V r1 = (i0 - i1);
+  i0 = r0;
+  i1 = r1;
+}
+
+template <class V>
+void DCT2x2(V& i0, V& i1, V& i2, V& i3) {
+  V r0 = (i0 + i1 + i2 + i3) * 0.25f;
+  V r1 = (i0 - i1 + i2 - i3) * 0.25f;
+  V r2 = (i0 + i1 - i2 - i3) * 0.25f;
+  V r3 = (i0 - i1 - i2 + i3) * 0.25f;
+  i0 = r0;
+  i1 = r1;
+  i2 = r2;
+  i3 = r3;
+}
+
+template <class V>
+void IDCT2x2(V& i0, V& i1, V& i2, V& i3) {
+  V r0 = i0 + i1 + i2 + i3;
+  V r1 = i0 - i1 + i2 - i3;
+  V r2 = i0 + i1 - i2 - i3;
+  V r3 = i0 - i1 - i2 + i3;
+  i0 = r0;
+  i1 = r1;
+  i2 = r2;
+  i3 = r3;
+}
+
+template <class V>
+void DCT3(V& i0, V& i1, V& i2) {
+  V r0 = (i0 + i1 + i2) * (1 / 3.0f);
+  V r1 = (i0 - i2) * 0.57735029;
+  V r2 = (i0 + i2) * (1 / 3.0f) - i1 * (2 / 3.0f);
+  i0 = r0;
+  i1 = r1;
+  i2 = r2;
+}
+
+template <class V>
+void IDCT3(V& i0, V& i1, V& i2) {
+  V t0 = i0;
+  V t1 = i1 * 0.86602540f;
+  V t2a = i2 * 0.5f;
+  V t2b = i2;
+  i0 = t0 + t2a + t1;
+  i1 = t0 - t2b;
+  i2 = t0 + t2a - t1;
+}
+
+template <class V>
+void DCT4(V& i0, V& i1, V& i2, V& i3) {
+  static const V c2_8 = 1.414213562373095048f;  // 2 * cos(2 * pi / 8)
+  V t0 = i0 + i3;
+  V t1 = i1 + i2;
+  V t2 = i0 - i3;
+  V t3 = i1 - i2;
+  V t4 = t0 + t1;
+  V t5 = t0 - t1;
+  V t6 = t2 - t3;
+  V t7 = t3 * c2_8;
+  V t8 = t6 + t7;
+  V t9 = t6 - t7;
+  i0 = t4 * (0.5f / 2);
+  i1 = t8 * (0.653281482438188264f / 2);
+  i2 = t5 * (0.5f / 2);
+  i3 = t9 * (0.270598050073098492f / 2);
+}
+
+template <class V>
+void IDCT4(V& i0, V& i1, V& i2, V& i3) {
+  static const V c2_8 = 0.7071067811865475244f;  // 0.5 / cos(2 * pi / 8)
+  i0 *= (0.5f * 2);
+  i1 *= (0.382683432365089772f * 2);
+  i2 *= (0.5f * 2);
+  i3 *= (0.923879532511286756f * 2);
+  V t0 = i0 + i2;
+  V t1 = i0 - i2;
+  V t2 = i1 + i3;
+  V t3 = i1 - i3;
+  V t4 = t3 * c2_8;
+  V t5 = t2 + t4;
+  V t6 = t0 + t5;
+  V t7 = t1 + t4;
+  V t8 = t0 - t5;
+  V t9 = t1 - t4;
+  i0 = t6;
+  i1 = t7;
+  i2 = t9;
+  i3 = t8;
+}
+
+template <class V>
+void DCT6(V& i0, V& i1, V& i2, V& i3, V& i4, V& i5) {
+  V t0 = (i1 - i4) * 0.23570227;
+  V r0 = (i0 + i1 + i2 + i3 + i4 + i5) * (1 / 6.0f);
+  V r1 = (i0 - i5) * 0.32197529 + t0 + (i2 - i3) * 0.08627302;
+  V r2 = (i0 - i2 - i3 + i5) * 0.28867514;
+  V r3 = (i0 - i1 - i2 + i3 + i4 - i5) * 0.23570227;
+  V r4 = (i0 + i2 + i3 + i5) * (1 / 6.0f) - (i1 + i4) * (1 / 3.0f);
+  V r5 = (i0 - i5) * 0.08627302 - t0 + (i2 - i3) * 0.32197529;
+  i0 = r0;
+  i1 = r1;
+  i2 = r2;
+  i3 = r3;
+  i4 = r4;
+  i5 = r5;
+}
+
+template <class V>
+void IDCT6(V& i0, V& i1, V& i2, V& i3, V& i4, V& i5) {
+  // TODO(lode): maybe more multiplies can be removed by combining some terms.
+  V i0a = i0;
+  V i1a = i1 * 0.96592583;
+  V i1b = i1 * 0.70710678;
+  V i1c = i1 * 0.25881905;
+  V i2a = i2 * 0.86602540;
+  V i3a = i3 * 0.70710678;
+  V i4a = i4 * 0.5;
+  V i4b = i4;
+  V i5a = i5 * 0.25881905;
+  V i5b = i5 * 0.70710678;
+  V i5c = i5 * 0.96592583;
+  i0 = i0a + i1a + i3a + i4a + i5a + i2a;
+  i1 = i0a + i1b - i3a - i4b - i5b;
+  i2 = i0a + i1c - i3a + i4a + i5c - i2a;
+  i3 = i0a - i1c + i3a + i4a - i5c - i2a;
+  i4 = i0a - i1b + i3a - i4b + i5b;
+  i5 = i0a - i1a - i3a + i4a - i5a + i2a;
+}
+
+template <class V>
+static void DCT8(V& i0, V& i1, V& i2, V& i3, V& i4, V& i5, V& i6, V& i7) {
+  static const V c1 = 0.707106781186548f;  // 1 / sqrt(2)
+  static const V c2 = 0.382683432365090f;  // cos(3 * pi / 8)
+  static const V c3 = 1.30656296487638f;   // 1 / (2 * cos(3 * pi / 8))
+  static const V c4 = 0.541196100146197f;  // sqrt(2) * cos(3 * pi / 8)
+  const V t00 = i0 + i7;
+  const V t01 = i0 - i7;
+  const V t02 = i3 + i4;
+  const V t03 = i3 - i4;
+  const V t04 = i2 + i5;
+  const V t05 = i2 - i5;
+  const V t06 = i1 + i6;
+  const V t07 = i1 - i6;
+  const V t08 = t00 + t02;
+  const V t09 = t00 - t02;
+  const V t10 = t06 + t04;
+  const V t11 = t06 - t04;
+  const V t12 = t07 + t05;
+  const V t13 = t01 + t07;
+  const V t14 = t05 + t03;
+  const V t15 = t11 + t09;
+  const V t16 = t14 - t13;
+  const V t17 = c1 * t15;
+  const V t18 = c1 * t12;
+  const V t19 = c2 * t16;
+  const V t20 = t01 + t18;
+  const V t21 = t01 - t18;
+  const V t22 = c3 * t13 + t19;
+  const V t23 = c4 * t14 + t19;
+  i0 = (t08 + t10) * (0.353553390593273762f / 2.8284271247461903f);
+  i1 = (t20 + t22) * (0.254897789552079584f / 2.8284271247461903f);
+  i2 = (t09 + t17) * (0.270598050073098492f / 2.8284271247461903f);
+  i3 = (t21 - t23) * (0.30067244346752264f / 2.8284271247461903f);
+  i4 = (t08 - t10) * (0.353553390593273762f / 2.8284271247461903f);
+  i5 = (t21 + t23) * (0.449988111568207852f / 2.8284271247461903f);
+  i6 = (t09 - t17) * (0.653281482438188264f / 2.8284271247461903f);
+  i7 = (t20 - t22) * (1.28145772387075309f / 2.8284271247461903f);
+}
+
+template <class V>
+static void IDCT8(V& i0, V& i1, V& i2, V& i3, V& i4, V& i5, V& i6, V& i7) {
+  static const V c1 = 1.41421356237310;  // sqrt(2)
+  static const V c2 = 2.61312592975275;  // 1 / cos(3 * pi / 8)
+  static const V c3 = 0.76536686473018;  // 2 * cos(3 * pi / 8)
+  static const V c4 = 1.08239220029239;  // 2 * sqrt(2) * cos(3 * pi / 8)
+  i0 *= (0.353553390593273762 * 2.8284271247461903f);
+  i1 *= (0.490392640201615225 * 2.8284271247461903f);
+  i2 *= (0.461939766255643378 * 2.8284271247461903f);
+  i3 *= (0.415734806151272619 * 2.8284271247461903f);
+  i4 *= (0.353553390593273762 * 2.8284271247461903f);
+  i5 *= (0.277785116509801112 * 2.8284271247461903f);
+  i6 *= (0.191341716182544886 * 2.8284271247461903f);
+  i7 *= (0.0975451610080641339 * 2.8284271247461903f);
+  const V t00 = i0 + i4;
+  const V t01 = i0 - i4;
+  const V t02 = i6 + i2;
+  const V t03 = i6 - i2;
+  const V t04 = i7 + i1;
+  const V t05 = i7 - i1;
+  const V t06 = i5 + i3;
+  const V t07 = i5 - i3;
+  const V t08 = t04 + t06;
+  const V t09 = t04 - t06;
+  const V t10 = t00 + t02;
+  const V t11 = t00 - t02;
+  const V t12 = t07 - t05;
+  const V t13 = c3 * t12;
+  const V t14 = c1 * t03 + t02;
+  const V t15 = t01 - t14;
+  const V t16 = t01 + t14;
+  const V t17 = c2 * t05 + t13;
+  const V t18 = c4 * t07 + t13;
+  const V t19 = t08 + t17;
+  const V t20 = c1 * t09 + t19;
+  const V t21 = t18 - t20;
+  i0 = t10 + t08;
+  i1 = t15 - t19;
+  i2 = t16 + t20;
+  i3 = t11 + t21;
+  i4 = t11 - t21;
+  i5 = t16 - t20;
+  i6 = t15 + t19;
+  i7 = t10 - t08;
+}
+
 // True if we should try to find a non-trivial AC strategy.
 const constexpr bool kChooseAcStrategy = true;
 
@@ -24,12 +257,12 @@ const constexpr bool kChooseAcStrategy = true;
 // this value in position (x, y) and 0s everywhere else will have the average of
 // absolute values of 1.
 template <size_t N>
-float DCTTotalScale(size_t x, size_t y) {
+constexpr float DCTTotalScale(size_t x, size_t y) {
   return N * DCTScales<N>()[x] * DCTScales<N>()[y] * L1NormInv<N>()[x] *
          L1NormInv<N>()[y];
 }
 template <size_t N>
-float DCTInvTotalScale(size_t x, size_t y) {
+constexpr float DCTInvTotalScale(size_t x, size_t y) {
   return N * IDCTScales<N>()[x] * IDCTScales<N>()[y] * L1Norm<N>()[x] *
          L1Norm<N>()[y];
 }
@@ -115,7 +348,7 @@ void DCT2TopBlock(const float* block, size_t stride, float* out) {
 }
 
 template <size_t S>
-void IDCT2TopBlock(const float* block, size_t stride, float* out) {
+void IDCT2TopBlock(const float* block, size_t stride_out, float* out) {
   static_assert(kBlockDim % S == 0, "S should be a divisor of kBlockDim");
   static_assert(S % 2 == 0, "S should be even");
   float temp[kBlockDim * kBlockDim];
@@ -130,28 +363,213 @@ void IDCT2TopBlock(const float* block, size_t stride, float* out) {
       float r01 = c00 + c01 - c10 - c11;
       float r10 = c00 - c01 + c10 - c11;
       float r11 = c00 - c01 - c10 + c11;
-      temp[y * 2 * stride + x * 2] = r00;
-      temp[y * 2 * stride + x * 2 + 1] = r01;
-      temp[(y * 2 + 1) * stride + x * 2] = r10;
-      temp[(y * 2 + 1) * stride + x * 2 + 1] = r11;
+      temp[y * 2 * kBlockDim + x * 2] = r00;
+      temp[y * 2 * kBlockDim + x * 2 + 1] = r01;
+      temp[(y * 2 + 1) * kBlockDim + x * 2] = r10;
+      temp[(y * 2 + 1) * kBlockDim + x * 2 + 1] = r11;
     }
   }
   for (size_t y = 0; y < S; y++) {
     for (size_t x = 0; x < S; x++) {
-      out[y * kBlockDim + x] = temp[y * kBlockDim + x];
+      out[y * stride_out + x] = temp[y * kBlockDim + x];
     }
   }
 }
 
 }  // namespace
 
+// Macros to index pixels, coefficients or temporary buffer with either x, y
+// coordinates or with a single index. Short name on purpose but undefined
+// below.
+#define C(x, y) coefficients[(y)*kBlockDim + (x)]
+#define P(x, y) pixels[(y)*pixels_stride + (x)]
+#define T(x, y) temp[(y)*8 + (x)]
+#define C1(i) C((i / 8), (i & 7))
+#define P1(i) P((i / 8), (i & 7))
+#define T1(i) temp[(i)]
+#define ARRAYSIZE(a) sizeof(a) / sizeof(*a)
+
+// These definitions are needed before C++17.
+constexpr size_t AcStrategy::kMaxCoeffBlocks;
+constexpr size_t AcStrategy::kMaxBlockDim;
+constexpr size_t AcStrategy::kMaxCoeffArea;
+constexpr size_t AcStrategy::kLLFMaskDim;
+
+// Define hardcoded tables for the specific 45 degree case of the diagonal
+// lines experiment.
+
+// Indices of the 4 groups of pixels for the 4 DC's for the diagonal lines
+// strategy.
+static const size_t kLinesDc00indices[] = {0,  8,  9,  16, 17, 18, 25,
+                                           26, 27, 34, 35, 36, 43, 44,
+                                           45, 52, 53, 54, 61, 62, 63};
+static const size_t kLinesDc01indices[] = {24, 32, 33, 40, 41, 42, 48, 49,
+                                           50, 51, 56, 57, 58, 59, 60};
+static const size_t kLinesDc10indices[] = {3,  4,  5,  6,  7,  12, 13, 14,
+                                           15, 21, 22, 23, 30, 31, 39};
+static const size_t kLinesDc11indices[] = {1,  2,  10, 11, 19, 20, 28,
+                                           29, 37, 38, 46, 47, 55};
+static const size_t kLinesNumDc00 = ARRAYSIZE(kLinesDc00indices);
+static const size_t kLinesNumDc01 = ARRAYSIZE(kLinesDc01indices);
+static const size_t kLinesNumDc10 = ARRAYSIZE(kLinesDc10indices);
+static const size_t kLinesNumDc11 = ARRAYSIZE(kLinesDc11indices);
+
+// Pixel indices of the different diagonal DCT's used in 8x8 block for the
+// diagonal lines strategy.
+static const size_t kLinesDct3indices[][3] = {
+    {6, 7, 15}, {5, 14, 23}, {40, 49, 58}, {48, 56, 57}};
+static const size_t kLinesDct4indices[][4] = {
+    {4, 13, 22, 31}, {3, 12, 30, 39}, {24, 33, 51, 60}, {32, 41, 50, 59}};
+static const size_t kLinesDct6indices[][6] = {{2, 11, 20, 29, 38, 47},
+                                              {1, 10, 19, 37, 46, 55},
+                                              {8, 17, 26, 44, 53, 62},
+                                              {16, 25, 34, 43, 52, 61}};
+static const size_t kLinesDct8indices[][8] = {{0, 9, 18, 27, 36, 45, 54, 63}};
+static const size_t kLinesNumDct3 = ARRAYSIZE(kLinesDct3indices);
+static const size_t kLinesNumDct4 = ARRAYSIZE(kLinesDct4indices);
+static const size_t kLinesNumDct6 = ARRAYSIZE(kLinesDct6indices);
+static const size_t kLinesNumDct8 = ARRAYSIZE(kLinesDct8indices);
+
+// Coefficient indices of the different diagonal DCT's used in 8x8 block for the
+// diagonal lines strategy.
+static const size_t kLinesDctC3indices[][3] = {
+    {6, 7, 15}, {5, 14, 23}, {40, 49, 58}, {48, 56, 57}};
+static const size_t kLinesDctC4indices[][4] = {
+    {4, 13, 22, 31}, {3, 12, 21, 30}, {24, 33, 42, 51}, {32, 41, 50, 59}};
+static const size_t kLinesDctC6indices[][6] = {{2, 11, 20, 29, 38, 47},
+                                               {10, 19, 28, 37, 46, 55},
+                                               {17, 26, 35, 44, 53, 62},
+                                               {16, 25, 34, 43, 52, 61}};
+static const size_t kLinesDctC8indices[][8] = {
+    {18, 27, 36, 45, 54, 39, 60, 63}};
+
+// Computes and returns DC, and also subtracts it from the corresponding pixels.
+static float ComputeDCPart(float* pixels, size_t pixels_stride,
+                           const size_t* indices, size_t num) {
+  float dc = 0;
+  for (size_t i = 0; i < num; i++) {
+    dc += P1(indices[i]);
+  }
+  dc /= num;
+  for (size_t i = 0; i < num; i++) {
+    P1(indices[i]) -= dc;
+  }
+  return dc;
+}
+
+static void RestoreDCPart(float* pixels, size_t pixels_stride,
+                          const size_t* indices, size_t num, float dc) {
+  for (size_t i = 0; i < num; i++) {
+    P1(indices[i]) += dc;
+  }
+}
+
+// Does the diagonal DCT's of size N as defined by the corresponding pixel and
+// coefficient index arrays, for the diagonal lines strategy.
+template <size_t N>
+static void DoDCTs(const size_t indices_p[][N], const size_t indices_c[][N],
+                   size_t num, const float* pixels, size_t pixels_stride,
+                   float* coefficients) {
+  for (size_t i = 0; i < num; i++) {
+    for (size_t j = 0; j < N; j++) {
+      C1(indices_c[i][j]) = P1(indices_p[i][j]);
+    }
+    // C++ has no static_if, so gives error when trying to index indices_c
+    // directly, but turning it into a pointer fixes it.
+    const size_t* indices = &indices_c[i][0];
+    // Nothing to do for N == 1.
+    if (N == 2) {
+      DCT2(C1(indices[0]), C1(indices[1]));
+    }
+    if (N == 3) {
+      DCT3(C1(indices[0]), C1(indices[1]), C1(indices[2]));
+    }
+    if (N == 4) {
+      DCT4(C1(indices[0]), C1(indices[1]), C1(indices[2]), C1(indices[3]));
+    }
+    if (N == 6) {
+      DCT6(C1(indices[0]), C1(indices[1]), C1(indices[2]), C1(indices[3]),
+           C1(indices[4]), C1(indices[5]));
+    }
+    if (N == 8) {
+      DCT8(C1(indices[0]), C1(indices[1]), C1(indices[2]), C1(indices[3]),
+           C1(indices[4]), C1(indices[5]), C1(indices[6]), C1(indices[7]));
+    }
+  }
+}
+
+template <size_t N>
+static void DoIDCTs(const size_t indices_p[][N], const size_t indices_c[][N],
+                    size_t num, float* pixels, size_t pixels_stride,
+                    const float* coefficients) {
+  for (size_t i = 0; i < num; i++) {
+    for (size_t j = 0; j < N; j++) {
+      P1(indices_p[i][j]) = C1(indices_c[i][j]);
+    }
+    const size_t* indices = &indices_p[i][0];
+    // Nothing to do for N == 1.
+    if (N == 2) {
+      IDCT2(P1(indices[0]), P1(indices[1]));
+    }
+    if (N == 3) {
+      IDCT3(P1(indices[0]), P1(indices[1]), P1(indices[2]));
+    }
+    if (N == 4) {
+      IDCT4(P1(indices[0]), P1(indices[1]), P1(indices[2]), P1(indices[3]));
+    }
+    if (N == 6) {
+      IDCT6(P1(indices[0]), P1(indices[1]), P1(indices[2]), P1(indices[3]),
+            P1(indices[4]), P1(indices[5]));
+    }
+    if (N == 8) {
+      IDCT8(P1(indices[0]), P1(indices[1]), P1(indices[2]), P1(indices[3]),
+            P1(indices[4]), P1(indices[5]), P1(indices[6]), P1(indices[7]));
+    }
+  }
+}
+
 SIMD_ATTR void AcStrategy::TransformFromPixels(
-    const float* pixels, size_t pixels_stride, float* coefficients,
-    size_t coefficients_stride) const {
+    const float* PIK_RESTRICT pixels, size_t pixels_stride,
+    float* PIK_RESTRICT coefficients, size_t coefficients_stride) const {
   if (block_ != 0) return;
   switch (strategy_) {
+    case Type::LINES: {
+      SIMD_ALIGN float temp[kBlockDim * kBlockDim];
+
+      for (size_t y = 0; y < 8; y++) {
+        for (size_t x = 0; x < 8; x++) {
+          C(x, y) = 0;
+        }
+      }
+
+      for (size_t y = 0; y < 8; y++) {
+        for (size_t x = 0; x < 8; x++) {
+          T(x, y) = P(x, y);
+        }
+      }
+
+      float dc00 = ComputeDCPart(temp, 8, kLinesDc00indices, kLinesNumDc00);
+      float dc01 = ComputeDCPart(temp, 8, kLinesDc01indices, kLinesNumDc01);
+      float dc10 = ComputeDCPart(temp, 8, kLinesDc10indices, kLinesNumDc10);
+      float dc11 = ComputeDCPart(temp, 8, kLinesDc11indices, kLinesNumDc11);
+      DCT2x2(dc00, dc01, dc10, dc11);
+
+      C(0, 0) = dc00;
+      C(0, 1) = dc01;
+      C(1, 0) = dc10;
+      C(1, 1) = dc11;
+
+      DoDCTs<3>(kLinesDct3indices, kLinesDctC3indices, kLinesNumDct3, temp, 8,
+                coefficients);
+      DoDCTs<4>(kLinesDct4indices, kLinesDctC4indices, kLinesNumDct4, temp, 8,
+                coefficients);
+      DoDCTs<6>(kLinesDct6indices, kLinesDctC6indices, kLinesNumDct6, temp, 8,
+                coefficients);
+      DoDCTs<8>(kLinesDct8indices, kLinesDctC8indices, kLinesNumDct8, temp, 8,
+                coefficients);
+      break;
+    }
     case Type::IDENTITY: {
-      SIMD_ALIGN float coeffs[kBlockDim * kBlockDim];
       for (size_t y = 0; y < 2; y++) {
         for (size_t x = 0; x < 2; x++) {
           float block_dc = 0;
@@ -164,29 +582,27 @@ SIMD_ATTR void AcStrategy::TransformFromPixels(
           for (size_t iy = 0; iy < 4; iy++) {
             for (size_t ix = 0; ix < 4; ix++) {
               if (ix == 1 && iy == 1) continue;
-              coeffs[(y + iy * 2) * 8 + x + ix * 2] =
+              coefficients[(y + iy * 2) * 8 + x + ix * 2] =
                   pixels[(y * 4 + iy) * pixels_stride + x * 4 + ix] -
                   pixels[(y * 4 + 1) * pixels_stride + x * 4 + 1];
             }
           }
-          coeffs[(y + 2) * 8 + x + 2] = coeffs[y * 8 + x];
-          coeffs[y * 8 + x] = block_dc;
+          coefficients[(y + 2) * 8 + x + 2] = coefficients[y * 8 + x];
+          coefficients[y * 8 + x] = block_dc;
         }
       }
-      float block00 = coeffs[0];
-      float block01 = coeffs[1];
-      float block10 = coeffs[8];
-      float block11 = coeffs[9];
-      coeffs[0] = (block00 + block01 + block10 + block11) * 0.25f;
-      coeffs[1] = (block00 + block01 - block10 - block11) * 0.25f;
-      coeffs[8] = (block00 - block01 + block10 - block11) * 0.25f;
-      coeffs[9] = (block00 - block01 - block10 + block11) * 0.25f;
-      memcpy(coefficients, coeffs, kBlockDim * kBlockDim * sizeof(float));
+      float block00 = coefficients[0];
+      float block01 = coefficients[1];
+      float block10 = coefficients[8];
+      float block11 = coefficients[9];
+      coefficients[0] = (block00 + block01 + block10 + block11) * 0.25f;
+      coefficients[1] = (block00 + block01 - block10 - block11) * 0.25f;
+      coefficients[8] = (block00 - block01 + block10 - block11) * 0.25f;
+      coefficients[9] = (block00 - block01 - block10 + block11) * 0.25f;
       break;
     }
     case Type::DCT4X4_NOHF:
     case Type::DCT4X4: {
-      SIMD_ALIGN float coeffs[kBlockDim * kBlockDim];
       for (size_t y = 0; y < 2; y++) {
         for (size_t x = 0; x < 2; x++) {
           float block[4 * 4];
@@ -196,46 +612,53 @@ SIMD_ATTR void AcStrategy::TransformFromPixels(
               ScaleToBlock<4>(block));
           for (size_t iy = 0; iy < 4; iy++) {
             for (size_t ix = 0; ix < 4; ix++) {
-              coeffs[(y + iy * 2) * 8 + x + ix * 2] = block[iy * 4 + ix];
+              coefficients[(y + iy * 2) * 8 + x + ix * 2] = block[iy * 4 + ix];
             }
           }
         }
       }
-      float block00 = coeffs[0];
-      float block01 = coeffs[1];
-      float block10 = coeffs[8];
-      float block11 = coeffs[9];
-      coeffs[0] = (block00 + block01 + block10 + block11) * 0.25f;
-      coeffs[1] = (block00 + block01 - block10 - block11) * 0.25f;
-      coeffs[8] = (block00 - block01 + block10 - block11) * 0.25f;
-      coeffs[9] = (block00 - block01 - block10 + block11) * 0.25f;
-      memcpy(coefficients, coeffs, kBlockDim * kBlockDim * sizeof(float));
+      float block00 = coefficients[0];
+      float block01 = coefficients[1];
+      float block10 = coefficients[8];
+      float block11 = coefficients[9];
+      coefficients[0] = (block00 + block01 + block10 + block11) * 0.25f;
+      coefficients[1] = (block00 + block01 - block10 - block11) * 0.25f;
+      coefficients[8] = (block00 - block01 + block10 - block11) * 0.25f;
+      coefficients[9] = (block00 - block01 - block10 + block11) * 0.25f;
       break;
     }
     case Type::DCT2X2: {
-      SIMD_ALIGN float coeffs[kBlockDim * kBlockDim];
-      DCT2TopBlock<8>(pixels, pixels_stride, coeffs);
-      DCT2TopBlock<4>(coeffs, kBlockDim, coeffs);
-      DCT2TopBlock<2>(coeffs, kBlockDim, coeffs);
-      memcpy(coefficients, coeffs, kBlockDim * kBlockDim * sizeof(float));
+      DCT2TopBlock<8>(pixels, pixels_stride, coefficients);
+      DCT2TopBlock<4>(coefficients, kBlockDim, coefficients);
+      DCT2TopBlock<2>(coefficients, kBlockDim, coefficients);
       break;
     }
     case Type::DCT16X16: {
+      // TODO(veluca): Generalize ScaleToBlock and related classes to handle
+      // non-contiguous blocks.
       SIMD_ALIGN float output[4 * kBlockDim * kBlockDim];
       ComputeTransposedScaledDCT<2 * kBlockDim>()(
           FromLines<2 * kBlockDim>(pixels, pixels_stride),
           ScaleToBlock<2 * kBlockDim>(output));
-      ScatterBlock<2 * kBlockDim, 2 * kBlockDim>(output, coefficients,
-                                                 coefficients_stride);
+      for (size_t i = 0; i < 2; i++) {
+        memcpy(coefficients + coefficients_stride * i,
+               output + 2 * kBlockDim * kBlockDim * i,
+               sizeof(float) * 2 * kBlockDim * kBlockDim);
+      }
       break;
     }
     case Type::DCT32X32: {
+      // TODO(veluca): Generalize ScaleToBlock and related classes to handle
+      // non-contiguous blocks.
       SIMD_ALIGN float output[16 * kBlockDim * kBlockDim];
       ComputeTransposedScaledDCT<4 * kBlockDim>()(
           FromLines<4 * kBlockDim>(pixels, pixels_stride),
           ScaleToBlock<4 * kBlockDim>(output));
-      ScatterBlock<4 * kBlockDim, 4 * kBlockDim>(output, coefficients,
-                                                 coefficients_stride);
+      for (size_t i = 0; i < 4; i++) {
+        memcpy(coefficients + coefficients_stride * i,
+               output + 4 * kBlockDim * kBlockDim * i,
+               sizeof(float) * 4 * kBlockDim * kBlockDim);
+      }
       break;
     }
     case Type::DCT_NOHF:
@@ -254,14 +677,57 @@ SIMD_ATTR void AcStrategy::TransformToPixels(const float* coefficients,
                                              size_t pixels_stride) const {
   if (block_ != 0) return;
   switch (strategy_) {
+    case Type::LINES: {
+      SIMD_ALIGN float temp[kBlockDim * kBlockDim];
+
+      for (size_t y = 0; y < 8; y++) {
+        for (size_t x = 0; x < 8; x++) {
+          T(x, y) = 0;
+        }
+      }
+
+      DoIDCTs<3>(kLinesDct3indices, kLinesDctC3indices, kLinesNumDct3, temp, 8,
+                 coefficients);
+      DoIDCTs<4>(kLinesDct4indices, kLinesDctC4indices, kLinesNumDct4, temp, 8,
+                 coefficients);
+      DoIDCTs<6>(kLinesDct6indices, kLinesDctC6indices, kLinesNumDct6, temp, 8,
+                 coefficients);
+      DoIDCTs<8>(kLinesDct8indices, kLinesDctC8indices, kLinesNumDct8, temp, 8,
+                 coefficients);
+
+      float dc00 = C(0, 0);
+      float dc01 = C(0, 1);
+      float dc10 = C(1, 0);
+      float dc11 = C(1, 1);
+
+      IDCT2x2(dc00, dc01, dc10, dc11);
+
+      RestoreDCPart(temp, 8, kLinesDc00indices, kLinesNumDc00, dc00);
+      RestoreDCPart(temp, 8, kLinesDc01indices, kLinesNumDc01, dc01);
+      RestoreDCPart(temp, 8, kLinesDc10indices, kLinesNumDc10, dc10);
+      RestoreDCPart(temp, 8, kLinesDc11indices, kLinesNumDc11, dc11);
+
+      // 4 pixels were not filled in, interpolate them here
+      // TODO(lode): use bicubic interpolation, and support this in the general
+      // case of working at any angle and fitting any size to any size.
+      T1(21) = (T1(12) + T1(30)) * 0.5f;
+      T1(28) = (T1(19) + T1(37)) * 0.5f;
+      T1(35) = (T1(26) + T1(44)) * 0.5f;
+      T1(42) = (T1(33) + T1(51)) * 0.5f;
+
+      for (size_t y = 0; y < 8; y++) {
+        for (size_t x = 0; x < 8; x++) {
+          P(x, y) = T(x, y);
+        }
+      }
+      break;
+    }
     case Type::IDENTITY: {
-      SIMD_ALIGN float coeffs[kBlockDim * kBlockDim];
-      memcpy(coeffs, coefficients, kBlockDim * kBlockDim * sizeof(float));
       float dcs[4] = {};
-      float block00 = coeffs[0];
-      float block01 = coeffs[1];
-      float block10 = coeffs[8];
-      float block11 = coeffs[9];
+      float block00 = coefficients[0];
+      float block01 = coefficients[1];
+      float block10 = coefficients[8];
+      float block11 = coefficients[9];
       dcs[0] = block00 + block01 + block10 + block11;
       dcs[1] = block00 + block01 - block10 - block11;
       dcs[2] = block00 - block01 + block10 - block11;
@@ -273,7 +739,7 @@ SIMD_ATTR void AcStrategy::TransformToPixels(const float* coefficients,
           for (size_t iy = 0; iy < 4; iy++) {
             for (size_t ix = 0; ix < 4; ix++) {
               if (ix == 0 && iy == 0) continue;
-              residual_sum += coeffs[(y + iy * 2) * 8 + x + ix * 2];
+              residual_sum += coefficients[(y + iy * 2) * 8 + x + ix * 2];
             }
           }
           pixels[(4 * y + 1) * pixels_stride + 4 * x + 1] =
@@ -282,12 +748,12 @@ SIMD_ATTR void AcStrategy::TransformToPixels(const float* coefficients,
             for (size_t ix = 0; ix < 4; ix++) {
               if (ix == 1 && iy == 1) continue;
               pixels[(y * 4 + iy) * pixels_stride + x * 4 + ix] =
-                  coeffs[(y + iy * 2) * 8 + x + ix * 2] +
+                  coefficients[(y + iy * 2) * 8 + x + ix * 2] +
                   pixels[(4 * y + 1) * pixels_stride + 4 * x + 1];
             }
           }
           pixels[y * 4 * pixels_stride + x * 4] =
-              coeffs[(y + 2) * 8 + x + 2] +
+              coefficients[(y + 2) * 8 + x + 2] +
               pixels[(4 * y + 1) * pixels_stride + 4 * x + 1];
         }
       }
@@ -295,13 +761,11 @@ SIMD_ATTR void AcStrategy::TransformToPixels(const float* coefficients,
     }
     case Type::DCT4X4_NOHF:
     case Type::DCT4X4: {
-      SIMD_ALIGN float coeffs[kBlockDim * kBlockDim];
-      memcpy(coeffs, coefficients, kBlockDim * kBlockDim * sizeof(float));
       float dcs[4] = {};
-      float block00 = coeffs[0];
-      float block01 = coeffs[1];
-      float block10 = coeffs[8];
-      float block11 = coeffs[9];
+      float block00 = coefficients[0];
+      float block01 = coefficients[1];
+      float block10 = coefficients[8];
+      float block11 = coefficients[9];
       dcs[0] = block00 + block01 + block10 + block11;
       dcs[1] = block00 + block01 - block10 - block11;
       dcs[2] = block00 - block01 + block10 - block11;
@@ -313,7 +777,7 @@ SIMD_ATTR void AcStrategy::TransformToPixels(const float* coefficients,
           for (size_t iy = 0; iy < 4; iy++) {
             for (size_t ix = 0; ix < 4; ix++) {
               if (ix == 0 && iy == 0) continue;
-              block[iy * 4 + ix] = coeffs[(y + iy * 2) * 8 + x + ix * 2];
+              block[iy * 4 + ix] = coefficients[(y + iy * 2) * 8 + x + ix * 2];
             }
           }
           ComputeTransposedScaledIDCT<4>()(
@@ -338,20 +802,30 @@ SIMD_ATTR void AcStrategy::TransformToPixels(const float* coefficients,
       break;
     }
     case Type::DCT16X16: {
-      SIMD_ALIGN float output[4 * kBlockDim * kBlockDim];
-      GatherBlock<2 * kBlockDim, 2 * kBlockDim>(coefficients,
-                                                coefficients_stride, output);
+      // TODO(veluca): Generalize ScaleToBlock and related classes to handle
+      // non-contiguous blocks.
+      SIMD_ALIGN float input[16 * kBlockDim * kBlockDim];
+      for (size_t i = 0; i < 2; i++) {
+        memcpy(input + 2 * kBlockDim * kBlockDim * i,
+               coefficients + coefficients_stride * i,
+               sizeof(float) * 2 * kBlockDim * kBlockDim);
+      }
       ComputeTransposedScaledIDCT<2 * kBlockDim>()(
-          FromBlock<2 * kBlockDim>(output),
+          FromBlock<2 * kBlockDim>(input),
           ToLines<2 * kBlockDim>(pixels, pixels_stride));
       break;
     }
     case Type::DCT32X32: {
-      SIMD_ALIGN float output[16 * kBlockDim * kBlockDim];
-      GatherBlock<4 * kBlockDim, 4 * kBlockDim>(coefficients,
-                                                coefficients_stride, output);
+      // TODO(veluca): Generalize ScaleToBlock and related classes to handle
+      // non-contiguous blocks.
+      SIMD_ALIGN float input[16 * kBlockDim * kBlockDim];
+      for (size_t i = 0; i < 4; i++) {
+        memcpy(input + 4 * kBlockDim * kBlockDim * i,
+               coefficients + coefficients_stride * i,
+               sizeof(float) * 4 * kBlockDim * kBlockDim);
+      }
       ComputeTransposedScaledIDCT<4 * kBlockDim>()(
-          FromBlock<4 * kBlockDim>(output),
+          FromBlock<4 * kBlockDim>(input),
           ToLines<4 * kBlockDim>(pixels, pixels_stride));
       break;
     }
@@ -365,6 +839,14 @@ SIMD_ATTR void AcStrategy::TransformToPixels(const float* coefficients,
   }
 }
 
+#undef ARRAYSIZE
+#undef C
+#undef T
+#undef P
+#undef C1
+#undef T1
+#undef P1
+
 SIMD_ATTR void AcStrategy::LowestFrequenciesFromDC(const float* PIK_RESTRICT dc,
                                                    size_t dc_stride, float* llf,
                                                    size_t llf_stride) const {
@@ -372,6 +854,7 @@ SIMD_ATTR void AcStrategy::LowestFrequenciesFromDC(const float* PIK_RESTRICT dc,
   switch (strategy_) {
     case Type::DCT_NOHF:
     case Type::DCT:
+    case Type::LINES:
       llf[0] = dc[0];
       break;
     case Type::DCT16X16: {
@@ -410,19 +893,26 @@ SIMD_ATTR void AcStrategy::DCFromLowestFrequencies(
   switch (strategy_) {
     case Type::DCT_NOHF:
     case Type::DCT:
+    case Type::LINES:
       dc[0] = block[0];
       break;
     case Type::DCT16X16: {
       float dest[4] = {};
-      GatherBlock<2 * kBlockDim, 2 * kBlockDim, 2, 2>(block, block_stride,
-                                                      dest);
+      for (size_t y = 0; y < 2; y++) {
+        for (size_t x = 0; x < 2; x++) {
+          dest[2 * y + x] = block[2 * kBlockDim * y + x];
+        }
+      }
       ReinterpretingIDCT<2 * kBlockDim, 2, 2>(dest, 2, dc, dc_stride);
       break;
     }
     case Type::DCT32X32: {
       float dest[16] = {};
-      GatherBlock<4 * kBlockDim, 4 * kBlockDim, 4, 4>(block, block_stride,
-                                                      dest);
+      for (size_t y = 0; y < 4; y++) {
+        for (size_t x = 0; x < 4; x++) {
+          dest[4 * y + x] = block[4 * kBlockDim * y + x];
+        }
+      }
       ReinterpretingIDCT<4 * kBlockDim, 4, 4>(dest, 4, dc, dc_stride);
       break;
     }
@@ -442,7 +932,8 @@ SIMD_ATTR void AcStrategy::DC2x2FromLowestFrequencies(
   constexpr size_t N = kBlockDim;
   switch (strategy_) {
     case Type::DCT_NOHF:
-    case Type::DCT: {
+    case Type::DCT:
+    case Type::LINES: {
       ReinterpretingIDCT<N, 1, 2>(llf, 0, dc2x2, dc2x2_stride);
       break;
     }
@@ -485,20 +976,27 @@ SIMD_ATTR void AcStrategy::DC2x2FromLowFrequencies(const float* block,
   switch (strategy_) {
     case Type::DCT_NOHF:
     case Type::DCT:
+    case Type::LINES:
       ReinterpretingIDCT<kBlockDim, 2, 2>(block, kBlockDim, dc2x2,
                                           dc2x2_stride);
       break;
     case Type::DCT16X16: {
       float dest[16] = {};
-      GatherBlock<2 * kBlockDim, 2 * kBlockDim, 4, 4>(block, block_stride,
-                                                      dest);
+      for (size_t y = 0; y < 4; y++) {
+        for (size_t x = 0; x < 4; x++) {
+          dest[4 * y + x] = block[2 * kBlockDim * y + x];
+        }
+      }
       ReinterpretingIDCT<2 * kBlockDim, 4, 4>(dest, 4, dc2x2, dc2x2_stride);
       break;
     }
     case Type::DCT32X32: {
       float dest[64] = {};
-      GatherBlock<4 * kBlockDim, 4 * kBlockDim, 8, 8>(block, block_stride,
-                                                      dest);
+      for (size_t y = 0; y < 8; y++) {
+        for (size_t x = 0; x < 8; x++) {
+          dest[8 * y + x] = block[4 * kBlockDim * y + x];
+        }
+      }
       ReinterpretingIDCT<4 * kBlockDim, 8, 8>(dest, 8, dc2x2, dc2x2_stride);
       break;
     }
@@ -508,8 +1006,8 @@ SIMD_ATTR void AcStrategy::DC2x2FromLowFrequencies(const float* block,
     case Type::IDENTITY:
       float block00 = block[0];
       float block01 = block[1];
-      float block10 = block[8];
-      float block11 = block[9];
+      float block10 = block[kBlockDim];
+      float block11 = block[kBlockDim + 1];
       dc2x2[0] = block00 + block01 + block10 + block11;
       dc2x2[1] = block00 + block01 - block10 - block11;
       dc2x2[dc2x2_stride] = block00 - block01 + block10 - block11;
@@ -526,6 +1024,7 @@ SIMD_ATTR void AcStrategy::LowFrequenciesFromDC2x2(const float* dc2x2,
   switch (strategy_) {
     case Type::DCT_NOHF:
     case Type::DCT:
+    case Type::LINES:
       ReinterpretingDCT<kBlockDim, 2, 2>(dc2x2, dc2x2_stride, block,
                                          block_stride);
       break;
@@ -533,14 +1032,8 @@ SIMD_ATTR void AcStrategy::LowFrequenciesFromDC2x2(const float* dc2x2,
       float dest[16] = {};
       ReinterpretingDCT<2 * kBlockDim, 4, 4>(dc2x2, dc2x2_stride, dest, 4);
       for (size_t y = 0; y < 4; y++) {
-        const size_t by = y / 2;
-        const size_t iy = y & 1;
-        const size_t yp = iy * 2 + by;
         for (size_t x = 0; x < 4; x++) {
-          const size_t bx = x / 2;
-          const size_t ix = x & 1;
-          const size_t xp = ix * 2 + bx;
-          block[yp * block_stride + xp] = dest[y * 4 + x];
+          block[block_stride * y + x] = dest[y * 4 + x];
         }
       }
       break;
@@ -549,14 +1042,8 @@ SIMD_ATTR void AcStrategy::LowFrequenciesFromDC2x2(const float* dc2x2,
       float dest[64] = {};
       ReinterpretingDCT<4 * kBlockDim, 8, 8>(dc2x2, dc2x2_stride, dest, 8);
       for (size_t y = 0; y < 8; y++) {
-        const size_t by = y / 4;
-        const size_t iy = y & 3;
-        const size_t yp = iy * 2 + by;
         for (size_t x = 0; x < 8; x++) {
-          const size_t bx = x / 4;
-          const size_t ix = x & 3;
-          const size_t xp = ix * 2 + bx;
-          block[yp * block_stride + xp] = dest[y * 8 + x];
+          block[block_stride * y + x] = dest[y * 8 + x];
         }
       }
       break;
@@ -577,7 +1064,9 @@ SIMD_ATTR void AcStrategy::LowFrequenciesFromDC2x2(const float* dc2x2,
 }
 
 void AcStrategyImage::SetFromRaw(const Rect& rect, const ImageB& raw_layers) {
-  PIK_ASSERT(SameSize(rect, raw_layers));
+  PIK_ASSERT(rect.IsInside(layers_));
+  PIK_ASSERT(rect.xsize() <= raw_layers.xsize());
+  PIK_ASSERT(rect.ysize() <= raw_layers.ysize());
   size_t stride = layers_.PixelsPerRow();
   for (size_t y = 0; y < rect.ysize(); ++y) {
     uint8_t* PIK_RESTRICT row = rect.Row(&layers_, y);
@@ -621,8 +1110,9 @@ size_t AcStrategyImage::CountBlocks(AcStrategy::Type type) const {
 }
 
 SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
-                                  const ImageF* quant_field, const Image3F& src,
-                                  ThreadPool* pool,
+                                  const ImageF* quant_field,
+                                  const DequantMatrices& dequant,
+                                  const Image3F& src, ThreadPool* pool,
                                   AcStrategyImage* ac_strategy,
                                   PikInfo* aux_out) {
   PROFILER_FUNC;
@@ -644,9 +1134,9 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
       // 4x4 DCT needs less focus on B channel, since at that resolution
       // blue needs to be correct only by average.
       static const double kColorWeights4x4[3] = {
-          0.55560083410056468,
-          1.0,
-          0.3,
+          0.60349588292079182,
+          1.5435289569786645,
+          0.33080849938060852,
       };
       for (int ix = 0; ix < 4; ++ix) {
         double total_sum = 0;
@@ -695,11 +1185,11 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
       norm8 = std::pow(norm8 * (1.0 / 4), 0.125);
       norm2 += 0.03;
 
-      double kMul1 = 0.8469907937870913;
+      double kMul1 = 0.86101693093148191;
       double loss_4x4 = kMul1 * norm8 / norm2;
-      double kMul2 = -0.054845247834733254;
+      double kMul2 = -0.18168363725368566;
       loss_4x4 += kMul2 * norm4 / norm2;
-      static const double loss_4x4_limit0 = 1.0745851804785773;
+      static const double loss_4x4_limit0 = 1.0861540086721586;
       if (loss_4x4 >= loss_4x4_limit0) {
         // Probably not multi-threading safe.
         disable_dct32[(by & ~3) * xsize_blocks + (bx & ~3)] = true;
@@ -708,6 +1198,9 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
     }
   };
   const auto find_block_strategy = [&](int bx, int by) SIMD_ATTR {
+#if ENABLE_DIAGONAL_LINES_EXPERIMENT
+    return AcStrategy::Type::LINES;
+#endif  // ENABLE_DIAGONAL_LINES_EXPERIMENT
     // The quantized symbol distribution contracts with the increasing
     // butteraugli_target.
     const float discretization_factor =
@@ -717,15 +1210,15 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
     // computation is not aware of visual masking. Inhomogeneous
     // visual masking will propagate accuracy further with 16x16 than
     // with 8x8 dcts.
-    const float kFavor8x8Dct = 0.97022476956774629;
-    float kFavor8x8DctOver32x32 = 0.75;
+    const float kFavor8x8Dct = 0.978192691479985;
+    float kFavor8x8DctOver32x32 = 0.74742417168628905;
     if (butteraugli_target >= 6.0) {
-      kFavor8x8DctOver32x32 = 0.86;
+      kFavor8x8DctOver32x32 = 0.737101360945845;
     }
     static const double kColorWeights[3] = {
-        0.55560083410056468,
-        2.5,
-        2.0,
+        0.65285453568125873,
+        2.4740163893371157,
+        2.0140216656143393,
     };
     // DCT4X4
     {
@@ -734,9 +1227,9 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
       // 4x4 DCT needs less focus on B channel, since at that resolution
       // blue needs to be correct only by average.
       static const double kColorWeights4x4[3] = {
-          0.55560083410056468,
-          1.0,
-          0.3,
+          0.76084140985773008,
+          0.9344031093258709,
+          0.31536647913297183,
       };
       // DCT4X4 collection
       for (int ix = 0; ix < 4; ++ix) {
@@ -776,10 +1269,8 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
         int offy = ((ix >> 2) & 3) * 2;
         for (size_t c = 0; c < src.kNumPlanes; c++) {
           double sum = 0;
-          const float* row0 =
-              src.ConstPlaneRow(c, by * kBlockDim + offy);
-          const float* row1 =
-              src.ConstPlaneRow(c, by * kBlockDim + offy + 1);
+          const float* row0 = src.ConstPlaneRow(c, by * kBlockDim + offy);
+          const float* row1 = src.ConstPlaneRow(c, by * kBlockDim + offy + 1);
           int x = bx * kBlockDim + offx;
           sum += fabs(row0[x] - row0[x + 1]);
           sum += fabs(row0[x] - row1[x]);
@@ -821,27 +1312,27 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
       norm2_2x2 = std::pow(norm2_2x2 * (1.0 / 16), 0.5);
       norm4_2x2 = std::pow(norm4_2x2 * (1.0 / 16), 0.25);
       norm8_2x2 = std::pow(norm8_2x2 * (1.0 / 16), 0.125);
-      norm2_2x2 += 0.019728218434017869;
+      norm2_2x2 += 0.019222543751497768;
 
-      double kMul1 = 0.84759906694969511;
+      double kMul1 = 0.84695221371792806;
       double loss_4x4 = kMul1 * norm8 / norm2;
       double loss_2x2 = kMul1 * norm8_2x2 / norm2_2x2;
-      double kMulCross = 0.25055664541015626;
+      double kMulCross = 0.24239613587680031;
       loss_2x2 *= 1.0 - kMulCross;
       loss_2x2 += kMulCross * loss_4x4;
-      double kMul2 = -0.012183673789682012;
+      double kMul2 = -0.012220022434342694;
       loss_4x4 += kMul2 * norm4 / norm2;
       loss_2x2 += kMul2 * norm4_2x2 / norm2_2x2;
-      static const double loss_4x4_limit0 = 1.0772933332748065;
-      static const double loss_2x2_mul = 1.2160334689154628;
+      static const double loss_4x4_limit0 = 1.079485914917413;
+      static const double loss_2x2_mul = 1.2125219678519115;
       if (loss_4x4 >= loss_4x4_limit0) {
         if (loss_2x2 >= loss_2x2_mul * loss_4x4) {
           return AcStrategy::Type::DCT2X2;
         }
         return AcStrategy::Type::DCT4X4;
       }
-      static const double loss_2x2_limit = 1.3804543168741275;
-      static const double loss_2x2_limit_4x4 = 0.65007565370307108;
+      static const double loss_2x2_limit = 1.3850101032587097;
+      static const double loss_2x2_limit_4x4 = 0.67096836699480211;
       if (loss_2x2 >= loss_2x2_limit && loss_4x4 >= loss_2x2_limit_4x4) {
         return AcStrategy::Type::DCT2X2;
       }
@@ -891,17 +1382,37 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
     if (identity_score > 3 * 49) {
       return AcStrategy::Type::IDENTITY;
     }
-    const double kPow = 0.98633286110451568;
-    const double kPow2 = 0.016160818829927922;
+    const double kPow = 0.99263297216052859;
+    const double kPow2 = 0.018823021573462634;
+    const double kExtremityWeight16x16 = 7.77;
+    const double kExtremityWeight32x32 = 7.77;
     // DCT32
     if (!disable_dct32[by * xsize_blocks + bx] && bx + 3 < xsize_blocks &&
         by + 3 < ysize_blocks && (bx & 3) == 0 && (by & 3) == 0) {
-      static const double kDiff = 0.739609387964272;
+      static const double kDiff = 0.9539527585329598;
       double dct8x8_entropy = 0;
       for (size_t c = 0; c < coeffs.kNumPlanes; c++) {
         double entropy = 0;
-        for (size_t iy = 0; iy < 4; iy++) {
+        double min_ext = 1e30;
+        double max_ext = -1e30;
+        for (size_t iy = 0; iy < 4 && by + iy < ysize_blocks; iy++) {
           const float* row = coeffs.ConstPlaneRow(c, by + iy);
+          for (size_t ix = 0; ix < 4 && bx + ix < xsize_blocks; ix++) {
+            double min8x8 = 1e30;
+            double max8x8 = -1e30;
+            for (int dy = 0; dy < 8; ++dy) {
+              const float* row =
+                  src.ConstPlaneRow(c, (by + iy) * kBlockDim + dy);
+              for (int dx = 0; dx < 8; ++dx) {
+                double v = row[(bx + ix) * kBlockDim + dx];
+                if (v < min8x8) min8x8 = v;
+                if (v > max8x8) max8x8 = v;
+              }
+            }
+            double ext = max8x8 - min8x8;
+            if (ext < min_ext) min_ext = ext;
+            if (ext > max_ext) max_ext = ext;
+          }
           int bx_actual = bx;
           for (size_t ix = 1; ix < kBlockDim * kBlockDim * 4; ix++) {
             // Skip the dc values at 0 and 64.
@@ -909,16 +1420,17 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
               bx_actual++;
               continue;
             }
-            float mul = 1.0f / DequantMatrix(0, kQuantKindDCT8, c)[ix & 63];
-            float val =
-                mul * row[bx * kBlockDim * kBlockDim + ix];
+            float mul = 1.0f / dequant.Matrix(kQuantKindDCT8, c)[ix & 63];
+            float val = mul * row[bx * kBlockDim * kBlockDim + ix];
             val *= quant_field->ConstRow(by + iy)[bx_actual];
             float v = fabsf(val) * discretization_factor;
             entropy += 1 + kDiff - pow(kPow, v) - kDiff * pow(kPow2, v);
           }
         }
+        entropy -= kExtremityWeight32x32 * (max_ext - min_ext);
         dct8x8_entropy += kColorWeights[c] * entropy;
       }
+
       float quant_inhomogeneity = 0;
       float max_quant = -1e30;
       for (int dy = 0; dy < 4; ++dy) {
@@ -929,22 +1441,23 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
         }
       }
       quant_inhomogeneity += 16 * max_quant;
-      double kMulInho = (-47.780 * (-4.4869535189137961  )) / butteraugli_target;
+      double kMulInho = (-47.780 * (-4.270639713545533)) / butteraugli_target;
       dct8x8_entropy += kMulInho * quant_inhomogeneity;
       double dct32x32_entropy = 0;
       for (size_t c = 0; c < src.kNumPlanes; c++) {
         double entropy = 0;
         SIMD_ALIGN float dct32x32[16 * kBlockDim * kBlockDim] = {};
-        AcStrategy(AcStrategy::Type::DCT32X32, 0)
-            .TransformFromPixels(
-                src.PlaneRow(c, kBlockDim * by) + kBlockDim * bx,
-                src.PixelsPerRow(), dct32x32, 4 * 64);
+        AcStrategy acs(AcStrategy::Type::DCT32X32, 0);
+        acs.TransformFromPixels(
+            src.PlaneRow(c, kBlockDim * by) + kBlockDim * bx,
+            src.PixelsPerRow(), dct32x32, 4 * kBlockDim * kBlockDim);
         for (size_t k = 0; k < 16 * kBlockDim * kBlockDim; k++) {
-          if (k % 64 == 0) {
+          if (k < 4 || (k < 36 && k > 31) || (k < 68 && k > 63) ||
+              (k < 100 && k > 95)) {
             // Leave out the lowest frequencies.
             continue;
           }
-          float mul = 1.0f / DequantMatrix(0, kQuantKindDCT32Start, c)[k];
+          float mul = 1.0f / dequant.Matrix(kQuantKindDCT32, c)[k];
           float val = mul * dct32x32[k];
           val *= max_quant;
           float v = fabsf(val) * discretization_factor;
@@ -960,11 +1473,29 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
     // DCT16
     if (!disable_dct16[by * xsize_blocks + bx] && bx + 1 < xsize_blocks &&
         by + 1 < ysize_blocks && (bx & 1) == 0 && (by & 1) == 0) {
-      static const double kDiff = 0.30935949753915776;
+      static const double kDiff = 0.2494383590606063;
       double dct8x8_entropy = 0;
       for (size_t c = 0; c < coeffs.kNumPlanes; c++) {
         double entropy = 0;
-        for (size_t iy = 0; iy < 2; iy++) {
+        double min_ext = 1e30;
+        double max_ext = -1e30;
+        for (size_t iy = 0; iy < 2 && by + iy < ysize_blocks; iy++) {
+          for (size_t ix = 0; ix < 2 && bx + ix < xsize_blocks; ix++) {
+            double min8x8 = 1e30;
+            double max8x8 = -1e30;
+            for (int dy = 0; dy < 8; ++dy) {
+              const float* row =
+                  src.ConstPlaneRow(c, (by + iy) * kBlockDim + dy);
+              for (int dx = 0; dx < 8; ++dx) {
+                double v = row[(bx + ix) * kBlockDim + dx];
+                if (v < min8x8) min8x8 = v;
+                if (v > max8x8) max8x8 = v;
+              }
+            }
+            double ext = max8x8 - min8x8;
+            if (ext < min_ext) min_ext = ext;
+            if (ext > max_ext) max_ext = ext;
+          }
           const float* row = coeffs.ConstPlaneRow(c, by + iy);
           int bx_actual = bx;
           for (size_t ix = 1; ix < kBlockDim * kBlockDim * 2; ix++) {
@@ -973,14 +1504,14 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
               bx_actual++;
               continue;
             }
-            float mul = 1.0f / DequantMatrix(0, kQuantKindDCT8, c)[ix & 63];
-            float val =
-                mul * row[bx * kBlockDim * kBlockDim + ix];
+            float mul = 1.0f / dequant.Matrix(kQuantKindDCT8, c)[ix & 63];
+            float val = mul * row[bx * kBlockDim * kBlockDim + ix];
             val *= quant_field->ConstRow(by + iy)[bx_actual];
             float v = fabsf(val) * discretization_factor;
             entropy += 1 + kDiff - pow(kPow, v) - kDiff * pow(kPow2, v);
           }
         }
+        entropy -= kExtremityWeight16x16 * (max_ext - min_ext);
         dct8x8_entropy += kColorWeights[c] * entropy;
       }
       float max_quant = std::max<double>(
@@ -993,22 +1524,22 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
           (quant_field->ConstRow(by)[bx] + quant_field->ConstRow(by)[bx + 1] +
            quant_field->ConstRow(by + 1)[bx] +
            quant_field->ConstRow(by + 1)[bx + 1]);
-      double kMulInho = (-47.780 * (4.0553021854221809  )) / butteraugli_target;
+      double kMulInho = (-47.780 * (3.9429727851421288)) / butteraugli_target;
       dct8x8_entropy += kMulInho * quant_inhomogeneity;
       double dct16x16_entropy = 0;
       for (size_t c = 0; c < src.kNumPlanes; c++) {
         double entropy = 0;
         SIMD_ALIGN float dct16x16[4 * kBlockDim * kBlockDim] = {};
-        AcStrategy(AcStrategy::Type::DCT16X16, 0)
-            .TransformFromPixels(
-                src.PlaneRow(c, kBlockDim * by) + kBlockDim * bx,
-                src.PixelsPerRow(), dct16x16, 2 * 64);
+        AcStrategy acs = AcStrategy(AcStrategy::Type::DCT16X16, 0);
+        acs.TransformFromPixels(
+            src.PlaneRow(c, kBlockDim * by) + kBlockDim * bx,
+            src.PixelsPerRow(), dct16x16, 2 * kBlockDim * kBlockDim);
         for (size_t k = 0; k < 4 * kBlockDim * kBlockDim; k++) {
-          if (k % 64 == 0) {
+          if (k < 2 || (k < 18 && k > 15)) {
             // Leave out the lowest frequencies.
             continue;
           }
-          float mul = 1.0f / DequantMatrix(0, kQuantKindDCT16Start, c)[k];
+          float mul = 1.0f / dequant.Matrix(kQuantKindDCT16, c)[k];
           float val = mul * dct16x16[k];
           val *= max_quant;
           float v = fabsf(val) * discretization_factor;

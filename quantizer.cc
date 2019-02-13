@@ -10,11 +10,11 @@
 #include <algorithm>
 #include <sstream>
 #include <vector>
+#include "ac_strategy.h"
 
 #undef PROFILER_ENABLED
 #define PROFILER_ENABLED 1
 #include "arch_specific.h"
-#include "cache_aligned.h"
 #include "common.h"
 #include "compiler_specific.h"
 #include "dct.h"
@@ -27,171 +27,32 @@ namespace pik {
 
 static const int kDefaultQuant = 64;
 
-const float* NewDequantMatrices() {
-  constexpr int N = kBlockDim;
-  constexpr int block_size = N * N;
-  constexpr int table_size = 3 * block_size;
-  const float* idct4_scales = IDCTScales<N / 2>();
-  const float* idct_scales = IDCTScales<N>();
-  const float* idct16_scales = IDCTScales<2 * N>();
-  const float* idct32_scales = IDCTScales<4 * N>();
-  float* table = static_cast<float*>(CacheAligned::Allocate(
-      kNumQuantTables * kNumQuantKinds * table_size * sizeof(float)));
-
-  static_assert(kNumQuantTables == 1,
-                "Update this function when adding quantization tables.");
-
-  static_assert(kNumQuantKinds == 24,
-                "Update this function when adding new quantization kinds.");
-
-  // DCT8 (quant_kind 0)
-  {
-    const double* quant_weights = GetQuantWeightsDCT8();
-    for (size_t c = 0; c < 3; c++) {
-      for (size_t i = 0; i < N * N; i++) {
-        double weight = quant_weights[c * block_size + i];
-        const size_t x = i % N;
-        const size_t y = i / N;
-        const float idct_scale = idct_scales[x] * idct_scales[y] / block_size;
-        table[DequantMatrixOffset(0, kQuantKindDCT8, c) * block_size + i] =
-            idct_scale / weight;
-      }
-    }
-  }
-
-  // Identity (quant_kind 1)
-  {
-    const double* quant_weights = GetQuantWeightsIdentity();
-    for (size_t c = 0; c < 3; c++) {
-      for (size_t i = 0; i < N * N; i++) {
-        double weight = quant_weights[c * block_size + i];
-        table[DequantMatrixOffset(0, kQuantKindID, c) * block_size + i] =
-            1.0f / weight;
-      }
-    }
-  }
-
-  // DCT4 (quant_kind 2)
-  {
-    const double* quant_weights = GetQuantWeightsDCT2();
-    for (size_t c = 0; c < 3; c++) {
-      for (size_t i = 0; i < N * N; i++) {
-        double weight = quant_weights[c * block_size + i];
-        table[DequantMatrixOffset(0, kQuantKindDCT2, c) * block_size + i] =
-            1.0f / weight;
-      }
-    }
-  }
-
-  // DCT4 (quant_kind 3)
-  {
-    double weight01[3] = {};
-    double weight11[3] = {};
-    const double* quant_weights = GetQuantWeightsDCT4(weight01, weight11);
-    for (size_t c = 0; c < 3; c++) {
-      for (size_t i = 0; i < N * N; i++) {
-        const size_t x = i % N;
-        const size_t y = i / N;
-        double weight =
-            quant_weights[c * (N / 2 * N / 2) + (y / 2 * N / 2) + x / 2];
-        float idct_scale =
-            idct4_scales[x / 2] * idct4_scales[y / 2] / (N / 2 * N / 2);
-        if (i == 1 || i == N) idct_scale *= weight01[c];
-        if (i == N + 1) idct_scale *= weight11[c];
-        table[DequantMatrixOffset(0, kQuantKindDCT4, c) * block_size + i] =
-            idct_scale / weight;
-      }
-    }
-  }
-
-  // DCT16 (quant_kind 4 to 7)
-  {
-    const double* quant_weights = GetQuantWeightsDCT16();
-    for (size_t c = 0; c < 3; c++) {
-      float dct16_table[4 * N * N] = {};
-      for (size_t i = 0; i < 4 * N * N; i++) {
-        double weight = quant_weights[c * 4 * block_size + i];
-        const size_t x = i & (2 * N - 1);
-        const size_t y = i / (2 * N);
-        const float idct_scale =
-            idct16_scales[x] * idct16_scales[y] / (4 * block_size);
-        dct16_table[i] = idct_scale / weight;
-      }
-      ScatterBlock<2 * N, 2 * N>(
-          dct16_table,
-          &table[DequantMatrixOffset(0, kQuantKindDCT16Start, c) * block_size],
-          2 * N * N);
-    }
-  }
-
-  // DCT32 (quant_kind 8 to 23)
-  {
-    const double* quant_weights = GetQuantWeightsDCT32();
-    for (size_t c = 0; c < 3; c++) {
-      float dct32_table[16 * N * N] = {};
-      for (size_t i = 0; i < 16 * N * N; i++) {
-        double weight = quant_weights[c * 16 * block_size + i];
-        const size_t x = i & (4 * N - 1);
-        const size_t y = i / (4 * N);
-        const float idct_scale =
-            idct32_scales[x] * idct32_scales[y] / (16 * block_size);
-        dct32_table[i] = idct_scale / weight;
-      }
-      ScatterBlock<4 * N, 4 * N>(
-          dct32_table,
-          &table[DequantMatrixOffset(0, kQuantKindDCT32Start, c) * block_size],
-          4 * N * N);
-    }
-  }
-  return table;
-}
-
-// Returns aligned memory.
-const float* DequantMatrix(int id, size_t quant_kind, int c) {
-  const constexpr size_t N = kBlockDim;
-  PIK_ASSERT(quant_kind < kNumQuantKinds);
-  static const float* const kDequantMatrix = NewDequantMatrices();
-  return &kDequantMatrix[DequantMatrixOffset(id, quant_kind, c) * N * N];
-}
-
-Quantizer::Quantizer(size_t block_dim, int template_id, int quant_xsize,
+Quantizer::Quantizer(const DequantMatrices* dequant, int quant_xsize,
                      int quant_ysize)
-    : Quantizer(block_dim, template_id, quant_xsize, quant_ysize, kDefaultQuant,
+    : Quantizer(dequant, quant_xsize, quant_ysize, kDefaultQuant,
                 kGlobalScaleDenom / kDefaultQuant) {}
 
-Quantizer::Quantizer(size_t block_dim, int template_id, int quant_xsize,
+Quantizer::Quantizer(const DequantMatrices* dequant, int quant_xsize,
                      int quant_ysize, int quant_dc, int global_scale)
-    : block_dim_(block_dim),
-      quant_xsize_(quant_xsize),
+    : quant_xsize_(quant_xsize),
       quant_ysize_(quant_ysize),
-      template_id_(template_id % kNumQuantTables),
       global_scale_(global_scale),
       quant_dc_(quant_dc),
       quant_img_ac_(quant_xsize_, quant_ysize_),
-      initialized_(false) {
-  // DCT16 still has block_dim = 8.
-  PIK_ASSERT(block_dim_ == 8);
+      dequant_(dequant) {
   RecomputeFromGlobalScale();
-
-  const size_t block_size = block_dim_ * block_dim_;
-  quant_matrix_.resize(3 * kNumQuantKinds * block_size);
 
   FillImage(kDefaultQuant, &quant_img_ac_);
 
-  PIK_ASSERT(template_id < kNumQuantTables);
   memcpy(zero_bias_, kZeroBiasDefault, sizeof(kZeroBiasDefault));
 }
 
-const float* Quantizer::DequantMatrix(int c, size_t quant_kind) const {
-  return pik::DequantMatrix(template_id_, quant_kind, c);
-}
-
+// TODO(veluca): reclaim the unused bit in global_scale encoding.
 std::string Quantizer::Encode(PikImageSizeInfo* info) const {
   std::stringstream ss;
-  static_assert(kNumQuantTables <= 2, "template_id is supposed to be 1 bit");
-  int global_scale_and_template_id = (global_scale_ - 1) | (template_id_ << 15);
-  ss << std::string(1, global_scale_and_template_id >> 8);
-  ss << std::string(1, global_scale_and_template_id & 0xff);
+  int global_scale = global_scale_ - 1;
+  ss << std::string(1, global_scale >> 8);
+  ss << std::string(1, global_scale & 0xff);
   ss << std::string(1, quant_dc_ - 1);
   if (info) {
     info->total_size += 3;
@@ -200,16 +61,12 @@ std::string Quantizer::Encode(PikImageSizeInfo* info) const {
 }
 
 bool Quantizer::Decode(BitReader* br) {
-  int global_scale_and_template_id = br->ReadBits(8) << 8;
-  global_scale_and_template_id += br->ReadBits(8);
+  int global_scale = br->ReadBits(8) << 8;
+  global_scale |= br->ReadBits(8);
+  global_scale_ = (global_scale & 0x7FFF) + 1;
   quant_dc_ = br->ReadBits(8) + 1;
-  global_scale_ = (global_scale_and_template_id & 0x7FFF) + 1;
-  template_id_ = global_scale_and_template_id >> 15;
-  if (template_id_ >= kNumQuantTables)
-    return PIK_FAILURE("template_id is too big");
   RecomputeFromGlobalScale();
   inv_quant_dc_ = inv_global_scale_ / quant_dc_;
-  initialized_ = true;
   return true;
 }
 
@@ -251,7 +108,7 @@ ImageF QuantizeRoundtripDC(const Quantizer& quantizer, int c,
 
   // Always use DCT8 quantization kind for DC
   const float mul =
-      quantizer.DequantMatrix(c, kQuantKindDCT8)[0] * quantizer.inv_quant_dc();
+      quantizer.DequantMatrix(kQuantKindDCT8, c)[0] * quantizer.inv_quant_dc();
   for (size_t by = 0; by < ysize_blocks; ++by) {
     const float* PIK_RESTRICT row_in = dc.ConstRow(by);
     float* PIK_RESTRICT row_out = out.Row(by);

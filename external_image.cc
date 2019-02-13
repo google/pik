@@ -16,6 +16,11 @@ namespace {
 
 #define PIK_EXT_VERBOSE 0
 
+#if PIK_EXT_VERBOSE
+// For printing RGB values at this X within each line.
+constexpr size_t kX = 1;
+#endif
+
 // Encoding CodecInOut using other codecs requires format conversions to their
 // "External" representation:
 // IO -[1]-> Temp01 -[CMS]-> Temp01 -[2dt]-> External
@@ -47,10 +52,18 @@ namespace {
 //    IO    |    32   |    255   |    3,4   |   Planar    |  ImageU
 
 // Number of external channels including alpha.
-struct Channels1 {};
-struct Channels2 {};
-struct Channels3 {};
-struct Channels4 {};
+struct Channels1 {
+  static const char* Name() { return "1"; }
+};
+struct Channels2 {
+  static const char* Name() { return "2"; }
+};
+struct Channels3 {
+  static const char* Name() { return "3"; }
+};
+struct Channels4 {
+  static const char* Name() { return "4"; }
+};
 
 // Step 1: interleaved <-> planar and rescale [0, 1] <-> [0, 255]
 struct Interleave {
@@ -140,14 +153,17 @@ struct Interleave {
 // Same naming convention as Image: B=u8, U=u16, F=f32. kSize enables generic
 // functions with Type and Order template arguments.
 struct TypeB {
+  static const char* Name() { return "B"; }
   static constexpr size_t kSize = 1;
   static constexpr uint16_t kMaxAlpha = 0xFF;
 };
 struct TypeU {
+  static const char* Name() { return "U"; }
   static constexpr size_t kSize = 2;
   static constexpr uint16_t kMaxAlpha = 0xFFFF;
 };
 struct TypeF {
+  static const char* Name() { return "F"; }
   static constexpr size_t kSize = 4;
   static constexpr uint16_t kMaxAlpha = 0xFFFF;
 };
@@ -576,6 +592,7 @@ CodecInterval GetInterval(const size_t bits_per_sample) {
 // the external type and back to the arbitrary interval.
 class CastRescale01 {
  public:
+  static const char* Name() { return "Rescale01"; }
   CastRescale01(const CodecIntervals& temp_intervals,
                 const CodecInterval ext_interval) {
     for (size_t c = 0; c < 4; ++c) {
@@ -586,7 +603,7 @@ class CastRescale01 {
     }
 #if PIK_EXT_VERBOSE >= 2
     printf("CastRescale01 min %f width %f %f\n", temp_intervals[0].min,
-           temp_intervals[0].width, ext_interval[0].width);
+           temp_intervals[0].width, ext_interval.width);
 #endif
   }
 
@@ -613,6 +630,7 @@ class CastRescale01 {
 // IO case without color conversion, one normally does not use this parameter.
 class CastRescale255 {
  public:
+  static const char* Name() { return "Rescale255"; }
   CastRescale255(const CodecIntervals& temp_intervals,
                  const CodecInterval ext_interval) {
     for (size_t c = 0; c < 4; ++c) {
@@ -624,7 +642,7 @@ class CastRescale255 {
     }
 #if PIK_EXT_VERBOSE >= 2
     printf("CastRescale255 min %f width %f %f\n", temp_intervals[0].min,
-           temp_intervals[0].width, ext_interval[0].width);
+           temp_intervals[0].width, ext_interval.width);
 #endif
   }
 
@@ -647,6 +665,7 @@ class CastRescale255 {
 // to store min/width metadata.
 class CastClip01 {
  public:
+  static const char* Name() { return "Clip01"; }
   CastClip01(const CodecInterval ext_interval) {
     for (size_t c = 0; c < 4; ++c) {
       temp_mul_[c] = ext_interval.width;
@@ -654,7 +673,7 @@ class CastClip01 {
       external_mul_[c] = 1.0f / ext_interval.width;
     }
 #if PIK_EXT_VERBOSE >= 2
-    printf("CastClip01 width %f\n", ext_interval[0].width);
+    printf("CastClip01 width %f\n", ext_interval.width);
 #endif
   }
 
@@ -677,6 +696,7 @@ class CastClip01 {
 };
 
 struct CastFloat {
+  static const char* Name() { return "Float"; }
   CastFloat(const CodecInterval ext_interval) {
     for (size_t c = 0; c < 4; ++c) {
       PIK_CHECK(ext_interval.min == 0.0f);
@@ -701,6 +721,7 @@ struct CastFloat {
 // to store min/width metadata.
 class CastClip255 {
  public:
+  static const char* Name() { return "Clip255"; }
   CastClip255(const CodecInterval ext_interval) {
     for (size_t c = 0; c < 4; ++c) {
       temp_mul_[c] = ext_interval.width;
@@ -708,7 +729,7 @@ class CastClip255 {
       external_mul_[c] = 255.0f / ext_interval.width;
     }
 #if PIK_EXT_VERBOSE >= 2
-    printf("CastClip255 width %f\n", ext_interval[0].width);
+    printf("CastClip255 width %f\n", ext_interval.width);
 #endif
   }
 
@@ -731,6 +752,7 @@ class CastClip255 {
 };
 
 struct CastFloat01 {
+  static const char* Name() { return "Float01"; }
   CastFloat01(const CodecInterval ext_interval) {
     for (size_t c = 0; c < 4; ++c) {
       PIK_CHECK(ext_interval.min == 0.0f);
@@ -752,6 +774,7 @@ struct CastFloat01 {
 
 // No-op
 struct CastFloat255 {
+  static const char* Name() { return "Float255"; }
   CastFloat255(const CodecInterval ext_interval) {
     for (size_t c = 0; c < 4; ++c) {
       PIK_CHECK(ext_interval.min == 0.0f);
@@ -789,8 +812,7 @@ class Transformer {
   // Can fail => separate from ctor.
   Status Init(const ColorEncoding& c_src, const ColorEncoding& c_dst) {
 #if PIK_EXT_VERBOSE >= 1
-    printf("== xform: %s -> %s\n", Description(c_src).c_str(),
-           Description(c_dst).c_str());
+    printf("%s->%s\n", Description(c_src).c_str(), Description(c_dst).c_str());
 #endif
 
     return transform_.Init(c_src, c_dst, rect_.xsize(), NumThreads(pool_));
@@ -818,11 +840,6 @@ class Transformer {
   }
 
  private:
-#if PIK_EXT_VERBOSE
-  // For printing RGB values at this X within each line.
-  static constexpr size_t kX = 0;
-#endif
-
   // First pass: only needed for ExtentsDynamic/CastUnused.
   template <class Type, class Order, class Channels>
   PIK_INLINE void DoRow(ToExternal1, ExtentsDynamic* extents, const CastUnused,
@@ -874,22 +891,29 @@ class Transformer {
     float* PIK_RESTRICT row_temp = transform_.BufDst(thread);
     Interleave::Image3ToTemp01(Channels(), y, color_, rect_, row_temp);
 
-    transform_.Run(thread, row_temp, row_temp);
-
 #if PIK_EXT_VERBOSE
-    const float in0 = row_temp[3 * kX + 0], in1 = row_temp[3 * kX + 1];
+    // Save inputs for printing before in-place transform overwrites them.
+    const float in0 = row_temp[3 * kX + 0];
+    const float in1 = row_temp[3 * kX + 1];
     const float in2 = row_temp[3 * kX + 2];
 #endif
+    transform_.Run(thread, row_temp, row_temp);
 
     uint8_t* PIK_RESTRICT row_external = external_->Row(y);
     Demux::TempToExternal(Type(), Order(), Channels(), rect_.xsize(), row_temp,
                           cast, row_external);
 
 #if PIK_EXT_VERBOSE
-    printf("ToExt: tmp %.4f %.4f %.4f; xform %.4f %.4f %.4f  ext %3d %d %3d\n",
-           in0, in1, in2, row_temp[3 * kX + 0], row_temp[3 * kX + 1],
-           row_temp[3 * kX + 2], row_external[3 * kX + 0],
-           row_external[3 * kX + 1], row_external[3 * kX + 2]);
+    const float tmp0 = row_temp[3 * kX + 0];
+    const float tmp1 = row_temp[3 * kX + 1];
+    const float tmp2 = row_temp[3 * kX + 2];
+    // Convert back so we can print the external values
+    Demux::ExternalToTemp(Type(), Order(), Channels(), rect_.xsize(),
+                          row_external, cast, row_temp);
+    printf("ToExt(%s%s %s): tmp %.4f %.4f %.4f|%.4f %.4f %.4f|%.4f %.4f %.4f\n",
+           Channels::Name(), Type::Name(), Cast::Name(), in0, in1, in2, tmp0,
+           tmp1, tmp2, row_temp[3 * kX + 0], row_temp[3 * kX + 1],
+           row_temp[3 * kX + 2]);
 #endif
 
     const uint16_t* PIK_RESTRICT row_alpha =
@@ -1023,11 +1047,6 @@ class Converter {
   }
 
  private:
-#if PIK_EXT_VERBOSE
-  // For printing RGB values at this X within each line.
-  static constexpr size_t kX = 0;
-#endif
-
   template <class Type, class Order, class Channels, class Cast>
   PIK_INLINE void DoRow(const Cast& cast, const size_t y, const size_t thread) {
     const uint8_t* PIK_RESTRICT row_external = external_->ConstRow(y);
@@ -1043,7 +1062,8 @@ class Converter {
                           cast, row_temp);
 
 #if PIK_EXT_VERBOSE
-    printf("ToIO: ext %3d %3d %3d  tmp %.4f %.4f %.4f\n",
+    printf("ToIO(%s%s %s): ext %3d %3d %3d  tmp %.4f %.4f %.4f\n",
+           Channels::Name(), Type::Name(), Cast::Name(),
            row_external[3 * kX + 0], row_external[3 * kX + 1],
            row_external[3 * kX + 2], row_temp[3 * kX + 0], row_temp[3 * kX + 1],
            row_temp[3 * kX + 2]);

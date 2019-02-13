@@ -15,11 +15,9 @@
 
 namespace pik {
 
-// Converts to linear sRGB. "linear" may alias "opsin".
-// Prefer to replace this parallelize-across-image version with the one below,
-// which is suitable for parallelize-across-group.
-SIMD_ATTR void OpsinToLinear(const Image3F& opsin, ThreadPool* pool,
-                             Image3F* linear);
+// Converts `inout` from opsin to linear sRGB in-place. Called from per-pass
+// postprocessing, hence parallelized.
+SIMD_ATTR void OpsinToLinear(Image3F* PIK_RESTRICT inout, ThreadPool* pool);
 
 // Converts to linear sRGB, writing to linear:rect_out.
 SIMD_ATTR void OpsinToLinear(const Image3F& opsin, const Rect& rect_out,

@@ -100,8 +100,8 @@ struct Alpha {
   PaddedBytes encoded;
 };
 
-constexpr size_t kNumTilesPerGroup = (kGroupWidthInBlocks / kTileDimInBlocks) *
-                                     (kGroupHeightInBlocks / kTileDimInBlocks);
+constexpr size_t kNumTilesPerGroup = (kGroupDimInBlocks / kTileDimInBlocks) *
+                                     (kGroupDimInBlocks / kTileDimInBlocks);
 
 struct GroupHeader {
   GroupHeader();
@@ -203,10 +203,7 @@ struct PassHeader {
     visitor->U64(0, &size);
 
     visitor->Bool(false, &has_alpha);
-    visitor->Bool(true, &is_last);
-    if (visitor->Conditional(is_last)) {
-      PIK_RETURN_IF_ERROR(visitor->VisitNested(&frame));
-    }
+    PIK_RETURN_IF_ERROR(visitor->VisitNested(&frame));
 
     visitor->Enum(kU32Direct3Plus4, ImageEncoding::kPasses, &encoding);
 
@@ -221,12 +218,12 @@ struct PassHeader {
       if (visitor->Conditional(have_adaptive_reconstruction)) {
         PIK_RETURN_IF_ERROR(visitor->VisitNested(&epf_params));
       }
+      // TODO(veluca); choose a good constant.
+      visitor->U32(0x20181008, 1, &num_passes);
     }
 
     // No resampling or group TOC for kProgressive.
     if (visitor->Conditional(encoding != ImageEncoding::kProgressive)) {
-      visitor->U32(kU32Direct2348, 2, &resampling_factor2);
-
       // WARNING: nonserialized_num_groups must be set beforehand.
       visitor->SetSizeWhenReading(nonserialized_num_groups, &group_sizes);
       for (uint32_t& group_size_bits : group_sizes) {
@@ -249,8 +246,6 @@ struct PassHeader {
   uint64_t size;  // [bytes]
   bool has_alpha;
 
-  bool is_last;
-  // Only if is_last:
   FrameInfo frame;
 
   ImageEncoding encoding;
@@ -259,7 +254,6 @@ struct PassHeader {
   bool lossless_grayscale;
   bool lossless_16_bits;
 
-  uint32_t resampling_factor2;
   uint32_t flags;
 
   GaborishStrength gaborish;
@@ -270,6 +264,8 @@ struct PassHeader {
   // TODO(janwas): move into EpfParams
   bool have_adaptive_reconstruction;
   EpfParams epf_params;
+
+  uint32_t num_passes;
 
   // WARNING: must be set before reading from bitstream - not serialized
   // like other fields because this is stored in FileHeader to save a few bits.

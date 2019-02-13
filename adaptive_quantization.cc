@@ -36,10 +36,10 @@ namespace {
 
 static const double kQuant64[64] = {
     0.0,
-    0.81251985351382217,
-    0.81251985351382217,
-    3.460364240025692,
-    3.460364240025692,
+    1.3209836994457049,
+    1.3209836994457049,
+    3.8093709838312875,
+    3.8093709838312875,
     3.24478652961692,
     3.2932050795619587,
     3.2773870962477889,
@@ -146,11 +146,11 @@ SIMD_ATTR void DctModulation(const ImageF& xyb, ImageF* out) {
       entropyQL4 = std::sqrt(std::sqrt(entropyQL4));
       entropyQL8 = std::pow(entropyQL8, 0.125);
       static const double mulQL2 = -0.00072185944355851461;
-      static const double mulQL4 = -1.256628388930916;
-      static const double mulQL8 = 0.18899851100262555;
+      static const double mulQL4 = -1.1783135317666862;
+      static const double mulQL8 = 0.29099162398822259;
       double v =
           mulQL2 * entropyQL2 + mulQL4 * entropyQL4 + mulQL8 * entropyQL8;
-      double kMul = 1.2840706752955837;
+      double kMul = 1.1555549005271522;
       row_out[x / 8] += kMul * v;
     }
   }
@@ -178,7 +178,7 @@ void RangeModulation(const ImageF& xyb, ImageF* out) {
         }
       }
       float range = maxval - minval;
-      static const double mul = 0.60277139175670691;
+      static const double mul = 0.67975181715504351;
       row_out[x / 8] += mul * range;
     }
   }
@@ -213,7 +213,7 @@ void HfModulation(const ImageF& xyb, ImageF* out) {
       if (n != 0) {
         sum /= n;
       }
-      static const double kMul = 0.84278727957620747;
+      static const double kMul = 0.70743567045382239;
       sum *= kMul;
       row_out[x / 8] += sum;
     }
@@ -234,8 +234,8 @@ void Exp(ImageF* out) {
 static double SimpleGamma(double v) {
   // A simple HDR compatible gamma function.
   // mul and mul2 represent a scaling difference between pik and butteraugli.
-  static const double mul = 103.21506721352836;
-  static const double mul2 = 1.0 / (67.982768085673044);
+  static const double mul = 103.34350600371506;
+  static const double mul2 = 1.0 / (67.797075768826289);
 
   v *= mul;
 
@@ -267,14 +267,14 @@ ImageF DiffPrecompute(const Image3F& xyb, float cutoff) {
   PIK_ASSERT(xyb.xsize() > 1);
   PIK_ASSERT(xyb.ysize() > 1);
   ImageF result(xyb.xsize(), xyb.ysize());
-  static const double mul0 = 0.049643371246670773;
+  static const double mul0 = 0.046650519741099357;
 
   // PIK's gamma is 3.0 to be able to decode faster with two muls.
   // Butteraugli's gamma is matching the gamma of human eye, around 2.6.
   // We approximate the gamma difference by adding one cubic root into
   // the adaptive quantization. This gives us a total gamma of 2.6666
   // for quantization uses.
-  static const double match_gamma_offset = 1.4439853629568109;
+  static const double match_gamma_offset = 0.55030107636310233;
   static const float kOverWeightBorders = 1.4;
   size_t x1, y1;
   size_t x2, y2;
@@ -395,11 +395,11 @@ ImageF Expand(const ImageF& img, size_t out_xsize, size_t out_ysize) {
 }
 
 ImageF ComputeMask(const ImageF& diffs) {
-  static const float kBase = 1.1786692762035098;
-  static const float kMul1 = 0.011134087946508579;
-  static const float kOffset1 = 0.0070057082516685083;
-  static const float kMul2 = -0.20545785980711334;
-  static const float kOffset2 = 0.080407961356758706;
+  static const float kBase = 1.039262607500535;
+  static const float kMul1 = 0.010994306366172898;
+  static const float kOffset1 = 0.00683227084849159;
+  static const float kMul2 = -0.1949226495025296;
+  static const float kOffset2 = 0.075052668223305155;
   ImageF out(diffs.xsize(), diffs.ysize());
   for (int y = 0; y < diffs.ysize(); ++y) {
     const float* const PIK_RESTRICT row_in = diffs.Row(y);
@@ -577,23 +577,26 @@ void AdjustQuantField(const AcStrategyImage& ac_strategy, ImageF* quant_field) {
 Image3F RoundtripImage(const CompressParams& cparams,
                        const PassHeader& pass_header, const GroupHeader& header,
                        const Image3F& opsin_orig, const Image3F& opsin,
+                       const ColorCorrelationMap& full_cmap,
+                       const BlockDictionary& block_dictionary,
                        const AcStrategyImage& ac_strategy,
-                       const Quantizer& quantizer,
-                       const ColorCorrelationMap& full_cmap, ThreadPool* pool,
-                       MultipassManager* multipass_manager) {
+                       const ImageB& sigma_lut_ids, const Quantizer& quantizer,
+                       ThreadPool* pool, MultipassManager* multipass_manager) {
   PROFILER_ZONE("enc roundtrip");
   PassDecCache pass_dec_cache;
   pass_dec_cache.ac_strategy = ac_strategy.Copy();
   PIK_ASSERT(opsin.ysize() % kBlockDim == 0);
   pass_dec_cache.raw_quant_field = CopyImage(quantizer.RawQuantField());
+  pass_dec_cache.sigma_lut_ids = CopyImage(sigma_lut_ids);
 
-  const size_t xsize_groups = DivCeil(opsin.xsize(), kGroupWidth);
-  const size_t ysize_groups = DivCeil(opsin.ysize(), kGroupHeight);
+  const size_t xsize_groups = DivCeil(opsin.xsize(), kGroupDim);
+  const size_t ysize_groups = DivCeil(opsin.ysize(), kGroupDim);
   const size_t num_groups = xsize_groups * ysize_groups;
 
   PassEncCache pass_enc_cache;
   InitializePassEncCache(pass_header, opsin, ac_strategy, quantizer, full_cmap,
-                         pool, &pass_enc_cache);
+                         block_dictionary, pool, &pass_enc_cache,
+                         /*aux_out=*/nullptr);
 
   pass_dec_cache.dc = CopyImage(pass_enc_cache.dc_dec);
   pass_dec_cache.gradient = std::move(pass_enc_cache.gradient);
@@ -602,15 +605,18 @@ Image3F RoundtripImage(const CompressParams& cparams,
   for (size_t group_index = 0; group_index < num_groups; ++group_index) {
     const size_t gx = group_index % xsize_groups;
     const size_t gy = group_index / xsize_groups;
-    const Rect rect(gx * kGroupWidth, gy * kGroupHeight, kGroupWidth,
-                    kGroupHeight, opsin.xsize(), opsin.ysize());
+    const Rect rect(gx * kGroupDim, gy * kGroupDim, kGroupDim, kGroupDim,
+                    opsin.xsize(), opsin.ysize());
     handlers[group_index] =
         multipass_manager->GetGroupHandler(group_index, rect);
   }
 
   Image3F idct(opsin.xsize(), opsin.ysize());
 
+  std::vector<GroupDecCache> group_dec_caches(NumThreads(pool));
+
   const auto process_group = [&](const int group_index, const int thread) {
+    GroupDecCache* PIK_RESTRICT group_dec_cache = &group_dec_caches[thread];
     MultipassHandler* handler = handlers[group_index];
     const Rect& group_rect = handler->PaddedGroupRect();
     Rect block_group_rect = handler->BlockGroupRect();
@@ -625,38 +631,37 @@ Image3F RoundtripImage(const CompressParams& cparams,
         DivCeil(block_group_rect.xsize(), kColorTileDimInBlocks),
         DivCeil(block_group_rect.ysize(), kColorTileDimInBlocks));
 
-    ColorCorrelationMap cmap = full_cmap.Copy(group_in_color_tiles);
-    ComputeCoefficients(quant, cmap, pool, &cache, multipass_manager);
+    ComputeCoefficients(quant, full_cmap, group_in_color_tiles, pool, &cache);
 
-    DecCache dec_cache;
-    InitializeDecCache(pass_dec_cache, group_rect, &dec_cache);
-    DequantImageAC(quant, cmap, cache.ac, pool, &dec_cache, &pass_dec_cache,
-                   group_rect);
-    ReconOpsinImage(pass_header, header, quant, block_group_rect, &dec_cache,
-                    &pass_dec_cache, &idct, group_rect);
+    InitializeDecCache(pass_dec_cache, group_rect, group_dec_cache);
+    DequantImageAC(quant, full_cmap, group_in_color_tiles, cache.ac,
+                   &pass_dec_cache, group_dec_cache, group_rect);
+    ReconOpsinImage(pass_header, header, quant, block_group_rect,
+                    &pass_dec_cache, group_dec_cache, &idct, group_rect);
   };
   RunOnPool(pool, 0, num_groups, process_group, "PixelsToPikPass");
 
   multipass_manager->RestoreOpsin(&idct);
-  Image3F linear(opsin_orig.xsize(), opsin_orig.ysize());
-  FinalizePassDecoding(std::move(idct), pass_header, NoiseParams(), quantizer,
-                       pool, &pass_dec_cache, &linear);
-  return linear;
+  // Fine to do a PIK_ASSERT instead of error handling, since this only happens
+  // on the encoder side where we can't be fed with invalid data.
+  PIK_CHECK(FinalizePassDecoding(&idct, opsin_orig.xsize(), opsin_orig.ysize(),
+                                  pass_header, NoiseParams(), quantizer,
+                                  block_dictionary, pool, &pass_dec_cache));
+  return idct;
 }
 
-static const float kDcQuantPow = 0.51334848288505397;
-static const float kDcQuant = 0.6920431110918609;
-static const float kAcQuant = 0.94080165407291261;
+static const float kDcQuantPow = 0.57840232344431763;
+static const float kDcQuant = 0.74852919562896747;
+static const float kAcQuant = 0.97136686727219523;
 
-void FindBestQuantization(const Image3F& opsin_orig, const Image3F& opsin_arg,
-                          const CompressParams& cparams,
-                          const PassHeader& pass_header,
-                          const GroupHeader& header, float butteraugli_target,
-                          const ColorCorrelationMap& cmap,
-                          const AcStrategyImage& ac_strategy,
-                          ImageF& quant_field, ThreadPool* pool,
-                          Quantizer* quantizer, PikInfo* aux_out,
-                          MultipassManager* multipass_manager, double rescale) {
+void FindBestQuantization(
+    const Image3F& opsin_orig, const Image3F& opsin_arg,
+    const CompressParams& cparams, const PassHeader& pass_header,
+    const GroupHeader& header, float butteraugli_target,
+    const ColorCorrelationMap& cmap, const BlockDictionary& block_dictionary,
+    const AcStrategyImage& ac_strategy, const ImageB& ar_sigma_lut_ids,
+    ImageF& quant_field, ThreadPool* pool, Quantizer* quantizer,
+    PikInfo* aux_out, MultipassManager* multipass_manager, double rescale) {
   const float intensity_multiplier = cparams.GetIntensityMultiplier();
   const float intensity_multiplier3 = std::cbrt(intensity_multiplier);
   ButteraugliComparator comparator(opsin_orig, cparams.hf_asymmetry,
@@ -698,9 +703,10 @@ void FindBestQuantization(const Image3F& opsin_orig, const Image3F& opsin_arg,
     }
 
     if (quantizer->SetQuantField(initial_quant_dc, QuantField(quant_field))) {
-      Image3F linear = RoundtripImage(cparams, pass_header, header, opsin_orig,
-                                      opsin_arg, ac_strategy, *quantizer, cmap,
-                                      pool, multipass_manager);
+      Image3F linear =
+          RoundtripImage(cparams, pass_header, header, opsin_orig, opsin_arg,
+                         cmap, block_dictionary, ac_strategy, ar_sigma_lut_ids,
+                         *quantizer, pool, multipass_manager);
       PROFILER_ZONE("enc Butteraugli");
       comparator.Compare(linear);
       static const int kMargins[100] = {0, 0, 0, 1, 2, 1, 1, 1, 0};
@@ -831,7 +837,8 @@ void FindBestQuantizationHQ(
     const Image3F& opsin_orig, const Image3F& opsin,
     const CompressParams& cparams, const PassHeader& pass_header,
     const GroupHeader& header, float butteraugli_target,
-    const ColorCorrelationMap& cmap, const AcStrategyImage& ac_strategy,
+    const ColorCorrelationMap& cmap, const BlockDictionary& block_dictionary,
+    const AcStrategyImage& ac_strategy, const ImageB& sigma_lut_ids,
     ImageF& quant_field, ThreadPool* pool, Quantizer* quantizer,
     PikInfo* aux_out, MultipassManager* multipass_manager, double rescale) {
   const float intensity_multiplier = cparams.GetIntensityMultiplier();
@@ -866,9 +873,10 @@ void FindBestQuantizationHQ(
     ImageMinMax(quant_field, &qmin, &qmax);
     ++butteraugli_iter;
     if (quantizer->SetQuantField(quant_dc, QuantField(quant_field))) {
-      Image3F linear = RoundtripImage(cparams, pass_header, header, opsin_orig,
-                                      opsin, ac_strategy, *quantizer, cmap,
-                                      pool, multipass_manager);
+      Image3F linear =
+          RoundtripImage(cparams, pass_header, header, opsin_orig, opsin, cmap,
+                         block_dictionary, ac_strategy, sigma_lut_ids,
+                         *quantizer, pool, multipass_manager);
       comparator.Compare(linear);
       bool best_quant_updated = false;
       if (comparator.distance() <= best_butteraugli) {
@@ -1026,12 +1034,12 @@ std::shared_ptr<Quantizer> FindBestQuantizer(
     const CompressParams& cparams, size_t xsize_blocks, size_t ysize_blocks,
     const Image3F& opsin_orig, const Image3F& opsin,
     const PassHeader& pass_header, const GroupHeader& header,
-    const ColorCorrelationMap& cmap, const AcStrategyImage& ac_strategy,
-    ImageF& quant_field, ThreadPool* pool, PikInfo* aux_out,
-    MultipassManager* multipass_manager, double rescale) {
-  int quant_template = kQuantDefault;
-  std::shared_ptr<Quantizer> quantizer = std::make_shared<Quantizer>(
-      kBlockDim, quant_template, xsize_blocks, ysize_blocks);
+    const ColorCorrelationMap& cmap, const BlockDictionary& block_dictionary,
+    const AcStrategyImage& ac_strategy, const ImageB& ar_sigma_lut_ids,
+    const DequantMatrices* dequant, ImageF& quant_field, ThreadPool* pool,
+    PikInfo* aux_out, MultipassManager* multipass_manager, double rescale) {
+  std::shared_ptr<Quantizer> quantizer =
+      std::make_shared<Quantizer>(dequant, xsize_blocks, ysize_blocks);
   const float intensity_multiplier = cparams.GetIntensityMultiplier();
   const float intensity_multiplier3 = std::cbrt(intensity_multiplier);
   if (cparams.fast_mode) {
@@ -1052,14 +1060,16 @@ std::shared_ptr<Quantizer> FindBestQuantizer(
     PROFILER_ZONE("enc find best2");
     if (cparams.guetzli_mode) {
       FindBestQuantizationHQ(opsin_orig, opsin, cparams, pass_header, header,
-                             cparams.butteraugli_distance, cmap, ac_strategy,
+                             cparams.butteraugli_distance, cmap,
+                             block_dictionary, ac_strategy, ar_sigma_lut_ids,
                              quant_field, pool, quantizer.get(), aux_out,
                              multipass_manager, rescale);
     } else {
       FindBestQuantization(opsin_orig, opsin, cparams, pass_header, header,
-                           cparams.butteraugli_distance, cmap, ac_strategy,
-                           quant_field, pool, quantizer.get(), aux_out,
-                           multipass_manager, rescale);
+                           cparams.butteraugli_distance, cmap, block_dictionary,
+                           ac_strategy, ar_sigma_lut_ids, quant_field, pool,
+                           quantizer.get(), aux_out, multipass_manager,
+                           rescale);
     }
   }
   return quantizer;

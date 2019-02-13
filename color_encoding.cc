@@ -72,6 +72,8 @@ std::string ToString(TransferFunction transfer_function) {
   switch (transfer_function) {
     case TransferFunction::kSRGB:
       return "SRG";
+    case TransferFunction::kAdobe:
+      return "Ado";
     case TransferFunction::kLinear:
       return "Lin";
     case TransferFunction::k709:
@@ -121,8 +123,8 @@ std::vector<Primaries> Values(Primaries) {
 
 std::vector<TransferFunction> Values(TransferFunction) {
   return {TransferFunction::kSRGB, TransferFunction::kLinear,
-          TransferFunction::k709, TransferFunction::kPQ,
-          TransferFunction::kHLG};
+          TransferFunction::k709,  TransferFunction::kAdobe,
+          TransferFunction::kPQ,   TransferFunction::kHLG};
 }
 
 std::vector<RenderingIntent> Values(RenderingIntent) {
@@ -189,12 +191,12 @@ WhitePoint WhitePointFromCIExy(const CIExy& xy) {
 Status PrimariesToCIExy(Primaries primaries, PrimariesCIExy* PIK_RESTRICT xy) {
   switch (primaries) {
     case Primaries::kSRGB:
-      xy->r.x = 0.64;
-      xy->r.y = 0.33;
-      xy->g.x = 0.30;
-      xy->g.y = 0.60;
-      xy->b.x = 0.15;
-      xy->b.y = 0.06;
+      xy->r.x = 0.639998686;
+      xy->r.y = 0.330010138;
+      xy->g.x = 0.300003784;
+      xy->g.y = 0.600003357;
+      xy->b.x = 0.150002046;
+      xy->b.y = 0.059997204;
       return true;
 
     case Primaries::k2020:
@@ -234,12 +236,12 @@ Status PrimariesToCIExy(Primaries primaries, PrimariesCIExy* PIK_RESTRICT xy) {
       return true;
 
     case Primaries::kAdobe:
-      xy->r.x = 0.64;
-      xy->r.y = 0.33;
-      xy->g.x = 0.21;
-      xy->g.y = 0.71;
-      xy->b.x = 0.15;
-      xy->b.y = 0.06;
+      xy->r.x = 0.639996511;
+      xy->r.y = 0.329996864;
+      xy->g.x = 0.210005295;
+      xy->g.y = 0.710004866;
+      xy->b.x = 0.149997606;
+      xy->b.y = 0.060003644;
       return true;
 
     case Primaries::kUnknown:
@@ -288,6 +290,7 @@ Primaries PrimariesFromCIExy(const PrimariesCIExy& xy) {
 double GammaFromTransferFunction(TransferFunction tf) {
   if (tf == TransferFunction::kLinear) return GammaLinear();
   if (tf == TransferFunction::kSRGB) return GammaSRGB();
+  if (tf == TransferFunction::kAdobe) return GammaAdobe();
   if (tf == TransferFunction::k709) return Gamma709();
   if (tf == TransferFunction::kPQ) return GammaPQ();
   if (tf == TransferFunction::kHLG) return GammaHLG();
@@ -297,6 +300,7 @@ double GammaFromTransferFunction(TransferFunction tf) {
 TransferFunction TransferFunctionFromGamma(double gamma) {
   if (ApproxEq(gamma, GammaLinear())) return TransferFunction::kLinear;
   if (ApproxEq(gamma, GammaSRGB())) return TransferFunction::kSRGB;
+  if (ApproxEq(gamma, GammaAdobe())) return TransferFunction::kAdobe;
   if (ApproxEq(gamma, Gamma709())) return TransferFunction::k709;
   if (ApproxEq(gamma, GammaPQ())) return TransferFunction::kPQ;
   if (ApproxEq(gamma, GammaHLG())) return TransferFunction::kHLG;

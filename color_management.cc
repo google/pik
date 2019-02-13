@@ -292,6 +292,12 @@ class TF_SRGB {
  public:
   template <typename V>
   SIMD_ATTR PIK_INLINE V DisplayFromEncoded(V x) const {
+    const SIMD_FULL(float) d;
+    const SIMD_FULL(uint32_t) du;
+    const V kSign = cast_to(d, set1(du, 0x80000000u));
+    const V original_sign = x & kSign;
+    x = andnot(kSign, x);  // abs
+
     // Computed via af_cheb_rational (k=100); replicated 4x.
     SIMD_ALIGN constexpr float p[(4 + 1) * 4] = {
         2.200248328e-04, 2.200248328e-04, 2.200248328e-04, 2.200248328e-04,
@@ -307,14 +313,20 @@ class TF_SRGB {
         -5.512498495e-02, -5.512498495e-02, -5.512498495e-02, -5.512498495e-02,
         6.521209011e-03,  6.521209011e-03,  6.521209011e-03,  6.521209011e-03,
     };
-    const SIMD_FULL(float) d;
     const V linear = x * set1(d, kLowDivInv);
     const V poly = EvalRationalPolynomial(x, p, q);
-    return select(linear, poly, x > set1(d, kThreshSRGBToLinear));
+    const V magnitude = select(linear, poly, x > set1(d, kThreshSRGBToLinear));
+    return andnot(kSign, magnitude) | original_sign;
   }
 
   template <class V>
-  SIMD_ATTR PIK_INLINE V EncodedFromDisplay(const V x) const {
+  SIMD_ATTR PIK_INLINE V EncodedFromDisplay(V x) const {
+    const SIMD_FULL(float) d;
+    const SIMD_FULL(uint32_t) du;
+    const V kSign = cast_to(d, set1(du, 0x80000000u));
+    const V original_sign = x & kSign;
+    x = andnot(kSign, x);  // abs
+
     // Computed via af_cheb_rational (k=100); replicated 4x.
     SIMD_ALIGN constexpr float p[(4 + 1) * 4] = {
         -5.135152395e-04, -5.135152395e-04, -5.135152395e-04, -5.135152395e-04,
@@ -330,17 +342,17 @@ class TF_SRGB {
         9.258482155e-01, 9.258482155e-01, 9.258482155e-01, 9.258482155e-01,
         2.424867759e-02, 2.424867759e-02, 2.424867759e-02, 2.424867759e-02,
     };
-    const SIMD_FULL(float) d;
     const V linear = x * set1(d, kLowDiv);
     const V poly = EvalRationalPolynomial(sqrt(x), p, q);
-    return select(linear, poly, x > set1(d, kThreshLinearToSRGB));
+    const V magnitude = select(linear, poly, x > set1(d, kThreshLinearToSRGB));
+    return andnot(kSign, magnitude) | original_sign;
   }
 
  private:
-  static constexpr double kThreshSRGBToLinear = 0.04045;
-  static constexpr double kThreshLinearToSRGB = 0.0031308;
-  static constexpr double kLowDiv = 12.92;
-  static constexpr double kLowDivInv = 1.0 / kLowDiv;
+  static constexpr float kThreshSRGBToLinear = 0.04045f;
+  static constexpr float kThreshLinearToSRGB = 0.0031308f;
+  static constexpr float kLowDiv = 12.92f;
+  static constexpr float kLowDivInv = 1.0f / kLowDiv;
 };
 
 // NOTE: this is only used to provide a reasonable ICC profile that other
@@ -366,7 +378,9 @@ cmsToneCurve* CreateTableCurve(const cmsContext context, int32_t N,
 }
 
 Curve CreateCurve(const cmsContext context, const double gamma) {
-  const cmsUInt32Number type = 4;  // exponential with linear part
+  // Exponential with linear part. Note that the LittleCMS API reference and
+  // tutorial disagree on the type number.
+  const cmsUInt32Number type = 4;
 
   PIK_CHECK(0 < gamma && gamma <= 1.0);
 
@@ -384,7 +398,13 @@ Curve CreateCurve(const cmsContext context, const double gamma) {
     return Curve(CreateTableCurve(context, 4096, TF_PQ()));
   } else {
     // "gamma" is the OETF exponent; LCMS expects EOTF, so take the reciprocal.
-    return Curve(cmsBuildGamma(context, 1.0 / gamma));
+    // Params after gamma are (in order): (1*x + 0)^gamma, or 1*x if x < 0.
+    const cmsFloat64Number params[5] = {1.0 / gamma, 1.0, 0.0, 1.0, 0.0};
+
+    // WARNING: using cmsBuildGamma results in a bounded curve - LittleCMS
+    // clamps negative outputs to zero. To retain unbounded mode, we use the
+    // same parametric curve type as sRGB.
+    return Curve(cmsBuildParametricToneCurve(context, type, params));
   }
 }
 
@@ -570,13 +590,13 @@ PIK_MUST_USE_RESULT Primaries IdentifyPrimaries(const Profile& profile,
 }
 
 PIK_MUST_USE_RESULT TransferFunction DetectTransferFunction(
-    const cmsContext context, ColorEncoding* PIK_RESTRICT c) {
+    const cmsContext context, const ColorEncoding& PIK_RESTRICT c) {
   ProfileParams pp;
   // If any fields are unknown, we can't synthesize a matching profile.
-  if (!ColorEncodingToParams(*c, &pp)) return TransferFunction::kUnknown;
+  if (!ColorEncodingToParams(c, &pp)) return TransferFunction::kUnknown;
 
   Profile profile;
-  if (!DecodeProfile(context, c->icc, &profile)) {
+  if (!DecodeProfile(context, c.icc, &profile)) {
     return TransferFunction::kUnknown;
   }
 
@@ -585,7 +605,7 @@ PIK_MUST_USE_RESULT TransferFunction DetectTransferFunction(
 
     PaddedBytes icc_test;
     if (MaybeCreateProfile(context, pp, &icc_test) &&
-        ProfileEquivalentToICC(context, profile, icc_test, *c)) {
+        ProfileEquivalentToICC(context, profile, icc_test, c)) {
       return tf;
     }
   }
@@ -654,7 +674,7 @@ Status ColorManagement::SetFromProfile(PaddedBytes&& icc,
   c->transfer_function = TransferFunction::kLinear;
   if (c->color_space != ColorSpace::kXYZ) {
     // Must come last because it uses the other fields.
-    c->transfer_function = DetectTransferFunction(context, c);
+    c->transfer_function = DetectTransferFunction(context, *c);
   }
 
   // ICC uses the same values.
@@ -713,14 +733,22 @@ Status ColorSpaceTransform::Init(const ColorEncoding& c_src,
                                  const ColorEncoding& c_dst, size_t xsize,
                                  const size_t num_threads) {
   std::unique_lock<std::mutex> lock(lcms_mutex);
+#if PIK_CMS_VERBOSE
+  printf("%s -> %s\n", Description(c_src).c_str(), Description(c_dst).c_str());
+#endif
+
   Profile profile_src, profile_dst;
   const cmsContext context = GetContext();
   PIK_RETURN_IF_ERROR(DecodeProfile(context, c_src.icc, &profile_src));
   PIK_RETURN_IF_ERROR(DecodeProfile(context, c_dst.icc, &profile_dst));
+
   skip_lcms_ = false;
   if (c_src.SameColorSpace(c_dst) &&
       c_src.transfer_function == c_dst.transfer_function) {
     skip_lcms_ = true;
+#if PIK_CMS_VERBOSE
+    printf("Skip CMS\n");
+#endif
   }
 
   // Special-case for BT.2100 HLG/PQ and SRGB <=> linear:
@@ -743,6 +771,9 @@ Status ColorSpaceTransform::Init(const ColorEncoding& c_src,
       if (c_src.SameColorSpace(c_dst)) {
         skip_lcms_ = true;
       }
+#if PIK_CMS_VERBOSE
+      printf("Linear <-> HLG/PQ; skip=%d\n", skip_lcms_);
+#endif
       profile_src.swap(new_src);
       profile_dst.swap(new_dst);
       if (IsLinear(c_dst.transfer_function)) {
@@ -769,6 +800,9 @@ Status ColorSpaceTransform::Init(const ColorEncoding& c_src,
   const size_t channels_src = c_src.Channels();
   const size_t channels_dst = c_dst.Channels();
   PIK_CHECK(channels_src == channels_dst);
+#if PIK_CMS_VERBOSE
+  printf("Channels: %zu; Threads: %zu\n", channels_src, num_threads);
+#endif
 
   transforms_.clear();
   for (size_t i = 0; i < num_threads; ++i) {
@@ -803,15 +837,17 @@ SIMD_ATTR void ColorSpaceTransform::Run(const size_t thread,
                                         const float* buf_src, float* buf_dst) {
   // No lock needed.
 
+  // If ExtraTF, we need a writable buffer; otherwise, only READ from buf_src.
+  float* const xform_src = (preprocess_ == ExtraTF::kNone)
+                               ? const_cast<float*>(buf_src)
+                               : buf_src_.Row(thread);
+
 #if PIK_CMS_VERBOSE
-  const size_t kX = 0;
+  const size_t kX = 1;  // pixel index, multiplied by 3 for RGB
 #endif
 
-  // ExtraTF can't write to (pointer-to-const) buf_src, so use buffer.
-  float* xform_src = buf_src_.Row(thread);  // possibly aliases buf_src
   switch (preprocess_) {
     case ExtraTF::kNone:
-      xform_src = const_cast<float*>(buf_src);  // won't write to it
       break;
     case ExtraTF::kPQ:
       for (size_t i = 0; i < buf_src_.xsize(); ++i) {
@@ -840,23 +876,36 @@ SIMD_ATTR void ColorSpaceTransform::Run(const size_t thread,
         const auto result = TF_SRGB().DisplayFromEncoded(val);
         store(result, df, xform_src + i);
       }
+#if PIK_CMS_VERBOSE
+      printf("pre in %.4f %.4f %.4f undoSRGB %.4f %.4f %.4f\n", buf_src[3 * kX],
+             buf_src[3 * kX + 1], buf_src[3 * kX + 2], xform_src[3 * kX],
+             xform_src[3 * kX + 1], xform_src[3 * kX + 2]);
+#endif
       break;
   }
 
-  if (!skip_lcms_) {
+#if PIK_CMS_VERBOSE
+  // Save inputs for printing before in-place transforms overwrite them.
+  const float in0 = xform_src[3 * kX + 0];
+  const float in1 = xform_src[3 * kX + 1];
+  const float in2 = xform_src[3 * kX + 2];
+#endif
+
+  if (skip_lcms_) {
+    if (buf_dst != xform_src) {
+      memcpy(buf_dst, xform_src, buf_dst_.xsize() * sizeof(*buf_dst));
+    }  // else: in-place, no need to copy
+  } else {
 #ifdef ADDRESS_SANITIZER
     PIK_ASSERT(thread < transforms_.size());
 #endif
     cmsHTRANSFORM xform = transforms_[thread];
     cmsDoTransform(xform, xform_src, buf_dst, xsize_);
-  } else {
-    memcpy(buf_dst, xform_src, buf_dst_.xsize() * sizeof(*buf_dst));
   }
 #if PIK_CMS_VERBOSE
-  printf("xform: %.4f %.4f %.4f (%p) -> (%p) %.4f %.4f %.4f\n",
-         xform_src[3 * kX], xform_src[3 * kX + 1], xform_src[3 * kX + 2],
-         xform_src, buf_dst, buf_dst[3 * kX], buf_dst[3 * kX + 1],
-         buf_dst[3 * kX + 2]);
+  printf("xform skip%d: %.4f %.4f %.4f (%p) -> (%p) %.4f %.4f %.4f\n",
+         skip_lcms_, in0, in1, in2, xform_src, buf_dst, buf_dst[3 * kX],
+         buf_dst[3 * kX + 1], buf_dst[3 * kX + 2]);
 #endif
 
   switch (postprocess_) {
@@ -887,6 +936,10 @@ SIMD_ATTR void ColorSpaceTransform::Run(const size_t thread,
         const auto result = TF_SRGB().EncodedFromDisplay(val);
         store(result, df, buf_dst + i);
       }
+#if PIK_CMS_VERBOSE
+      printf("after SRGB enc %.4f %.4f %.4f\n", buf_dst[3 * kX],
+             buf_dst[3 * kX + 1], buf_dst[3 * kX + 2]);
+#endif
       break;
   }
 }

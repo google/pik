@@ -20,7 +20,7 @@ struct AdaptiveReconstructionAux {
   void Assimilate(const AdaptiveReconstructionAux& other) {
     epf_stats.Assimilate(other.epf_stats);
     if (other.stretch != -1.0f) stretch = other.stretch;
-    if (other.quant_scale != -1.0f) quant_scale= other.quant_scale;
+    if (other.quant_scale != -1.0f) quant_scale = other.quant_scale;
   }
 
   void Print() const { epf_stats.Print(); }
@@ -33,6 +33,8 @@ struct AdaptiveReconstructionAux {
 
   // If not null, filled with difference between input and filtered image.
   Image3F* residual = nullptr;
+  // If not null, filled with the output of the filter.
+  Image3F* filtered = nullptr;
   // If not null, filled with raw quant map used to compute sigma.
   ImageI* ac_quant = nullptr;
   // If not null, filled with AC strategy (for detecting DCT16)

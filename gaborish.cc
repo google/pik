@@ -7,6 +7,7 @@
 #include "gaborish.h"
 
 #include "convolve.h"
+#include "pik_params.h"
 
 namespace pik {
 
@@ -117,28 +118,44 @@ Image3F GaborishInverse(const Image3F& in, double mul) {
   return sharpened;
 }
 
-SIMD_ATTR Image3F ConvolveGaborish(Image3F&& in, GaborishStrength strength,
-                                   ThreadPool* pool) {
-  if (strength == GaborishStrength::kOff) return std::move(in);
-
-  PROFILER_FUNC;
-  Image3F out(in.xsize(), in.ysize());
-  using Conv3 = ConvolveT<strategy::Symmetric3>;
+namespace {
+template <typename Kernel, typename Executor>
+// Assumes `Kernel` is symmetric.
+SIMD_ATTR void RunConv(const Executor executor, const Image3F& in,
+                       const Kernel& kernel, Image3F* out) {
   const BorderNeverUsed border;
-  const ExecutorPool executor(pool);
-  if (strength == GaborishStrength::k1000) {
-    Conv3::Run(border, executor, in, kernel::Gaborish3_1000(), &out);
-  } else if (strength == GaborishStrength::k875) {
-    Conv3::Run(border, executor, in, kernel::Gaborish3_875(), &out);
-  } else if (strength == GaborishStrength::k750) {
-    Conv3::Run(border, executor, in, kernel::Gaborish3_750(), &out);
-  } else if (strength == GaborishStrength::k500) {
-    Conv3::Run(border, executor, in, kernel::Gaborish3_500(), &out);
+  if (in.xsize() < kConvolveMinWidth) {
+    using Convolution = slow::General3x3Convolution<1, WrapMirror>;
+    Convolution::Run(in, in.xsize(), in.ysize(), kernel, out);
   } else {
-    PIK_ASSERT(false);
+    using Conv3 = ConvolveT<strategy::Symmetric3>;
+    Conv3::Run(border, executor, in, kernel, out);
   }
-  out.CheckSizesSame();
-  return out;
+}
+}  // namespace
+
+SIMD_ATTR Status ConvolveGaborish(const Image3F& in,
+                                  GaborishStrength strength, ThreadPool* pool,
+                                  Image3F* PIK_RESTRICT out) {
+  // Since kOff would want us to return the `in` parameter as `out`, which would
+  // lead to either a copy or a new memory handling strategy, we disallow it and
+  // require callers to avoid it.
+  PIK_CHECK(strength != GaborishStrength::kOff);
+  PROFILER_FUNC;
+  const ExecutorPool executor(pool);
+  *out = Image3F(in.xsize(), in.ysize());
+  if (strength == GaborishStrength::k1000) {
+    RunConv(executor, in, kernel::Gaborish3_1000(), out);
+  } else if (strength == GaborishStrength::k875) {
+    RunConv(executor, in, kernel::Gaborish3_875(), out);
+  } else if (strength == GaborishStrength::k750) {
+    RunConv(executor, in, kernel::Gaborish3_750(), out);
+  } else if (strength == GaborishStrength::k500) {
+    RunConv(executor, in, kernel::Gaborish3_500(), out);
+  } else {
+    return PIK_FAILURE("Invalid strength argument");
+  }
+  return true;
 }
 
 }  // namespace pik

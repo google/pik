@@ -58,9 +58,6 @@ Status CompressArgs::AddCommandLineOptions(tools::CommandLineParser* cmdline) {
   cmdline->AddOptionFlag('\0', "lossless", "Use the lossless mode.",
                          &params.lossless_mode, &SetBooleanTrue);
 
-  cmdline->AddOptionValue('\0', "lossless_base", "N", nullptr,
-                          &params.lossless_base, &ParseString);
-
   cmdline->AddOptionFlag('\0', "keep_tempfiles",
                          "Don't delete temporary files.",
                          &params.keep_tempfiles, &SetBooleanTrue);
@@ -83,10 +80,6 @@ Status CompressArgs::AddCommandLineOptions(tools::CommandLineParser* cmdline) {
   cmdline->AddOptionValue('\0', "gaborish", "0..7",
                           "chooses deblocking strength (4=normal).",
                           &params.gaborish, &ParseGaborishStrength);
-
-  cmdline->AddOptionValue('\0', "resampleX2", "N",
-                          "is twice the downsampling factor, 3 for 1.5x.",
-                          &params.resampling_factor2, &ParseUnsigned);
 
   // Target distance/size/bpp
   opt_distance_id = cmdline->AddOptionValue(
@@ -165,14 +158,6 @@ Status CompressArgs::ValidateArgs(const tools::CommandLineParser& cmdline) {
             "'--target_bpp' and '--target_size'. They are all different ways"
             " to specify the image quality. When in doubt, use --distance."
             " It gives the most visually consistent results.\n");
-    return false;
-  }
-
-  if (!params.lossless_base.empty() &&
-      (params.lossless_mode || params.progressive_mode)) {
-    fprintf(stderr,
-            "--lossless_base is incompatible with --lossless_mode and "
-            "--progressive_mode.\n");
     return false;
   }
 
@@ -272,6 +257,9 @@ Status Compress(ThreadPool* pool, CompressArgs& args, PaddedBytes* compressed) {
           io.enc_size, xsize, ysize, decode_mps, mode, NumWorkerThreads(pool));
 
   PikInfo aux_out;
+  if (args.inspector_image3f) {
+    aux_out.SetInspectorImage3F(args.inspector_image3f);
+  }
   t0 = Now();
   if (!PixelsToPik(args.params, &io, compressed, &aux_out, pool)) {
     fprintf(stderr, "Failed to compress.\n");

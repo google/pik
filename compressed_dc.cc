@@ -5,7 +5,9 @@
 // https://opensource.org/licenses/MIT.
 
 #include "compressed_dc.h"
+#include <vector>
 
+#include "ac_strategy.h"
 #include "common.h"
 #include "compressed_image_fwd.h"
 #include "data_parallel.h"
@@ -227,8 +229,11 @@ SIMD_ATTR void DequantDC(const Image3S& img_dc16, const Rect& rect,
 
 // `rect`: block units
 std::string CompressDCGroup(const Image3S& dc, const Rect& rect,
-                            bool use_new_dc, bool grayscale,
-                            PikImageSizeInfo* dc_info) {
+                            const AcStrategyImage& ac_strategy,
+                            const ImageI& quant_field, bool use_new_dc,
+                            bool grayscale, MultipassManager* manager,
+                            PikImageSizeInfo* dc_info,
+                            PikImageSizeInfo* cfield_info) {
   std::string dc_code;
   if (use_new_dc) {
     PaddedBytes enc_dc;
@@ -240,33 +245,86 @@ std::string CompressDCGroup(const Image3S& dc, const Rect& rect,
     dc_code =
         EncodeImageData(Rect(tmp_dc_residuals), tmp_dc_residuals, dc_info);
   }
-  return dc_code;
+  std::vector<std::vector<Token>> control_fields_tokens(1);
+
+  TokenizeAcStrategy(rect, ac_strategy, manager->HintAcStrategy(),
+                     &control_fields_tokens[0]);
+
+  TokenizeQuantField(rect, quant_field, manager->HintQuantField(), ac_strategy,
+                     &control_fields_tokens[0]);
+
+  std::vector<uint8_t> context_map;
+  std::vector<ANSEncodingData> codes;
+  std::string histo_code =
+      BuildAndEncodeHistograms(kNumControlFieldContexts, control_fields_tokens,
+                               &codes, &context_map, cfield_info);
+  std::string control_fields_code =
+      WriteTokens(control_fields_tokens[0], codes, context_map, cfield_info);
+
+  return dc_code + histo_code + control_fields_code;
 }
 
 // `rect`: block units.
 Status DecodeDCGroup(BitReader* reader, const PaddedBytes& compressed,
                      const Rect& rect, bool use_new_dc, bool grayscale,
                      const float* mul_dc, const float ytox_dc,
-                     const float ytob_dc, PassDecCache* pass_dec_cache) {
-  Image3S quantized_dc(rect.xsize(), rect.ysize());
+                     const float ytob_dc, MultipassManager* manager,
+                     PassDecCache* pass_dec_cache,
+                     GroupDecCache* group_dec_cache) {
+  group_dec_cache->InitDecodeDC(rect.xsize(), rect.ysize());
+
   if (use_new_dc) {
+    PIK_ASSERT(SameSize(rect, group_dec_cache->quantized_dc));
     size_t dc_pos = reader->Position();
-    if (!Image3SDecompress(compressed, grayscale, &dc_pos, &quantized_dc)) {
+    if (!Image3SDecompress(compressed, grayscale, &dc_pos,
+                           &group_dec_cache->quantized_dc)) {
       return PIK_FAILURE("Failed to decode DC");
     }
   } else {
-    ImageS dc_y(rect.xsize(), rect.ysize());
-    ImageS dc_xz_residuals(rect.xsize() * 2, rect.ysize());
-    ImageS dc_xz_expanded(rect.xsize() * 2, rect.ysize());
-    if (!DecodeImage(reader, Rect(quantized_dc), &quantized_dc)) {
+    PIK_ASSERT(SameSize(rect, group_dec_cache->dc_y));
+    PIK_ASSERT(SameSize(group_dec_cache->dc_xz_residuals,
+                        group_dec_cache->dc_xz_expanded));
+    if (!DecodeImage(reader, Rect(group_dec_cache->quantized_dc),
+                     &group_dec_cache->quantized_dc)) {
       return PIK_FAILURE("Failed to decode DC image");
     }
 
-    ExpandDC(Rect(quantized_dc), &quantized_dc, &dc_y, &dc_xz_residuals,
-             &dc_xz_expanded);
+    ExpandDC(Rect(group_dec_cache->quantized_dc),
+             &group_dec_cache->quantized_dc, &group_dec_cache->dc_y,
+             &group_dec_cache->dc_xz_residuals,
+             &group_dec_cache->dc_xz_expanded);
   }
   PIK_RETURN_IF_ERROR(reader->JumpToByteBoundary());
-  DequantDC(quantized_dc, rect, mul_dc, ytox_dc, ytob_dc, pass_dec_cache);
+
+  ANSCode code;
+  std::vector<uint8_t> context_map;
+  PIK_RETURN_IF_ERROR(DecodeHistograms(reader, kNumControlFieldContexts, 256,
+                                       &code, &context_map));
+  PIK_RETURN_IF_ERROR(reader->JumpToByteBoundary());
+  ANSSymbolReader control_fields_decoder(&code);
+  ANSSymbolReader strategy_decoder(&code);
+  if (!DecodeAcStrategy(reader, &control_fields_decoder, context_map,
+                        &group_dec_cache->ac_strategy_raw, rect,
+                        &pass_dec_cache->ac_strategy,
+                        manager->HintAcStrategy())) {
+    return PIK_FAILURE("Failed to decode AcStrategy.");
+  }
+
+  if (!DecodeQuantField(reader, &control_fields_decoder, context_map, rect,
+                        pass_dec_cache->ac_strategy,
+                        &pass_dec_cache->raw_quant_field,
+                        manager->HintQuantField())) {
+    return PIK_FAILURE("Failed to decode QuantField.");
+  }
+
+  if (!control_fields_decoder.CheckANSFinalState()) {
+    return PIK_FAILURE("QuantField: ANS checksum failure.");
+  }
+
+  PIK_RETURN_IF_ERROR(reader->JumpToByteBoundary());
+
+  DequantDC(group_dec_cache->quantized_dc, rect, mul_dc, ytox_dc, ytob_dc,
+            pass_dec_cache);
   return true;
 }
 
@@ -276,9 +334,14 @@ using DCGroupSizeCoder = SizeCoderT<0x150F0E0C>;
 }  // namespace
 
 PaddedBytes EncodeDC(const Quantizer& quantizer,
-                     const PassEncCache& pass_enc_cache, ThreadPool* pool,
-                     PikImageSizeInfo* dc_info) {
+                     const PassEncCache& pass_enc_cache,
+                     const AcStrategyImage& ac_strategy, ThreadPool* pool,
+                     MultipassManager* manager, PikImageSizeInfo* dc_info,
+                     PikImageSizeInfo* cfields_info) {
   PaddedBytes out;
+
+  static_assert(kDcGroupDimInBlocks % kGroupDimInBlocks == 0,
+                "DC group size must be a multiple of AC group size!");
 
   const size_t xsize_blocks = pass_enc_cache.dc.xsize();
   const size_t ysize_blocks = pass_enc_cache.dc.ysize();
@@ -289,12 +352,8 @@ PaddedBytes EncodeDC(const Quantizer& quantizer,
 
   const size_t num_groups = xsize_groups * ysize_groups;
 
-  std::vector<std::unique_ptr<PikImageSizeInfo>> size_info(num_groups);
-  for (size_t group_index = 0; group_index < num_groups; ++group_index) {
-    if (dc_info != nullptr) {
-      size_info[group_index] = make_unique<PikImageSizeInfo>();
-    }
-  }
+  std::vector<PikImageSizeInfo> size_info(num_groups);
+  std::vector<PikImageSizeInfo> cfields_size_info(num_groups);
 
   std::vector<PaddedBytes> group_codes(num_groups);
   const auto process_group = [&](const int group_index, const int thread) {
@@ -305,8 +364,9 @@ PaddedBytes EncodeDC(const Quantizer& quantizer,
                     kDcGroupDimInBlocks, kDcGroupDimInBlocks, xsize_blocks,
                     ysize_blocks);
     std::string group_code = CompressDCGroup(
-        pass_enc_cache.dc, rect, pass_enc_cache.use_new_dc,
-        pass_enc_cache.grayscale_opt, size_info[group_index].get());
+        pass_enc_cache.dc, rect, ac_strategy, quantizer.RawQuantField(),
+        pass_enc_cache.use_new_dc, pass_enc_cache.grayscale_opt, manager,
+        &size_info[group_index], &cfields_size_info[group_index]);
     group_codes[group_index].resize(group_code.size());
     Append(group_code, &group_codes[group_index], &group_pos);
   };
@@ -314,7 +374,10 @@ PaddedBytes EncodeDC(const Quantizer& quantizer,
 
   for (size_t group_index = 0; group_index < num_groups; ++group_index) {
     if (dc_info != nullptr) {
-      dc_info->Assimilate(*size_info[group_index]);
+      dc_info->Assimilate(size_info[group_index]);
+    }
+    if (cfields_info != nullptr) {
+      cfields_info->Assimilate(cfields_size_info[group_index]);
     }
   }
 
@@ -357,12 +420,12 @@ Status DecodeDC(BitReader* reader, const PaddedBytes& compressed,
                 const PassHeader& pass_header, size_t xsize_blocks,
                 size_t ysize_blocks, const Quantizer& quantizer,
                 const ColorCorrelationMap& cmap, ThreadPool* pool,
-                PassDecCache* pass_dec_cache) {
-  const float* dequant_matrices = quantizer.DequantMatrix(0, kQuantKindDCT8);
+                MultipassManager* manager,
+                PassDecCache* PIK_RESTRICT pass_dec_cache,
+                std::vector<GroupDecCache>* group_dec_caches) {
   float mul_dc[3];
   for (int c = 0; c < 3; ++c) {
-    mul_dc[c] = dequant_matrices[DequantMatrixOffset(0, kQuantKindDCT8, c) *
-                                 kBlockDim * kBlockDim] *
+    mul_dc[c] = quantizer.DequantMatrix(kQuantKindDCT8, c)[0] *
                 quantizer.inv_quant_dc();
   }
 
@@ -412,10 +475,12 @@ Status DecodeDC(BitReader* reader, const PaddedBytes& compressed,
     const Rect rect(gx * kDcGroupDimInBlocks, gy * kDcGroupDimInBlocks,
                     kDcGroupDimInBlocks, kDcGroupDimInBlocks, xsize_blocks,
                     ysize_blocks);
+    GroupDecCache* group_dec_cache = group_dec_caches->data() + thread;
     if (!DecodeDCGroup(&group_reader, compressed, rect,
                        pass_dec_cache->use_new_dc, pass_dec_cache->grayscale,
-                       mul_dc, ytox_dc, ytob_dc, pass_dec_cache)) {
-      num_errors.fetch_add(1);
+                       mul_dc, ytox_dc, ytob_dc, manager, pass_dec_cache,
+                       group_dec_cache)) {
+      num_errors.fetch_add(1, std::memory_order_relaxed);
       return;
     }
   };
@@ -436,7 +501,7 @@ Status DecodeDC(BitReader* reader, const PaddedBytes& compressed,
 }
 
 void InitializeDecCache(const PassDecCache& pass_dec_cache, const Rect& rect,
-                        DecCache* dec_cache) {
+                        GroupDecCache* PIK_RESTRICT group_dec_cache) {
   const size_t full_xsize_blocks = pass_dec_cache.dc.xsize();
   const size_t full_ysize_blocks = pass_dec_cache.dc.ysize();
   const size_t x0_blocks = rect.x0() / kBlockDim;
@@ -444,13 +509,17 @@ void InitializeDecCache(const PassDecCache& pass_dec_cache, const Rect& rect,
   const size_t xsize_blocks = rect.xsize() / kBlockDim;
   const size_t ysize_blocks = rect.ysize() / kBlockDim;
 
+  group_dec_cache->InitOnce(xsize_blocks, ysize_blocks);
+
   // TODO(veluca): avoid this copy.
-  dec_cache->dc = Image3F(xsize_blocks + 2, ysize_blocks + 2);
   for (size_t c = 0; c < 3; c++) {
+    PIK_ASSERT(xsize_blocks <= group_dec_cache->dc.xsize());
+    PIK_ASSERT(ysize_blocks <= group_dec_cache->dc.ysize());
     for (size_t y = 0; y < ysize_blocks + 2; y++) {
       const size_t y_src = SourceCoord(y + y0_blocks, full_ysize_blocks);
-      const float* row_src = pass_dec_cache.dc.ConstPlaneRow(c, y_src);
-      float* row_dc = dec_cache->dc.PlaneRow(c, y);
+      const float* PIK_RESTRICT row_src =
+          pass_dec_cache.dc.ConstPlaneRow(c, y_src);
+      float* PIK_RESTRICT row_dc = group_dec_cache->dc.PlaneRow(c, y);
       for (size_t x = 0; x < xsize_blocks + 2; x++) {
         const size_t x_src = SourceCoord(x + x0_blocks, full_xsize_blocks);
         row_dc[x] = row_src[x_src];

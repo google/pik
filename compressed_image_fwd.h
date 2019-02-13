@@ -45,8 +45,11 @@ struct PassEncCache {
 
   bool use_gradient;
   bool grayscale_opt = false;
+
   // Gradient map, if used.
   GradientMap gradient;
+
+  DequantMatrices matrices{/*need_inv_table=*/true};
 };
 
 // Working area for ComputeCoefficients
@@ -82,14 +85,6 @@ struct EncCache {
   ImageI quant_field;  // Final values, to be encoded in stream.
 };
 
-struct DecCache {
-  // Dequantized output produced by DecodeFromBitstream, DequantImage or
-  // ExtractGroupDC.
-  // TODO(veluca): replace the DC with a pointer + a rect to avoid copies.
-  Image3F dc;
-  Image3F ac;
-};
-
 // Information that is used at the pass level. All the images here should be
 // accessed through a group rect (either with block units or pixel units).
 struct PassDecCache {
@@ -110,6 +105,107 @@ struct PassDecCache {
   ImageI raw_quant_field;
 
   AcStrategyImage ac_strategy;
+
+  DequantMatrices matrices{/*need_inv_table=*/false};
+
+  // Per-block indices into LUT for adaptive reconstruction's blur strength.
+  ImageB sigma_lut_ids;
+};
+
+// Temp images required for decoding a single group. Reduces memory allocations
+// for large images because we only initialize min(#threads, #groups) instances.
+struct GroupDecCache {
+  // Separate from InitOnce because the caller only knows the DC group size.
+  void InitDecodeDC(size_t xsize_blocks, size_t ysize_blocks) {
+    if (quantized_dc.xsize() == 0) {
+      quantized_dc = Image3S(kDcGroupDimInBlocks, kDcGroupDimInBlocks);
+      dc_y = ImageS(kDcGroupDimInBlocks, kDcGroupDimInBlocks);
+      dc_xz_residuals = ImageS(kDcGroupDimInBlocks * 2, kDcGroupDimInBlocks);
+      dc_xz_expanded = ImageS(kDcGroupDimInBlocks * 2, kDcGroupDimInBlocks);
+    }
+
+    quantized_dc.ShrinkTo(xsize_blocks, ysize_blocks);
+    dc_y.ShrinkTo(xsize_blocks, ysize_blocks);
+    dc_xz_residuals.ShrinkTo(xsize_blocks * 2, ysize_blocks);
+    dc_xz_expanded.ShrinkTo(xsize_blocks * 2, ysize_blocks);
+    ac_strategy_raw = ImageB(kDcGroupDimInBlocks, kDcGroupDimInBlocks);
+  }
+
+  void InitOnce(size_t xsize_blocks, size_t ysize_blocks) {
+    if (num_nzeroes.xsize() == 0) {
+      // Allocate enough for a whole tile - partial tiles on the right/bottom
+      // border just use a subset. The valid size is passed via Rect.
+
+      ac = Image3F(kGroupDimInBlocks * kDCTBlockSize, kGroupDimInBlocks);
+      dc = Image3F(kGroupDimInBlocks + 2, kGroupDimInBlocks + 2);
+
+      quantized_ac =
+          Image3S(kTileDimInBlocks * kDCTBlockSize, kTileDimInBlocks);
+      num_nzeroes = Image3I(kTileDimInBlocks, kTileDimInBlocks);
+
+      const size_t xsize_tiles = DivCeil(kGroupDimInBlocks, kTileDimInBlocks);
+      const size_t ysize_tiles = DivCeil(kGroupDimInBlocks, kTileDimInBlocks);
+      tile_stage = ImageB(xsize_tiles + 1, ysize_tiles + 1);
+
+      const size_t kWidth2x2 = (kGroupDimInBlocks + 2) * 2;
+      const size_t kHeight2x2 = (kGroupDimInBlocks + 2) * 2;
+
+      // TODO(user): do not allocate when !predict_hf
+      pred2x2 = Image3F(kWidth2x2, kHeight2x2);
+      // TODO(user): do not allocate when !predict_lf
+      lf2x2 = Image3F(kWidth2x2, kHeight2x2);
+      llf = Image3F(kGroupDimInBlocks + 2, kGroupDimInBlocks + 2);
+
+      blur_x = ImageF(kGroupDimInBlocks * 8, kGroupDimInBlocks * 2 + 2);
+    }
+
+    // These images need to have correct sizes (used as loop bounds):
+
+    // Ensure ShrinkTo is safe.
+    PIK_ASSERT(xsize_blocks <= kGroupDimInBlocks);
+    PIK_ASSERT(ysize_blocks <= kGroupDimInBlocks);
+
+    dc.ShrinkTo(xsize_blocks + 2, ysize_blocks + 2);
+    ac.ShrinkTo(xsize_blocks * kDCTBlockSize, ysize_blocks);
+
+    const size_t xsize2x2 = (xsize_blocks + 2) * 2;
+    const size_t ysize2x2 = (ysize_blocks + 2) * 2;
+
+    pred2x2.ShrinkTo(xsize2x2, ysize2x2);
+    llf.ShrinkTo(xsize_blocks + 2, ysize_blocks + 2);
+    lf2x2.ShrinkTo(xsize2x2, ysize2x2);
+
+    blur_x.ShrinkTo(xsize_blocks * 8, ysize_blocks * 2 + 2);
+  }
+
+  // Dequantized output produced by DecodeFromBitstream, DequantImage or
+  // ExtractGroupDC.
+  // TODO(veluca): replace the DC with a pointer + a rect to avoid copies.
+  Image3F dc;
+  Image3F ac;
+
+  // Decode
+  Image3S quantized_ac;
+  // DequantAC
+  Image3I num_nzeroes;
+
+  // DecodeDCGroup
+  Image3S quantized_dc;
+  // TODO(janwas): remove these after use_new_dc
+  ImageS dc_y;
+  ImageS dc_xz_residuals;
+  ImageS dc_xz_expanded;
+
+  ImageB ac_strategy_raw;
+
+  // ReconOpsinImage
+  Image3F pred2x2;
+  Image3F llf;
+  Image3F lf2x2;
+  ImageB tile_stage;
+
+  // AddPredictions
+  ImageF blur_x;
 };
 
 template <size_t N>

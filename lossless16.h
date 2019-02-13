@@ -14,6 +14,9 @@
 
 namespace pik {
 
+// *compress appends to `bytes`.
+// *decompress starts at byte offset `*pos` and sets `*pos` to point to the
+// first unconsumed byte.
 bool Grayscale16bit_compress(const ImageU& img, PaddedBytes* bytes);
 bool Grayscale16bit_decompress(const PaddedBytes& bytes, size_t* pos,
                                ImageU* result);

@@ -257,8 +257,8 @@ class Upsampler {
       Upsample1D(in_row, in_xsize, 1, kernel, out_row, out_xsize, 1);
     }
 
-    const size_t in_stride = resampled_rows.bytes_per_row() / sizeof(float);
-    const size_t out_stride = out->bytes_per_row() / sizeof(float);
+    const size_t in_stride = resampled_rows.PixelsPerRow();
+    const size_t out_stride = out->PixelsPerRow();
     for (size_t out_x = 0; out_x < out_xsize; ++out_x) {
       const float* PIK_RESTRICT in_col = resampled_rows.Row(0) + out_x;
       float* PIK_RESTRICT out_col = out->Row(0) + out_x;
@@ -272,8 +272,7 @@ class Upsampler {
                   const Kernel& kernel, Image3F* PIK_RESTRICT out) {
     // Unoptimized: separate planes (additional fork/join)
     for (int c = 0; c < 3; ++c) {
-      Run(executor, in.Plane(c), kernel, out->MutablePlane(c));
-      out->CheckSizesSame();
+      Run(executor, in.Plane(c), kernel, const_cast<ImageF*>(&out->Plane(c)));
     }
   }
 
@@ -358,8 +357,7 @@ class GeneralUpsamplerFromSeparable {
                   const Kernel& kernel, Image3F* PIK_RESTRICT out) {
     // Unoptimized: separate planes (additional fork/join)
     for (int c = 0; c < 3; ++c) {
-      Run(executor, in.Plane(c), kernel, out->MutablePlane(c));
-      out->CheckSizesSame();
+      Run(executor, in.Plane(c), kernel, const_cast<ImageF*>(&out->Plane(c)));
     }
   }
 };
@@ -425,8 +423,7 @@ class GeneralUpsampler {
                   const Kernel& kernel, Image3F* PIK_RESTRICT out) {
     // Unoptimized: separate planes (additional fork/join)
     for (int c = 0; c < 3; ++c) {
-      Run(executor, in.Plane(c), kernel, out->MutablePlane(c));
-      out->CheckSizesSame();
+      Run(executor, in.Plane(c), kernel, const_cast<ImageF*>(&out->Plane(c)));
     }
   }
 };
@@ -526,7 +523,8 @@ class Upsampler8Base {
   static SIMD_ATTR void ProduceRow(const Horz horz, const size_t out_y,
                                    const ImageF& in, const WrapY wrap_y,
                                    const float* PIK_RESTRICT weights,
-                                   ImageF* out) {
+                                   float* PIK_RESTRICT out_row,
+                                   size_t out_xsize) {
     const size_t in_xsize = in.xsize();
     const size_t in_ysize = in.ysize();
 
@@ -543,11 +541,10 @@ class Upsampler8Base {
         kRadius == 2 ? nullptr : in.ConstRow(wrap_y(in_y + 4, in_ysize));
     const float* PIK_RESTRICT row_b2 =
         kRadius == 2 ? nullptr : in.ConstRow(wrap_y(in_y + 5, in_ysize));
-    float* PIK_RESTRICT row_out = out->Row(out_y);
 
     weights += mod_y * Derived::kWeightsPerModY;
     horz(row_t3, row_t2, row_t, row_m, row_b, row_b2, in_xsize, weights,
-         row_out, out->xsize());
+         out_row, out_xsize);
   }
 
   template <class Horz, class Executor>
@@ -555,29 +552,34 @@ class Upsampler8Base {
                                 const ImageF& in,
                                 const float* PIK_RESTRICT weights,
                                 ImageF* PIK_RESTRICT out) {
+    const size_t out_xsize = out->xsize();
     const size_t out_ysize = out->ysize();
 
     // Short: single loop (ignore pool - not worthwhile).
     if (out_ysize <= 2 * kBorder) {
       for (size_t out_y = 0; out_y < out_ysize; ++out_y) {
-        ProduceRow(horz, out_y, in, WrapMirror(), weights, out);
+        ProduceRow(horz, out_y, in, WrapMirror(), weights, out->Row(out_y),
+                   out_xsize);
       }
       return;
     }
 
     // Tall: skip bounds checks for middle rows.
     for (size_t out_y = 0; out_y < kBorder; ++out_y) {
-      ProduceRow(horz, out_y, in, WrapMirror(), weights, out);
+      ProduceRow(horz, out_y, in, WrapMirror(), weights, out->Row(out_y),
+                 out_xsize);
     }
     executor.Run(
         kBorder, out_ysize - kBorder,
-        [horz, &in, weights, out](const int task, const int thread) {
+        [horz, &in, weights, out, out_xsize](const int task, const int thread) {
           const int64_t out_y = task;
-          ProduceRow(horz, out_y, in, WrapUnchanged(), weights, out);
+          ProduceRow(horz, out_y, in, WrapUnchanged(), weights, out->Row(out_y),
+                     out_xsize);
         },
         "Resample");
     for (size_t out_y = out_ysize - kBorder; out_y < out_ysize; ++out_y) {
-      ProduceRow(horz, out_y, in, WrapMirror(), weights, out);
+      ProduceRow(horz, out_y, in, WrapMirror(), weights, out->Row(out_y),
+                 out_xsize);
     }
   }
 
@@ -586,6 +588,7 @@ class Upsampler8Base {
                                 const Image3F& in,
                                 const float* PIK_RESTRICT weights,
                                 Image3F* PIK_RESTRICT out) {
+    const size_t out_xsize = out->xsize();
     const size_t out_ysize = out->ysize();
 
     // Short: single loop (ignore pool - not worthwhile).
@@ -593,7 +596,7 @@ class Upsampler8Base {
       for (int c = 0; c < 3; ++c) {
         for (size_t out_y = 0; out_y < out_ysize; ++out_y) {
           ProduceRow(horz, out_y, in.Plane(c), WrapMirror(), weights,
-                     out->MutablePlane(c));
+                     out->PlaneRow(c, out_y), out_xsize);
         }
       }
       return;
@@ -603,23 +606,23 @@ class Upsampler8Base {
     for (int c = 0; c < 3; ++c) {
       for (size_t out_y = 0; out_y < kBorder; ++out_y) {
         ProduceRow(horz, out_y, in.Plane(c), WrapMirror(), weights,
-                   out->MutablePlane(c));
+                   out->PlaneRow(c, out_y), out_xsize);
       }
     }
     executor.Run(
         kBorder, out_ysize - kBorder,
-        [horz, &in, weights, out](const int task, const int thread) {
+        [horz, &in, weights, out, out_xsize](const int task, const int thread) {
           const int64_t out_y = task;
           for (int c = 0; c < 3; ++c) {
             ProduceRow(horz, out_y, in.Plane(c), WrapUnchanged(), weights,
-                       out->MutablePlane(c));
+                       out->PlaneRow(c, out_y), out_xsize);
           }
         },
         "Resample3");
     for (int c = 0; c < 3; ++c) {
       for (size_t out_y = out_ysize - kBorder; out_y < out_ysize; ++out_y) {
         ProduceRow(horz, out_y, in.Plane(c), WrapMirror(), weights,
-                   out->MutablePlane(c));
+                   out->PlaneRow(c, out_y), out_xsize);
       }
     }
   }

@@ -36,6 +36,9 @@ WARN_FLAGS  = -Wall -Werror -Wformat-security -Wno-char-subscripts -Wno-error=de
 
 ALL_FLAGS = $(DBG_FLAGS) $(PP_FLAGS) $(MSG_FLAGS) $(F_FLAGS) $(WARN_FLAGS) $(INC_FLAGS) $(M_FLAGS) $(LANG_FLAGS) $(CPU_FLAGS)
 
+# Flags only used by tests
+TEST_FLAGS = -Ithird_party/googletest/googletest/include/ -Ithird_party/googletest/googlemock/include/ -Ithird_party/benchmark/include/
+
 override CXXFLAGS += -O3 $(ALL_FLAGS)
 # Static so we can run the binary on other systems. whole-archive ensures
 # all objects in the archive are included - required for pthread weak symbols.
@@ -47,16 +50,19 @@ PIK_OBJS := $(addprefix obj/, \
 	ac_strategy.o \
 	adaptive_quantization.o \
 	adaptive_reconstruction.o \
+	ar_control_field.o \
 	epf.o \
 	alpha.o \
 	ans_common.o \
 	ans_decode.o \
 	ans_encode.o \
 	arch_specific.o \
+	block_dictionary.o \
 	brotli.o \
 	butteraugli/butteraugli.o \
 	butteraugli_comparator.o \
 	butteraugli_distance.o \
+	cache_aligned.o \
 	codec_impl.o \
 	codec_png.o \
 	codec_pnm.o \
@@ -89,7 +95,6 @@ PIK_OBJS := $(addprefix obj/, \
 	pik_multipass.o \
 	huffman_decode.o \
 	huffman_encode.o \
-	image_io.o \
 	lehmer_code.o \
 	metadata.o \
 	noise.o \
@@ -102,13 +107,13 @@ PIK_OBJS := $(addprefix obj/, \
 	quantizer.o \
 	quant_weights.o \
 	single_image_handler.o \
-	tile_flow.o \
+	status.o \
 	upscaler.o \
 	yuv_convert.o \
 	saliency_map.o \
 )
 
-all: $(addprefix bin/, cpik dpik butteraugli_main)
+all: deps.mk $(addprefix bin/, cpik dpik butteraugli_main)
 
 # print an error message with helpful instructions if the brotli git submodule
 # is not checked out
@@ -149,7 +154,7 @@ bin/%: obj/%.o
 deps.mk: $(wildcard *.cc) $(wildcard *.h) Makefile
 	set -eu; for file in *.cc; do \
 		target=obj/$${file##*/}; target=$${target%.*}.o; \
-		$(CXX) -c $(CPPFLAGS) $(CXXFLAGS) -MM -MT \
+		$(CXX) -c $(CPPFLAGS) $(CXXFLAGS) $(TEST_FLAGS) -MM -MT \
 		"$$target" "$$file"; \
 	done >$@
 -include deps.mk

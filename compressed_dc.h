@@ -7,10 +7,12 @@
 #ifndef COMPRESSED_DC_H_
 #define COMPRESSED_DC_H_
 
+#include <vector>
 #include "color_correlation.h"
 #include "compressed_image_fwd.h"
 #include "data_parallel.h"
 #include "headers.h"
+#include "multipass_handler.h"
 #include "padded_bytes.h"
 #include "pik_info.h"
 #include "quantizer.h"
@@ -23,8 +25,10 @@ namespace pik {
 // Encodes the DC-related information from pass_enc_cache: quantized dc itself
 // and gradient map.
 PaddedBytes EncodeDC(const Quantizer& quantizer,
-                     const PassEncCache& pass_enc_cache, ThreadPool* pool,
-                     PikImageSizeInfo* dc_info);
+                     const PassEncCache& pass_enc_cache,
+                     const AcStrategyImage& ac_strategy, ThreadPool* pool,
+                     MultipassManager* manager, PikImageSizeInfo* dc_info,
+                     PikImageSizeInfo* cfield_info);
 
 // Decodes and dequantizes DC, and optionally decodes and applies the
 // gradient map if requested.
@@ -32,7 +36,9 @@ Status DecodeDC(BitReader* reader, const PaddedBytes& compressed,
                 const PassHeader& pass_header, size_t xsize_blocks,
                 size_t ysize_blocks, const Quantizer& quantizer,
                 const ColorCorrelationMap& cmap, ThreadPool* pool,
-                PassDecCache* pass_dec_cache);
+                MultipassManager* manager,
+                PassDecCache* PIK_RESTRICT pass_dec_cache,
+                std::vector<GroupDecCache>* group_dec_caches);
 
 // Clamps the input coordinate `candidate` to the [0, size) interval, using 1 px
 // of border (extended by cloning, not mirroring).
@@ -44,7 +50,7 @@ PIK_INLINE size_t SourceCoord(size_t candidate, size_t size) {
 // Initializes the dec_cache for decoding the `rect` part of the image (in pixel
 // units) from the pass decoder cache.
 void InitializeDecCache(const PassDecCache& pass_dec_cache, const Rect& rect,
-                        DecCache* dec_cache);
+                        GroupDecCache* PIK_RESTRICT group_dec_cache);
 
 }  // namespace pik
 

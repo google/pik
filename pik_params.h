@@ -13,9 +13,6 @@
 #include <cstdint>
 #include <string>
 
-#include "epf.h"
-#include "gaborish.h"
-
 namespace pik {
 
 // Reasonable default for sRGB, matches common monitors. Butteraugli was tuned
@@ -27,11 +24,28 @@ static constexpr float kIntensityMultiplier = 1.0f / kDefaultIntensityTarget;
 // flag) on or off.
 enum class Override : int { kOn = 1, kOff = 0, kDefault = -1 };
 
+static inline Override OverrideFromBool(bool flag) {
+  return flag ? Override::kOn : Override::kOff;
+}
+
 static inline bool ApplyOverride(Override o, bool condition) {
   if (o == Override::kOn) condition = true;
   if (o == Override::kOff) condition = false;
   return condition;
 }
+
+// Additional smoothing helps for medium/low-quality.
+enum class GaborishStrength : uint32_t {
+  // Serialized, do not change enumerator values.
+  kOff = 0,
+  k500,
+  k750,
+  k875,
+  k1000,
+
+  // Future extensions: [5, 6]
+  kMaxValue
+};
 
 struct CompressParams {
   // Only used for benchmarking (comparing vs libjpeg)
@@ -55,8 +69,6 @@ struct CompressParams {
   bool fast_mode = false;
   int max_butteraugli_iters = 11;
 
-  size_t resampling_factor2 = 2;
-
   bool guetzli_mode = false;
   int max_butteraugli_iters_guetzli_mode = 100;
 
@@ -64,19 +76,18 @@ struct CompressParams {
 
   Override noise = Override::kDefault;
   Override gradient = Override::kDefault;
+
   Override adaptive_reconstruction = Override::kDefault;
-  GaborishStrength gaborish = GaborishStrength::k750;
+  // Optional parameters for adaptive reconstruction.
+  Override epf_use_sharpened = Override::kDefault;
+  uint32_t epf_sigma = 0;  // 0 means adaptive
+
+  int gaborish = int(GaborishStrength::k750);
 
   bool use_ac_strategy = false;
 
   // Progressive mode.
   bool progressive_mode = false;
-
-  // If non-empty, the image referenced by this filepath will be used as a
-  // lossless first pass. The difference between that first pass and the
-  // original input image will then be encoded as a lossy second pass.
-  // Incompatible with lossless mode and progressive mode.
-  std::string lossless_base;
 
   // Progressive-mode saliency extractor.
   // Empty string disables this feature.
@@ -119,21 +130,8 @@ struct CompressParams {
   bool predict_lf = true;
   bool predict_hf = true;
 
-  // Edge-preserving filter parameters for AdaptiveReconstruction.
-  EpfParams epf_params;
-
   float GetIntensityMultiplier() const {
     return intensity_target * kIntensityMultiplier;
-  }
-
-  size_t TargetSize(const Rect& rect) const {
-    if (target_size > 0) {
-      return target_size;
-    }
-    if (target_bitrate > 0.0) {
-      return 0.5 + target_bitrate * rect.xsize() * rect.ysize() / 8;
-    }
-    return 0;
   }
 };
 
@@ -147,12 +145,11 @@ struct DecompressParams {
   Override gradient = Override::kDefault;  // cannot be kOn (needs encoder)
 
   Override adaptive_reconstruction = Override::kDefault;
-  // Edge-preserving filter parameters for AdaptiveReconstruction - overrides
-  // epf_params from the bitstream if adaptive_reconstruction == kOn.
-  EpfParams epf_params;
+  // Optional parameters for adaptive reconstruction.
+  Override epf_use_sharpened = Override::kDefault;
+  uint32_t epf_sigma = 0;  // 0 means adaptive
 
-  bool override_gaborish = false;  // if true, override GroupHeader.gaborish ..
-  GaborishStrength gaborish = GaborishStrength::k750;  // with this value.
+  int gaborish = -1;
 
   // Enable new Lossless codec for DC. This flag exists only temporarily
   // as long as both old and new implementation co-exist, and eventually
@@ -161,7 +158,7 @@ struct DecompressParams {
 };
 
 // Enable features for distances >= these thresholds:
-static constexpr float kMinButteraugliForNoise = 99.0f;     // disabled
+static constexpr float kMinButteraugliForNoise = 99.0f;  // disabled
 static constexpr float kMinButteraugliForGradient = 1.85f;
 static constexpr float kMinButteraugliForAdaptiveReconstruction = 0.0f;
 

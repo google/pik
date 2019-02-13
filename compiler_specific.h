@@ -123,4 +123,11 @@
 #define PIK_MUST_USE_RESULT
 #endif
 
+#if PIK_HAVE_ATTRIBUTE(__format__)
+#define PIK_FORMAT(idx_fmt, idx_arg) \
+  __attribute__((__format__(__printf__, idx_fmt, idx_arg)))
+#else
+#define PIK_FORMAT(idx_fmt, idx_arg)
+#endif
+
 #endif  // COMPILER_SPECIFIC_H_

@@ -24,7 +24,7 @@ void CommandLineParser::PrintHelp() const {
   fprintf(stderr, " --help\n    Prints this help message.\n");
 }
 
-bool CommandLineParser::Parse(int argc, char* argv[]) {
+bool CommandLineParser::Parse(int argc, const char* argv[]) {
   if (argc) program_name_ = argv[0];
   int i = 1;  // argv[0] is the program name.
   while (i < argc) {

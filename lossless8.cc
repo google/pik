@@ -54,9 +54,9 @@ static const int mulWeights3teNE_N_[] = {
     27, 0, 23, 29, 26, 34, 29, 29, 30, 13, 35, 13, 40, 11, 51, 9,
 };
 
-static const int WITHSIGN = 7, NUMCONTEXTS = 8 + WITHSIGN + 2, kGroupSize = 512,
-                 kGroupSize2plus = kGroupSize * kGroupSize * 9 / 8;
-static const int MAXERROR = 101, MaxSumErrors = MAXERROR * 7 + 1, NumRuns = 1;
+static const int kWithSign = 7, kNumContexts = 8 + kWithSign + 2, kNumRuns = 1,
+            kGroupSize = 512, kGroupSize2plus = kGroupSize * kGroupSize * 9 / 8,
+            kMaxError = 101, kMaxSumErrors = kMaxError * 7 + 1;
 
 // Left shift a signed integer by the shift amount.
 static int LshInt(int value, unsigned shift) {
@@ -71,15 +71,14 @@ struct State {
       toRound = ((1 << PBits) >> 1), toRound_m1 = (toRound ? toRound - 1 : 0);
   typedef enum { PM_Regular, PM_West, PM_North } PredictMode;
 
-  // uint64_t gqe[NUMCONTEXTS];  //global quantized errors (all groups)
+  // uint64_t gqe[kNumContexts];  //global quantized errors (all groups)
   // frequencies
 
-  uint8_t edata[NUMCONTEXTS]
-               [kGroupSize * kGroupSize],  // size can be *2/NUMCONTEXTS in the
-                                           // Production edition
+  uint8_t edata[kNumContexts][kGroupSize * kGroupSize],  // size should be [2][]
+                        // instead of [kNumContexts][] in the Production edition
       compressedDataTmpBuf[kGroupSize2plus], *compressedData;
   uint8_t
-      errors0[kGroupSize * 2 + 4];  // Errors of predictor 0. Range 0..MAXERROR
+      errors0[kGroupSize * 2 + 4];  // Errors of predictor 0. Range 0..kMaxError
   uint8_t errors1[kGroupSize * 2 + 4];     // Errors of predictor 1
   uint8_t errors2[kGroupSize * 2 + 4];     // Errors of predictor 2
   uint8_t errors3[kGroupSize * 2 + 4];     // Errors of predictor 3
@@ -89,10 +88,9 @@ struct State {
 
 #ifdef SIMPLE_signToLSB_TRANSFORM  // to fully disable, "=i;" in the init macros
 
-  uint8_t signLSB_forwardTransform[256],
-      signLSB_backwardTransform[256];  // const
+  uint8_t signLSB_forwardTransform[256], signLSB_backwardTransform[256]; //const
 #define ToLSB_FRWRD signLSB_forwardTransform[err & 255]
-#define ToLSB_BKWRD (prediction - signLSB_backwardTransform[err]) & 255
+#define ToLSB_BKWRD (prediction - signLSB_backwardTransform[q]) & 255
 
 #define signToLSB_FORWARD_INIT  \
   for (int i = 0; i < 256; ++i) \
@@ -128,21 +126,24 @@ struct State {
 #endif
 
   uint8_t quantizedTable[256], diff2error[512 * 2];  // const
-  uint16_t error2weight[MaxSumErrors];               // const
+  uint16_t error2weight[kMaxSumErrors];              // const
 
   State() {
-    for (int j = 0; j < MaxSumErrors; ++j)
+    for (int j = 0; j < kMaxSumErrors; ++j)
       error2weight[j] =
           150 * 512 / (58 + j * std::sqrt(j + 50));  // const init!  150 58 50
 
     for (int j = -512; j <= 511; ++j)
-      diff2error[512 + j] = std::min(j < 0 ? -j : j, MAXERROR);  // const init!
+      diff2error[512 + j] = std::min(j < 0 ? -j : j, kMaxError);  // const init!
     for (int j = 0; j <= 255; ++j)
       quantizedTable[j] = quantizedInit(j);  // const init!
     // for (int i=0; i < 512; i += 16, printf("\n"))
     //   for (int j=i; j < i + 16; ++j)  printf("%2d, ", quantizedTable[j]);
     signToLSB_FORWARD_INIT       // const init!
         signToLSB_BACKWARD_INIT  // const init!
+
+    // Prevent uninitialized values in case of invalid compressed data
+    memset(edata, 0, sizeof(edata));
   }
 
   PIK_INLINE int quantized(int x) {
@@ -170,7 +171,7 @@ struct State {
   uint8_t const *PIK_RESTRICT rowPrev, *PIK_RESTRICT rowPP;
 
   PIK_INLINE int predictY0(size_t x, size_t yc, size_t yp, int* maxErr) {
-    *maxErr = (x == 0 ? NUMCONTEXTS - 3
+    *maxErr = (x == 0 ? kNumContexts - 3
                       : x == 1 ? quantizedError[yc]
                                : std::max(quantizedError[yc],
                                           quantizedError[yc - 1]));
@@ -229,7 +230,7 @@ struct State {
       if (sumWN * 40 + teNW * 20 + teNE * mulWeights3teNE_R_[1 + mE] <= 0) ++mE;
     } else {
       if (N == W && N == NE)
-        mE = ((sumWN | teNE | teNW) == 0 ? NUMCONTEXTS - 1 : 1);
+        mE = ((sumWN | teNE | teNW) == 0 ? kNumContexts - 1 : 1);
     }
     *maxErr = mE;
 
@@ -299,7 +300,7 @@ struct State {
       if (sumWN * 40 + (teNW + teNE) * mulWeights3teNE_W_[1 + mE] <= 0) ++mE;
     } else {
       if (N == W && N == NE)
-        mE = ((sumWN | teNE | teNW) == 0 ? NUMCONTEXTS - 1 : 1);
+        mE = ((sumWN | teNE | teNW) == 0 ? kNumContexts - 1 : 1);
     }
     *maxErr = mE;
 
@@ -369,7 +370,7 @@ struct State {
       if (sumWN * 40 + teNW * 23 + teNE * mulWeights3teNE_N_[1 + mE] <= 0) ++mE;
     } else {
       if (N == W && N == NE)
-        mE = ((sumWN | teNE | teNW) == 0 ? NUMCONTEXTS - 1 : 1);
+        mE = ((sumWN | teNE | teNW) == 0 ? kNumContexts - 1 : 1);
     }
     *maxErr = mE;
 
@@ -420,7 +421,7 @@ struct State {
 
 #define AfterPredictWhenCompressing                 \
   maxErr >>= maxerrShift;                           \
-  assert(0 <= maxErr && maxErr <= NUMCONTEXTS - 1); \
+  assert(0 <= maxErr && maxErr <= kNumContexts - 1); \
   int q, truePixelValue = rowImg[x];                \
   int err = prediction - (truePixelValue << PBits); \
   size_t s = esize[maxErr];                         \
@@ -431,7 +432,7 @@ struct State {
 
 #define AfterPredictWhenCompressing3                \
   maxErr >>= maxerrShift;                           \
-  assert(0 <= maxErr && maxErr <= NUMCONTEXTS - 1); \
+  assert(0 <= maxErr && maxErr <= kNumContexts - 1); \
   int q, truePixelValue = rowImg[x];                \
   if (planeToCompress != planeToUse) {              \
     truePixelValue -= (int)rowUse[x] - 0x80;        \
@@ -447,7 +448,7 @@ struct State {
 
 #define AfterPredictWhenDecompressing                          \
   maxErr >>= maxerrShift;                                      \
-  assert(0 <= maxErr && maxErr <= NUMCONTEXTS - 1);            \
+  assert(0 <= maxErr && maxErr <= kNumContexts - 1);            \
   assert(0 <= prediction && prediction <= 255 << PBits);       \
   size_t s = esize[maxErr];                                    \
   int err, q = edata[maxErr][s], truePixelValue = ToLSB_BKWRD; \
@@ -484,11 +485,11 @@ struct State {
     // The code modifies the image for palette so must copy for now.
     ImageB img = CopyImage(img_in);
 
-    size_t esize[NUMCONTEXTS], xsize = img.xsize(), ysize = img.ysize();
+    size_t esize[kNumContexts], xsize = img.xsize(), ysize = img.ysize();
     std::vector<uint8_t> temp_buffer(kGroupSize2plus);
     compressedData = temp_buffer.data();
 
-    for (int run = 0; run < NumRuns; ++run) {
+    for (int run = 0; run < kNumRuns; ++run) {
       int freqs[256];
       memset(freqs, 0, sizeof(freqs));
       for (size_t y = 0; y < ysize; ++y) {
@@ -578,13 +579,12 @@ struct State {
               for (int i = 0; i < 256 / kBitsPerByte; ++i) {
                 int code = 0;
                 for (int j = kBitsPerByte - 1; j >= 0; --j)
-                  code =
-                      code * 2 + (freqs[i * 8 + j] ? 1 : 0);  // color=YES bits
+                  code = code * 2 + (freqs[i * 8 + j] ? 1 : 0);
                 compressedData[pos++] = code;
               }  // for i
             }    // if (havePalette)
           }      // if (groupY...)
-          int nC = ((NUMCONTEXTS - 1) >> maxerrShift) + 1;
+          int nC = ((kNumContexts - 1) >> maxerrShift) + 1;
           for (int i = 0; i < nC; ++i) {
             if (esize[i]) {
               // size_t cs = FSE_compress(&compressedDataTmpBuf[0],
@@ -609,7 +609,7 @@ struct State {
             } else
               pos += encodeVarInt(i > 0 ? 0 : pMode, &compressedData[pos]);
           }  // i
-          if (run == 0) {
+          if (kNumRuns == 1) {
             size_t current = bytes->size();
             bytes->resize(bytes->size() + pos);
             memcpy(bytes->data() + current, &compressedData[0], pos);
@@ -617,11 +617,11 @@ struct State {
         }  // groupX
       }    // groupY
     }      // run
-    // for (int i=0; i<NUMCONTEXTS; ++i) printf("%3d
+    // for (int i=0; i<kNumContexts; ++i) printf("%3d
     // ",gqe[i]*1000/(xsize*ysize)); printf("\n");
 
-    if (NumRuns > 1)
-      printf("%d runs, %1.5f seconds", NumRuns,
+    if (kNumRuns > 1)
+      printf("%d runs, %1.5f seconds", kNumRuns,
              ((double)clock() - start) / CLOCKS_PER_SEC);
     return true;
   }
@@ -635,7 +635,7 @@ struct State {
     size_t maxDecodedSize = kGroupSize * kGroupSize;  // Size of an edata entry
 
     clock_t start = clock();
-    size_t esize[NUMCONTEXTS], xsize, ysize, pos = 0;
+    size_t esize[kNumContexts], xsize, ysize, pos = 0;
     xsize = decodeVarInt(compressedData, compressedSize, &pos);
     ysize = decodeVarInt(compressedData, compressedSize, &pos);
     int havePalette = xsize & 1, count = 256, palette[256];
@@ -659,8 +659,8 @@ struct State {
     }
     pik::ImageB img(xsize, ysize);
 
-    for (int run = 0; run < NumRuns; ++run) {
-      if (NumRuns > 1) pos = 0;
+    for (int run = 0; run < kNumRuns; ++run) {
+      if (kNumRuns > 1) pos = 0;
       for (size_t groupY = 0; groupY < ysize; groupY += kGroupSize) {
         for (size_t groupX = 0; groupX < xsize; groupX += kGroupSize) {
           size_t yEnd = std::min((size_t)kGroupSize, ysize - groupY);
@@ -672,14 +672,14 @@ struct State {
                    : area > 12800 ? 1 : area > 4000 ? 2 : area > 400 ? 3 : 4);
           size_t decompressedSize = 0;  // is used only for the assert()
 
-          if (NumRuns > 1 && groupY == 0 && groupX == 0) {
+          if (kNumRuns > 1 && groupY == 0 && groupX == 0) {
             decodeVarInt(compressedData, compressedSize,
                          &pos);  // just skip them
             decodeVarInt(compressedData, compressedSize, &pos);
             if (havePalette) pos += 32;
           }
           PredictMode pMode;
-          int nC = ((NUMCONTEXTS - 1) >> maxerrShift) + 1;
+          int nC = ((kNumContexts - 1) >> maxerrShift) + 1;
           for (int i = 0; i < nC; ++i) {
             size_t cs = decodeVarInt(compressedData, compressedSize, &pos);
             if (i == 0) pMode = (PredictMode)(cs % 3), cs /= 3;
@@ -747,9 +747,10 @@ struct State {
           for (size_t x = 0; x < xsize; ++x)  // UNROLL and PARALLELIZE ME!
             rowImg[x] = palette[rowImg[x]];
         }
+      *bytes_pos += pos;
     }  // run
-    if (NumRuns > 1)
-      printf("%d runs, %1.5f seconds", NumRuns,
+    if (kNumRuns > 1)
+      printf("%d runs, %1.5f seconds", kNumRuns,
              ((double)clock() - start) / CLOCKS_PER_SEC);
     *result = std::move(img);
     return true;
@@ -802,7 +803,7 @@ struct State {
                      size_t groupY, size_t groupX,
                      const uint8_t* compressedData, size_t compressedSize,
                      size_t maxDecodedSize) {
-    size_t esize[NUMCONTEXTS], xsize = img->xsize(), ysize = img->ysize();
+    size_t esize[kNumContexts], xsize = img->xsize(), ysize = img->ysize();
     size_t yEnd = std::min((size_t)kGroupSize, ysize - groupY);
     width = std::min((size_t)kGroupSize, xsize - groupX) - 1;
     size_t area = yEnd * (width + 1);
@@ -813,7 +814,7 @@ struct State {
     size_t decompressedSize = 0;  // is used only for the assert()
 
     PredictMode pMode;
-    int nC = ((NUMCONTEXTS - 1) >> maxerrShift) + 1;
+    int nC = ((kNumContexts - 1) >> maxerrShift) + 1;
     for (int i = 0; i < nC; ++i) {
       size_t cs = decodeVarInt(compressedData, compressedSize, &pos);
       if (i == 0) pMode = (PredictMode)(cs % 3), cs /= 3;
@@ -898,7 +899,7 @@ struct State {
 
     clock_t start = clock();
     pb255 = 255 << PBits;
-    for (int run = 0; run < NumRuns; ++run) {
+    for (int run = 0; run < kNumRuns; ++run) {
       size_t pos = pos0;
       if (xsize * ysize > 4 * 0x100) {  // TODO: smarter decision making here
         if (pos >= compressedSize)
@@ -1087,9 +1088,10 @@ struct State {
               rowImg[x] = p[rowImg[x]];
           }
         }
+      *bytes_pos += pos;
     }  // run
-    if (NumRuns > 1)
-      printf("%d runs, %1.5f seconds", NumRuns,
+    if (kNumRuns > 1)
+      printf("%d runs, %1.5f seconds", kNumRuns,
              ((double)clock() - start) / CLOCKS_PER_SEC);
     *result = std::move(img);
     return true;
@@ -1098,7 +1100,7 @@ struct State {
   uint32_t cmprs512x512(pik::Image3B& img, int planeToCompress, int planeToUse,
                         size_t groupY, size_t groupX,
                         uint8_t* compressedOutput) {
-    size_t esize[NUMCONTEXTS], xsize = img.xsize(), ysize = img.ysize();
+    size_t esize[kNumContexts], xsize = img.xsize(), ysize = img.ysize();
     memset(esize, 0, sizeof(esize));
     size_t yEnd = std::min((size_t)kGroupSize, ysize - groupY);
     width = std::min((size_t)kGroupSize, xsize - groupX) - 1;
@@ -1153,7 +1155,7 @@ struct State {
     }  // TODO: other prediction modes!
 
     size_t pos = 0;
-    int nC = ((NUMCONTEXTS - 1) >> maxerrShift) + 1;
+    int nC = ((kNumContexts - 1) >> maxerrShift) + 1;
     for (int i = 0; i < nC; ++i) {
       if (esize[i]) {
         // size_t cs = FSE_compress(&compressedDataTmpBuf[0],
@@ -1184,7 +1186,7 @@ struct State {
 
 #define FWr(buf, bufsize)                            \
   {                                                  \
-    if (run == 0) {                                  \
+    if (kNumRuns == 1) {                             \
       size_t current = bytes->size();                \
       bytes->resize(bytes->size() + bufsize);        \
       memcpy(bytes->data() + current, buf, bufsize); \
@@ -1207,7 +1209,7 @@ struct State {
     compressedData = temp_buffer.data();
 
     pb255 = 255 << PBits;
-    for (int run = 0; run < NumRuns; ++run) {
+    for (int run = 0; run < kNumRuns; ++run) {
       size_t xsize = img.xsize(), ysize = img.ysize(), pos;
       pos = encodeVarInt(xsize, &compressedData[0]);
       pos += encodeVarInt(ysize, &compressedData[pos]);
@@ -1231,24 +1233,23 @@ struct State {
           }
           // count the number of pixel values present in the image
           for (i = 0; i < 0x100; ++i)
-            if (palette[i]) break;
+            if (palette[i])  break;
           for (first = i, count = 0; i < 0x100; ++i)
-            if (palette[i]) palette[i] = count++;
+            if (palette[i])  palette[i] = count++;
           // printf("count=%5d, %f%%\n", count, count * 100. / 256);
-          if (count >= 240) {
+          if (count >= 240) {  // TODO: better decision making
             flags = 0;
             break;
-          }  // TODO: decision making
+          }
 
           flags += 1 << channel;
           numColors[channel] = count;
           palette[first] = 1;
-          for (int sb = 0, x = 0; x < 0x100;
-               x += 8) {  // Compress the bits, not store!
+          for (int sb = 0, x = 0; x < 0x100; x += 8) {
             uint32_t b = 0, v;
             for (int y = x + 7; y >= x; --y)
               v = (palette[y] ? 1 : 0), b += b + v, sb += v;
-            *pb++ = b;
+            *pb++ = b;  // TODO: Compress the bits, not store!
             if (sb >= count || sb + 0x100 - 8 - x == count) break;
           }
           palette[first] = 0;
@@ -1304,60 +1305,53 @@ struct State {
           if (p1 == PL1)
             FWr(cd1, S1)
 
-                if (S4 >= S2 && S5 >= S3) {
-              S6 =
-                  cmprs512x512(img, p2, p3, groupY, groupX, cd6); /* R-B+0x80 */
+          if (S4 >= S2 && S5 >= S3) {
+              S6 = cmprs512x512(img, p2, p3, groupY, groupX, cd6); // R-B+0x80
               if (S6 >= S2 && S6 >= S3)
-                FWr(cd2, S2) else if (S3 > S2 && S3 > S6)
-                    FWr(cd2, S2) else FWr(cd6, S6) if (p1 == PL2)
-                        FWr(cd1, S1) if (S6 >= S2 && S6 >= S3) {
-                  FWr(cd3, S3)
-                }
+                FWr(cd2, S2)
+              else if (S3 > S2 && S3 > S6)
+                FWr(cd2, S2)
+              else FWr(cd6, S6)
+              if (p1 == PL2)
+                FWr(cd1, S1)
+              if (S6 >= S2 && S6 >= S3)
+                FWr(cd3, S3)
               else if (S3 > S2 && S3 > S6) {
                 FWr(cd6, S6) planeMethod += 5;
               } else {
                 FWr(cd3, S3) planeMethod += 4;
               }
-            }
+          }
           else {
-            size_t yEnd = std::min((size_t)kGroupSize, ysize - groupY);
+            size_t yEnd = std::min((size_t)kGroupSize, ysize - groupY) + groupY;
             size_t xEnd = std::min((size_t)kGroupSize, xsize - groupX);
-            if (S5 < S4) {
-              for (size_t y = 0; y < yEnd; ++y) {
-                uint8_t* PIK_RESTRICT row1 =
-                    img.PlaneRow(p1, groupY + y) + groupX;
-                uint8_t* PIK_RESTRICT row2 =
-                    img.PlaneRow(p2, groupY + y) + groupX;
-                for (size_t x = 0; x < xEnd; ++x) {
-                  uint32_t v1 = row1[x], v2 = (row2[x] + v1 + 0x80) & 0xff;
-                  row2[x] = ((v1 + v2) >> 1) - v1 + 0x80;
-                }
+            size_t p2or3 = (S5 < S4 ? p2 : p3);
+            for (size_t y = groupY; y < yEnd; ++y) {
+              uint8_t* PIK_RESTRICT row1 = img.PlaneRow(p1,    y) + groupX;
+              uint8_t* PIK_RESTRICT row2 = img.PlaneRow(p2or3, y) + groupX;
+              for (size_t x = 0; x < xEnd; ++x) {
+                uint32_t v1 = row1[x], v2 = (row2[x] + v1 + 0x80) & 0xff;
+                row2[x] = ((v1 + v2) >> 1) - v1 + 0x80;
               }
-              S6 = cmprs512x512(img, p3, p2, groupY, groupX,
-                                cd6); /* B-(R+G)/2 */
+            }
+            if (S5 < S4) {
+              S6 = cmprs512x512(img, p3, p2, groupY, groupX, cd6);  // B-(R+G)/2
               if (S4 < S2)
-                FWr(cd4, S4) else FWr(cd2, S2) if (p1 == PL2)
-                    FWr(cd1, S1) if (S3 <= S5 && S3 <= S6) {
-                  FWr(cd3, S3) planeMethod += 1;
-                }
+                FWr(cd4, S4)
+              else
+                FWr(cd2, S2)
+              if (p1 == PL2)
+                FWr(cd1, S1)
+              if (S3 <= S5 && S3 <= S6) {
+                FWr(cd3, S3) planeMethod += 1;
+              }
               else if (S5 <= S6) {
                 FWr(cd5, S5) planeMethod += (S4 < S2 ? 3 : 2);
               } else {
                 FWr(cd6, S6) planeMethod += (S4 < S2 ? 6 : 8);
               }
             } else {
-              for (size_t y = 0; y < yEnd; ++y) {
-                uint8_t* PIK_RESTRICT row1 =
-                    img.PlaneRow(p1, groupY + y) + groupX;
-                uint8_t* PIK_RESTRICT row3 =
-                    img.PlaneRow(p3, groupY + y) + groupX;
-                for (size_t x = 0; x < xEnd; ++x) {
-                  uint32_t v1 = row1[x], v3 = (row3[x] + v1 + 0x80) & 0xff;
-                  row3[x] = ((v1 + v3) >> 1) - v1 + 0x80;
-                }
-              }
-              S6 = cmprs512x512(img, p2, p3, groupY, groupX,
-                                cd6); /* R-(B+G)/2 */
+              S6 = cmprs512x512(img, p2, p3, groupY, groupX, cd6);  // R-(B+G)/2
               if (S2 <= S4 && S2 <= S6) {
                 FWr(cd2, S2) planeMethod += 2;
               } else if (S4 <= S6) {
@@ -1366,16 +1360,21 @@ struct State {
                 FWr(cd6, S6) planeMethod += (S5 < S3 ? 7 : 9);
               }
               if (p1 == PL2)
-                FWr(cd1, S1) if (S5 < S3) FWr(cd5, S5) else FWr(cd3, S3)
+                FWr(cd1, S1)
+              if (S5 < S3)
+                FWr(cd5, S5)
+              else
+                FWr(cd3, S3)
             }
           }
           if (p1 == PL3)
-            FWr(cd1, S1) FWrByte(planeMethod);  // printf("%2d ", planeMethod);
-        }                                       // groupX
-      }                                         // groupY
-    }                                           // run
-    if (NumRuns > 1)
-      printf("%d runs, %1.5f seconds", NumRuns,
+            FWr(cd1, S1)
+          FWrByte(planeMethod);  // printf("%2d ", planeMethod);
+        }  // groupX
+      }    // groupY
+    }     // run
+    if (kNumRuns > 1)
+      printf("%d runs, %1.5f seconds", kNumRuns,
              ((double)clock() - start) / CLOCKS_PER_SEC);
     return true;
   }

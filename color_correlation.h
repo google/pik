@@ -15,6 +15,7 @@
 #include "data_parallel.h"
 #include "image.h"
 #include "pik_info.h"
+#include "quant_weights.h"
 
 namespace pik {
 
@@ -77,9 +78,9 @@ struct ColorCorrelationMap {
   ImageI ytob_map;
 
   ColorCorrelationMap Copy(const Rect& rect) const {
-    ColorCorrelationMap copy(0, 0);
-    copy.ytob_dc = ytob_dc;
+    ColorCorrelationMap copy;
     copy.ytox_dc = ytox_dc;
+    copy.ytob_dc = ytob_dc;
     copy.ytob_map = CopyImage(rect, ytob_map);
     copy.ytox_map = CopyImage(rect, ytox_map);
     return copy;
@@ -88,6 +89,7 @@ struct ColorCorrelationMap {
 };
 
 SIMD_ATTR void UnapplyColorCorrelationAC(const ColorCorrelationMap& cmap,
+                                         const Rect& cmap_rect,
                                          const ImageF& y_plane,
                                          Image3F* coeffs);
 
@@ -97,6 +99,7 @@ SIMD_ATTR void ApplyColorCorrelationDC(const ColorCorrelationMap& cmap,
                                        Image3F* coeffs_dc);
 
 void FindBestColorCorrelationMap(const Image3F& opsin,
+                                 const DequantMatrices& dequant,
                                  ColorCorrelationMap* cmap);
 
 std::string EncodeColorMap(const ImageI& ac_map, const Rect& rect,

@@ -29,7 +29,6 @@
 #include "fast_log.h"
 #include "image.h"
 #include "lehmer_code.h"
-#include "multipass_handler.h"
 #include "pik_info.h"
 #include "status.h"
 
@@ -42,7 +41,7 @@ namespace pik {
 N = 8
 out, lut = [0] * (N * N), [0] * (N * N)
 x, y, d = 0, 0, 1
-for i in range(N * N / 2):
+for i in range(N * N // 2):
   out[i], out[N * N - 1 - i] = x + y * N, N * N - 1 - x - y * N
   x, y = x + d, y - d
   if y < 0: y, d = 0, -d
@@ -90,7 +89,7 @@ constexpr uint32_t kQuantFieldContexts = 1;
 constexpr uint32_t kAcStrategyContexts = 1;
 
 // Total number of order-free contextes.
-constexpr uint32_t kNumOrderFreeContexts =
+constexpr uint32_t kNumControlFieldContexts =
     kQuantFieldContexts + kAcStrategyContexts;
 
 // For DCT 8x8 there could be up to 63 non-zero AC coefficients (and one DC
@@ -143,9 +142,7 @@ inline int ZeroDensityContext(int nonzeros_left, int k) {
   return kCoeffNumNonzeroContext[nonzeros_left] + kCoeffFreqContext[k];
 }
 
-// Context map consists of 3 blocks:
-//  |kNumOrderFreeContexts|    : context for residuals of quantization levels,
-//                               and AC strategy.
+// Context map for AC coefficients consists of 2 blocks:
 //  |kOrderContexts x          : context for number of non-zeros in the block
 //   kNonZeroBuckets|            computed from block context and predicted value
 //                               (based top and left values)
@@ -153,8 +150,7 @@ inline int ZeroDensityContext(int nonzeros_left, int k) {
 //   kZeroDensityContextCount|   computed from block context,
 //                               number of non-zeros left and
 //                               index in scan order
-constexpr uint32_t kNumContexts = kNumOrderFreeContexts +
-                                  (kOrderContexts * kNonZeroBuckets) +
+constexpr uint32_t kNumContexts = (kOrderContexts * kNonZeroBuckets) +
                                   (kOrderContexts * kZeroDensityContextCount);
 
 constexpr uint32_t AcStrategyContext() { return 0; }
@@ -164,13 +160,13 @@ constexpr uint32_t QuantContext() { return kAcStrategyContexts; }
 // Non-zero context is based on number of non-zeros and block context.
 // For better clustering, contexts with same number of non-zeros are grouped.
 constexpr uint32_t NonZeroContext(uint32_t non_zeros, uint32_t block_ctx) {
-  return kNumOrderFreeContexts + kOrderContexts * (non_zeros >> 1) + block_ctx;
+  return kOrderContexts * (non_zeros >> 1) + block_ctx;
 }
 
 // Non-zero context is based on number of non-zeros and block context.
 // For better clustering, contexts with same number of non-zeros are grouped.
 constexpr uint32_t ZeroDensityContextsOffset(uint32_t block_ctx) {
-  return kNumOrderFreeContexts + kOrderContexts * kNonZeroBuckets +
+  return kOrderContexts * kNonZeroBuckets +
          kZeroDensityContextCount * block_ctx;
 }
 
@@ -259,7 +255,8 @@ void TokenizeCoefficients(const int32_t* orders, const Rect& rect,
 // See also TokenizeAcStrategy.
 bool DecodeAcStrategy(BitReader* PIK_RESTRICT br,
                       ANSSymbolReader* PIK_RESTRICT decoder,
-                      const std::vector<uint8_t>& context_map, const Rect& rect,
+                      const std::vector<uint8_t>& context_map,
+                      ImageB* PIK_RESTRICT ac_strategy_raw, const Rect& rect,
                       AcStrategyImage* PIK_RESTRICT ac_strategy,
                       const AcStrategyImage* PIK_RESTRICT hint);
 
@@ -317,7 +314,17 @@ constexpr int32_t UnpackSigned(uint32_t value) {
 
 // Encode non-negative integer as a pair (N, bits), where len(bits) == N.
 // 0 is encoded as (0, ''); X from range [2**N - 1, 2 * (2**N - 1)]
-// is encoded as (N, X + 1 - 2**N).
+// is encoded as (N, X + 1 - 2**N). In detail:
+// 0 -> (0, '')
+// 1 -> (1, '0')
+// 2 -> (1, '1')
+// 3 -> (2, '00')
+// 4 -> (2, '01')
+// 5 -> (2, '10')
+// 6 -> (2, '11')
+// 7 -> (3, '000')
+// ...
+// 65535 -> (16, '0000000000000000')
 static PIK_INLINE void EncodeVarLenUint(uint32_t value, int* PIK_RESTRICT nbits,
                                         int* PIK_RESTRICT bits) {
   if (value == 0) {
@@ -335,9 +342,74 @@ constexpr uint32_t DecodeVarLenUint(int nbits, int bits) {
   return (1u << nbits) + bits - 1;
 }
 
-// Decode value and unpack signed integer.
-constexpr int32_t DecodeVarLenInt(int nbits, int bits) {
-  return UnpackSigned(DecodeVarLenUint(nbits, bits));
+// Experiments show that best performance is typically achieved for a
+// split-exponent of 3 or 4. Trend seems to be that '4' is better
+// for large-ish pictures, and '3' better for rather small-ish pictures.
+// This is plausible - the more special symbols we have, the better
+// statistics we need to get a benefit out of them.
+constexpr uint32_t kHybridEncodingDirectSplitExponent = 4;
+// constexpr uint32_t kHybridEncodingDirectSplitExponent = 3;
+constexpr uint32_t kHybridEncodingSplitToken =
+    1u << kHybridEncodingDirectSplitExponent;
+
+// Alternative encoding scheme for unsigned integers,
+// expected work better with entropy coding.
+// Numbers N in [0 .. kHybridEncodingSplitToken-1]:
+//   These get represented as (token=N, bits='').
+// Numbers N >= kHybridEncodingSplitToken:
+//   If n is such that 2**n <= N < 2**(n+1),
+//   and m = N - 2**n is the 'mantissa',
+//   these get represented as:
+// (token=kHybridEncodingSplitToken +
+//        ((n - kHybridEncodingDirectSplitExponent) * 2) +
+//        (m >> (n - 1)),
+//  bits=m & (1 << (n - 1)) - 1)
+// Specifically, for kHybridEncodingDirectSplitExponent = 4, i.e.
+// kHybridEncodingSplitToken=16, we would get:
+// N = 0 - 15: (token=N, nbits=0, bits='')
+// N = 16:     (token=16, nbits=3, bits='000')
+// N = 17:     (token=16, nbits=3, bits='001')
+// N = 23:     (token=16, nbits=3, bits='111')
+// N = 24:     (token=17, nbits=3, bits='000')
+// N = 25:     (token=17, nbits=3, bits='001')
+// N = 31:     (token=17, nbits=3, bits='111')
+// N = 32:     (token=18, nbits=4, bits='0000')
+// N=65535:    (token=39, nbits=14, bits='11111111111111')
+static PIK_INLINE void EncodeHybridVarLenUint(uint32_t value,
+                                              int* PIK_RESTRICT token,
+                                              int* PIK_RESTRICT nbits,
+                                              int* PIK_RESTRICT bits) {
+  if (value < kHybridEncodingSplitToken) {
+    *token = value;
+    *nbits = 0;
+    *bits = 0;
+  } else {
+    uint32_t n = Log2FloorNonZero(value);
+    uint32_t m = value - (1 << n);
+    *token = kHybridEncodingSplitToken + (
+        (n - kHybridEncodingDirectSplitExponent) << 1) + (m >> (n - 1));
+    *nbits = n - 1;
+    *bits = value & ((1 << (n - 1)) - 1);
+  }
+}
+
+static PIK_INLINE uint32_t HybridEncodingTokenNumBits(int token) {
+  if (token < kHybridEncodingSplitToken) {
+    return 0;
+  }
+  return kHybridEncodingDirectSplitExponent - 1 + (
+      (token - kHybridEncodingSplitToken) >> 1);
+}
+
+
+// Decode variable length non-negative value. Reverse to EncodeHybridVarLenUint.
+static PIK_INLINE uint32_t DecodeHybridVarLenUint(int token, int bits) {
+  if (token < kHybridEncodingSplitToken) {
+    return token;
+  }
+  uint32_t n = kHybridEncodingDirectSplitExponent +
+               ((token - kHybridEncodingSplitToken) >> 1);
+  return (1 << n) + ((token & 1) << (n - 1)) + bits;
 }
 
 // Pack signed integer and encode value.
@@ -345,6 +417,25 @@ static PIK_INLINE void EncodeVarLenInt(int32_t value, int* PIK_RESTRICT nbits,
                                        int* PIK_RESTRICT bits) {
   EncodeVarLenUint(PackSigned(value), nbits, bits);
 }
+
+// Decode value and unpack signed integer.
+constexpr int32_t DecodeVarLenInt(int nbits, int bits) {
+  return UnpackSigned(DecodeVarLenUint(nbits, bits));
+}
+
+// Pack signed integer and encode value.
+static PIK_INLINE void EncodeHybridVarLenInt(int32_t value,
+                                             int* PIK_RESTRICT token,
+                                             int* PIK_RESTRICT nbits,
+                                             int* PIK_RESTRICT bits) {
+  EncodeHybridVarLenUint(PackSigned(value), token, nbits, bits);
+}
+
+// Decode value and unpack signed integer, using Hybrid-Varint encoding.
+static PIK_INLINE int32_t DecodeHybridVarLenInt(int token, int bits) {
+  return UnpackSigned(DecodeHybridVarLenUint(token, bits));
+}
+
 
 }  // namespace pik
 

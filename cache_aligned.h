@@ -13,9 +13,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>  // memcpy
-#include <algorithm>
+#include <atomic>
 #include <memory>
-#include <new>
 
 #include "arch_specific.h"
 #include "compiler_specific.h"
@@ -27,44 +26,32 @@ namespace pik {
 // Functions that depend on the cache line size.
 class CacheAligned {
  public:
+  static void PrintStats();
+
   static constexpr size_t kPointerSize = sizeof(void*);
   static constexpr size_t kCacheLineSize = 64;
   // To avoid RFOs, match L2 fill size (pairs of lines).
   static constexpr size_t kAlignment = 2 * kCacheLineSize;
+  // Minimum multiple for which cache set conflicts and/or loads blocked by
+  // preceding stores can occur.
+  static constexpr size_t kAlias = 2048;
 
-  // "offset" is added to the allocation size and allocated pointer in an
-  // attempt to avoid 2K aliasing of consecutive allocations (e.g. Image).
-  static void* Allocate(const size_t payload_size, const size_t offset = 0) {
-    PIK_ASSERT(payload_size < (1ULL << 63));
-    // Layout: |<alignment> Avoid2K|<allocated>  left_padding  | <payload>
-    // Sizes : |kAlignment   offset|kPointerSize kMaxVectorSize| payload_size
-    //         ^allocated..........^stash...............payload^
-    const size_t header_size =
-        kAlignment + offset + kPointerSize + kMaxVectorSize;
-    void* allocated = malloc(header_size + payload_size);
-    if (allocated == nullptr) return nullptr;
-    uintptr_t payload = reinterpret_cast<uintptr_t>(allocated) + header_size;
-    payload &= ~(kAlignment - 1);  // round down
-    const uintptr_t stash = payload - kMaxVectorSize - kPointerSize;
-    memcpy(reinterpret_cast<void*>(stash), &allocated, kPointerSize);
-    return reinterpret_cast<void*>(payload);
+  // Returns a 'random' (cyclical) offset suitable for Allocate.
+  static size_t NextOffset();
+
+  // Returns null or memory whose address is congruent to `offset` (mod kAlias).
+  // This reduces cache conflicts and load/store stalls, especially with large
+  // allocations that would otherwise have similar alignments. At least
+  // `payload_size` (which can be zero) bytes will be accessible.
+  static void* Allocate(const size_t payload_size, size_t offset);
+
+  static void* Allocate(const size_t payload_size) {
+    return Allocate(payload_size, NextOffset());
   }
 
-  // Template allows freeing pointer-to-const.
-  template <typename T>
-  static void Free(T* aligned_pointer) {
-    if (aligned_pointer == nullptr) {
-      return;
-    }
-    const uintptr_t payload = reinterpret_cast<uintptr_t>(aligned_pointer);
-    PIK_ASSERT(payload % kAlignment == 0);
-    const uintptr_t stash = payload - kMaxVectorSize - kPointerSize;
-    void* allocated;
-    memcpy(&allocated, reinterpret_cast<const void*>(stash), kPointerSize);
-    free(allocated);
-  }
+  static void Free(const void* aligned_pointer);
 
-  // Overwrites "to_items" without loading it into cache (read-for-ownership).
+  // Overwrites `to` without loading it into cache (read-for-ownership).
   // Copies kCacheLineSize bytes from/to naturally aligned addresses.
   template <typename T>
   static SIMD_ATTR void StreamCacheLine(const T* PIK_RESTRICT from,
@@ -103,11 +90,16 @@ struct CacheAlignedDeleter {
 using CacheAlignedUniquePtr = std::unique_ptr<uint8_t[], CacheAlignedDeleter>;
 
 // Does not invoke constructors.
-static inline CacheAlignedUniquePtr AllocateArray(const size_t entries,
-                                           const size_t offset = 0) {
-  const size_t size = entries * sizeof(uint8_t);
+static inline CacheAlignedUniquePtr AllocateArray(const size_t bytes) {
   return CacheAlignedUniquePtr(
-      static_cast<uint8_t*>(CacheAligned::Allocate(size, offset)),
+      static_cast<uint8_t*>(CacheAligned::Allocate(bytes)),
+      CacheAlignedDeleter());
+}
+
+static inline CacheAlignedUniquePtr AllocateArray(const size_t bytes,
+                                                  const size_t offset) {
+  return CacheAlignedUniquePtr(
+      static_cast<uint8_t*>(CacheAligned::Allocate(bytes, offset)),
       CacheAlignedDeleter());
 }
 

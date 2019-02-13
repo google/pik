@@ -40,14 +40,14 @@ inline void FindIndexOfSumMaximum(const V* array, const size_t len, R* idx,
 template <int MAIN_CHANNEL, int SIDE_CHANNEL, int SCALE, int OFFSET>
 void FindBestCorrelation(const Image3F& dct, ImageI* PIK_RESTRICT map,
                          ImageF* PIK_RESTRICT tmp_map, int* PIK_RESTRICT dc,
-                         float acceptance) {
+                         float acceptance, const DequantMatrices& dequant) {
   constexpr int N = kBlockDim;
   constexpr int block_size = N * N;
   constexpr float kScale = SCALE;
   constexpr float kZeroThresh = kScale * kZeroBiasDefault[SIDE_CHANNEL];
   // Always use DCT8 quantization values for DC.
   const float* const PIK_RESTRICT kDequantMatrix =
-      DequantMatrix(0, kQuantKindDCT8, SIDE_CHANNEL);
+      dequant.Matrix(kQuantKindDCT8, SIDE_CHANNEL);
   float qm[block_size];
   for (int k = 0; k < block_size; ++k) {
     qm[k] = 1.0f / kDequantMatrix[k];
@@ -144,6 +144,7 @@ void FindBestCorrelation(const Image3F& dct, ImageI* PIK_RESTRICT map,
 // block layout (consecutive block coefficient `pixels').
 // Class Dequant applies color correlation maps back.
 SIMD_ATTR void UnapplyColorCorrelationAC(const ColorCorrelationMap& cmap,
+                                         const Rect& cmap_rect,
                                          const ImageF& y_plane,
                                          Image3F* coeffs) {
   constexpr size_t N = kBlockDim;
@@ -154,8 +155,8 @@ SIMD_ATTR void UnapplyColorCorrelationAC(const ColorCorrelationMap& cmap,
   const size_t ysize_blocks = coeffs->ysize();
   for (size_t y = 0; y < ysize_blocks; ++y) {
     size_t ty = y / kColorTileDimInBlocks;
-    const int* PIK_RESTRICT row_ytob = cmap.ytob_map.Row(ty);
-    const int* PIK_RESTRICT row_ytox = cmap.ytox_map.Row(ty);
+    const int* PIK_RESTRICT row_ytob = cmap_rect.ConstRow(cmap.ytob_map, ty);
+    const int* PIK_RESTRICT row_ytox = cmap_rect.ConstRow(cmap.ytox_map, ty);
 
     for (size_t x = 0; x < xsize_blocks; ++x) {
       size_t tx = x / kColorTileDimInBlocks;
@@ -212,6 +213,7 @@ template void ApplyColorCorrelationDC<false>(const ColorCorrelationMap&,
                                              const ImageF&, Image3F*);
 
 void FindBestColorCorrelationMap(const Image3F& opsin,
+                                 const DequantMatrices& dequant,
                                  ColorCorrelationMap* cmap) {
   PROFILER_ZONE("enc YTo* correlation");
 
@@ -233,10 +235,10 @@ void FindBestColorCorrelationMap(const Image3F& opsin,
 
   FindBestCorrelation</* from Y */ 1, /* to B */ 2, kColorFactorB,
                       kColorOffsetB>(dct, &cmap->ytob_map, &tmp, &cmap->ytob_dc,
-                                     y_to_b_acceptance);
+                                     y_to_b_acceptance, dequant);
   FindBestCorrelation</* from Y */ 1, /* to X */ 0, kColorFactorX,
                       kColorOffsetX>(dct, &cmap->ytox_map, &tmp, &cmap->ytox_dc,
-                                     y_to_x_acceptance);
+                                     y_to_x_acceptance, dequant);
 }
 
 bool DecodeColorMap(BitReader* PIK_RESTRICT br, ImageI* PIK_RESTRICT ac_map,

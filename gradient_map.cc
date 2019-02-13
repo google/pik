@@ -276,9 +276,18 @@ Image3S Quantize(const GradientMap& gradient, const Rect& map_rect,
   const Image3F& image = gradient.gradient;
   Image3S out(map_rect.xsize(), map_rect.ysize());
   for (int c = 0; c < 3; c++) {
-    if (gradient.grayscale && c != 1) continue;
+    // Skip x and b channels if grayscale, but do initialize them to 0.
+    if (gradient.grayscale && c != 1) {
+      for (size_t y = 0; y < out.ysize(); y++) {
+        int16_t* PIK_RESTRICT row_out = out.PlaneRow(c, y);
+        for (size_t x = 0; x < out.xsize(); x++) {
+          row_out[x] = 0;
+        }
+      }
+      continue;
+    };
     const float step = quantizer.inv_quant_dc() *
-                       quantizer.DequantMatrix(c, kQuantKindDCT8)[0];
+                       quantizer.DequantMatrix(kQuantKindDCT8, c)[0];
     float range = kXybRadius[c] * 2;
     // Use around 3x more bits than DC's quantization, capped
     int steps = std::min(std::max(16, (int)(3 * range / step)), 256);
@@ -303,7 +312,7 @@ void Dequantize(const Quantizer& quantizer, const Image3S& quant,
   for (int c = 0; c < 3; c++) {
     if (gradient->grayscale && c != 1) continue;
     const float step = quantizer.inv_quant_dc() *
-                       quantizer.DequantMatrix(c, kQuantKindDCT8)[0];
+                       quantizer.DequantMatrix(kQuantKindDCT8, c)[0];
     float range = kXybRadius[c] * 2;
     // Use around 3x more bits than DC's quantization, capped
     int steps = std::min(std::max(16, (int)(3 * range / step)), 256);
@@ -366,6 +375,7 @@ void ComputeGradientMap(const Image3F& opsin, bool grayscale,
   size_t xsize = gradient->xsize;
   size_t ysize = gradient->ysize;
 
+  gradient->gradient = Image3F(xsize, ysize);
   const auto compute_gradient_channel = [&](const int task, const int thread) {
     static const float kExclude = 999999;
     static const float kMaxDiff[3] = {0.001, 0.01, 0.05};
@@ -405,7 +415,11 @@ void ComputeGradientMap(const Image3F& opsin, bool grayscale,
     std::vector<float> coeffs(xsize * ysize);
     PlanePieceFit(points.data(), xsize_dc, ysize_dc, kNumBlocks, kExclude, true,
                   coeffs.data());
-    *gradient->gradient.MutablePlane(c) = ImageFromPacked(coeffs, xsize, ysize);
+    for (size_t y = 0; y < ysize; ++y) {
+      float* PIK_RESTRICT row = gradient->gradient.PlaneRow(c, y);
+      const float* PIK_RESTRICT packed_row = &coeffs[y * xsize];
+      memcpy(row, packed_row, xsize * sizeof(float));
+    }
   };
 
   RunOnPool(pool, 0, 3, compute_gradient_channel);
@@ -423,7 +437,7 @@ void ApplyGradientMap(const GradientMap& gradient, const Quantizer& quantizer,
   for (int c = 0; c < 3; ++c) {
     if (gradient.grayscale && c != 1) return;
     const float step = quantizer.inv_quant_dc() *
-                       quantizer.DequantMatrix(c, kQuantKindDCT8)[0] *
+                       quantizer.DequantMatrix(kQuantKindDCT8, c)[0] *
                        kScale[c];
 
     std::vector<int> apply(gradient.ysize_dc * gradient.xsize_dc, 0);

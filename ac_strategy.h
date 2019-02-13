@@ -11,9 +11,10 @@
 #include "common.h"
 #include "data_parallel.h"
 #include "dct.h"
+#include "dct_util.h"
 #include "image.h"
 #include "pik_info.h"
-#include "quantizer.h"
+#include "quant_weights.h"
 
 // Defines the different kinds of transforms, and heuristics to choose between
 // them.
@@ -29,6 +30,13 @@
 // used in each block.
 
 namespace pik {
+namespace detail {
+template <size_t SZ, size_t BX, size_t BY>
+static constexpr float ARLowestFrequencyScale() {
+  return SZ * IDCTScales<SZ>()[BX] * IDCTScales<SZ>()[BY] * L1Norm<SZ>()[BX] *
+         L1Norm<SZ>()[BY];
+}
+}  // namespace detail
 
 class AcStrategy {
  public:
@@ -36,6 +44,8 @@ class AcStrategy {
   static constexpr size_t kMaxCoeffBlocks = 4;
   static constexpr size_t kMaxBlockDim = kBlockDim * kMaxCoeffBlocks;
   static constexpr size_t kMaxCoeffArea = kMaxBlockDim * kMaxBlockDim;
+  static constexpr size_t kLLFMaskDim =
+      DivCeil(kMaxBlockDim, SIMD_FULL(float)::N) * SIMD_FULL(float)::N;
 
   // Raw strategy types.
   enum class Type : uint32_t {
@@ -51,10 +61,12 @@ class AcStrategy {
     DCT16X16 = 4,
     // Use 32-by-32 DCT
     DCT32X32 = 5,
+    // Angled lines (currently hardcoded for 45 degrees)
+    LINES = 6,
     // Use 8-by-8 DCT, no HF prediction
-    DCT_NOHF = 6,
+    DCT_NOHF = 7,
     // Use 4-by-4 DCT, no HF prediction
-    DCT4X4_NOHF = 7,
+    DCT4X4_NOHF = 8,
   };
 
   // Returns true if this block is the first 8x8 block (i.e. top-left) of a
@@ -67,6 +79,7 @@ class AcStrategy {
   }
 
   PIK_INLINE Type Strategy() const { return strategy_; }
+  PIK_INLINE size_t Block() const { return block_; }
 
   // Inverse check
   static PIK_INLINE bool IsRawStrategyValid(uint8_t raw_strategy) {
@@ -76,27 +89,11 @@ class AcStrategy {
     return AcStrategy((Type)raw_strategy, 0);
   }
 
-  // Get the quant kind for this type of strategy. A non-zero block parameter
-  // overrides block_.
+  // Get the quant kind for this type of strategy.
   PIK_INLINE size_t GetQuantKind(size_t block = 0) const {
-#ifdef ADDRESS_SANITIZER
-    PIK_ASSERT(block == 0 || block_ == 0);
-#endif
-    if (block == 0) block = block_;
-
-    if (strategy_ == Type::DCT16X16) {
-#ifdef ADDRESS_SANITIZER
-      PIK_ASSERT(block <= 3);
-#endif
-      return block + kQuantKindDCT16Start;
-    }
-
-    if (strategy_ == Type::DCT32X32) {
-#ifdef ADDRESS_SANITIZER
-      PIK_ASSERT(block <= 15);
-#endif
-      return block + kQuantKindDCT32Start;
-    }
+    static_assert(kMaxCoeffArea == kMaxQuantTableSize,
+                  "Maximum coefficient area should be the same as maximum "
+                  "quant table size!");
     if (strategy_ == Type::DCT_NOHF) return kQuantKindDCT8;
     if (strategy_ == Type::DCT4X4_NOHF) return kQuantKindDCT4;
 
@@ -104,12 +101,17 @@ class AcStrategy {
     static_assert(kQuantKindID == size_t(Type::IDENTITY), "QuantKind != type");
     static_assert(kQuantKindDCT4 == size_t(Type::DCT4X4), "QuantKind != type");
     static_assert(kQuantKindDCT2 == size_t(Type::DCT2X2), "QuantKind != type");
+    static_assert(kQuantKindDCT16 == size_t(Type::DCT16X16),
+                  "QuantKind != type");
+    static_assert(kQuantKindDCT32 == size_t(Type::DCT32X32),
+                  "QuantKind != type");
+    static_assert(kQuantKindLines == size_t(Type::LINES), "QuantKind != type");
     return static_cast<size_t>(strategy_);
   }
 
   PIK_INLINE float ARQuantScale() const {
-    if (strategy_ == Type::DCT32X32) return 0.71122376f;
-    if (strategy_ == Type::DCT16X16) return 0.827516904f;
+    if (strategy_ == Type::DCT32X32) return 1.2282996852328099;
+    if (strategy_ == Type::DCT16X16) return 1.1423171621463439;
     // TODO(veluca): find better values.
     if (strategy_ == Type::DCT4X4 || strategy_ == Type::DCT4X4_NOHF)
       return 1.2f;
@@ -119,7 +121,8 @@ class AcStrategy {
 
   PIK_INLINE bool PredictHF() const {
     return strategy_ != Type::DCT2X2 && strategy_ != Type::IDENTITY &&
-           strategy_ != Type::DCT_NOHF && strategy_ != Type::DCT4X4_NOHF;
+           strategy_ != Type::DCT_NOHF && strategy_ != Type::DCT4X4_NOHF &&
+           strategy_ != Type::LINES;
   }
 
   // Number of 8x8 blocks that this strategy will cover. 0 for non-top-left
@@ -155,7 +158,8 @@ class AcStrategy {
     return 1.0f / (8 * 8 - 1);
   }
 
-  float ARLowestFrequencyScale(size_t bx, size_t by) {
+  const float* ARLowestFrequencyScales(size_t y) {
+    using detail::ARLowestFrequencyScale;
     switch (strategy_) {
       case Type::DCT2X2:
       case Type::IDENTITY:
@@ -163,27 +167,99 @@ class AcStrategy {
       case Type::DCT4X4:
       case Type::DCT_NOHF:
       case Type::DCT4X4_NOHF:
-        return 1.0f;
+      case Type::LINES: {
+        SIMD_ALIGN static const constexpr float scales[kLLFMaskDim] = {1.0f};
+        return scales;
+      }
       case Type::DCT16X16: {
-        return 2 * kBlockDim * IDCTScales<2 * kBlockDim>()[bx] *
-               IDCTScales<2 * kBlockDim>()[by] * L1Norm<2 * kBlockDim>()[bx] *
-               L1Norm<2 * kBlockDim>()[by];
+        SIMD_ALIGN static const constexpr float scales[2][kLLFMaskDim] = {
+            {ARLowestFrequencyScale<2 * kBlockDim, 0, 0>(),
+             ARLowestFrequencyScale<2 * kBlockDim, 1, 0>()},
+            {ARLowestFrequencyScale<2 * kBlockDim, 0, 1>(),
+             ARLowestFrequencyScale<2 * kBlockDim, 1, 1>()}};
+        return scales[y];
       }
       case Type::DCT32X32: {
-        return 4 * kBlockDim * IDCTScales<4 * kBlockDim>()[bx] *
-               IDCTScales<4 * kBlockDim>()[by] * L1Norm<4 * kBlockDim>()[bx] *
-               L1Norm<4 * kBlockDim>()[by];
+        SIMD_ALIGN static const constexpr float scales[4][kLLFMaskDim] = {
+            {
+                ARLowestFrequencyScale<4 * kBlockDim, 0, 0>(),
+                ARLowestFrequencyScale<4 * kBlockDim, 1, 0>(),
+                ARLowestFrequencyScale<4 * kBlockDim, 2, 0>(),
+                ARLowestFrequencyScale<4 * kBlockDim, 3, 0>(),
+            },
+            {
+                ARLowestFrequencyScale<4 * kBlockDim, 0, 1>(),
+                ARLowestFrequencyScale<4 * kBlockDim, 1, 1>(),
+                ARLowestFrequencyScale<4 * kBlockDim, 2, 1>(),
+                ARLowestFrequencyScale<4 * kBlockDim, 3, 1>(),
+            },
+            {
+                ARLowestFrequencyScale<4 * kBlockDim, 0, 2>(),
+                ARLowestFrequencyScale<4 * kBlockDim, 1, 2>(),
+                ARLowestFrequencyScale<4 * kBlockDim, 2, 2>(),
+                ARLowestFrequencyScale<4 * kBlockDim, 3, 2>(),
+            },
+            {
+                ARLowestFrequencyScale<4 * kBlockDim, 0, 3>(),
+                ARLowestFrequencyScale<4 * kBlockDim, 1, 3>(),
+                ARLowestFrequencyScale<4 * kBlockDim, 2, 3>(),
+                ARLowestFrequencyScale<4 * kBlockDim, 3, 3>(),
+            }};
+        return scales[y];
       }
     }
   }
 
   // Pixel to coefficients and vice-versa
-  SIMD_ATTR void TransformFromPixels(const float* pixels, size_t pixels_stride,
-                                     float* coefficients,
+  SIMD_ATTR void TransformFromPixels(const float* PIK_RESTRICT pixels,
+                                     size_t pixels_stride,
+                                     float* PIK_RESTRICT coefficients,
                                      size_t coefficients_stride) const;
-  SIMD_ATTR void TransformToPixels(const float* coefficients,
-                                   size_t coefficients_stride, float* pixels,
+  SIMD_ATTR void TransformToPixels(const float* PIK_RESTRICT coefficients,
+                                   size_t coefficients_stride,
+                                   float* PIK_RESTRICT pixels,
                                    size_t pixels_stride) const;
+
+  // Coefficient scattering and gathering.
+  template <typename T>
+  SIMD_ATTR void ScatterCoefficients(const T* PIK_RESTRICT coefficients,
+                                     size_t coefficients_stride,
+                                     T* PIK_RESTRICT blocks,
+                                     size_t blocks_stride) const {
+    if (block_ != 0) return;
+    if (covered_blocks_x() == 4 && covered_blocks_y() == 4) {
+      ScatterBlock<4 * kBlockDim, 4 * kBlockDim>(
+          coefficients, coefficients_stride, blocks, blocks_stride);
+      return;
+    }
+    if (covered_blocks_x() == 2 && covered_blocks_y() == 2) {
+      ScatterBlock<2 * kBlockDim, 2 * kBlockDim>(
+          coefficients, coefficients_stride, blocks, blocks_stride);
+      return;
+    }
+    PIK_ASSERT(covered_blocks_x() == 1 && covered_blocks_y() == 1);
+    memcpy(blocks, coefficients, kBlockDim * kBlockDim * sizeof(T));
+  }
+
+  template <typename T>
+  SIMD_ATTR void GatherCoefficients(const T* PIK_RESTRICT blocks,
+                                    size_t blocks_stride,
+                                    T* PIK_RESTRICT coefficients,
+                                    size_t coefficients_stride) const {
+    if (block_ != 0) return;
+    if (covered_blocks_x() == 4 && covered_blocks_y() == 4) {
+      GatherBlock<4 * kBlockDim, 4 * kBlockDim>(
+          blocks, blocks_stride, coefficients, coefficients_stride);
+      return;
+    }
+    if (covered_blocks_x() == 2 && covered_blocks_y() == 2) {
+      GatherBlock<2 * kBlockDim, 2 * kBlockDim>(
+          blocks, blocks_stride, coefficients, coefficients_stride);
+      return;
+    }
+    PIK_ASSERT(covered_blocks_x() == 1 && covered_blocks_y() == 1);
+    memcpy(coefficients, blocks, kBlockDim * kBlockDim * sizeof(T));
+  }
 
   // Same as above, but for DC image.
   SIMD_ATTR void LowestFrequenciesFromDC(const float* PIK_RESTRICT dc,
@@ -222,7 +298,7 @@ class AcStrategy {
  private:
   Type strategy_;
   uint32_t block_;
-};
+};  // namespace pik
 
 // Class to use a certain row of the AC strategy.
 class AcStrategyRow {
@@ -250,6 +326,7 @@ class AcStrategyImage {
   AcStrategyImage(AcStrategyImage&&) = default;
   AcStrategyImage& operator=(AcStrategyImage&&) = default;
 
+  // `rect` is the area to fill with the entire contents of `raw_layers`.
   void SetFromRaw(const Rect& rect, const ImageB& raw_layers);
 
   AcStrategyRow ConstRow(size_t y, size_t x_prefix = 0) const {
@@ -282,8 +359,9 @@ class AcStrategyImage {
 // `quant_field` is an initial quantization field for this image. `src` is the
 // input image in the XYB color space. `ac_strategy` is the output strategy.
 SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
-                                  const ImageF* quant_field, const Image3F& src,
-                                  ThreadPool* pool,
+                                  const ImageF* quant_field,
+                                  const DequantMatrices& dequant,
+                                  const Image3F& src, ThreadPool* pool,
                                   AcStrategyImage* ac_strategy,
                                   PikInfo* aux_out);
 

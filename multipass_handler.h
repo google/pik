@@ -7,6 +7,8 @@
 #ifndef MULTIPASS_HANDLER_H_
 #define MULTIPASS_HANDLER_H_
 
+#include "ac_strategy.h"
+#include "block_dictionary.h"
 #include "codec.h"
 #include "color_correlation.h"
 #include "color_encoding.h"
@@ -32,14 +34,6 @@ class MultipassHandler {
  public:
   virtual ~MultipassHandler() = default;
 
-  // Save the ac strategy / quant field of this pass.
-  virtual void SaveAcStrategy(const AcStrategyImage& af) {}
-  virtual void SaveQuantField(const ImageI& qf) {}
-
-  // Give a hint to the ac strategy / quant field encoder/decoder.
-  virtual const AcStrategyImage* HintAcStrategy() { return nullptr; }
-  virtual const ImageI* HintQuantField() { return nullptr; }
-
   virtual const Rect& GroupRect() = 0;
   virtual const Rect& PaddedGroupRect() = 0;
   Rect BlockGroupRect() {
@@ -48,16 +42,20 @@ class MultipassHandler {
                 r.ysize() / kBlockDim);
   }
 
-  virtual Status GetPreviousPass(const ColorEncoding& color_encoding,
-                                 ThreadPool* pool, Image3F* out) {
-    return true;
+  // Progressive mode.
+  virtual std::vector<Image3S> SplitACCoefficients(
+      Image3S&& ac, const AcStrategyImage& ac_strategy) {
+    std::vector<Image3S> ret;
+    ret.push_back(std::move(ac));
+    return ret;
   }
 
   // Returns the MultipassManager this handler was created by.
   virtual MultipassManager* Manager() = 0;
 
  private:
-  Quantizer quantizer_{kBlockDim, 0, 0, 0};
+  DequantMatrices default_matrices_{/*need_inv_matrices=*/false};
+  Quantizer quantizer_{&default_matrices_, 0, 0};
 };
 
 // MultipassManager holds information about passes and manages
@@ -94,12 +92,23 @@ class MultipassManager {
   virtual MultipassHandler* GetGroupHandler(size_t group_id,
                                             const Rect& group_rect) = 0;
 
-  // Methods to retrieve color correlation, ac strategy and quantizer.
+  // Methods to retrieve color correlation, ac strategy, quantizer, block
+  // dictionary and dequant matrices.
+  virtual DequantMatrices GetDequantMatrices(double butteraugli_target,
+                                             const Image3F& opsin) {
+    return FindBestDequantMatrices(butteraugli_target, opsin);
+  }
+
+  virtual BlockDictionary GetBlockDictionary(double butteraugli_target,
+                                             const Image3F& opsin) = 0;
+
   virtual void GetColorCorrelationMap(const Image3F& opsin,
+                                      const DequantMatrices& dequant,
                                       ColorCorrelationMap* cmap) = 0;
 
   virtual void GetAcStrategy(float butteraugli_target,
-                             const ImageF* quant_field, const Image3F& src,
+                             const ImageF* quant_field,
+                             const DequantMatrices& dequant, const Image3F& src,
                              ThreadPool* pool, AcStrategyImage* ac_strategy,
                              PikInfo* aux_out) = 0;
 
@@ -107,15 +116,26 @@ class MultipassManager {
       const CompressParams& cparams, size_t xsize_blocks, size_t ysize_blocks,
       const Image3F& opsin_orig, const Image3F& opsin,
       const PassHeader& pass_header, const GroupHeader& header,
-      const ColorCorrelationMap& cmap, const AcStrategyImage& ac_strategy,
-      ImageF& quant_field, ThreadPool* pool, PikInfo* aux_out) = 0;
+      const ColorCorrelationMap& cmap, const BlockDictionary& block_dictionary,
+      const AcStrategyImage& ac_strategy, const ImageB& ar_sigma_lut_ids,
+      const DequantMatrices* dequant, ImageF& quant_field, ThreadPool* pool,
+      PikInfo* aux_out) = 0;
 
-  // Remove information from the image, just before encoding.
-  virtual void StripInfo(EncCache* cache) {}
-  virtual void StripInfoBeforePredictions(EncCache* cache) {}
+  virtual size_t GetNumPasses() { return 1; }
 
-  // Remove DC information from the image. Runs per-pass.
-  virtual void StripDCInfo(PassEncCache* cache) {}
+  // Save the ac strategy / quant field of this pass.
+  virtual void SaveAcStrategy(const AcStrategyImage& af) {}
+  virtual void SaveQuantField(const ImageI& qf) {}
+
+  // Give a hint to the ac strategy / quant field encoder/decoder.
+  virtual const AcStrategyImage* HintAcStrategy() { return nullptr; }
+  virtual const ImageI* HintQuantField() { return nullptr; }
+
+  // Previous pass in a specific colorspace.
+  virtual Status GetPreviousPass(const ColorEncoding& color_encoding,
+                                 ThreadPool* pool, Image3F* out) {
+    return true;
+  }
 };
 
 }  // namespace pik

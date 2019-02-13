@@ -5,11 +5,10 @@
 // https://opensource.org/licenses/MIT.
 
 // TODO(veluca): Lehmer coding takes up to 5% of the decoding time on very
-// small images (32x32 pixels), and up to 1.5% for moderate-sized images (such
-// as set14/6.png). However, since computing and reversing Lehmer coding can be
-// seen as a variation of the Fisher-Yates shuffle, we can reduce the time
-// taken by this step significantly by changing the implementation to a linear
-// time one
+// small images (32x32 pixels), and up to 1.5% for moderate-sized images.
+// However, since computing and reversing Lehmer coding can be seen as a
+// variation of the Fisher-Yates shuffle, we can reduce the time taken by this
+// step significantly by changing the implementation to a linear time one.
 
 #include "lehmer_code.h"
 

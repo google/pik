@@ -22,7 +22,6 @@
 #include "profiler.h"
 #include "simd/simd.h"
 #include "status.h"
-#include "tile_flow.h"
 
 namespace pik {
 
@@ -258,8 +257,8 @@ struct General3x3Convolution {
   static void Run(const Image3F& in, const size_t xsize, const size_t ysize,
                   const Kernel& kernel, Image3F* out) {
     for (int c = 0; c < 3; ++c) {
-      Run(in.Plane(c), xsize, ysize, kernel, out->MutablePlane(c));
-      out->CheckSizesSame();
+      Run(in.Plane(c), xsize, ysize, kernel,
+          const_cast<ImageF*>(&out->Plane(c)));
     }
   }
 };
@@ -304,7 +303,8 @@ class SymmetricConvolution {
                   const float (&weights)[(kRadius + 1) * (kRadius + 1)],
                   Image3F* out) {
     for (int c = 0; c < 3; ++c) {
-      Run(in.Plane(c), xsize, ysize, weights, out->MutablePlane(c));
+      Run(in.Plane(c), xsize, ysize, weights,
+          const_cast<ImageF*>(&out->Plane(c)));
     }
   }
 
@@ -1409,7 +1409,7 @@ class ConvolveT {
                                              const int64_t yend,
                                              const Kernel& kernel,
                                              const ImageF* out) {
-    const int64_t stride = in.bytes_per_row() / sizeof(float);
+    const int64_t stride = in.PixelsPerRow();
     const WrapRowMirror wrap_row(in, in.ysize());
     for (int64_t y = ybegin; y < yend; ++y) {
       RunRow<kSizeModN, LeftRight>(in.ConstRow(y), in.xsize(), stride, wrap_row,
@@ -1424,10 +1424,10 @@ class ConvolveT {
                                              const int64_t yend,
                                              const Kernel& kernel,
                                              const Image3F* out) {
-    const int64_t stride = in.Plane(0).bytes_per_row() / sizeof(float);
-    for (size_t c = 0; c < 3; ++c) {
-      const WrapRowMirror wrap_row(in.Plane(c), in.ysize());
-      for (int64_t y = ybegin; y < yend; ++y) {
+    const int64_t stride = in.PixelsPerRow();
+    for (int64_t y = ybegin; y < yend; ++y) {
+      for (size_t c = 0; c < 3; ++c) {
+        const WrapRowMirror wrap_row(in.Plane(c), in.ysize());
         RunRow<kSizeModN, LeftRight>(in.ConstPlaneRow(c, y), in.xsize(), stride,
                                      wrap_row, kernel, out->PlaneRow(c, y));
       }
@@ -1442,10 +1442,10 @@ class ConvolveT {
     // There is no interior if ysize <= 2 * kRadius.
     if (ybegin >= yend) return;
 
-    const int64_t stride = in.bytes_per_row() / sizeof(float);
+    const int64_t stride = in.PixelsPerRow();
     executor.Run(
         ybegin, yend,
-        [&in, stride, &kernel, out](const int y, const int thread) {
+        [&in, stride, &kernel, out](const int y, const int thread) SIMD_ATTR {
           RunRow<kSizeModN, LeftRight>(in.ConstRow(y), in.xsize(), stride,
                                        WrapRowUnchanged(), kernel, out->Row(y));
         },
@@ -1460,7 +1460,7 @@ class ConvolveT {
     // There is no interior if ysize <= 2 * kRadius.
     if (ybegin >= yend) return;
 
-    const int64_t stride = in.Plane(0).bytes_per_row() / sizeof(float);
+    const int64_t stride = in.PixelsPerRow();
     executor.Run(
         ybegin, yend,
         [&in, stride, &kernel, out](const int y, const int thread) SIMD_ATTR {
@@ -1480,14 +1480,14 @@ class ConvolveT {
                                                const int64_t yend,
                                                const Kernel& kernel,
                                                const ImageF* out) {
-    const int64_t stride = in.bytes_per_row() / sizeof(float);
+    const int64_t stride = in.PixelsPerRow();
     const float* row_in = in.ConstRow(ybegin);
     const float* row_out = out->Row(ybegin);  // RunRow casts to float*.
     for (int64_t y = ybegin; y < yend; ++y) {
       RunRow<kSizeModN, LeftRight>(row_in, in.xsize(), stride,
                                    WrapRowUnchanged(), kernel, row_out);
-      row_in += in.bytes_per_row() / sizeof(float);
-      row_out += out->bytes_per_row() / sizeof(float);
+      row_in += in.PixelsPerRow();
+      row_out += out->PixelsPerRow();
     }
   }
 
@@ -1498,15 +1498,15 @@ class ConvolveT {
                                                const int64_t yend,
                                                const Kernel& kernel,
                                                const Image3F* out) {
-    const int64_t stride = in.Plane(0).bytes_per_row() / sizeof(float);
-    for (size_t c = 0; c < 3; ++c) {
-      const float* row_in = in.ConstPlaneRow(c, ybegin);
-      const float* row_out = out->PlaneRow(c, ybegin);  // Used as float*.
-      for (int64_t y = ybegin; y < yend; ++y) {
+    const int64_t stride = in.PixelsPerRow();
+    for (int64_t y = ybegin; y < yend; ++y) {
+      for (size_t c = 0; c < 3; ++c) {
+        const float* row_in = in.ConstPlaneRow(c, ybegin);
+        const float* row_out = out->PlaneRow(c, ybegin);  // Used as float*.
         RunRow<kSizeModN, LeftRight>(row_in, in.xsize(), stride,
                                      WrapRowUnchanged(), kernel, row_out);
-        row_in += in.Plane(0).bytes_per_row() / sizeof(float);
-        row_out += out->Plane(0).bytes_per_row() / sizeof(float);
+        row_in += in.PixelsPerRow();
+        row_out += out->PixelsPerRow();
       }
     }
   }
@@ -1551,8 +1551,8 @@ class ConvolveT {
     PIK_ASSERT(xsize > kRadius && ysize > kRadius);
     static_assert(kRadius * sizeof(T) <= kMaxVectorSize, "Not enough padding");
 
-    for (size_t c = 0; c < 3; ++c) {
-      for (size_t y = 0; y < ysize; ++y) {
+    for (size_t y = 0; y < ysize; ++y) {
+      for (size_t c = 0; c < 3; ++c) {
         // Even if the image is const, we're allowed to overwrite its padding.
         T* const PIK_RESTRICT row = const_cast<T*>(image->ConstPlaneRow(c, y));
 

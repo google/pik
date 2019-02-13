@@ -21,6 +21,11 @@ namespace pik {
 Status BrotliCompress(int quality, const PaddedBytes& in,
                       PaddedBytes* PIK_RESTRICT out);
 
+// Appends to out + *total_out_size.
+Status BrotliCompress(int quality, const uint8_t* in, const size_t in_size,
+                      uint8_t* PIK_RESTRICT out,
+                      size_t* PIK_RESTRICT total_out_size);
+
 // Appends to out and ADDS to "bytes_read", which must be pre-initialized.
 Status BrotliDecompress(const uint8_t* in, size_t max_input_size,
                         size_t max_output_size, size_t* PIK_RESTRICT bytes_read,

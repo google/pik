@@ -19,7 +19,6 @@
 #include "multipass_handler.h"
 #include "noise.h"
 #include "os_specific.h"
-#include "pik_multipass.h"
 #include "pik_params.h"
 #include "pik_pass.h"
 #include "profiler.h"
@@ -30,9 +29,7 @@
 namespace pik {
 
 namespace {
-static const uint8_t kBrunsliMagic[] = {
-  0x0A, 0x04, 'B', 0xd2, 0xd5, 'N', 0x12
-};
+static const uint8_t kBrunsliMagic[] = {0x0A, 0x04, 'B', 0xd2, 0xd5, 'N', 0x12};
 
 // TODO(user): use VerifySignature, when brunsli codebase is attached.
 bool IsBrunsliFile(const PaddedBytes& compressed) {
@@ -68,102 +65,22 @@ Status PixelsToPik(const CompressParams& cparams, const CodecInOut* io,
   FileHeader container;
   MakeFileHeader(cparams, io, &container);
 
-  if (!cparams.lossless_base.empty()) {
-    SingleImageManager transform;
-    PikMultipassEncoder encoder(container, compressed, &transform, aux_out);
-    CompressParams p = cparams;
+  size_t extension_bits, total_bits;
+  PIK_CHECK(CanEncode(container, &extension_bits, &total_bits));
 
-    if (ApplyOverride(cparams.adaptive_reconstruction,
-                      cparams.butteraugli_distance >=
-                          kMinButteraugliForAdaptiveReconstruction)) {
-      transform.UseAdaptiveReconstruction();
-    }
-
-    // Lossless base.
-    CodecInOut base_io(io->Context());
-    PIK_RETURN_IF_ERROR(base_io.SetFromFile(cparams.lossless_base, pool));
-    p.adaptive_reconstruction = Override::kOff;
-    p.lossless_mode = true;
-    PIK_RETURN_IF_ERROR(
-        encoder.AddPass(p, PassParams{/*is_last=*/false}, &base_io, pool));
-
-    // Final non-lossless pass.
-    p.adaptive_reconstruction = cparams.adaptive_reconstruction;
-    p.lossless_mode = false;
-    PIK_RETURN_IF_ERROR(
-        encoder.AddPass(p, PassParams{/*is_last=*/true}, io, pool));
-    PIK_RETURN_IF_ERROR(encoder.Finalize());
-    return true;
+  compressed->resize(DivCeil(total_bits, kBitsPerByte));
+  size_t pos = 0;
+  PIK_RETURN_IF_ERROR(
+      WriteFileHeader(container, extension_bits, &pos, compressed->data()));
+  PassParams pass_params;
+  SingleImageManager transform;
+  if (cparams.progressive_mode) {
+    // TODO(veluca): re-enable saliency.
+    PassDefinition pass_definition[] = {{2, false}, {3, false}, {8, false}};
+    transform.SetProgressiveMode(ProgressiveMode{pass_definition});
   }
-
-  if (!cparams.progressive_mode) {
-    size_t extension_bits, total_bits;
-    PIK_CHECK(CanEncode(container, &extension_bits, &total_bits));
-
-    compressed->resize(DivCeil(total_bits, kBitsPerByte));
-    size_t pos = 0;
-    PIK_RETURN_IF_ERROR(
-        WriteFileHeader(container, extension_bits, &pos, compressed->data()));
-    PassParams pass_params;
-    pass_params.is_last = true;
-    SingleImageManager transform;
-    PIK_RETURN_IF_ERROR(PixelsToPikPass(cparams, pass_params, io, pool,
-                                        compressed, pos, aux_out, &transform));
-  } else {
-    bool lossless = cparams.lossless_mode;
-    SingleImageManager transform;
-    PikMultipassEncoder encoder(container, compressed, &transform, aux_out);
-    CompressParams p = cparams;
-    PassParams pass_params;
-    p.lossless_mode = false;
-
-    if (ApplyOverride(cparams.adaptive_reconstruction,
-                      cparams.butteraugli_distance >=
-                          kMinButteraugliForAdaptiveReconstruction)) {
-      transform.UseAdaptiveReconstruction();
-    }
-
-    // Disable adaptive reconstruction in intermediate passes.
-    p.adaptive_reconstruction = Override::kOff;
-    pass_params.is_last = false;
-
-    // DC + Low frequency pass.
-    transform.SetProgressiveMode(ProgressiveMode::kLfOnly);
-    PIK_RETURN_IF_ERROR(encoder.AddPass(p, pass_params, io, pool));
-
-    // Disable gradient map from here on.
-    p.gradient = Override::kOff;
-
-    // DC + LF are 0, predictions are useless.
-    p.predict_lf = false;
-    p.predict_hf = false;
-
-    // Optional salient-regions high frequency pass.
-    auto final_pass_progressive_mode = ProgressiveMode::kHfOnly;
-    if (!cparams.saliency_extractor_for_progressive_mode.empty()) {
-      std::shared_ptr<ImageF> saliency_map;
-      PIK_RETURN_IF_ERROR(
-          ProduceSaliencyMap(cparams, compressed, io, pool, &saliency_map));
-      final_pass_progressive_mode = ProgressiveMode::kNonSalientHfOnly;
-      transform.SetProgressiveMode(ProgressiveMode::kSalientHfOnly);
-      transform.SetSaliencyMap(saliency_map);
-      PIK_RETURN_IF_ERROR(encoder.AddPass(p, pass_params, io, pool));
-    }
-
-    // Final non-lossless pass.
-    transform.SetProgressiveMode(final_pass_progressive_mode);
-    p.adaptive_reconstruction = cparams.adaptive_reconstruction;
-    if (!lossless) {
-      pass_params.is_last = true;
-    }
-    PIK_RETURN_IF_ERROR(encoder.AddPass(p, pass_params, io, pool));
-    if (lossless) {
-      pass_params.is_last = true;
-      p.lossless_mode = true;
-      PIK_RETURN_IF_ERROR(encoder.AddPass(p, pass_params, io, pool));
-    }
-    PIK_RETURN_IF_ERROR(encoder.Finalize());
-  }
+  PIK_RETURN_IF_ERROR(PixelsToPikPass(cparams, pass_params, io, pool,
+                                      compressed, pos, aux_out, &transform));
   return true;
 }
 
@@ -190,10 +107,8 @@ Status PikToPixels(const DecompressParams& dparams,
   }
 
   SingleImageManager transform;
-  do {
-    PIK_RETURN_IF_ERROR(PikPassToPixels(dparams, compressed, container, pool,
-                                        &reader, io, aux_out, &transform));
-  } while (!transform.IsLastPass());
+  PIK_RETURN_IF_ERROR(PikPassToPixels(dparams, compressed, container, pool,
+                                      &reader, io, aux_out, &transform, 1));
 
   if (dparams.check_decompressed_size &&
       reader.Position() != compressed.size()) {

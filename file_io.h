@@ -3,8 +3,6 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT.
-//
-// Disclaimer: This is not an official Google product.
 
 #ifndef FILE_IO_H_
 #define FILE_IO_H_
@@ -31,6 +29,9 @@ static inline std::string Extension(const std::string& filename) {
 // RAII, ensures files are closed even when returning early.
 class FileWrapper {
  public:
+  FileWrapper(const FileWrapper& other) = delete;
+  FileWrapper& operator=(const FileWrapper& other) = delete;
+
   FileWrapper(const std::string& pathname, const char* mode)
       : file_(fopen(pathname.c_str(), mode)) {}
 
@@ -47,8 +48,9 @@ class FileWrapper {
   FILE* const file_;
 };
 
+template<typename ContainerType>
 static inline Status ReadFile(const std::string& pathname,
-                              PaddedBytes* PIK_RESTRICT bytes) {
+                              ContainerType* PIK_RESTRICT bytes) {
   FileWrapper f(pathname, "rb");
   if (f == nullptr) return PIK_FAILURE("Failed to open file for reading");
 
@@ -59,8 +61,10 @@ static inline Status ReadFile(const std::string& pathname,
 
   size_t pos = 0;
   while (pos < bytes->size()) {
+    // Needed in case ContainerType is std::string, whose data() is const.
+    char* bytes_writable = reinterpret_cast<char*>(&(*bytes)[0]);
     const size_t bytes_read =
-        fread(bytes->data() + pos, 1, bytes->size() - pos, f);
+        fread(bytes_writable + pos, 1, bytes->size() - pos, f);
     if (bytes_read == 0) return PIK_FAILURE("Failed to read");
     pos += bytes_read;
   }
@@ -68,7 +72,8 @@ static inline Status ReadFile(const std::string& pathname,
   return true;
 }
 
-static inline Status WriteFile(const PaddedBytes& bytes,
+template<typename ContainerType>
+static inline Status WriteFile(const ContainerType& bytes,
                                const std::string& pathname) {
   FileWrapper f(pathname, "wb");
   if (f == nullptr) return PIK_FAILURE("Failed to open file for writing");

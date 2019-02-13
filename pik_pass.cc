@@ -19,14 +19,15 @@
 #include <memory>
 #include <string>
 #include <vector>
-#include "noise.h"
 
 #undef PROFILER_ENABLED
 #define PROFILER_ENABLED 1
 #include "ac_strategy.h"
 #include "adaptive_quantization.h"
 #include "alpha.h"
+#include "ar_control_field.h"
 #include "arch_specific.h"
+#include "bit_reader.h"
 #include "bits.h"
 #include "byte_order.h"
 #include "color_correlation.h"
@@ -44,11 +45,14 @@
 #include "gamma_correct.h"
 #include "headers.h"
 #include "image.h"
-#include "image_io.h"
 #include "lossless16.h"
 #include "lossless8.h"
+#include "multipass_handler.h"
+#include "noise.h"
 #include "opsin_image.h"
 #include "opsin_inverse.h"
+#include "padded_bytes.h"
+#include "pik_params.h"
 #include "profiler.h"
 #include "resize.h"
 #include "simd/targets.h"
@@ -93,9 +97,6 @@ void OverrideFlag(const Override o, const uint32_t flag,
 
 void OverridePassFlags(const DecompressParams& dparams,
                        PassHeader* PIK_RESTRICT pass_header) {
-  // Do not forcibly enable features in intermediate passes.
-  if (!pass_header->is_last) return;
-
   OverrideFlag(dparams.noise, PassHeader::kNoise, &pass_header->flags);
   OverrideFlag(dparams.gradient, PassHeader::kGradientMap, &pass_header->flags);
 
@@ -103,20 +104,22 @@ void OverridePassFlags(const DecompressParams& dparams,
     pass_header->have_adaptive_reconstruction = false;
   } else if (dparams.adaptive_reconstruction == Override::kOn) {
     pass_header->have_adaptive_reconstruction = true;
-    pass_header->epf_params = dparams.epf_params;
+  }
+  pass_header->epf_params.use_sharpened = ApplyOverride(
+      dparams.epf_use_sharpened, pass_header->epf_params.use_sharpened);
+  if (dparams.epf_sigma > 0) {
+    pass_header->epf_params.enable_adaptive = false;
+    pass_header->epf_params.sigma = dparams.epf_sigma;
   }
 
-  if (dparams.override_gaborish) {
-    pass_header->gaborish = dparams.gaborish;
+  if (dparams.gaborish != -1) {
+    pass_header->gaborish = GaborishStrength(dparams.gaborish);
   }
 }
 
 void OverrideGroupFlags(const DecompressParams& dparams,
                         const PassHeader* PIK_RESTRICT pass_header,
-                        GroupHeader* PIK_RESTRICT header) {
-  // Do not forcibly enable features in intermediate passes.
-  if (!pass_header->is_last) return;
-}
+                        GroupHeader* PIK_RESTRICT header) {}
 
 // Specializes a 8-bit and 16-bit of rounding from floating point to lossless.
 template <typename T>
@@ -124,6 +127,9 @@ T RoundForLossless(float in);
 
 template <>
 uint8_t RoundForLossless(float in) {
+  // NOTE: if in was originally an 8 or 16 bit value, we don't need to round
+  // because such values are exactly representable as floats. Rounding is only
+  // needed when forcing inexact values back to integers.
   return static_cast<uint8_t>(in + 0.5f);
 }
 
@@ -193,20 +199,21 @@ Status PixelsToPikLosslessFrame(CompressParams cparams,
                                 const Image3F& previous_pass,
                                 PaddedBytes* compressed, size_t& pos,
                                 PikInfo* aux_out) {
+  PIK_ASSERT(pos % kBitsPerByte == 0);
   size_t xsize = rect.xsize();
   size_t ysize = rect.ysize();
   if (pass_header.lossless_grayscale) {
     if (pass_header.lossless_16_bits) {
       ImageU channel(xsize, ysize);
       LosslessChannelPass(0, io, rect, previous_pass, &channel);
-      compressed->resize(pos / 8);
+      compressed->resize(pos / kBitsPerByte);
       if (!Grayscale16bit_compress(channel, compressed)) {
         return PIK_FAILURE("Lossless compression failed");
       }
     } else {
       ImageB channel(xsize, ysize);
       LosslessChannelPass(0, io, rect, previous_pass, &channel);
-      compressed->resize(pos / 8);
+      compressed->resize(pos / kBitsPerByte);
       if (!Grayscale8bit_compress(channel, compressed)) {
         return PIK_FAILURE("Lossless compression failed");
       }
@@ -214,36 +221,54 @@ Status PixelsToPikLosslessFrame(CompressParams cparams,
   } else {
     if (pass_header.lossless_16_bits) {
       Image3U image(xsize, ysize);
-      LosslessChannelPass(0, io, rect, previous_pass, image.MutablePlane(0));
-      LosslessChannelPass(1, io, rect, previous_pass, image.MutablePlane(1));
-      LosslessChannelPass(2, io, rect, previous_pass, image.MutablePlane(2));
-      compressed->resize(pos / 8);
+      LosslessChannelPass(0, io, rect, previous_pass,
+                          const_cast<ImageU*>(&image.Plane(0)));
+      LosslessChannelPass(1, io, rect, previous_pass,
+                          const_cast<ImageU*>(&image.Plane(1)));
+      LosslessChannelPass(2, io, rect, previous_pass,
+                          const_cast<ImageU*>(&image.Plane(2)));
+      compressed->resize(pos / kBitsPerByte);
       if (!Colorful16bit_compress(image, compressed)) {
         return PIK_FAILURE("Lossless compression failed");
       }
     } else {
       Image3B image(xsize, ysize);
-      LosslessChannelPass(0, io, rect, previous_pass, image.MutablePlane(0));
-      LosslessChannelPass(1, io, rect, previous_pass, image.MutablePlane(1));
-      LosslessChannelPass(2, io, rect, previous_pass, image.MutablePlane(2));
-      compressed->resize(pos / 8);
+      LosslessChannelPass(0, io, rect, previous_pass,
+                          const_cast<ImageB*>(&image.Plane(0)));
+      LosslessChannelPass(1, io, rect, previous_pass,
+                          const_cast<ImageB*>(&image.Plane(1)));
+      LosslessChannelPass(2, io, rect, previous_pass,
+                          const_cast<ImageB*>(&image.Plane(2)));
+      compressed->resize(pos / kBitsPerByte);
       if (!Colorful8bit_compress(image, compressed)) {
         return PIK_FAILURE("Lossless compression failed");
       }
     }
   }
-  pos = compressed->size() * 8;
+  pos = compressed->size() * kBitsPerByte;
   return true;
 }
 
-Status PikPassHeuristics(CompressParams cparams, const PassHeader& pass_header,
-                         const Image3F& opsin_orig, const Image3F& opsin,
-                         MultipassManager* multipass_manager,
-                         GroupHeader* template_group_header,
-                         ColorCorrelationMap* full_cmap,
-                         std::shared_ptr<Quantizer>* full_quantizer,
-                         AcStrategyImage* full_ac_strategy, PikInfo* aux_out) {
-  size_t target_size = cparams.TargetSize(Rect(opsin_orig));
+// Returns the target size based on whether bitrate or direct targetsize is
+// given.
+size_t TargetSize(const CompressParams& cparams, const Rect& rect) {
+  if (cparams.target_size > 0) {
+    return cparams.target_size;
+  }
+  if (cparams.target_bitrate > 0.0) {
+    return 0.5 + cparams.target_bitrate * rect.xsize() * rect.ysize() / 8;
+  }
+  return 0;
+}
+
+Status PikPassHeuristics(
+    CompressParams cparams, const PassHeader& pass_header,
+    const Image3F& opsin_orig, const Image3F& opsin, DequantMatrices* dequant,
+    MultipassManager* multipass_manager, GroupHeader* template_group_header,
+    ColorCorrelationMap* full_cmap, std::shared_ptr<Quantizer>* full_quantizer,
+    AcStrategyImage* full_ac_strategy, ImageB* full_ar_sigma_lut_ids,
+    BlockDictionary* block_dictionary, PikInfo* aux_out) {
+  size_t target_size = TargetSize(cparams, Rect(opsin_orig));
   // TODO(robryk): This should take *template_group_header size, and size of
   // other passes into account.
   size_t opsin_target_size = target_size;
@@ -265,18 +290,36 @@ Status PikPassHeuristics(CompressParams cparams, const PassHeader& pass_header,
   const size_t ysize = opsin_orig.ysize();
   const size_t xsize_blocks = DivCeil(xsize, N);
   const size_t ysize_blocks = DivCeil(ysize, N);
-  multipass_manager->GetColorCorrelationMap(opsin, &*full_cmap);
+
+  *dequant = multipass_manager->GetDequantMatrices(cparams.butteraugli_distance,
+                                                   opsin);
+
+  *block_dictionary = multipass_manager->GetBlockDictionary(
+      cparams.butteraugli_distance, opsin);
+
+  Image3F opsin_with_removed_blocks = CopyImage(opsin);
+  block_dictionary->SubtractFrom(&opsin_with_removed_blocks);
+
+  multipass_manager->GetColorCorrelationMap(opsin_with_removed_blocks, dequant,
+                                            &*full_cmap);
   ImageF quant_field = InitialQuantField(
       cparams.butteraugli_distance, cparams.GetIntensityMultiplier(),
       opsin_orig, cparams, /*pool=*/nullptr, 1.0);
 
   multipass_manager->GetAcStrategy(cparams.butteraugli_distance, &quant_field,
-                                   opsin,
+                                   dequant, opsin_with_removed_blocks,
                                    /*pool=*/nullptr, full_ac_strategy, aux_out);
+
+  // TODO(veluca): investigate if this should be included in multipass_manager.
+  FindBestArControlField(cparams.butteraugli_distance,
+                         opsin_with_removed_blocks, *full_ac_strategy,
+                         quant_field, pass_header.gaborish,
+                         full_ar_sigma_lut_ids);
 
   *full_quantizer = multipass_manager->GetQuantizer(
       cparams, xsize_blocks, ysize_blocks, opsin_orig, opsin, pass_header,
-      *template_group_header, *full_cmap, *full_ac_strategy, quant_field,
+      *template_group_header, *full_cmap, *block_dictionary, *full_ac_strategy,
+      *full_ar_sigma_lut_ids, dequant, quant_field,
       /*pool=*/nullptr, aux_out);
   return true;
 }
@@ -287,7 +330,7 @@ Status PixelsToPikGroup(CompressParams cparams, const PassHeader& pass_header,
                         const ColorCorrelationMap& full_cmap,
                         const CodecInOut* io, const Image3F& opsin_in,
                         const NoiseParams& noise_params,
-                        PaddedBytes* compressed, size_t& pos,
+                        std::vector<PaddedBytes>* compressed, size_t& pos,
                         const PassEncCache& pass_enc_cache, PikInfo* aux_out,
                         MultipassHandler* multipass_handler) {
   const Rect& rect = multipass_handler->GroupRect();
@@ -295,10 +338,6 @@ Status PixelsToPikGroup(CompressParams cparams, const PassHeader& pass_header,
   const Rect area_to_encode =
       Rect(0, 0, padded_rect.xsize(), padded_rect.ysize());
 
-  // In progressive mode, encoders may choose to send alpha in any pass, the
-  // decoder shouldn't care in which pass it comes. Since at the moment it is
-  // unlikely that previews are used for alpha-blending/compositing, we choose
-  // to encode alpha only in the last pass. This might change in the future.
   if (pass_header.has_alpha) {
     PROFILER_ZONE("enc alpha");
     PIK_RETURN_IF_ERROR(EncodeAlpha(cparams, io->alpha(), rect, io->AlphaBits(),
@@ -308,21 +347,18 @@ Status PixelsToPikGroup(CompressParams cparams, const PassHeader& pass_header,
 
   size_t extension_bits, total_bits;
   PIK_RETURN_IF_ERROR(CanEncode(header, &extension_bits, &total_bits));
-  compressed->resize(DivCeil(pos + total_bits, kBitsPerByte));
+  (*compressed)[0].resize(DivCeil(pos + total_bits, kBitsPerByte));
   PIK_RETURN_IF_ERROR(
-      WriteGroupHeader(header, extension_bits, &pos, compressed->data()));
-  WriteZeroesToByteBoundary(&pos, compressed->data());
+      WriteGroupHeader(header, extension_bits, &pos, (*compressed)[0].data()));
+  WriteZeroesToByteBoundary(&pos, (*compressed)[0].data());
   if (aux_out != nullptr) {
     aux_out->layers[kLayerHeader].total_size +=
         DivCeil(total_bits, kBitsPerByte);
   }
 
   if (cparams.lossless_mode) {
-    Image3F previous_pass;
-    PIK_RETURN_IF_ERROR(multipass_handler->GetPreviousPass(
-        io->dec_c_original, /*pool=*/nullptr, &previous_pass));
-    return PixelsToPikLosslessFrame(cparams, pass_header, io, rect,
-                                    previous_pass, compressed, pos, aux_out);
+    // Done; we'll encode the entire image in one shot later.
+    return true;
   }
 
   Rect group_in_color_tiles(
@@ -344,17 +380,23 @@ Status PixelsToPikGroup(CompressParams cparams, const PassHeader& pass_header,
   Quantizer quantizer =
       full_quantizer->Copy(multipass_handler->BlockGroupRect());
 
-  ComputeCoefficients(quantizer, cmap, /*pool=*/nullptr, &cache,
-                      multipass_handler->Manager(), aux_out);
+  ComputeCoefficients(quantizer, full_cmap, group_in_color_tiles,
+                      /*pool=*/nullptr, &cache, aux_out);
 
-  multipass_handler->Manager()->StripInfo(&cache);
+  std::vector<Image3S> ac_split = multipass_handler->SplitACCoefficients(
+      std::move(cache.ac), cache.ac_strategy);
 
-  PaddedBytes compressed_data =
-      EncodeToBitstream(cache, area_to_encode, quantizer, noise_params, cmap,
-                        cparams.fast_mode, multipass_handler, aux_out);
+  PIK_ASSERT(ac_split.size() == multipass_handler->Manager()->GetNumPasses());
 
-  compressed->append(compressed_data);
-  pos += compressed_data.size() * kBitsPerByte;
+  for (size_t i = 0; i < ac_split.size(); i++) {
+    cache.ac = std::move(ac_split[i]);
+    PaddedBytes compressed_data =
+        EncodeToBitstream(cache, area_to_encode, quantizer, noise_params,
+                          cparams.fast_mode, multipass_handler, aux_out);
+
+    (*compressed)[i].append(compressed_data);
+    pos += compressed_data.size() * kBitsPerByte;
+  }
 
   return true;
 }
@@ -370,6 +412,7 @@ Status PixelsToPikPass(CompressParams cparams, const PassParams& pass_params,
                        PaddedBytes* compressed, size_t& pos, PikInfo* aux_out,
                        MultipassManager* multipass_manager) {
   PassHeader pass_header;
+  pass_header.num_passes = multipass_manager->GetNumPasses();
   pass_header.have_adaptive_reconstruction = false;
   if (cparams.lossless_mode) {
     pass_header.encoding = ImageEncoding::kLossless;
@@ -377,38 +420,24 @@ Status PixelsToPikPass(CompressParams cparams, const PassParams& pass_params,
     pass_header.lossless_grayscale = io->IsGray();
   }
 
-  pass_header.is_last = pass_params.is_last;
   pass_header.frame = pass_params.frame_info;
-  pass_header.has_alpha = io->HasAlpha() && pass_params.is_last;
+  pass_header.has_alpha = io->HasAlpha();
 
   if (pass_header.encoding == ImageEncoding::kPasses) {
-    pass_header.resampling_factor2 = cparams.resampling_factor2;
     pass_header.flags = PassFlagsFromParams(cparams, io);
     pass_header.predict_hf = cparams.predict_hf;
     pass_header.predict_lf = cparams.predict_lf;
-    pass_header.gaborish = cparams.gaborish;
-
-    if (io->xsize() <= 8 || io->ysize() <= 8) {
-      // Broken, disable.
-      pass_header.gaborish = GaborishStrength::kOff;
-    }
+    pass_header.gaborish = GaborishStrength(cparams.gaborish);
 
     if (ApplyOverride(cparams.adaptive_reconstruction,
                       cparams.butteraugli_distance >=
                           kMinButteraugliForAdaptiveReconstruction)) {
       pass_header.have_adaptive_reconstruction = true;
-      pass_header.epf_params = cparams.epf_params;
-      if (pass_header.epf_params.enable_adaptive &&
-          pass_header.epf_params.lut == 0) {
-        if (cparams.butteraugli_distance <= 1.0f) {
-          pass_header.epf_params.lut = 1;
-        } else if (cparams.butteraugli_distance <= 2.0f) {
-          pass_header.epf_params.lut = 2;
-        } else if (cparams.butteraugli_distance <= 3.0f) {
-          pass_header.epf_params.lut = 3;
-        } else {
-          pass_header.epf_params.lut = 0;
-        }
+      pass_header.epf_params.use_sharpened = ApplyOverride(
+          cparams.epf_use_sharpened, pass_header.epf_params.use_sharpened);
+      if (cparams.epf_sigma > 0) {
+        pass_header.epf_params.enable_adaptive = false;
+        pass_header.epf_params.sigma = cparams.epf_sigma;
       }
     }
   }
@@ -427,8 +456,8 @@ Status PixelsToPikPass(CompressParams cparams, const PassParams& pass_params,
         DivCeil(total_bits, kBitsPerByte);
   }
 
-  const size_t xsize_groups = DivCeil(io->xsize(), kGroupWidth);
-  const size_t ysize_groups = DivCeil(io->ysize(), kGroupHeight);
+  const size_t xsize_groups = DivCeil(io->xsize(), kGroupDim);
+  const size_t ysize_groups = DivCeil(io->ysize(), kGroupDim);
   const size_t num_groups = xsize_groups * ysize_groups;
 
   std::vector<std::unique_ptr<PikInfo>> aux_outs(num_groups);
@@ -436,8 +465,8 @@ Status PixelsToPikPass(CompressParams cparams, const PassParams& pass_params,
   for (size_t group_index = 0; group_index < num_groups; ++group_index) {
     const size_t gx = group_index % xsize_groups;
     const size_t gy = group_index / xsize_groups;
-    const Rect rect(gx * kGroupWidth, gy * kGroupHeight, kGroupWidth,
-                    kGroupHeight, io->xsize(), io->ysize());
+    const Rect rect(gx * kGroupDim, gy * kGroupDim, kGroupDim, kGroupDim,
+                    io->xsize(), io->ysize());
     handlers[group_index] =
         multipass_manager->GetGroupHandler(group_index, rect);
     if (aux_out != nullptr) {
@@ -449,14 +478,17 @@ Status PixelsToPikPass(CompressParams cparams, const PassParams& pass_params,
   ColorCorrelationMap full_cmap(io->xsize(), io->ysize());
   std::shared_ptr<Quantizer> full_quantizer;
   AcStrategyImage full_ac_strategy;
+  ImageB ar_sigma_lut_ids;
   Image3F opsin_orig, opsin;
   NoiseParams noise_params;
+  BlockDictionary block_dictionary;
   PassEncCache pass_enc_cache;
 
   if (pass_header.encoding == ImageEncoding::kPasses) {
     opsin_orig = OpsinDynamicsImage(io, Rect(io->color()));
-    if (pass_header.resampling_factor2 != 2) {
-      opsin_orig = DownsampleImage(opsin_orig, pass_header.resampling_factor2);
+    if (aux_out != nullptr) {
+      PIK_RETURN_IF_ERROR(
+          aux_out->InspectImage3F("pik_pass:OpsinDynamicsImage", opsin_orig));
     }
 
     constexpr size_t N = kBlockDim;
@@ -493,17 +525,23 @@ Status PixelsToPikPass(CompressParams cparams, const PassParams& pass_params,
 
     multipass_manager->DecorrelateOpsin(&opsin);
 
-    PIK_RETURN_IF_ERROR(
-        PikPassHeuristics(cparams, pass_header, opsin_orig, opsin,
-                          multipass_manager, &template_group_header, &full_cmap,
-                          &full_quantizer, &full_ac_strategy, aux_out));
+    PIK_RETURN_IF_ERROR(PikPassHeuristics(
+        cparams, pass_header, opsin_orig, opsin, &pass_enc_cache.matrices,
+        multipass_manager, &template_group_header, &full_cmap, &full_quantizer,
+        &full_ac_strategy, &ar_sigma_lut_ids, &block_dictionary, aux_out));
 
     // Initialize pass_enc_cache and encode DC.
     InitializePassEncCache(pass_header, opsin, full_ac_strategy,
-                           *full_quantizer, full_cmap, pool, &pass_enc_cache);
-
-    multipass_manager->StripDCInfo(&pass_enc_cache);
+                           *full_quantizer, full_cmap, block_dictionary, pool,
+                           &pass_enc_cache, aux_out);
     pass_enc_cache.use_new_dc = cparams.use_new_dc;
+
+    PikImageSizeInfo* matrices_info =
+        aux_out != nullptr ? &aux_out->layers[kLayerDequantTables] : nullptr;
+
+    std::string dequant_code = pass_enc_cache.matrices.Encode(matrices_info);
+    compressed->append(dequant_code);
+    pos += dequant_code.size() * 8;
 
     PaddedBytes pass_global_code;
     size_t byte_pos = 0;
@@ -514,7 +552,7 @@ Status PixelsToPikPass(CompressParams cparams, const PassParams& pass_params,
     std::string quant_code = full_quantizer->Encode(quant_info);
 
     // Encode cmap. TODO(veluca): consider encoding DC part of cmap only here,
-    // and AC in groups.
+    // and AC in (super)groups.
     PikImageSizeInfo* cmap_info =
         aux_out ? &aux_out->layers[kLayerCmap] : nullptr;
     std::string cmap_code =
@@ -527,19 +565,32 @@ Status PixelsToPikPass(CompressParams cparams, const PassParams& pass_params,
     Append(quant_code, &pass_global_code, &byte_pos);
     Append(cmap_code, &pass_global_code, &byte_pos);
 
-    PikImageSizeInfo* dc_info = aux_out ? &aux_out->layers[kLayerDC] : nullptr;
-    pass_global_code.append(
-        EncodeDC(*full_quantizer, pass_enc_cache, pool, dc_info));
+    PikImageSizeInfo* dc_info =
+        aux_out != nullptr ? &aux_out->layers[kLayerDC] : nullptr;
+    PikImageSizeInfo* cfields_info =
+        aux_out != nullptr ? &aux_out->layers[kLayerControlFields] : nullptr;
+
+    pass_global_code.append(EncodeDC(*full_quantizer, pass_enc_cache,
+                                     full_ac_strategy, pool, multipass_manager,
+                                     dc_info, cfields_info));
     compressed->append(pass_global_code);
     pos += pass_global_code.size() * 8;
+    PikImageSizeInfo* dictionary_info =
+        aux_out ? &aux_out->layers[kLayerDictionary] : nullptr;
+    std::string dictionary_code = block_dictionary.Encode(dictionary_info);
+    compressed->append(dictionary_code);
+    pos += dictionary_code.size() * 8;
   }
 
-  // Compress groups.
-  std::vector<PaddedBytes> group_codes(num_groups);
+  // Compress groups: one per combination of group and pass. Outer loop lists
+  // passes, inner lists groups. Group headers are only encoded in the groups of
+  // the first pass.
+  std::vector<std::vector<PaddedBytes>> group_codes(num_groups);
   std::atomic<int> num_errors{0};
   const auto process_group = [&](const int group_index, const int thread) {
-    PaddedBytes* group_code = &group_codes[group_index];
+    std::vector<PaddedBytes>* group_code = &group_codes[group_index];
     size_t group_pos = 0;
+    group_code->resize(multipass_manager->GetNumPasses());
     if (!PixelsToPikGroup(cparams, pass_header, template_group_header,
                           full_ac_strategy, full_quantizer.get(), full_cmap, io,
                           opsin, noise_params, group_code, group_pos,
@@ -551,6 +602,10 @@ Status PixelsToPikPass(CompressParams cparams, const PassParams& pass_params,
   };
   RunOnPool(pool, 0, num_groups, process_group, "PixelsToPikPass");
 
+  for (size_t i = 0; i < num_groups; i++) {
+    PIK_ASSERT(group_codes[i].size() == multipass_manager->GetNumPasses());
+  }
+
   if (aux_out != nullptr) {
     for (size_t group_index = 0; group_index < num_groups; ++group_index) {
       aux_out->Assimilate(*aux_outs[group_index]);
@@ -559,29 +614,48 @@ Status PixelsToPikPass(CompressParams cparams, const PassParams& pass_params,
 
   PIK_RETURN_IF_ERROR(num_errors.load(std::memory_order_relaxed) == 0);
 
-  // Build TOC.
-  PaddedBytes group_toc(GroupSizeCoder::MaxSize(num_groups));
-  size_t group_toc_pos = 0;
-  uint8_t* group_toc_storage = group_toc.data();
-  size_t total_groups_size = 0;
-  for (size_t group_index = 0; group_index < num_groups; ++group_index) {
-    size_t group_size = group_codes[group_index].size();
-    GroupSizeCoder::Encode(group_size, &group_toc_pos, group_toc_storage);
-    total_groups_size += group_size;
-  }
-  WriteZeroesToByteBoundary(&group_toc_pos, group_toc_storage);
-  group_toc.resize(group_toc_pos / kBitsPerByte);
+  // Build TOCs.
 
-  // Push output.
-  PIK_ASSERT(pos % kBitsPerByte == 0);
-  compressed->reserve(DivCeil(pos, kBitsPerByte) + group_toc.size() +
-                      total_groups_size);
-  compressed->append(group_toc);
-  pos += group_toc.size() * kBitsPerByte;
-  for (size_t group_index = 0; group_index < num_groups; ++group_index) {
-    const PaddedBytes& group_code = group_codes[group_index];
-    compressed->append(group_code);
-    pos += group_code.size() * kBitsPerByte;
+  for (size_t i = 0; i < multipass_manager->GetNumPasses(); i++) {
+    size_t group_toc_pos = 0;
+    PaddedBytes group_toc(PaddedBytes(GroupSizeCoder::MaxSize(num_groups)));
+    uint8_t* group_toc_storage = group_toc.data();
+    size_t total_groups_size = 0;
+    for (size_t group_index = 0; group_index < num_groups; ++group_index) {
+      size_t group_size = group_codes[group_index][i].size();
+      GroupSizeCoder::Encode(group_size, &group_toc_pos, group_toc_storage);
+      total_groups_size += group_size;
+    }
+    WriteZeroesToByteBoundary(&group_toc_pos, group_toc_storage);
+    group_toc.resize(group_toc_pos / kBitsPerByte);
+
+    // Push output.
+    PIK_ASSERT(pos % kBitsPerByte == 0);
+    compressed->reserve(DivCeil(pos, kBitsPerByte) + group_toc.size() +
+                        total_groups_size);
+    compressed->append(group_toc);
+    pos += group_toc.size() * kBitsPerByte;
+
+    // Only do lossless encoding in the first pass, if there is more than one.
+    if (pass_header.encoding == ImageEncoding::kLossless && i == 0) {
+      // Encode entire image at once to avoid per-group overhead. Must come
+      // BEFORE the encoded groups because the decoder assumes that the last
+      // group coincides with the end of the bitstream.
+      const Rect rect(io->color());
+
+      Image3F previous_pass;
+      PIK_RETURN_IF_ERROR(multipass_manager->GetPreviousPass(
+          io->dec_c_original, pool, &previous_pass));
+      PIK_RETURN_IF_ERROR(PixelsToPikLosslessFrame(cparams, pass_header, io,
+                                                   rect, previous_pass,
+                                                   compressed, pos, aux_out));
+    }
+
+    for (size_t group_index = 0; group_index < num_groups; ++group_index) {
+      const PaddedBytes& group_code = group_codes[group_index][i];
+      compressed->append(group_code);
+      pos += group_code.size() * kBitsPerByte;
+    }
   }
 
   io->enc_size = compressed->size();
@@ -590,10 +664,10 @@ Status PixelsToPikPass(CompressParams cparams, const PassParams& pass_params,
 
 namespace {
 
-Status ValidateImageDimensions(const FileHeader& container,
+Status ValidateImageDimensions(const FileHeader& file_header,
                                const DecompressParams& dparams) {
-  const size_t xsize = container.xsize();
-  const size_t ysize = container.ysize();
+  const size_t xsize = file_header.xsize();
+  const size_t ysize = file_header.ysize();
   if (xsize == 0 || ysize == 0) {
     return PIK_FAILURE("Empty image.");
   }
@@ -737,21 +811,26 @@ Status PikLosslessFrameToPixels(const PaddedBytes& compressed,
   return true;
 }
 
+// `reader` is a vector of readers (one per pass). Group headers are only
+// present in the first pass, thus the group header of this group is read from
+// `reader[0]`.
 Status PikGroupToPixels(
-    const DecompressParams& dparams, const FileHeader& container,
+    const DecompressParams& dparams, const FileHeader& file_header,
     const PassHeader* pass_header, const PaddedBytes& compressed,
     const Quantizer& quantizer, const ColorCorrelationMap& full_cmap,
-    BitReader* reader, Image3F* PIK_RESTRICT opsin_output, ImageU* alpha_output,
-    CodecContext* context, PikInfo* aux_out, PassDecCache* pass_dec_cache,
+    std::vector<BitReader>* reader, Image3F* PIK_RESTRICT opsin_output,
+    ImageU* alpha_output, const CodecContext* context, PikInfo* aux_out,
+    PassDecCache* PIK_RESTRICT pass_dec_cache,
+    GroupDecCache* PIK_RESTRICT group_dec_cache,
     MultipassHandler* multipass_handler,
-    const ColorEncoding& original_color_encoding) {
+    const ColorEncoding& original_color_encoding, size_t downsample) {
   PROFILER_FUNC;
   const Rect& padded_rect = multipass_handler->PaddedGroupRect();
   const Rect& rect = multipass_handler->GroupRect();
   GroupHeader header;
   header.nonserialized_have_alpha = pass_header->has_alpha;
-  PIK_RETURN_IF_ERROR(ReadGroupHeader(reader, &header));
-  PIK_RETURN_IF_ERROR(reader->JumpToByteBoundary());
+  PIK_RETURN_IF_ERROR(ReadGroupHeader(&(*reader)[0], &header));
+  PIK_RETURN_IF_ERROR((*reader)[0].JumpToByteBoundary());
   OverrideGroupFlags(dparams, pass_header, &header);
 
   if (pass_header->has_alpha) {
@@ -760,37 +839,22 @@ Status PikGroupToPixels(
     // encoding in pik which differs from what the original had (or
     // alternatively if they must be the same, there should not be two fields)
     if (header.alpha.bytes_per_alpha !=
-        container.metadata.transcoded.original_bytes_per_alpha) {
+        file_header.metadata.transcoded.original_bytes_per_alpha) {
       return PIK_FAILURE("Nonuniform alpha bitdepth is not supported yet.");
     }
-    if (container.metadata.transcoded.original_bytes_per_alpha == 0) {
+    if (file_header.metadata.transcoded.original_bytes_per_alpha == 0) {
       return PIK_FAILURE("Header claims to contain alpha but the depth is 0.");
     }
     PIK_RETURN_IF_ERROR(DecodeAlpha(dparams, header.alpha, alpha_output, rect));
   }
 
   if (pass_header->encoding == ImageEncoding::kLossless) {
-    size_t pos = reader->Position();
-    size_t before_pos = pos;
-    Image3F previous_pass;
-    PIK_RETURN_IF_ERROR(multipass_handler->GetPreviousPass(
-        original_color_encoding, /*pool=*/nullptr, &previous_pass));
-    auto result = PikLosslessFrameToPixels(compressed, *pass_header, &pos,
-                                           opsin_output, rect, previous_pass);
-    reader->SkipBits((pos - before_pos) << 3);
-    // Byte-wise; no need to jump to boundary.
-    return result;
+    // Done; we'll decode the entire image in one shot later.
+    return true;
   }
 
-  const size_t resampling_factor2 = pass_header->resampling_factor2;
-  if (resampling_factor2 != 2 && resampling_factor2 != 3 &&
-      resampling_factor2 != 4 && resampling_factor2 != 8) {
-    return PIK_FAILURE("Pik decoding failed: invalid resampling factor");
-  }
-
-  ImageSize opsin_size = DownsampledImageSize(
-      ImageSize::Make(padded_rect.xsize(), padded_rect.ysize()),
-      resampling_factor2);
+  ImageSize opsin_size =
+      ImageSize::Make(padded_rect.xsize(), padded_rect.ysize());
   const size_t xsize_blocks = DivCeil<size_t>(opsin_size.xsize, kBlockDim);
   const size_t ysize_blocks = DivCeil<size_t>(opsin_size.ysize, kBlockDim);
 
@@ -803,33 +867,33 @@ Status PikGroupToPixels(
               kColorTileDimInBlocks));
 
   NoiseParams noise_params;
-  // TODO(veluca): either avoid the copy, or decode the sub-rect in
-  // DecodeFromBitstream.
-  ColorCorrelationMap cmap = full_cmap.Copy(group_in_color_tiles);
-  DecCache dec_cache;
 
-  InitializeDecCache(*pass_dec_cache, padded_rect, &dec_cache);
+  InitializeDecCache(*pass_dec_cache, padded_rect, group_dec_cache);
 
-  {
+  for (size_t i = 0; i < pass_header->num_passes; i++) {
     PROFILER_ZONE("dec_bitstr");
-    if (!DecodeFromBitstream(*pass_header, header, compressed, reader,
-                             padded_rect, multipass_handler, xsize_blocks,
-                             ysize_blocks, cmap, &noise_params, quantizer,
-                             &dec_cache, pass_dec_cache)) {
+    auto decode = i == 0 ? &DecodeFromBitstream</*first=*/true>
+                         : &DecodeFromBitstream</*first=*/false>;
+    if (!decode(*pass_header, header, compressed, &(*reader)[i], padded_rect,
+                multipass_handler, xsize_blocks, ysize_blocks, full_cmap,
+                group_in_color_tiles, &noise_params, quantizer, pass_dec_cache,
+                group_dec_cache)) {
       return PIK_FAILURE("Pik decoding failed.");
     }
-    if (!reader->JumpToByteBoundary()) {
+    if (!(*reader)[i].JumpToByteBoundary()) {
       return PIK_FAILURE("Pik bitstream is corrupted.");
     }
   }
 
-  multipass_handler->SaveAcStrategy(pass_dec_cache->ac_strategy);
-  multipass_handler->SaveQuantField(pass_dec_cache->raw_quant_field);
+  Rect opsin_rect(padded_rect.x0() / downsample, padded_rect.y0() / downsample,
+                  DivCeil(padded_rect.xsize(), downsample),
+                  DivCeil(padded_rect.ysize(), downsample));
 
   // Note: DecodeFromBitstream already performed dequantization.
   ReconOpsinImage(*pass_header, header, quantizer,
-                  multipass_handler->BlockGroupRect(), &dec_cache,
-                  pass_dec_cache, opsin_output, padded_rect, aux_out);
+                  multipass_handler->BlockGroupRect(), pass_dec_cache,
+                  group_dec_cache, opsin_output, opsin_rect, aux_out,
+                  downsample);
 
   return true;
 }
@@ -838,28 +902,28 @@ Status PikGroupToPixels(
 
 Status PikPassToPixels(const DecompressParams& dparams,
                        const PaddedBytes& compressed,
-                       const FileHeader& container, ThreadPool* pool,
+                       const FileHeader& file_header, ThreadPool* pool,
                        BitReader* reader, CodecInOut* io, PikInfo* aux_out,
-                       MultipassManager* multipass_handler) {
+                       MultipassManager* multipass_manager, size_t downsample) {
   PROFILER_ZONE("PikPassToPixels uninstrumented");
-  PIK_RETURN_IF_ERROR(ValidateImageDimensions(container, dparams));
+  PIK_RETURN_IF_ERROR(ValidateImageDimensions(file_header, dparams));
 
-  io->metadata = container.metadata;
+  io->metadata = file_header.metadata;
 
   // Used when writing the output file unless DecoderHints overrides it.
   io->SetOriginalBitsPerSample(
-      container.metadata.transcoded.original_bit_depth);
-  io->dec_c_original = container.metadata.transcoded.original_color_encoding;
+      file_header.metadata.transcoded.original_bit_depth);
+  io->dec_c_original = file_header.metadata.transcoded.original_color_encoding;
   if (io->dec_c_original.icc.empty()) {
     // Removed by MaybeRemoveProfile; fail unless we successfully restore it.
     PIK_RETURN_IF_ERROR(
         ColorManagement::SetProfileFromFields(&io->dec_c_original));
   }
 
-  const size_t xsize = container.xsize();
-  const size_t ysize = container.ysize();
-  size_t padded_xsize = DivCeil(xsize, kBlockDim) * kBlockDim;
-  size_t padded_ysize = DivCeil(ysize, kBlockDim) * kBlockDim;
+  const size_t xsize = file_header.xsize();
+  const size_t ysize = file_header.ysize();
+  const size_t padded_xsize = DivCeil(xsize, kBlockDim) * kBlockDim;
+  const size_t padded_ysize = DivCeil(ysize, kBlockDim) * kBlockDim;
 
   PassHeader header;
   PIK_RETURN_IF_ERROR(ReadPassHeader(reader, &header));
@@ -872,17 +936,17 @@ Status PikPassToPixels(const DecompressParams& dparams,
     return PIK_FAILURE("Unsupported bitstream");
   }
 
-  multipass_handler->StartPass(header);
-
   OverridePassFlags(dparams, &header);
+
+  multipass_manager->StartPass(header);
 
   ImageU alpha;
   if (header.has_alpha) {
     alpha = ImageU(xsize, ysize);
   }
 
-  const size_t xsize_groups = DivCeil(xsize, kGroupWidth);
-  const size_t ysize_groups = DivCeil(ysize, kGroupHeight);
+  const size_t xsize_groups = DivCeil(xsize, kGroupDim);
+  const size_t ysize_groups = DivCeil(ysize, kGroupDim);
   const size_t num_groups = xsize_groups * ysize_groups;
 
   std::vector<PikInfo> aux_outs;
@@ -895,11 +959,11 @@ Status PikPassToPixels(const DecompressParams& dparams,
     for (size_t group_index = 0; group_index < num_groups; ++group_index) {
       const size_t gx = group_index % xsize_groups;
       const size_t gy = group_index / xsize_groups;
-      const size_t x = gx * kGroupWidth;
-      const size_t y = gy * kGroupHeight;
-      Rect rect(x, y, kGroupWidth, kGroupHeight, xsize, ysize);
+      const size_t x = gx * kGroupDim;
+      const size_t y = gy * kGroupDim;
+      Rect rect(x, y, kGroupDim, kGroupDim, xsize, ysize);
       handlers[group_index] =
-          multipass_handler->GetGroupHandler(group_index, rect);
+          multipass_manager->GetGroupHandler(group_index, rect);
     }
   }
 
@@ -911,60 +975,97 @@ Status PikPassToPixels(const DecompressParams& dparams,
   pass_dec_cache.grayscale = header.flags & PassHeader::kGrayscaleOpt;
   pass_dec_cache.ac_strategy = AcStrategyImage(xsize_blocks, ysize_blocks);
   pass_dec_cache.raw_quant_field = ImageI(xsize_blocks, ysize_blocks);
+
+  // TODO(veluca): Decode the lut image in DC groups decoding.
+  pass_dec_cache.sigma_lut_ids = ImageB(xsize_blocks, ysize_blocks);
+  ZeroFillImage(&pass_dec_cache.sigma_lut_ids);
+
   ColorCorrelationMap cmap(xsize, ysize);
-  Quantizer quantizer(kBlockDim, 0, 0, 0);
+
+  // TODO(veluca): deserialize quantization tables from the bitstream.
+
+  Quantizer quantizer(&pass_dec_cache.matrices, 0, 0);
+  BlockDictionary block_dictionary;
+
+  std::vector<GroupDecCache> group_dec_caches(NumThreads(pool));
 
   if (header.encoding == ImageEncoding::kPasses) {
     PROFILER_ZONE("DecodeColorMap+DC");
+    PIK_RETURN_IF_ERROR(pass_dec_cache.matrices.Decode(reader));
     PIK_RETURN_IF_ERROR(quantizer.Decode(reader));
     PIK_RETURN_IF_ERROR(reader->JumpToByteBoundary());
     DecodeColorMap(reader, &cmap.ytob_map, &cmap.ytob_dc);
     DecodeColorMap(reader, &cmap.ytox_map, &cmap.ytox_dc);
-    PIK_RETURN_IF_ERROR(DecodeDC(reader, compressed, header, xsize_blocks,
-                                 ysize_blocks, quantizer, cmap, pool,
-                                 &pass_dec_cache));
+    PIK_RETURN_IF_ERROR(DecodeDC(
+        reader, compressed, header, xsize_blocks, ysize_blocks, quantizer, cmap,
+        pool, multipass_manager, &pass_dec_cache, &group_dec_caches));
+    PIK_RETURN_IF_ERROR(
+        block_dictionary.Decode(reader, padded_xsize, padded_ysize));
+    multipass_manager->SaveAcStrategy(pass_dec_cache.ac_strategy);
+    multipass_manager->SaveQuantField(pass_dec_cache.raw_quant_field);
   }
 
-  // Read TOC.
-  std::vector<size_t> group_offsets;
-  {
+  Image3F opsin(DivCeil(padded_xsize, downsample),
+                DivCeil(padded_ysize, downsample));
+
+  // Read TOCs.
+  std::vector<std::vector<size_t>> group_offsets(header.num_passes);
+  std::vector<size_t> group_codes_begin(header.num_passes);
+  for (size_t i = 0; i < header.num_passes; i++) {
     PROFILER_ZONE("Read TOC");
-    group_offsets.reserve(num_groups + 1);
-    group_offsets.push_back(0);
+    std::vector<size_t>& group_offsets_pass = group_offsets[i];
+    group_offsets_pass.reserve(num_groups + 1);
+    group_offsets_pass.push_back(0);
     for (size_t group_index = 0; group_index < num_groups; ++group_index) {
       const uint32_t size = GroupSizeCoder::Decode(reader);
-      group_offsets.push_back(group_offsets.back() + size);
+      group_offsets_pass.push_back(group_offsets_pass.back() + size);
     }
     PIK_RETURN_IF_ERROR(reader->JumpToByteBoundary());
-  }
+    // On first pass, read lossless.
+    if (header.encoding == ImageEncoding::kLossless && i == 0) {
+      const Rect rect(0, 0, xsize, ysize);
 
-  // Pretend all groups are read.
-  size_t group_codes_begin = reader->Position();
-  reader->SkipBits(group_offsets.back() * kBitsPerByte);
-  if (reader->Position() > compressed.size()) {
-    return PIK_FAILURE("Group code extends after stream end");
-  }
+      size_t pos = reader->Position();
+      const size_t before_pos = pos;
 
-  Image3F opsin(padded_xsize, padded_ysize);
+      Image3F previous_pass;
+      PIK_RETURN_IF_ERROR(multipass_manager->GetPreviousPass(
+          io->dec_c_original, pool, &previous_pass));
+      PIK_RETURN_IF_ERROR(PikLosslessFrameToPixels(
+          compressed, header, &pos, &opsin, rect, previous_pass));
+      reader->SkipBits((pos - before_pos) * kBitsPerByte);
+      // Byte-wise; no need to jump to boundary.
+    }
+    // Pretend all groups of this pass are read.
+    group_codes_begin[i] = reader->Position();
+    reader->SkipBits(group_offsets_pass.back() * kBitsPerByte);
+    if (reader->Position() > compressed.size()) {
+      return PIK_FAILURE("Group code extends after stream end");
+    }
+  }
 
   // Decode groups.
   std::atomic<int> num_errors{0};
   const auto process_group = [&](const int group_index, const int thread) {
-    size_t group_code_offset = group_offsets[group_index];
-    size_t group_reader_limit = group_offsets[group_index + 1];
-    // TODO(user): this looks ugly; we should get rid of PaddedBytes parameter
-    //               once it is wrapped into BitReader; otherwise it is easy to
-    //               screw the things up.
-    BitReader group_reader(compressed.data(),
-                           group_codes_begin + group_reader_limit);
-    group_reader.SkipBits((group_codes_begin + group_code_offset) *
-                          kBitsPerByte);
+    std::vector<BitReader> readers;
+    for (size_t i = 0; i < header.num_passes; i++) {
+      size_t group_code_offset = group_offsets[i][group_index];
+      size_t group_reader_limit = group_offsets[i][group_index + 1];
+      // TODO(user): this looks ugly; we should get rid of PaddedBytes
+      //               parameter once it is wrapped into BitReader; otherwise
+      //               it is easy to screw the things up.
+      readers.emplace_back(compressed.data(),
+                           group_codes_begin[i] + group_reader_limit);
+      readers.back().SkipBits((group_codes_begin[i] + group_code_offset) *
+                              kBitsPerByte);
+    }
 
     PikInfo* my_aux_out = aux_out ? &aux_outs[group_index] : nullptr;
-    if (!PikGroupToPixels(dparams, container, &header, compressed, quantizer,
-                          cmap, &group_reader, &opsin, &alpha, io->Context(),
-                          my_aux_out, &pass_dec_cache, handlers[group_index],
-                          io->dec_c_original)) {
+    if (!PikGroupToPixels(dparams, file_header, &header, compressed, quantizer,
+                          cmap, &readers, &opsin, &alpha, io->Context(),
+                          my_aux_out, &pass_dec_cache,
+                          &group_dec_caches[thread], handlers[group_index],
+                          io->dec_c_original, downsample)) {
       num_errors.fetch_add(1);
       return;
     }
@@ -974,30 +1075,32 @@ Status PikPassToPixels(const DecompressParams& dparams,
     RunOnPool(pool, 0, num_groups, process_group, "PikPassToPixels");
   }
 
+  PIK_RETURN_IF_ERROR(num_errors.load(std::memory_order_relaxed) == 0);
+
   if (aux_out != nullptr) {
     for (size_t group_index = 0; group_index < num_groups; ++group_index) {
       aux_out->Assimilate(aux_outs[group_index]);
     }
   }
 
-  PIK_RETURN_IF_ERROR(num_errors.load(std::memory_order_relaxed) == 0);
-
   if (header.encoding == ImageEncoding::kPasses) {
-    multipass_handler->RestoreOpsin(&opsin);
-    multipass_handler->SetDecodedPass(opsin);
+    multipass_manager->RestoreOpsin(&opsin);
+    multipass_manager->SetDecodedPass(opsin);
 
-    Image3F color(padded_xsize, padded_ysize);
-    FinalizePassDecoding(std::move(opsin), header, NoiseParams(), quantizer,
-                         pool, &pass_dec_cache, &color, aux_out);
+    PIK_RETURN_IF_ERROR(
+        FinalizePassDecoding(&opsin, file_header.xsize(), file_header.ysize(),
+                             header, NoiseParams(), quantizer, block_dictionary,
+                             pool, &pass_dec_cache, aux_out, downsample));
+    // From now on, `opsin` is actually linear sRGB.
 
     if (header.flags & PassHeader::kGrayscaleOpt) {
       PROFILER_ZONE("Grayscale opt");
       // Force all channels to gray
-      for (size_t y = 0; y < color.ysize(); ++y) {
-        float* PIK_RESTRICT row_r = color.PlaneRow(0, y);
-        float* PIK_RESTRICT row_g = color.PlaneRow(1, y);
-        float* PIK_RESTRICT row_b = color.PlaneRow(2, y);
-        for (size_t x = 0; x < color.xsize(); x++) {
+      for (size_t y = 0; y < opsin.ysize(); ++y) {
+        float* PIK_RESTRICT row_r = opsin.PlaneRow(0, y);
+        float* PIK_RESTRICT row_g = opsin.PlaneRow(1, y);
+        float* PIK_RESTRICT row_b = opsin.PlaneRow(2, y);
+        for (size_t x = 0; x < opsin.xsize(); x++) {
           float gray = row_r[x] * 0.299 + row_g[x] * 0.587 + row_b[x] * 0.114;
           row_r[x] = row_g[x] = row_b[x] = gray;
         }
@@ -1005,21 +1108,21 @@ Status PikPassToPixels(const DecompressParams& dparams,
     }
     const ColorEncoding& c =
         io->Context()->c_linear_srgb[io->dec_c_original.IsGray()];
-    io->SetFromImage(std::move(color), c);
+    io->SetFromImage(std::move(opsin), c);
   } else if (header.encoding == ImageEncoding::kLossless) {
     io->SetFromImage(std::move(opsin), io->dec_c_original);
     io->ShrinkTo(xsize, ysize);
-    multipass_handler->SetDecodedPass(io);
+    multipass_manager->SetDecodedPass(io);
   } else {
     return PIK_FAILURE("Unsupported image encoding");
   }
 
   if (header.has_alpha) {
     io->SetAlpha(std::move(alpha),
-                 8 * container.metadata.transcoded.original_bytes_per_alpha);
+                 8 * file_header.metadata.transcoded.original_bytes_per_alpha);
   }
 
-  io->ShrinkTo(xsize, ysize);
+  io->ShrinkTo(DivCeil(xsize, downsample), DivCeil(ysize, downsample));
 
   return true;
 }

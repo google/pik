@@ -10,11 +10,13 @@
 // Optional output information for debugging and analyzing size usage.
 
 #include <cstddef>
+#include <sstream>
 #include <string>
 #include <vector>
 #include "adaptive_reconstruction_fwd.h"
+#include "codec.h"
 #include "image.h"
-#include "image_io.h"
+#include "pik_inspection.h"
 
 namespace pik {
 
@@ -51,14 +53,18 @@ struct PikImageSizeInfo {
 enum {
   kLayerHeader = 0,
   kLayerQuant,
+  kLayerDequantTables,
   kLayerOrder,
-  kLayerCmap,
   kLayerDC,
+  kLayerCmap,
+  kLayerControlFields,
   kLayerAC,
+  kLayerDictionary,
   kNumImageLayers
 };
-static const char* kImageLayers[kNumImageLayers] = {"header", "quant", "order",
-                                                    "cmap",   "DC",    "AC"};
+static const char* kImageLayers[kNumImageLayers] = {
+    "header", "quant",   "tables", "order",     "DC",
+    "cmap",   "cfields", "AC",     "dictionary"};
 
 struct TestingAux {
   Image3F* ac_prediction = nullptr;
@@ -98,7 +104,9 @@ struct PikInfo {
            num_butteraugli_iters * 1.0 / num_inputs);
     for (int i = 0; i < layers.size(); ++i) {
       if (layers[i].total_size > 0) {
-        printf("Total layer size %-10s", kImageLayers[i]);
+        printf("Total layer size %-10s\t", kImageLayers[i]);
+        printf("%10f%%",
+               100.0f * layers[i].total_size / TotalImageSize().total_size);
         layers[i].Print(num_inputs);
       }
     }
@@ -107,13 +115,21 @@ struct PikInfo {
     adaptive_reconstruction_aux.Print();
   }
 
-  template <typename Img>
-  void DumpImage(const char* label, const Img& image) const {
+  template <typename T>
+  void DumpImage(const char* label, const Image3<T>& image) const {
     if (debug_prefix.empty()) return;
-    char pathname[200];
-    snprintf(pathname, sizeof(pathname), "%s%s.png", debug_prefix.c_str(),
-             label);
-    WriteImage(ImageFormatPNG(), image, pathname);
+    std::ostringstream pathname;
+    pathname << debug_prefix << label << ".png";
+    CodecContext context;
+    CodecInOut io(&context);
+    io.SetFromImage(StaticCastImage3<T, float>(image), context.c_srgb[0]);
+    (void)io.EncodeToFile(io.c_current(), sizeof(T) * kBitsPerByte,
+                          pathname.str());
+  }
+  template <typename T>
+  void DumpImage(const char* label, const Image<T>& image) {
+    DumpImage(label,
+              Image3<T>(CopyImage(image), CopyImage(image), CopyImage(image)));
   }
 
   // This dumps coefficients as a 16-bit PNG with coefficients of a block placed
@@ -121,6 +137,20 @@ struct PikInfo {
   // resulting image manually, rescale intensities by using:
   // $ convert -auto-level IMAGE.PNG - | display -
   void DumpCoeffImage(const char* label, const Image3S& coeff_image) const;
+
+  void SetInspectorImage3F(pik::InspectorImage3F inspector) {
+    inspector_image3f_ = inspector;
+  }
+
+  // Allows hooking intermediate data inspection into various
+  // places of the PIK processing pipeline. Returns true iff
+  // processing should proceed.
+  bool InspectImage3F(const char* label, const Image3F& image) {
+    if (inspector_image3f_ != nullptr) {
+      return inspector_image3f_(label, image);
+    }
+    return true;
+  }
 
   std::vector<PikImageSizeInfo> layers;
   size_t num_blocks = 0;
@@ -138,6 +168,8 @@ struct PikInfo {
 
   AdaptiveReconstructionAux adaptive_reconstruction_aux;
   TestingAux testing_aux;
+
+  pik::InspectorImage3F inspector_image3f_;
 };
 
 // Used to skip image creation if they won't be written to debug directory.

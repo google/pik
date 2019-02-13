@@ -3,8 +3,6 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT.
-//
-// Disclaimer: This is not an official Google product.
 
 #include "codec_png.h"
 
@@ -588,7 +586,7 @@ Status InspectChunkType(const PaddedBytes& bytes, const std::string& type,
       bytes.data(), bytes.data() + bytes.size(), type.c_str());
   if (chunk && lodepng_inspect_chunk(state, chunk - bytes.data(), bytes.data(),
                                      bytes.size()) != 0) {
-    return PIK_FAILURE(("Invalid " + type + " chunk in PNG image").c_str());
+    return PIK_FAILURE("Invalid chunk \"%s\" in PNG image", type.c_str());
   }
   return true;
 }

@@ -5,6 +5,7 @@
 // https://opensource.org/licenses/MIT.
 
 #include "single_image_handler.h"
+#include "ac_strategy.h"
 #include "adaptive_quantization.h"
 #include "codec.h"
 #include "color_correlation.h"
@@ -24,7 +25,8 @@ MultipassHandler* SingleImageManager::GetGroupHandler(size_t group_id,
     group_handlers_.resize(group_id + 1);
   }
   if (!group_handlers_[group_id]) {
-    group_handlers_[group_id].reset(new SingleImageHandler(this, group_rect));
+    group_handlers_[group_id].reset(
+        new SingleImageHandler(this, group_rect, mode_));
   }
   return group_handlers_[group_id].get();
 }
@@ -35,51 +37,30 @@ float SingleImageManager::BlockSaliency(size_t row, size_t col) const {
   return saliency_map->Row(row)[col];
 }
 
-void SingleImageManager::SetDecodedPass(CodecInOut* io) {
-  if (current_header_.is_last) return;
-  previous_pass_ =
-      PadImageToMultiple(OpsinDynamicsImage(io, Rect(io->color())), kBlockDim);
-  if (current_header_.gaborish != GaborishStrength::kOff) {
-    previous_pass_ = GaborishInverse(previous_pass_, 0.92718927264540152);
-  }
-  num_passes_++;
-}
-
-void SingleImageManager::SetDecodedPass(const Image3F& opsin) {
-  if (current_header_.is_last) return;
-  previous_pass_ = CopyImage(opsin);
-  num_passes_++;
-}
-
-void SingleImageManager::DecorrelateOpsin(Image3F* img) {
-  if (num_passes_ == 0) return;
-  PIK_ASSERT(SameSize(*img, previous_pass_));
-  SubtractFrom(previous_pass_, img);
-}
-
-void SingleImageManager::RestoreOpsin(Image3F* img) {
-  if (num_passes_ == 0) return;
-  PIK_ASSERT(SameSize(*img, previous_pass_));
-  AddTo(previous_pass_, img);
-}
-
 void SingleImageManager::GetColorCorrelationMap(const Image3F& opsin,
+                                                const DequantMatrices& dequant,
                                                 ColorCorrelationMap* cmap) {
   if (!has_cmap_) {
     cmap_ = std::move(*cmap);
-    FindBestColorCorrelationMap(opsin, &cmap_);
+    FindBestColorCorrelationMap(opsin, dequant, &cmap_);
     has_cmap_ = true;
   }
   *cmap = cmap_.Copy();
 }
 
+BlockDictionary SingleImageManager::GetBlockDictionary(
+    double butteraugli_target, const Image3F& opsin) {
+  return FindBestBlockDictionary(butteraugli_target, opsin);
+}
+
 void SingleImageManager::GetAcStrategy(float butteraugli_target,
                                        const ImageF* quant_field,
+                                       const DequantMatrices& dequant,
                                        const Image3F& src, ThreadPool* pool,
                                        AcStrategyImage* ac_strategy,
                                        PikInfo* aux_out) {
   if (!has_ac_strategy_) {
-    FindBestAcStrategy(butteraugli_target, quant_field, src, pool,
+    FindBestAcStrategy(butteraugli_target, quant_field, dequant, src, pool,
                        &ac_strategy_, aux_out);
     has_ac_strategy_ = true;
   }
@@ -90,8 +71,10 @@ std::shared_ptr<Quantizer> SingleImageManager::GetQuantizer(
     const CompressParams& cparams, size_t xsize_blocks, size_t ysize_blocks,
     const Image3F& opsin_orig, const Image3F& opsin,
     const PassHeader& pass_header, const GroupHeader& header,
-    const ColorCorrelationMap& cmap, const AcStrategyImage& ac_strategy,
-    ImageF& quant_field, ThreadPool* pool, PikInfo* aux_out) {
+    const ColorCorrelationMap& cmap, const BlockDictionary& block_dictionary,
+    const AcStrategyImage& ac_strategy, const ImageB& ar_sigma_lut_ids,
+    const DequantMatrices* dequant, ImageF& quant_field, ThreadPool* pool,
+    PikInfo* aux_out) {
   if (!has_quantizer_) {
     PassHeader hdr = pass_header;
     if (use_adaptive_reconstruction_) {
@@ -99,31 +82,71 @@ std::shared_ptr<Quantizer> SingleImageManager::GetQuantizer(
     }
     quantizer_ = FindBestQuantizer(
         cparams, xsize_blocks, ysize_blocks, opsin_orig, opsin, hdr, header,
-        cmap, ac_strategy, quant_field, pool, aux_out, this);
+        cmap, block_dictionary, ac_strategy, ar_sigma_lut_ids, dequant,
+        quant_field, pool, aux_out, this);
     has_quantizer_ = true;
   }
   return quantizer_;
 }
 
-void SingleImageManager::StripInfo(EncCache* cache) {
-  const constexpr size_t kBlockSize = kBlockDim * kBlockDim;
-  switch (mode_) {
-    case ProgressiveMode::kLfOnly: {
-      for (size_t c = 0; c < cache->ac.kNumPlanes; c++) {
-        for (size_t by = 0; by < cache->ac_strategy.ysize(); by++) {
-          int16_t* PIK_RESTRICT row = cache->ac.PlaneRow(c, by);
-          for (size_t bx = 0; bx < cache->ac_strategy.xsize(); bx++) {
-            int16_t* PIK_RESTRICT block = row + kBlockSize * bx;
-            for (size_t i = 2; i < kBlockSize; i++) {
-              if (i != kBlockDim && i != kBlockDim + 1) block[i] = 0;
+std::vector<Image3S> SingleImageHandler::SplitACCoefficients(
+    Image3S&& ac, const AcStrategyImage& ac_strategy) {
+  if (mode_.num_passes == 1) {
+    PIK_ASSERT(mode_.passes[0].num_coefficients == 8);
+    PIK_ASSERT(!mode_.passes[0].salient_only);
+    std::vector<Image3S> ret;
+    ret.push_back(std::move(ac));
+    return ret;
+  }
+
+  size_t xsize_blocks = ac.xsize() / (kBlockDim * kBlockDim);
+  size_t ysize_blocks = ac.ysize();
+
+  size_t last_ncoeff = 1;
+  size_t last_salient_only = false;
+  std::vector<Image3S> ac_split;
+
+  // TODO(veluca): handle saliency.
+  for (size_t i = 0; i < mode_.num_passes; i++) {
+    ac_split.emplace_back(ac.xsize(), ac.ysize());
+    Image3S* current = &ac_split.back();
+    ZeroFillImage(current);
+    size_t stride = current->PixelsPerRow();
+    size_t pass_coeffs = mode_.passes[i].num_coefficients;
+    for (size_t c = 0; c < ac.kNumPlanes; c++) {
+      for (size_t by = 0; by < ysize_blocks; by++) {
+        const int16_t* PIK_RESTRICT row_in = ac.ConstPlaneRow(c, by);
+        AcStrategyRow row_strategy = ac_strategy.ConstRow(by);
+        int16_t* PIK_RESTRICT row_out = current->PlaneRow(c, by);
+        for (size_t bx = 0; bx < xsize_blocks; bx++) {
+          AcStrategy strategy = row_strategy[bx];
+          if (!strategy.IsFirstBlock()) continue;
+          size_t xsize = strategy.covered_blocks_x();
+          size_t ysize = strategy.covered_blocks_y();
+          size_t block_shift =
+              NumZeroBitsBelowLSBNonzero(kBlockDim * kBlockDim * xsize);
+          for (size_t y = 0; y < ysize * pass_coeffs; y++) {
+            size_t line_start = y * xsize * kBlockDim;
+            size_t block_off = line_start >> block_shift;
+            size_t block_idx = line_start & (xsize * kBlockDim * kBlockDim - 1);
+            line_start = block_off * stride + block_idx;
+            for (size_t x = 0; x < xsize * pass_coeffs; x++) {
+              if (x < xsize * last_ncoeff && y < ysize * last_ncoeff) continue;
+              row_out[bx * kBlockDim * kBlockDim + line_start + x] =
+                  row_in[bx * kBlockDim * kBlockDim + line_start + x];
             }
           }
         }
       }
-      break;
     }
-    case ProgressiveMode::kSalientHfOnly:
-    case ProgressiveMode::kNonSalientHfOnly: {
+    last_ncoeff = pass_coeffs;
+    last_salient_only = mode_.passes[i].salient_only;
+  }
+  PIK_ASSERT(last_ncoeff == 8);
+  PIK_ASSERT(last_salient_only == false);
+
+  // Saved saliency code. TODO(veluca): integrate
+#if 0
       // High frequency components for progressive mode with saliency.
       // For Salient Hf pass, null out non-salient blocks.
       // For Non-Salient Hf pass, null out everything if we debug-skip
@@ -151,108 +174,8 @@ void SingleImageManager::StripInfo(EncCache* cache) {
           }
         }
       }
-      break;
-    }
-    case ProgressiveMode::kHfOnly:
-    case ProgressiveMode::kFull: {
-      break;
-    }
-  }
-}
-
-void SingleImageManager::StripInfoBeforePredictions(EncCache* cache) {
-  const constexpr size_t kBlockSize = kBlockDim * kBlockDim;
-  switch (mode_) {
-    case ProgressiveMode::kLfOnly: {
-      break;
-    }
-    case ProgressiveMode::kHfOnly:
-    case ProgressiveMode::kNonSalientHfOnly:
-    case ProgressiveMode::kSalientHfOnly: {
-      for (size_t c = 0; c < cache->ac.kNumPlanes; c++) {
-        for (size_t by = 0; by < cache->ac_strategy.ysize(); by++) {
-          float* PIK_RESTRICT row = cache->coeffs.PlaneRow(c, by);
-          for (size_t bx = 0; bx < cache->ac_strategy.xsize(); bx++) {
-            float* PIK_RESTRICT block = row + kBlockSize * bx;
-            // Zero out components that should be zero but might not quite be so
-            // e.g. due to numerical noise.
-            //
-            // Null out only DC and Low-Frequency components
-            // (0, 0), (0, 1), (1, 0), (1, 1).
-            block[0] = block[1] = 0.0f;
-            block[kBlockDim] = block[kBlockDim + 1] = 0.0f;
-            if (mode_ == ProgressiveMode::kNonSalientHfOnly &&
-                (cache->saliency_debug_skip_nonsalient ||
-                 (BlockSaliency(by, bx) > cache->saliency_threshold)))
-              std::fill(block, block + kBlockSize, 0);
-          }
-        }
-      }
-      break;
-    }
-    case ProgressiveMode::kFull: {
-      break;
-    }
-  }
-}
-
-void SingleImageManager::StripDCInfo(PassEncCache* cache) {
-  switch (mode_) {
-    case ProgressiveMode::kLfOnly: {
-      break;
-    }
-    case ProgressiveMode::kHfOnly:
-    case ProgressiveMode::kNonSalientHfOnly:
-    case ProgressiveMode::kSalientHfOnly: {
-      ZeroFillImage(&cache->dc_dec);
-      ZeroFillImage(&cache->dc);
-      break;
-    }
-    case ProgressiveMode::kFull: {
-      break;
-    }
-  }
-}
-
-void SingleImageHandler::SaveAcStrategy(const AcStrategyImage& as) {
-  if (manager_->IsLastPass()) return;
-  ac_strategy_hint_ = as.Copy(BlockGroupRect());
-}
-
-void SingleImageHandler::SaveQuantField(const ImageI& qf) {
-  if (manager_->IsLastPass()) return;
-  quant_field_hint_ = CopyImage(BlockGroupRect(), qf);
-}
-
-const AcStrategyImage* SingleImageHandler::HintAcStrategy() {
-  if (ac_strategy_hint_.xsize() == 0 || ac_strategy_hint_.ysize() == 0)
-    return nullptr;
-  return &ac_strategy_hint_;
-}
-
-const ImageI* SingleImageHandler::HintQuantField() {
-  if (quant_field_hint_.xsize() == 0 || quant_field_hint_.ysize() == 0)
-    return nullptr;
-  return &quant_field_hint_;
-}
-
-Status SingleImageHandler::GetPreviousPass(const ColorEncoding& color_encoding,
-                                           ThreadPool* pool, Image3F* out) {
-  if (manager_->num_passes_ == 0) return true;
-  CodecContext ctx;
-  CodecInOut io(&ctx);
-  Rect group_rect = GroupRect();
-  Image3F opsin = CopyImage(group_rect, manager_->previous_pass_);
-  opsin = ConvolveGaborish(std::move(opsin), manager_->current_header_.gaborish,
-                           /*pool=*/nullptr);
-  Image3F linear(opsin.xsize(), opsin.ysize());
-  OpsinToLinear(opsin, Rect(opsin), &linear);
-  io.SetFromImage(std::move(linear),
-                  ctx.c_linear_srgb[color_encoding.IsGray()]);
-  PIK_RETURN_IF_ERROR(io.TransformTo(color_encoding, pool));
-  // TODO(veluca): avoid this copy.
-  *out = CopyImage(io.color());
-  return true;
+#endif
+  return ac_split;
 }
 
 MultipassManager* SingleImageHandler::Manager() { return manager_; }

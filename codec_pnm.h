@@ -3,8 +3,6 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT.
-//
-// Disclaimer: This is not an official Google product.
 
 #ifndef CODEC_PNM_H_
 #define CODEC_PNM_H_

@@ -35,14 +35,6 @@ static constexpr int kMaxSigma = EdgePreservingFilter::kMaxSigma;
 
 static constexpr float kFlushWeightToZeroIfBelow = 0.05f;
 
-// This leads to somewhat better code than pointer arithmetic.
-template <typename T>
-SIMD_INLINE T* SIMD_RESTRICT ByteOffset(T* SIMD_RESTRICT base,
-                                        const intptr_t byte_offset) {
-  const uintptr_t base_addr = reinterpret_cast<uintptr_t>(base);
-  return reinterpret_cast<T*>(base_addr + byte_offset);
-}
-
 //------------------------------------------------------------------------------
 // Distance: sum of absolute differences on patches
 
@@ -1077,10 +1069,12 @@ SIMD_ATTR Image3B MakeGuide(const Image3F& padded,
   return guide;
 }
 
-static PIK_INLINE int SigmaFromQuant(float signal, float stretch,
-                                     EpfStats* stats) {
+static PIK_INLINE int SigmaFromQuant(float signal, float stretch, int lut_id,
+                                     const float* luts, EpfStats* stats) {
   constexpr size_t kTableSize = 16;
   // Larger signal => less quantization, less smoothing.
+
+  const float* lut = luts + kTableSize * lut_id;
 
 #if EPF_NEW_SIGMA
 #error "Add new LUT"
@@ -1090,16 +1084,6 @@ static PIK_INLINE int SigmaFromQuant(float signal, float stretch,
   const float min_signal = 0.022156f;
   const float max_signal = 0.531738;
   const float mul_signal = 29.435892;
-  const float lut[kTableSize] = {
-      1.9526588764830413,  1.8367268088812285,
-      1.4683527305391753,  0.67453456347419904,
-      0.56739522502387574, 0.47391800212275448,
-      0.39849796536954679, 0.3530272873870296,
-      0.28674463075973239, 0.267941940617686,
-      0.230457320522961,   0.19919241098486523,
-      0.17288014802305265, 0.14992185705215172,
-      0.1494542027739368,  0.0,
-  };
 #endif
   float unscaled_sigma;
   if (signal <= min_signal) {
@@ -1120,7 +1104,7 @@ static PIK_INLINE int SigmaFromQuant(float signal, float stretch,
     PIK_ASSERT(0.0f <= frac && frac <= 1.0f);
     unscaled_sigma = frac * lut[trunc + 1] + (1.0f - frac) * lut[trunc];
   }
-  static const float kBias = 0.65510999999999997;
+  static const float kBias = 0.5182760822018414;
   const int sigma = unscaled_sigma * stretch + kBias;
   // No need to clamp to kMinSigma, we skip blocks with very low sigma.
   return std::min(sigma, kMaxSigma);
@@ -1128,6 +1112,7 @@ static PIK_INLINE int SigmaFromQuant(float signal, float stretch,
 
 SIMD_ATTR void AdaptiveFilter(const Image3F& in_guide, const Image3F& in,
                               const ImageI* ac_quant, float quant_scale,
+                              const ImageB& lut_ids,
                               const AcStrategyImage& ac_strategy,
                               const EpfParams& epf_params, ThreadPool* pool,
                               Image3F* smoothed, EpfStats* epf_stats) {
@@ -1173,11 +1158,49 @@ SIMD_ATTR void AdaptiveFilter(const Image3F& in_guide, const Image3F& in,
 
   std::vector<EpfStats> all_stats(NumThreads(pool));
 
+  const float lut[] = {
+      1.9815775622811198,
+      1.9715084740908622,
+      1.6819963065873933,
+      1.2146133632942862,
+      1.0395364091521881,
+      0.93552327583169714,
+      0.68568655651684773,
+      0.51174440217871964,
+      0.36397262821018583,
+      0.31621830414136975,
+      0.30262954326557712,
+      0.246314237855494,
+      0.21617524864418683,
+      0.10,
+      0.05,
+      0.0,
+      // TODO(robryk): This is a temporary test alternative LUT. Provide actual
+      // alternatives.
+      1.9815775622811198 / 2.0,
+      1.9715084740908622 / 2.0,
+      1.6819963065873933 / 2.0,
+      1.2146133632942862 / 2.0,
+      1.0395364091521881 / 2.0,
+      0.93552327583169714 / 2.0,
+      0.68568655651684773 / 2.0,
+      0.51174440217871964 / 2.0,
+      0.36397262821018583 / 2.0,
+      0.31621830414136975 / 2.0,
+      0.30262954326557712 / 2.0,
+      0.246314237855494 / 2.0,
+      0.21617524864418683 / 2.0,
+      0.10 / 2.0,
+      0.05 / 2.0,
+      0.0 / 2.0,
+  };
+
   RunOnPool(
       pool, 0, ysize_blocks, [&](const int task, const int thread) SIMD_ATTR {
         const size_t by = task;
         EpfStats& stats = all_stats[thread];
         const int* SIMD_RESTRICT ac_quant_row = ac_quant->Row(by);
+        const uint8_t* SIMD_RESTRICT lut_id_row = lut_ids.Row(by);
         AcStrategyRow ac_strategy_row = ac_strategy.ConstRow(by);
 #if EPF_DUMP_SIGMA
         uint8_t* dump_row = dump.Row(by);
@@ -1187,12 +1210,13 @@ SIMD_ATTR void AdaptiveFilter(const Image3F& in_guide, const Image3F& in,
 
         for (size_t bx = 0; bx < xsize; bx += kBlockDim) {
           const float ac_q = ac_quant_row[bx / kBlockDim];
+          const int lut_id = lut_id_row[bx / kBlockDim];
           const AcStrategy ac_strategy = ac_strategy_row[bx / kBlockDim];
           const float scale = ac_strategy.ARQuantScale();
           // fprintf(stderr, "%d %d %g (%g %g)\n", by, bx, ac_q, scale,
           // quant_scale);
           const float quant = ac_q * scale * quant_scale;
-          const int sigma = SigmaFromQuant(quant, stretch, &stats);
+          const int sigma = SigmaFromQuant(quant, stretch, lut_id, lut, &stats);
 #if EPF_ENABLE_STATS
           stats.s_sigma.Notify(sigma);
           stats.s_quant.Notify(quant);
@@ -1366,11 +1390,12 @@ void InitEdgePreservingFilter::operator()<SIMD_TARGET>() const {
 template <>
 void EdgePreservingFilter::operator()<SIMD_TARGET>(
     const Image3F& in_guide, const Image3F& in, const ImageI* ac_quant,
-    float sigma_mul, const AcStrategyImage& ac_strategy,
+    float sigma_mul, const ImageB& lut_ids, const AcStrategyImage& ac_strategy,
     const EpfParams& epf_params, ThreadPool* pool, Image3F* smoothed,
     EpfStats* epf_stats) const {
-  SIMD_NAMESPACE::AdaptiveFilter(in_guide, in, ac_quant, sigma_mul, ac_strategy,
-                                 epf_params, pool, smoothed, epf_stats);
+  SIMD_NAMESPACE::AdaptiveFilter(in_guide, in, ac_quant, sigma_mul, lut_ids,
+                                 ac_strategy, epf_params, pool, smoothed,
+                                 epf_stats);
 }
 
 template <>
@@ -1392,6 +1417,7 @@ void EdgePreservingFilterTest::operator()<SIMD_TARGET>() const {
 template <>
 float EdgePreservingFilterTest::operator()<SIMD_TARGET>(int sigma,
                                                         int sad) const {
+  SIMD_NAMESPACE::MulTable::Init();
   SIMD_NAMESPACE::WeightFast weight_func;
   weight_func.SetSigma(sigma);
   return SIMD_NAMESPACE::GetWeightForTest(weight_func, sad);

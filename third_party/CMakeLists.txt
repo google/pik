@@ -11,10 +11,18 @@ include(lodepng.cmake)
 if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/brotli/c/include/brotli/decode.h")
   message(FATAL_ERROR "Brotli is required to build pik, run \"git submodule update --init\" to get it, then run cmake again")
 endif ()
-add_subdirectory(brotli)
+add_subdirectory(brotli EXCLUDE_FROM_ALL)
 
 # lcms2
 include(lcms2.cmake)
 
 # FiniteStateEntropy
 include(fse.cmake)
+
+set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+add_subdirectory(benchmark EXCLUDE_FROM_ALL)
+
+add_subdirectory(gflags EXCLUDE_FROM_ALL)
+
+add_subdirectory(googletest EXCLUDE_FROM_ALL)

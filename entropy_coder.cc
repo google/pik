@@ -120,7 +120,8 @@ void ShrinkDC(const Rect& rect_dc, const Image3S& dc,
   PIK_ASSERT(tmp_residuals->ysize() >= ysize);
   const Rect tmp_rect(0, 0, xsize, ysize);
 
-  ShrinkY(rect_dc, dc.Plane(1), tmp_rect, tmp_residuals->MutablePlane(1));
+  ShrinkY(rect_dc, dc.Plane(1), tmp_rect,
+          const_cast<ImageS*>(&tmp_residuals->Plane(1)));
 
   ImageS tmp_xz(xsize * 2, ysize);
 
@@ -176,15 +177,10 @@ void ExpandDC(const Rect& rect_dc, Image3S* PIK_RESTRICT dc,
 
   ExpandXB(xsize, ysize, *tmp_y, *tmp_xz_residuals, tmp_xz_expanded);
 
-  if (rect_dc.x0() == 0 && rect_dc.y0() == 0 && SameSize(*dc, *tmp_y)) {
-    // Avoid copying Y; tmp_y remains valid for next call.
-    dc->MutablePlane(1)->Swap(*tmp_y);
-  } else {
-    for (size_t y = 0; y < ysize; ++y) {
-      const int16_t* PIK_RESTRICT row_from = tmp_y->ConstRow(y);
-      int16_t* PIK_RESTRICT row_to = rect_dc.PlaneRow(dc, 1, y);
-      memcpy(row_to, row_from, xsize * sizeof(row_to[0]));
-    }
+  for (size_t y = 0; y < ysize; ++y) {
+    const int16_t* PIK_RESTRICT row_from = tmp_y->ConstRow(y);
+    int16_t* PIK_RESTRICT row_to = rect_dc.PlaneRow(dc, 1, y);
+    memcpy(row_to, row_from, xsize * sizeof(row_to[0]));
   }
 
   // Deinterleave |tmp_xz_expanded| and copy into |dc|.
@@ -343,7 +339,7 @@ constexpr size_t kMaxClusters = 256;
 // TODO(user): revise this number when non-DCT-8x8 contexts are added / used.
 static const size_t kClustersLimit = 64;
 static const size_t kNumStaticZdensContexts = 7;
-static const size_t kNumStaticOrderFreeContexts = 5;
+static const size_t kNumStaticOrderFreeContexts = 3;
 // Should depend on N.
 static const size_t kNumStaticContexts =
     kNumStaticOrderFreeContexts + 3 * kNumStaticZdensContexts;
@@ -358,17 +354,13 @@ std::vector<uint8_t> StaticContextMap() {
       3, 6, 6, 6, 6, 5, 5, 2, 2, 2, 2, 2, 3, 3, 3, 3, 6, 6, 6, 6, 5,
       5, 2, 2, 2, 2, 2, 3, 3, 3, 6, 6, 6, 6, 5, 5, 2, 2, 2, 2, 2,
   };
-  static const uint8_t kStaticQuantContextMap[kQuantFieldContexts] = {0};
   PIK_ASSERT(kNumStaticContexts <= kMaxClusters);
   std::vector<uint8_t> context_map(kNumContexts);
-  memcpy(&context_map[kAcStrategyContexts], kStaticQuantContextMap,
-         sizeof(kStaticQuantContextMap));                              // [0]
-  context_map[AcStrategyContext()] = kNumStaticOrderFreeContexts - 1;  // [4]
   static_assert(kOrderContexts == 3,
                 "The static context map only works with 3 order contexts");
   for (size_t c = 0; c < kOrderContexts; ++c) {
     for (size_t i = 0; i < block_size - 1; ++i) {
-      context_map[NonZeroContext(i, c)] = 1 + c;  // [1..3]
+      context_map[NonZeroContext(i, c)] = c;  // [0..2]
     }
     uint32_t zero_density_context_base = ZeroDensityContextsOffset(c);
     for (size_t i = 0; i < kZeroDensityContextCount; ++i) {
@@ -764,8 +756,10 @@ std::string WriteTokens(const std::vector<Token>& tokens,
 }
 
 namespace {
-// TODO(veluca): check if this upper bound can be improved.
-const constexpr int kRleSymStart = 18;
+const constexpr int kRleSymStart =
+    kHybridEncodingSplitToken +
+    2 * (15 - kHybridEncodingDirectSplitExponent) + 1;
+const constexpr int kEntropyCodingNumSymbols = 2 * kRleSymStart;
 }  // namespace
 
 std::string EncodeImageData(const Rect& rect, const Image3S& img,
@@ -784,9 +778,9 @@ std::string EncodeImageData(const Rect& rect, const Image3S& img,
 
     auto encode_cnt = [&](size_t c) {
       if (cnt > 0) {
-        int nbits, bits;
-        EncodeVarLenUint(cnt - 1, &nbits, &bits);
-        tokens[0].emplace_back(Token(c, kRleSymStart + nbits, nbits, bits));
+        int token, nbits, bits;
+        EncodeHybridVarLenUint(cnt - 1, &token, &nbits, &bits);
+        tokens[0].emplace_back(Token(c, kRleSymStart + token, nbits, bits));
         cnt = 0;
       }
     };
@@ -796,10 +790,10 @@ std::string EncodeImageData(const Rect& rect, const Image3S& img,
         for (size_t x = 0; x < xsize; x++) {
           if (!rle || row[x]) {
             encode_cnt(c);
-            int nbits, bits;
-            EncodeVarLenInt(row[x], &nbits, &bits);
-            PIK_ASSERT(nbits < kRleSymStart);
-            tokens[0].emplace_back(Token(c, nbits, nbits, bits));
+            int token, nbits, bits;
+            EncodeHybridVarLenInt(row[x], &token, &nbits, &bits);
+            PIK_ASSERT(token < kRleSymStart);
+            tokens[0].emplace_back(Token(c, token, nbits, bits));
           } else {
             cnt++;
           }
@@ -861,19 +855,26 @@ bool DecodeImageData(BitReader* PIK_RESTRICT br,
           continue;
         }
         br->FillBitBuffer();
-        int s = decoder->ReadSymbol(histo_idx, br);
-        if (s > 0) {
-          if (s >= kRleSymStart) {
-            s -= kRleSymStart;
-            int bits = br->ReadBits(s);
-            s = DecodeVarLenUint(s, bits);
-            skip = s;
-            row[x] = 0;
-            continue;
+        int token = decoder->ReadSymbol(histo_idx, br);
+        int s = 0;
+        if (token >= kRleSymStart) {
+          token -= kRleSymStart;
+          int num_bits = HybridEncodingTokenNumBits(token);
+          int bits = 0;
+          if (num_bits > 0) {
+            bits = br->ReadBits(num_bits);
           }
-          int bits = br->ReadBits(s);
-          s = DecodeVarLenInt(s, bits);
+          s = DecodeHybridVarLenUint(token, bits);
+          skip = s;
+          row[x] = 0;
+          continue;
         }
+        int num_bits = HybridEncodingTokenNumBits(token);
+        int bits = 0;
+        if (num_bits > 0) {
+          bits = br->ReadBits(num_bits);
+        }
+        s = DecodeHybridVarLenInt(token, bits);
         row[x] = s;
       }
     }
@@ -926,7 +927,8 @@ bool DecodeImage(BitReader* PIK_RESTRICT br, const Rect& rect,
                  Image3S* PIK_RESTRICT img) {
   std::vector<uint8_t> context_map;
   ANSCode code;
-  PIK_RETURN_IF_ERROR(DecodeHistograms(br, 3, 40, &code, &context_map));
+  PIK_RETURN_IF_ERROR(DecodeHistograms(br, 3, kEntropyCodingNumSymbols,
+                                       &code, &context_map));
   ANSSymbolReader decoder(&code);
   PIK_RETURN_IF_ERROR(DecodeImageData(br, context_map, &decoder, rect, img));
   if (!decoder.CheckANSFinalState()) {
@@ -1042,7 +1044,8 @@ void TokenizeAcStrategy(const Rect& rect, const AcStrategyImage& ac_strategy,
 
 bool DecodeAcStrategy(BitReader* PIK_RESTRICT br,
                       ANSSymbolReader* PIK_RESTRICT decoder,
-                      const std::vector<uint8_t>& context_map, const Rect& rect,
+                      const std::vector<uint8_t>& context_map,
+                      ImageB* PIK_RESTRICT ac_strategy_raw, const Rect& rect,
                       AcStrategyImage* PIK_RESTRICT ac_strategy,
                       const AcStrategyImage* PIK_RESTRICT hint) {
   PROFILER_FUNC;
@@ -1050,13 +1053,12 @@ bool DecodeAcStrategy(BitReader* PIK_RESTRICT br,
 
   const size_t xsize = rect.xsize();
   const size_t ysize = rect.ysize();
-  ImageB ac_strategy_raw(xsize, ysize);
-  FillImage(AcStrategyImage::INVALID, &ac_strategy_raw);
-  const size_t stride = ac_strategy_raw.PixelsPerRow();
+  FillImage(AcStrategyImage::INVALID, ac_strategy_raw);
+  const size_t stride = ac_strategy_raw->PixelsPerRow();
 
   if (hint == nullptr) {
     for (size_t by = 0; by < ysize; by++) {
-      uint8_t* PIK_RESTRICT row_ac = ac_strategy_raw.Row(by);
+      uint8_t* PIK_RESTRICT row_ac = ac_strategy_raw->Row(by);
       for (size_t bx = 0; bx < xsize; bx++) {
         if (row_ac[bx] != AcStrategyImage::INVALID) continue;
         br->FillBitBuffer();
@@ -1078,7 +1080,7 @@ bool DecodeAcStrategy(BitReader* PIK_RESTRICT br,
     }
   } else {
     for (size_t by = 0; by < ysize; by++) {
-      uint8_t* PIK_RESTRICT row_ac = ac_strategy_raw.Row(by);
+      uint8_t* PIK_RESTRICT row_ac = ac_strategy_raw->Row(by);
       AcStrategyRow row_hint = hint->ConstRow(by);
       for (size_t bx = 0; bx < xsize; bx++) {
         if (row_ac[bx] != AcStrategyImage::INVALID) continue;
@@ -1101,7 +1103,7 @@ bool DecodeAcStrategy(BitReader* PIK_RESTRICT br,
       }
     }
   }
-  ac_strategy->SetFromRaw(rect, ac_strategy_raw);
+  ac_strategy->SetFromRaw(rect, *ac_strategy_raw);
   return true;
 }
 
