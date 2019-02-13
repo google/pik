@@ -34,12 +34,12 @@ find_package(Threads REQUIRED)
 add_subdirectory(third_party)
 
 # The pikcommon library definition.
-include(pikcommon.cmake)
+include(pik/pikcommon.cmake)
 
-add_executable(cpik cpik_main.cc cpik.cc cmdline.cc)
-add_executable(dpik dpik_main.cc dpik.cc cmdline.cc)
-add_executable(decode_and_encode decode_and_encode.cc)
-add_executable(butteraugli_main butteraugli_main.cc)
+add_executable(cpik pik/cpik_main.cc pik/cpik.cc pik/cmdline.cc)
+add_executable(dpik pik/dpik_main.cc pik/dpik.cc pik/cmdline.cc)
+add_executable(decode_and_encode pik/decode_and_encode.cc)
+add_executable(butteraugli_main pik/butteraugli_main.cc)
 
 set(BINARIES cpik dpik decode_and_encode butteraugli_main)
 foreach (BINARY IN LISTS BINARIES)
@@ -47,7 +47,7 @@ foreach (BINARY IN LISTS BINARIES)
 endforeach ()
 install(TARGETS ${BINARIES} RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 
-add_executable(multi_threading_benchmark multi_threading_benchmark.cc)
+add_executable(multi_threading_benchmark pik/multi_threading_benchmark.cc)
 target_link_libraries(multi_threading_benchmark
   benchmark
   gflags::gflags
@@ -104,7 +104,7 @@ set(TESTS
   yuv_opsin_convert_test
 )
 foreach (TEST IN LISTS TESTS)
-  add_executable("${TEST}" "${TEST}.cc")
+  add_executable("${TEST}" "pik/${TEST}.cc")
   target_compile_definitions("${TEST}" PRIVATE -DTEST_DATA_PATH="${CMAKE_CURRENT_SOURCE_DIR}/third_party/testdata")
   target_link_libraries("${TEST}" pikcommon gmock gtest gtest_main)
   gtest_add_tests(TARGET "${TEST}")

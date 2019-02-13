@@ -4,13 +4,13 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT.
 
-#ifndef COMPARISON_TOOL_VIEWER_IMAGE_LOADING_H_
-#define COMPARISON_TOOL_VIEWER_IMAGE_LOADING_H_
+#ifndef PIK_COMPARISON_TOOL_VIEWER_IMAGE_LOADING_H_
+#define PIK_COMPARISON_TOOL_VIEWER_IMAGE_LOADING_H_
 
 #include <QImage>
 #include <QString>
 
-#include "../../padded_bytes.h"
+#include "pik/padded_bytes.h"
 
 namespace pik {
 
@@ -22,4 +22,4 @@ QImage loadImage(const QString& filename,
 
 }  // namespace pik
 
-#endif  // COMPARISON_TOOL_VIEWER_IMAGE_LOADING_H_
+#endif  // PIK_COMPARISON_TOOL_VIEWER_IMAGE_LOADING_H_

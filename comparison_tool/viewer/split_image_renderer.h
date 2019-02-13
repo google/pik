@@ -4,8 +4,8 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT.
 
-#ifndef COMPARISON_TOOL_VIEWER_SPLIT_IMAGE_RENDERER_H_
-#define COMPARISON_TOOL_VIEWER_SPLIT_IMAGE_RENDERER_H_
+#ifndef PIK_COMPARISON_TOOL_VIEWER_SPLIT_IMAGE_RENDERER_H_
+#define PIK_COMPARISON_TOOL_VIEWER_SPLIT_IMAGE_RENDERER_H_
 
 #include <QImage>
 #include <QKeyEvent>
@@ -70,4 +70,4 @@ class SplitImageRenderer : public QWidget {
 
 }  // namespace pik
 
-#endif  // COMPARISON_TOOL_VIEWER_SPLIT_IMAGE_RENDERER_H_
+#endif  // PIK_COMPARISON_TOOL_VIEWER_SPLIT_IMAGE_RENDERER_H_

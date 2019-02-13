@@ -15,9 +15,9 @@
 #include <QStringList>
 #include <QX11Info>
 
-#include "../../x11/icc.h"
-#include "image_loading.h"
-#include "split_image_view.h"
+#include "comparison_tool/viewer/image_loading.h"
+#include "comparison_tool/viewer/split_image_view.h"
+#include "pik/x11/icc.h"
 
 namespace {
 

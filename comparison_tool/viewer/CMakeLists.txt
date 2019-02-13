@@ -28,8 +28,8 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 
 add_library(x11_icc STATIC
-  ../../x11/icc.cc
-  ../../x11/icc.h
+  ../../pik/x11/icc.cc
+  ../../pik/x11/icc.h
 )
 target_link_libraries(x11_icc PUBLIC pikcommon XCB::XCB)
 

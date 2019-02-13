@@ -4,12 +4,12 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT.
 
-#ifndef COMPARISON_TOOL_VIEWER_SPLIT_IMAGE_VIEW_H_
-#define COMPARISON_TOOL_VIEWER_SPLIT_IMAGE_VIEW_H_
+#ifndef PIK_COMPARISON_TOOL_VIEWER_SPLIT_IMAGE_VIEW_H_
+#define PIK_COMPARISON_TOOL_VIEWER_SPLIT_IMAGE_VIEW_H_
 
 #include <QWidget>
 
-#include "ui_split_image_view.h"
+#include "comparison_tool/viewer/ui_split_image_view.h"
 
 namespace pik {
 
@@ -33,4 +33,4 @@ class SplitImageView : public QWidget {
 
 }  // namespace pik
 
-#endif  // COMPARISON_TOOL_VIEWER_SPLIT_IMAGE_VIEW_H_
+#endif  // PIK_COMPARISON_TOOL_VIEWER_SPLIT_IMAGE_VIEW_H_

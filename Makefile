@@ -44,7 +44,7 @@ override CXXFLAGS += -O3 $(ALL_FLAGS)
 # all objects in the archive are included - required for pthread weak symbols.
 override LDFLAGS += -s -Wl,--whole-archive -lpthread -Wl,--no-whole-archive -static -static-libgcc -static-libstdc++
 
-PIK_OBJS := $(addprefix obj/, \
+PIK_OBJS := $(addprefix obj/pik/, \
 	simd/targets.o \
 	ac_predictions.o \
 	ac_strategy.o \
@@ -113,7 +113,7 @@ PIK_OBJS := $(addprefix obj/, \
 	saliency_map.o \
 )
 
-all: deps.mk $(addprefix bin/, cpik dpik butteraugli_main)
+all: deps.mk $(addprefix bin/, cpik dpik butteraugli_main decode_and_encode)
 
 # print an error message with helpful instructions if the brotli git submodule
 # is not checked out
@@ -137,26 +137,40 @@ THIRD_PARTY := \
 	third_party/lodepng/lodepng.o \
 	third_party/FiniteStateEntropy/libfse.a
 
-bin/cpik: obj/cpik_main.o obj/cpik.o obj/cmdline.o $(PIK_OBJS) $(THIRD_PARTY)
-bin/dpik: obj/dpik_main.o obj/dpik.o obj/cmdline.o $(PIK_OBJS) $(THIRD_PARTY)
-bin/butteraugli_main: obj/butteraugli_main.o $(PIK_OBJS) $(THIRD_PARTY)
-bin/decode_and_encode: obj/decode_and_encode.o $(PIK_OBJS) $(THIRD_PARTY)
+BIN_OBJS := $(addprefix obj/pik/, \
+  butteraugli_main.o \
+  cmdline.o \
+  cpik.o \
+  cpik_main.o \
+  decode_and_encode.o \
+  dpik.o \
+  dpik_main.o \
+)
+
+bin/cpik: obj/pik/cpik_main.o obj/pik/cpik.o obj/pik/cmdline.o $(PIK_OBJS) $(THIRD_PARTY)
+bin/dpik: obj/pik/dpik_main.o obj/pik/dpik.o obj/pik/cmdline.o $(PIK_OBJS) $(THIRD_PARTY)
+bin/butteraugli_main: obj/pik/butteraugli_main.o $(PIK_OBJS) $(THIRD_PARTY)
+bin/decode_and_encode: obj/pik/decode_and_encode.o $(PIK_OBJS) $(THIRD_PARTY)
 
 obj/%.o: %.cc
 	@mkdir -p -- $(dir $@)
 	$(CXX) -c $(CPPFLAGS) $(CXXFLAGS) $(SIMD_FLAGS) $< -o $@
 
-bin/%: obj/%.o
+bin/%: obj/pik/%.o
 	@mkdir -p -- $(dir $@)
 	$(CXX) $^ -o $@ $(LDFLAGS)
 
 .DELETE_ON_ERROR:
-deps.mk: $(wildcard *.cc) $(wildcard *.h) Makefile
-	set -eu; for file in *.cc; do \
-		target=obj/$${file##*/}; target=$${target%.*}.o; \
-		$(CXX) -c $(CPPFLAGS) $(CXXFLAGS) $(TEST_FLAGS) -MM -MT \
-		"$$target" "$$file"; \
-	done >$@
+obj/%.o.d: %.cc Makefile
+	@mkdir -p $(@D)
+	@# We set both the .o file and the .o.d file as targets so the dependencies
+	@# file gets rebuilt as well when the code changes.
+	@$(CXX) -c $(CPPFLAGS) $(CXXFLAGS) $(TEST_FLAGS) -MM -MT "$(@:.d=), $@" "$<" \
+	  >$@
+
+ALL_DEPS := $(addsuffix .d,$(BIN_OBJS) $(PIK_OBJS))
+deps.mk: $(ALL_DEPS) Makefile
+	cat $(ALL_DEPS) > deps.mk
 -include deps.mk
 
 clean:

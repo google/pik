@@ -9,7 +9,7 @@
 #include <QRgb>
 #include <QThread>
 
-#include "../../codec.h"
+#include "pik/codec.h"
 
 namespace pik {
 

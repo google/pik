@@ -10,7 +10,7 @@
 
 #include <QLabel>
 
-#include "split_image_renderer.h"
+#include "comparison_tool/viewer/split_image_renderer.h"
 
 namespace pik {
 

@@ -36,7 +36,7 @@ Depending on mode \\(\text{M} = \text{L}[\text{S}]\\):
     \\(\text{V} + ((\text{M} \gg 3) \& \texttt{0x7}) + 1\\)
 -   otherwise \\(\text{M}\\) following bits represent the encoded value
 
-Source code: cs/fields.h
+Source code: cs/pik/fields.h
 
 ## Uint64 field
 
@@ -57,7 +57,7 @@ Value is decoded as following:
         -   otherwise 4 bits represent the highest 4 bits of value and 'while'
             loop is finished
 
-Source code: cs/fields.h
+Source code: cs/pik/fields.h
 
 ## Byte array field
 
@@ -74,7 +74,7 @@ encoded as:
     -   uint8 repeated \\(\text{size}\\) times;
     -   payload is compressed if \\(\text{type}\\) is \\(\text{Brotli}\\)
 
-Source code: cs/fields.h
+Source code: cs/pik/fields.h
 
 ## VarSignedMantissa
 

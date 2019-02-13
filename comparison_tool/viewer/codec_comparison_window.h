@@ -4,8 +4,8 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT.
 
-#ifndef COMPARISON_TOOL_VIEWER_CODEC_COMPARISON_WINDOW_H_
-#define COMPARISON_TOOL_VIEWER_CODEC_COMPARISON_WINDOW_H_
+#ifndef PIK_COMPARISON_TOOL_VIEWER_CODEC_COMPARISON_WINDOW_H_
+#define PIK_COMPARISON_TOOL_VIEWER_CODEC_COMPARISON_WINDOW_H_
 
 #include <QDir>
 #include <QMainWindow>
@@ -13,8 +13,8 @@
 #include <QSet>
 #include <QString>
 
-#include "../../padded_bytes.h"
-#include "ui_codec_comparison_window.h"
+#include "pik/padded_bytes.h"
+#include "comparison_tool/viewer/ui_codec_comparison_window.h"
 
 namespace pik {
 
@@ -73,4 +73,4 @@ class CodecComparisonWindow : public QMainWindow {
 
 }  // namespace pik
 
-#endif  // COMPARISON_TOOL_VIEWER_CODEC_COMPARISON_WINDOW_H_
+#endif  // PIK_COMPARISON_TOOL_VIEWER_CODEC_COMPARISON_WINDOW_H_
