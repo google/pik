@@ -947,7 +947,7 @@ void ReconOpsinImage(const PassHeader& pass_header, const GroupHeader& header,
     PROFILER_ZONE("Predict HF");
     AcStrategy acs(AcStrategy::Type::DCT, 0);
     const size_t pred2x2_stride = group_dec_cache->pred2x2.PixelsPerRow();
-    if (predict_lf) {
+    /*if (predict_lf) {
       const size_t lf2x2_stride = group_dec_cache->lf2x2.PixelsPerRow();
       float block[N * N] = {};
       for (size_t c = 0; c < 3; c++) {
@@ -961,7 +961,7 @@ void ReconOpsinImage(const PassHeader& pass_header, const GroupHeader& header,
             block[1] = row_lf2x2[2 * x + 1];
             block[N] = row_lf2x2[lf2x2_stride + 2 * x];
             block[N + 1] = row_lf2x2[lf2x2_stride + 2 * x + 1];
-            acs.DC2x2FromLowFrequencies(block, 0 /*not used*/,
+            acs.DC2x2FromLowFrequencies(block, 0 ,
                                         row_pred2x2 + 2 * x, pred2x2_stride);
           }
         }
@@ -975,7 +975,7 @@ void ReconOpsinImage(const PassHeader& pass_header, const GroupHeader& header,
             block[1] = row_lf2x2[2 * x + 1];
             block[N] = row_lf2x2[lf2x2_stride + 2 * x];
             block[N + 1] = row_lf2x2[lf2x2_stride + 2 * x + 1];
-            acs.DC2x2FromLowFrequencies(block, 0 /*not used*/,
+            acs.DC2x2FromLowFrequencies(block, 0 ,
                                         row_pred2x2 + 2 * x, pred2x2_stride);
           }
         }
@@ -1000,7 +1000,7 @@ void ReconOpsinImage(const PassHeader& pass_header, const GroupHeader& header,
           }
         }
       }
-    }
+    }*/
   }
 
   // tile_stage is used to make calculation dispatching simple; each pixel
