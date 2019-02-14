@@ -9,6 +9,7 @@
 #include "pik/lossless16.h"
 
 #include <cmath>
+#include <ctime>
 
 #include <cassert>
 #include <cstdio>
