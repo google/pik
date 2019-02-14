@@ -254,8 +254,8 @@ Status RunCommand(const std::vector<std::string>& args) {
   std::ostringstream cmd;
   std::copy(args.begin(), args.end(),
            std::ostream_iterator<std::string>(cmd, " "));
-  printf(stderr, "Warning: Using system() on string: %s\n", cmd.str.c_str());
-  int ret = system(cmd.str.c_str());
+  printf((const char*) stderr, "Warning: Using system() on string: %s\n", cmd.str().c_str());
+  int ret = system(cmd.str().c_str());
   if (errno != ENOENT &&  // Windows: Command interpreter not found.
       ret == 0) {
     return true;
