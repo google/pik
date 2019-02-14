@@ -9,6 +9,7 @@
 #include "pik/lossless8.h"
 
 #include <cmath>
+#include <ctime>
 
 #include <assert.h>
 #include <stdio.h>
