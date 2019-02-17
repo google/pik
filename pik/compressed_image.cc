@@ -947,11 +947,11 @@ void ReconOpsinImage(const PassHeader& pass_header, const GroupHeader& header,
     PROFILER_ZONE("Predict HF");
     AcStrategy acs(AcStrategy::Type::DCT, 0);
     const size_t pred2x2_stride = group_dec_cache->pred2x2.PixelsPerRow();
-    /*if (predict_lf) {
+    if (predict_lf) {
       const size_t lf2x2_stride = group_dec_cache->lf2x2.PixelsPerRow();
       float block[N * N] = {};
       for (size_t c = 0; c < 3; c++) {
-        for (size_t x : {0UL, xsize_blocks + 1}) {
+        for (size_t x : {0UL, (long unsigned int) xsize_blocks + 1}) {
           for (size_t y = 0; y < ysize_blocks + 2; y++) {
             const float* row_llf = group_dec_cache->llf.ConstPlaneRow(c, y);
             const float* row_lf2x2 =
@@ -965,7 +965,7 @@ void ReconOpsinImage(const PassHeader& pass_header, const GroupHeader& header,
                                         row_pred2x2 + 2 * x, pred2x2_stride);
           }
         }
-        for (size_t y : {0UL, ysize_blocks + 1}) {
+        for (size_t y : {0UL, (long unsigned int) ysize_blocks + 1}) {
           const float* row_llf = group_dec_cache->llf.ConstPlaneRow(c, y);
           const float* row_lf2x2 =
               group_dec_cache->lf2x2.ConstPlaneRow(c, 2 * y);
@@ -983,7 +983,7 @@ void ReconOpsinImage(const PassHeader& pass_header, const GroupHeader& header,
     } else {
       const size_t llf_stride = group_dec_cache->llf.PixelsPerRow();
       for (size_t c = 0; c < 3; c++) {
-        for (size_t x : {0UL, xsize_blocks + 1}) {
+        for (size_t x : {0UL, (long unsigned int) xsize_blocks + 1}) {
           for (size_t y = 0; y < ysize_blocks + 2; y++) {
             const float* row_llf = group_dec_cache->llf.ConstPlaneRow(c, y);
             float* row_pred2x2 = group_dec_cache->pred2x2.PlaneRow(c, 2 * y);
@@ -991,7 +991,7 @@ void ReconOpsinImage(const PassHeader& pass_header, const GroupHeader& header,
                                            row_pred2x2 + 2 * x, pred2x2_stride);
           }
         }
-        for (size_t y : {0UL, ysize_blocks + 1}) {
+        for (size_t y : {0UL, (long unsigned int) ysize_blocks + 1}) {
           const float* row_llf = group_dec_cache->llf.ConstPlaneRow(c, y);
           float* row_pred2x2 = group_dec_cache->pred2x2.PlaneRow(c, 2 * y);
           for (size_t x = 0; x < xsize_blocks + 2; x++) {
@@ -1000,7 +1000,7 @@ void ReconOpsinImage(const PassHeader& pass_header, const GroupHeader& header,
           }
         }
       }
-    }*/
+    }
   }
 
   // tile_stage is used to make calculation dispatching simple; each pixel
