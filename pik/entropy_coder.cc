@@ -1107,6 +1107,45 @@ bool DecodeAcStrategy(BitReader* PIK_RESTRICT br,
   return true;
 }
 
+void TokenizeARParameters(const Rect& rect, const ImageB& ar_sigma_lut_ids,
+                          const AcStrategyImage& ac_strategy,
+                          std::vector<Token>* PIK_RESTRICT output) {
+  const size_t xsize = rect.xsize();
+  const size_t ysize = rect.ysize();
+  for (size_t by = 0; by < ysize; by++) {
+    AcStrategyRow acs_row = ac_strategy.ConstRow(rect, by);
+    const uint8_t* src_row = rect.ConstRow(ar_sigma_lut_ids, by);
+    for (size_t bx = 0; bx < xsize; bx++) {
+      if (!acs_row[bx].IsFirstBlock()) continue;
+      output->emplace_back(ARParamsContext(), src_row[bx], 0, 0);
+    }
+  }
+}
+
+bool DecodeARParameters(BitReader* br, ANSSymbolReader* decoder,
+                        const std::vector<uint8_t>& context_map,
+                        const Rect& rect, const AcStrategyImage& ac_strategy,
+                        ImageB* ar_sigma_lut_ids) {
+  const size_t xsize = rect.xsize();
+  const size_t ysize = rect.ysize();
+  for (size_t by = 0; by < ysize; by++) {
+    AcStrategyRow acs_row = ac_strategy.ConstRow(rect, by);
+    for (size_t bx = 0; bx < xsize; bx++) {
+      AcStrategy acs = acs_row[bx];
+      if (!acs.IsFirstBlock()) continue;
+      const size_t ctx = context_map[ARParamsContext()];
+      br->FillBitBuffer();
+      size_t value = decoder->ReadSymbol(ctx, br);
+      for (size_t dy = 0; dy < acs.covered_blocks_y(); dy++) {
+        for (size_t dx = 0; dx < acs.covered_blocks_y(); dx++) {
+          rect.Row(ar_sigma_lut_ids, by + dy)[bx + dx] = value;
+        }
+      }
+    }
+  }
+  return true;
+}
+
 bool DecodeAC(const std::vector<uint8_t>& context_map,
               const int32_t* PIK_RESTRICT coeff_order,
               BitReader* PIK_RESTRICT br, ANSSymbolReader* decoder,

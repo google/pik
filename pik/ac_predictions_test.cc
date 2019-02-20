@@ -59,6 +59,8 @@ class AcPredictionsTest
     PikInfo decoding_info;
     // WARNING: the code that fills this is not thread-safe, and will only
     // work for a single group, which is OK for the current test image.
+    PIK_CHECK(xsize_blocks <= kGroupDimInBlocks &&
+              ysize_blocks <= kGroupDimInBlocks);
     decoding_info.testing_aux.ac_prediction = &decoding_ac_prediction;
 
     EXPECT_TRUE(PikToPixels(dparams, compressed, io, &decoding_info, pool));

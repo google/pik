@@ -9,6 +9,7 @@
 #include <array>
 
 #include "gtest/gtest.h"
+#include "pik/adaptive_reconstruction.h"
 #include "pik/butteraugli_distance.h"
 #include "pik/codec.h"
 #include "pik/common.h"
@@ -16,6 +17,7 @@
 #include "pik/entropy_coder.h"
 #include "pik/gaborish.h"
 #include "pik/gradient_map.h"
+#include "pik/image_ops.h"
 #include "pik/image_test_utils.h"
 #include "pik/opsin_image.h"
 #include "pik/opsin_inverse.h"
@@ -26,46 +28,55 @@ namespace pik {
 namespace {
 
 // Verifies ReconOpsinImage reconstructs with low butteraugli distance.
-void RoundTrip(const CompressParams& cparams, const PassHeader& pass_header,
+void RoundTrip(const CompressParams& cparams, const FrameHeader& frame_header,
                const GroupHeader& header, const Image3F& opsin,
                Quantizer* quantizer, const ColorCorrelationMap& cmap,
                const Rect& cmap_rect, const CodecInOut* io0, ThreadPool* pool) {
   AcStrategyImage ac_strategy(quantizer->RawQuantField().xsize(),
                               quantizer->RawQuantField().ysize());
-  PassEncCache pass_enc_cache;
+  FrameEncCache frame_enc_cache;
+  frame_enc_cache.dequant_control_field = ImageB(
+      DivCeil(opsin.xsize(), kTileDim), DivCeil(opsin.ysize(), kTileDim));
+  ZeroFillImage(&frame_enc_cache.dequant_control_field);
   BlockDictionary dictionary;
-  InitializePassEncCache(pass_header, opsin, ac_strategy, *quantizer, cmap,
-                         dictionary, pool, &pass_enc_cache, nullptr);
+  InitializeFrameEncCache(frame_header, opsin, ac_strategy, *quantizer, cmap,
+                          dictionary, pool, &frame_enc_cache, nullptr);
   EncCache enc_cache;
-  InitializeEncCache(pass_header, header, pass_enc_cache, Rect(opsin),
+  InitializeEncCache(frame_header, header, frame_enc_cache, Rect(opsin),
                      &enc_cache);
   enc_cache.ac_strategy = ac_strategy.Copy();
-  ComputeCoefficients(*quantizer, cmap, cmap_rect, pool, &enc_cache);
+  ComputeCoefficients(*quantizer, cmap, cmap_rect, pool, frame_enc_cache,
+                      &enc_cache);
 
-  PassDecCache pass_dec_cache;
-  pass_dec_cache.dc = CopyImage(pass_enc_cache.dc_dec);
-  pass_dec_cache.gradient = std::move(pass_enc_cache.gradient);
-  if (pass_header.flags & PassHeader::kGradientMap) {
-    ApplyGradientMap(pass_dec_cache.gradient, *quantizer, &pass_dec_cache.dc);
+  FrameDecCache frame_dec_cache;
+  frame_dec_cache.dequant_control_field = ImageB(
+      DivCeil(opsin.xsize(), kTileDim), DivCeil(opsin.ysize(), kTileDim));
+  ZeroFillImage(&frame_dec_cache.dequant_control_field);
+  frame_dec_cache.dc = CopyImage(frame_enc_cache.dc_dec);
+  frame_dec_cache.gradient = std::move(frame_enc_cache.gradient);
+  if (frame_header.flags & FrameHeader::kGradientMap) {
+    ApplyGradientMap(frame_dec_cache.gradient, *quantizer, &frame_dec_cache.dc);
+  } else {
+    AdaptiveDCReconstruction(frame_dec_cache.dc, *quantizer, pool);
   }
   // Override quant field with the one seen by decoder.
-  pass_dec_cache.raw_quant_field = std::move(enc_cache.quant_field);
-  pass_dec_cache.ac_strategy = std::move(enc_cache.ac_strategy);
+  frame_dec_cache.raw_quant_field = std::move(enc_cache.quant_field);
+  frame_dec_cache.ac_strategy = std::move(enc_cache.ac_strategy);
 
   GroupDecCache group_dec_cache;
 
-  InitializeDecCache(pass_dec_cache, Rect(opsin), &group_dec_cache);
-  DequantImageAC(*quantizer, cmap, cmap_rect, enc_cache.ac, &pass_dec_cache,
-                 &group_dec_cache, Rect(opsin));
+  InitializeDecCache(frame_dec_cache, Rect(opsin), &group_dec_cache);
+  DequantImageAC(*quantizer, cmap, cmap_rect, enc_cache.ac, &frame_dec_cache,
+                 &group_dec_cache, Rect(opsin), /*aux_out=*/nullptr);
 
-  Image3F recon(pass_dec_cache.dc.xsize() * kBlockDim,
-                pass_dec_cache.dc.ysize() * kBlockDim);
-  ReconOpsinImage(pass_header, header, *quantizer, Rect(enc_cache.quant_field),
-                  &pass_dec_cache, &group_dec_cache, &recon, Rect(recon));
+  Image3F recon(frame_dec_cache.dc.xsize() * kBlockDim,
+                frame_dec_cache.dc.ysize() * kBlockDim);
+  ReconOpsinImage(frame_header, header, *quantizer, Rect(enc_cache.quant_field),
+                  &frame_dec_cache, &group_dec_cache, &recon, Rect(recon));
 
-  PIK_CHECK(FinalizePassDecoding(&recon, io0->xsize(), io0->ysize(),
-                                 pass_header, NoiseParams(), *quantizer,
-                                 dictionary, pool, &pass_dec_cache));
+  PIK_CHECK(FinalizeFrameDecoding(&recon, io0->xsize(), io0->ysize(),
+                                  frame_header, NoiseParams(), *quantizer,
+                                  dictionary, pool, &frame_dec_cache));
   CodecInOut io1(io0->Context());
   io1.SetFromImage(std::move(recon), io0->Context()->c_linear_srgb[0]);
 
@@ -98,11 +109,11 @@ void RunRGBRoundTrip(float distance, bool fast) {
   cparams.butteraugli_distance = distance;
   cparams.fast_mode = fast;
 
-  PassHeader pass_header;
+  FrameHeader frame_header;
   GroupHeader header;
-  pass_header.gaborish = GaborishStrength::k1000;
+  frame_header.gaborish = GaborishStrength::k1000;
 
-  RoundTrip(cparams, pass_header, header, opsin, &quantizer, cmap, cmap_rect,
+  RoundTrip(cparams, frame_header, header, opsin, &quantizer, cmap, cmap_rect,
             &io, &pool);
 }
 

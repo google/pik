@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 #include "pik/adaptive_reconstruction_fwd.h"
+#include "pik/chroma_from_luma_fwd.h"
 #include "pik/codec.h"
 #include "pik/image.h"
 #include "pik/pik_inspection.h"
@@ -87,6 +88,8 @@ struct PikInfo {
     num_dct32_blocks += victim.num_dct32_blocks;
     entropy_estimate += victim.entropy_estimate;
     num_butteraugli_iters += victim.num_butteraugli_iters;
+    cfl_stats_dc.Assimilate(victim.cfl_stats_dc);
+    cfl_stats_ac.Assimilate(victim.cfl_stats_ac);
     adaptive_reconstruction_aux.Assimilate(victim.adaptive_reconstruction_aux);
   }
 
@@ -112,6 +115,12 @@ struct PikInfo {
     }
     printf("Total image size           ");
     TotalImageSize().Print(num_inputs);
+
+    printf("\nCFL:\n");
+    cfl_stats_dc.Print();
+    cfl_stats_ac.Print();
+
+    printf("\nAR:\n");
     adaptive_reconstruction_aux.Print();
   }
 
@@ -122,7 +131,7 @@ struct PikInfo {
     pathname << debug_prefix << label << ".png";
     CodecContext context;
     CodecInOut io(&context);
-    io.SetFromImage(StaticCastImage3<T, float>(image), context.c_srgb[0]);
+    io.SetFromImage(StaticCastImage3<float>(image), context.c_srgb[0]);
     (void)io.EncodeToFile(io.c_current(), sizeof(T) * kBitsPerByte,
                           pathname.str());
   }
@@ -166,10 +175,19 @@ struct PikInfo {
   // saved in files with this prefix.
   std::string debug_prefix;
 
+  // By how much the decoded image was downsampled relative to the encoded
+  // image.
+  size_t downsampling = 1;
+
   AdaptiveReconstructionAux adaptive_reconstruction_aux;
-  TestingAux testing_aux;
+  CFL_Stats cfl_stats_dc;
+  CFL_Stats cfl_stats_ac;
 
   pik::InspectorImage3F inspector_image3f_;
+
+  // WARNING: this is actually an INPUT to some code, and must be
+  // copy-initialized from aux_out to aux_outs.
+  TestingAux testing_aux;
 };
 
 // Used to skip image creation if they won't be written to debug directory.

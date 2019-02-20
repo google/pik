@@ -8,12 +8,14 @@
 #include <vector>
 
 #include "pik/ac_strategy.h"
+#include "pik/adaptive_reconstruction.h"
 #include "pik/common.h"
 #include "pik/compressed_image_fwd.h"
 #include "pik/data_parallel.h"
 #include "pik/entropy_coder.h"
 #include "pik/gradient_map.h"
 #include "pik/image.h"
+#include "pik/image_ops.h"
 #include "pik/lossless16.h"
 #include "pik/lossless8.h"
 #include "pik/padded_bytes.h"
@@ -174,13 +176,13 @@ bool Image3SDecompress(const PaddedBytes& bytes, bool grayscale, size_t* pos,
   return true;
 }
 
-//
 // Dequantizes and inverse color-transforms the provided quantized DC, to the
 // window `rect` within the entire output image `enc_cache->dc`.
 SIMD_ATTR void DequantDC(const Image3S& img_dc16, const Rect& rect,
                          const float* mul_dc, const float ytox_dc,
                          const float ytob_dc,
-                         PassDecCache* PIK_RESTRICT pass_dec_cache) {
+                         FrameDecCache* PIK_RESTRICT frame_dec_cache,
+                         PikInfo* aux_out) {
   PIK_ASSERT(SameSize(img_dc16, rect));
   const size_t xsize = rect.xsize();
   const size_t ysize = rect.ysize();
@@ -194,7 +196,7 @@ SIMD_ATTR void DequantDC(const Image3S& img_dc16, const Rect& rect,
 
   for (size_t by = 0; by < ysize; ++by) {
     const int16_t* PIK_RESTRICT row_y16 = img_dc16.ConstPlaneRow(1, by);
-    float* PIK_RESTRICT row_y = rect.PlaneRow(&pass_dec_cache->dc, 1, by);
+    float* PIK_RESTRICT row_y = rect.PlaneRow(&frame_dec_cache->dc, 1, by);
 
     for (size_t bx = 0; bx < xsize; bx += d.N) {
       const auto quantized_y16 = load(d16, row_y16 + bx);
@@ -210,8 +212,8 @@ SIMD_ATTR void DequantDC(const Image3S& img_dc16, const Rect& rect,
     for (size_t by = 0; by < ysize; ++by) {
       const int16_t* PIK_RESTRICT row_xb16 = img_dc16.ConstPlaneRow(c, by);
       const float* PIK_RESTRICT row_y =
-          rect.ConstPlaneRow(pass_dec_cache->dc, 1, by);
-      float* PIK_RESTRICT row_xb = rect.PlaneRow(&pass_dec_cache->dc, c, by);
+          rect.ConstPlaneRow(frame_dec_cache->dc, 1, by);
+      float* PIK_RESTRICT row_xb = rect.PlaneRow(&frame_dec_cache->dc, c, by);
 
       for (size_t bx = 0; bx < xsize; bx += d.N) {
         const auto quantized_xb16 = load(d16, row_xb16 + bx);
@@ -230,7 +232,8 @@ SIMD_ATTR void DequantDC(const Image3S& img_dc16, const Rect& rect,
 // `rect`: block units
 std::string CompressDCGroup(const Image3S& dc, const Rect& rect,
                             const AcStrategyImage& ac_strategy,
-                            const ImageI& quant_field, bool use_new_dc,
+                            const ImageI& quant_field,
+                            const ImageB& ar_sigma_lut_ids, bool use_new_dc,
                             bool grayscale, MultipassManager* manager,
                             PikImageSizeInfo* dc_info,
                             PikImageSizeInfo* cfield_info) {
@@ -253,6 +256,11 @@ std::string CompressDCGroup(const Image3S& dc, const Rect& rect,
   TokenizeQuantField(rect, quant_field, manager->HintQuantField(), ac_strategy,
                      &control_fields_tokens[0]);
 
+  // TODO(veluca): tokenize quantization control field.
+
+  TokenizeARParameters(rect, ar_sigma_lut_ids, ac_strategy,
+                       &control_fields_tokens[0]);
+
   std::vector<uint8_t> context_map;
   std::vector<ANSEncodingData> codes;
   std::string histo_code =
@@ -269,9 +277,9 @@ Status DecodeDCGroup(BitReader* reader, const PaddedBytes& compressed,
                      const Rect& rect, bool use_new_dc, bool grayscale,
                      const float* mul_dc, const float ytox_dc,
                      const float ytob_dc, MultipassManager* manager,
-                     PassDecCache* pass_dec_cache,
-                     GroupDecCache* group_dec_cache) {
-  group_dec_cache->InitDecodeDC(rect.xsize(), rect.ysize());
+                     FrameDecCache* frame_dec_cache,
+                     GroupDecCache* group_dec_cache, PikInfo* aux_out) {
+  group_dec_cache->InitDecodeDCGroup(rect.xsize(), rect.ysize());
 
   if (use_new_dc) {
     PIK_ASSERT(SameSize(rect, group_dec_cache->quantized_dc));
@@ -305,16 +313,24 @@ Status DecodeDCGroup(BitReader* reader, const PaddedBytes& compressed,
   ANSSymbolReader strategy_decoder(&code);
   if (!DecodeAcStrategy(reader, &control_fields_decoder, context_map,
                         &group_dec_cache->ac_strategy_raw, rect,
-                        &pass_dec_cache->ac_strategy,
+                        &frame_dec_cache->ac_strategy,
                         manager->HintAcStrategy())) {
     return PIK_FAILURE("Failed to decode AcStrategy.");
   }
 
   if (!DecodeQuantField(reader, &control_fields_decoder, context_map, rect,
-                        pass_dec_cache->ac_strategy,
-                        &pass_dec_cache->raw_quant_field,
+                        frame_dec_cache->ac_strategy,
+                        &frame_dec_cache->raw_quant_field,
                         manager->HintQuantField())) {
     return PIK_FAILURE("Failed to decode QuantField.");
+  }
+
+  // TODO(veluca): decode quantization control field.
+
+  if (!DecodeARParameters(reader, &control_fields_decoder, context_map, rect,
+                          frame_dec_cache->ac_strategy,
+                          &frame_dec_cache->ar_sigma_lut_ids)) {
+    return PIK_FAILURE("Failed to decode ARParameters.");
   }
 
   if (!control_fields_decoder.CheckANSFinalState()) {
@@ -324,7 +340,7 @@ Status DecodeDCGroup(BitReader* reader, const PaddedBytes& compressed,
   PIK_RETURN_IF_ERROR(reader->JumpToByteBoundary());
 
   DequantDC(group_dec_cache->quantized_dc, rect, mul_dc, ytox_dc, ytob_dc,
-            pass_dec_cache);
+            frame_dec_cache, aux_out);
   return true;
 }
 
@@ -333,22 +349,22 @@ using DCGroupSizeCoder = SizeCoderT<0x150F0E0C>;
 
 }  // namespace
 
-PaddedBytes EncodeDC(const Quantizer& quantizer,
-                     const PassEncCache& pass_enc_cache,
-                     const AcStrategyImage& ac_strategy, ThreadPool* pool,
-                     MultipassManager* manager, PikImageSizeInfo* dc_info,
-                     PikImageSizeInfo* cfields_info) {
+PaddedBytes EncodeDCGroups(const Quantizer& quantizer,
+                           const FrameEncCache& frame_enc_cache,
+                           const AcStrategyImage& ac_strategy, ThreadPool* pool,
+                           MultipassManager* manager, PikImageSizeInfo* dc_info,
+                           PikImageSizeInfo* cfield_info) {
   PaddedBytes out;
 
   static_assert(kDcGroupDimInBlocks % kGroupDimInBlocks == 0,
                 "DC group size must be a multiple of AC group size!");
 
-  const size_t xsize_blocks = pass_enc_cache.dc.xsize();
-  const size_t ysize_blocks = pass_enc_cache.dc.ysize();
+  const size_t xsize_blocks = frame_enc_cache.dc.xsize();
+  const size_t ysize_blocks = frame_enc_cache.dc.ysize();
   const size_t xsize_groups =
-      DivCeil(pass_enc_cache.dc.xsize(), kDcGroupDimInBlocks);
+      DivCeil(frame_enc_cache.dc.xsize(), kDcGroupDimInBlocks);
   const size_t ysize_groups =
-      DivCeil(pass_enc_cache.dc.ysize(), kDcGroupDimInBlocks);
+      DivCeil(frame_enc_cache.dc.ysize(), kDcGroupDimInBlocks);
 
   const size_t num_groups = xsize_groups * ysize_groups;
 
@@ -364,20 +380,21 @@ PaddedBytes EncodeDC(const Quantizer& quantizer,
                     kDcGroupDimInBlocks, kDcGroupDimInBlocks, xsize_blocks,
                     ysize_blocks);
     std::string group_code = CompressDCGroup(
-        pass_enc_cache.dc, rect, ac_strategy, quantizer.RawQuantField(),
-        pass_enc_cache.use_new_dc, pass_enc_cache.grayscale_opt, manager,
-        &size_info[group_index], &cfields_size_info[group_index]);
+        frame_enc_cache.dc, rect, ac_strategy, quantizer.RawQuantField(),
+        frame_enc_cache.ar_sigma_lut_ids, frame_enc_cache.use_new_dc,
+        frame_enc_cache.grayscale_opt, manager, &size_info[group_index],
+        &cfields_size_info[group_index]);
     group_codes[group_index].resize(group_code.size());
     Append(group_code, &group_codes[group_index], &group_pos);
   };
-  RunOnPool(pool, 0, num_groups, process_group, "EncodeDC");
+  RunOnPool(pool, 0, num_groups, process_group, "EncodeDCGroup");
 
   for (size_t group_index = 0; group_index < num_groups; ++group_index) {
     if (dc_info != nullptr) {
       dc_info->Assimilate(size_info[group_index]);
     }
-    if (cfields_info != nullptr) {
-      cfields_info->Assimilate(cfields_size_info[group_index]);
+    if (cfield_info != nullptr) {
+      cfield_info->Assimilate(cfields_size_info[group_index]);
     }
   }
 
@@ -395,8 +412,8 @@ PaddedBytes EncodeDC(const Quantizer& quantizer,
   group_toc.resize(group_toc_pos / kBitsPerByte);
 
   PaddedBytes serialized_gradient_map;
-  if (pass_enc_cache.use_gradient) {
-    SerializeGradientMap(pass_enc_cache.gradient, Rect(pass_enc_cache.dc),
+  if (frame_enc_cache.use_gradient) {
+    SerializeGradientMap(frame_enc_cache.gradient, Rect(frame_enc_cache.dc),
                          quantizer, &serialized_gradient_map);
   }
 
@@ -416,20 +433,21 @@ PaddedBytes EncodeDC(const Quantizer& quantizer,
   return out;
 }
 
-Status DecodeDC(BitReader* reader, const PaddedBytes& compressed,
-                const PassHeader& pass_header, size_t xsize_blocks,
-                size_t ysize_blocks, const Quantizer& quantizer,
-                const ColorCorrelationMap& cmap, ThreadPool* pool,
-                MultipassManager* manager,
-                PassDecCache* PIK_RESTRICT pass_dec_cache,
-                std::vector<GroupDecCache>* group_dec_caches) {
+Status DecodeDCGroups(BitReader* reader, const PaddedBytes& compressed,
+                      const FrameHeader& frame_header, size_t xsize_blocks,
+                      size_t ysize_blocks, const Quantizer& quantizer,
+                      const ColorCorrelationMap& cmap, ThreadPool* pool,
+                      MultipassManager* manager,
+                      FrameDecCache* PIK_RESTRICT frame_dec_cache,
+                      std::vector<GroupDecCache>* group_dec_caches,
+                      PikInfo* aux_out) {
   float mul_dc[3];
   for (int c = 0; c < 3; ++c) {
-    mul_dc[c] = quantizer.DequantMatrix(kQuantKindDCT8, c)[0] *
+    mul_dc[c] = quantizer.DequantMatrix(0, kQuantKindDCT8, c)[0] *
                 quantizer.inv_quant_dc();
   }
 
-  pass_dec_cache->dc = Image3F(xsize_blocks, ysize_blocks);
+  frame_dec_cache->dc = Image3F(xsize_blocks, ysize_blocks);
 
   // Precompute DC inverse color transform.
   float ytox_dc = ColorCorrelationMap::YtoX(1.0f, cmap.ytox_dc);
@@ -460,6 +478,7 @@ Status DecodeDC(BitReader* reader, const PaddedBytes& compressed,
 
   // Decode groups.
   std::atomic<int> num_errors{0};
+  std::vector<PikInfo> aux_outs(aux_out ? NumThreads(pool) : 0);
   const auto process_group = [&](const int group_index, const int thread) {
     size_t group_code_offset = group_offsets[group_index];
     size_t group_reader_limit = group_offsets[group_index + 1];
@@ -476,34 +495,42 @@ Status DecodeDC(BitReader* reader, const PaddedBytes& compressed,
                     kDcGroupDimInBlocks, kDcGroupDimInBlocks, xsize_blocks,
                     ysize_blocks);
     GroupDecCache* group_dec_cache = group_dec_caches->data() + thread;
+    PikInfo* my_aux_out = aux_out ? &aux_outs[thread] : nullptr;
     if (!DecodeDCGroup(&group_reader, compressed, rect,
-                       pass_dec_cache->use_new_dc, pass_dec_cache->grayscale,
-                       mul_dc, ytox_dc, ytob_dc, manager, pass_dec_cache,
-                       group_dec_cache)) {
+                       frame_dec_cache->use_new_dc, frame_dec_cache->grayscale,
+                       mul_dc, ytox_dc, ytob_dc, manager, frame_dec_cache,
+                       group_dec_cache, my_aux_out)) {
       num_errors.fetch_add(1, std::memory_order_relaxed);
       return;
     }
   };
-  RunOnPool(pool, 0, num_groups, process_group, "DecodeDC");
-
+  RunOnPool(pool, 0, num_groups, process_group, "DecodeDCGroup");
   PIK_RETURN_IF_ERROR(num_errors.load(std::memory_order_relaxed) == 0);
+  if (aux_out != nullptr) {
+    for (size_t thread = 0; thread < NumThreads(pool); ++thread) {
+      aux_out->Assimilate(aux_outs[thread]);
+    }
+  }
 
-  if (pass_header.flags & PassHeader::kGradientMap) {
+  if (frame_header.flags & FrameHeader::kGradientMap) {
     size_t byte_pos = reader->Position();
     PIK_RETURN_IF_ERROR(DeserializeGradientMap(
         xsize_blocks, ysize_blocks,
-        pass_header.flags & PassHeader::kGrayscaleOpt, quantizer, compressed,
-        &byte_pos, &pass_dec_cache->gradient));
+        frame_header.flags & FrameHeader::kGrayscaleOpt, quantizer, compressed,
+        &byte_pos, &frame_dec_cache->gradient));
     reader->SkipBits((byte_pos - reader->Position()) * 8);
-    ApplyGradientMap(pass_dec_cache->gradient, quantizer, &pass_dec_cache->dc);
+    ApplyGradientMap(frame_dec_cache->gradient, quantizer,
+                     &frame_dec_cache->dc);
+  } else {
+    AdaptiveDCReconstruction(frame_dec_cache->dc, quantizer, pool);
   }
   return true;
 }
 
-void InitializeDecCache(const PassDecCache& pass_dec_cache, const Rect& rect,
+void InitializeDecCache(const FrameDecCache& frame_dec_cache, const Rect& rect,
                         GroupDecCache* PIK_RESTRICT group_dec_cache) {
-  const size_t full_xsize_blocks = pass_dec_cache.dc.xsize();
-  const size_t full_ysize_blocks = pass_dec_cache.dc.ysize();
+  const size_t full_xsize_blocks = frame_dec_cache.dc.xsize();
+  const size_t full_ysize_blocks = frame_dec_cache.dc.ysize();
   const size_t x0_blocks = rect.x0() / kBlockDim;
   const size_t y0_blocks = rect.y0() / kBlockDim;
   const size_t xsize_blocks = rect.xsize() / kBlockDim;
@@ -518,7 +545,7 @@ void InitializeDecCache(const PassDecCache& pass_dec_cache, const Rect& rect,
     for (size_t y = 0; y < ysize_blocks + 2; y++) {
       const size_t y_src = SourceCoord(y + y0_blocks, full_ysize_blocks);
       const float* PIK_RESTRICT row_src =
-          pass_dec_cache.dc.ConstPlaneRow(c, y_src);
+          frame_dec_cache.dc.ConstPlaneRow(c, y_src);
       float* PIK_RESTRICT row_dc = group_dec_cache->dc.PlaneRow(c, y);
       for (size_t x = 0; x < xsize_blocks + 2; x++) {
         const size_t x_src = SourceCoord(x + x0_blocks, full_xsize_blocks);

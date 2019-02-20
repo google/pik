@@ -46,19 +46,6 @@ void* CacheAligned::Allocate(const size_t payload_size, size_t offset) {
   PIK_ASSERT(payload_size < (1ULL << 63));
   PIK_ASSERT((offset % kAlignment == 0) && offset <= kAlias);
 
-  // Update statistics (#allocations and max bytes in use)
-  num_allocations.fetch_add(1, std::memory_order_relaxed);
-  const uint64_t prev_bytes =
-      bytes_in_use.fetch_add(payload_size, std::memory_order_acq_rel);
-  uint64_t expected_max = max_bytes_in_use.load(std::memory_order_acq_rel);
-  for (;;) {
-    const uint64_t desired = std::max(expected_max, prev_bytes + payload_size);
-    if (max_bytes_in_use.compare_exchange_strong(expected_max, desired,
-                                                 std::memory_order_acq_rel)) {
-      break;
-    }
-  }
-
   // What: | misalign | unused | AllocationHeader |payload
   // Size: |<= kAlias | offset |                  |payload_size
   //       ^allocated.^aligned.^header............^payload
@@ -103,6 +90,20 @@ void* CacheAligned::Allocate(const size_t payload_size, size_t offset) {
     PIK_NOTIFY_ERROR("mlock failed");
   }
 #endif
+
+  // Update statistics (#allocations and max bytes in use)
+  num_allocations.fetch_add(1, std::memory_order_relaxed);
+  const uint64_t prev_bytes =
+      bytes_in_use.fetch_add(allocated_size, std::memory_order_acq_rel);
+  uint64_t expected_max = max_bytes_in_use.load(std::memory_order_acq_rel);
+  for (;;) {
+    const uint64_t desired =
+        std::max(expected_max, prev_bytes + allocated_size);
+    if (max_bytes_in_use.compare_exchange_strong(expected_max, desired,
+                                                 std::memory_order_acq_rel)) {
+      break;
+    }
+  }
 
   const uintptr_t payload = aligned + offset;  // still aligned
 

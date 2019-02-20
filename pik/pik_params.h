@@ -11,6 +11,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 
 namespace pik {
@@ -155,11 +156,18 @@ struct DecompressParams {
   // as long as both old and new implementation co-exist, and eventually
   // only the new implementation should remain.
   bool use_new_dc = false;
+
+  // How many passes to decode at most. By default, decode everything.
+  uint32_t max_passes = std::numeric_limits<uint32_t>::max();
+  // Alternatively, one can specify the maximum tolerable downscaling factor
+  // with respect to the full size of the image. By default, nothing less than
+  // the full size is requested.
+  size_t max_downsampling = 1;
 };
 
 // Enable features for distances >= these thresholds:
 static constexpr float kMinButteraugliForNoise = 99.0f;  // disabled
-static constexpr float kMinButteraugliForGradient = 1.85f;
+static constexpr float kMinButteraugliForGradient = 99.0f;  // disabled
 static constexpr float kMinButteraugliForAdaptiveReconstruction = 0.0f;
 
 }  // namespace pik

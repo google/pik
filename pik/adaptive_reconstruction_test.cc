@@ -7,8 +7,10 @@
 #include "pik/adaptive_reconstruction.h"
 
 #include "gtest/gtest.h"
+#include "pik/common.h"
 #include "pik/entropy_coder.h"
 #include "pik/epf.h"
+#include "pik/quant_weights.h"
 #include "pik/single_image_handler.h"
 
 namespace pik {
@@ -98,6 +100,10 @@ void EnsureUnchanged(const float background, const float foreground) {
 
   AcStrategyImage ac_strategy(xsize / kBlockDim, ysize / kBlockDim);
 
+  ImageB dequant_cf(DivCeil(xsize, kTileDim), DivCeil(ysize, kTileDim));
+  ZeroFillImage(&dequant_cf);
+  uint8_t dequant_map[kMaxQuantControlFieldValue][256] = {};
+
   const EpfParams epf_params;
 
   for (size_t idx_image = 0; idx_image < images.size(); ++idx_image) {
@@ -107,8 +113,8 @@ void EnsureUnchanged(const float background, const float foreground) {
     ZeroFillImage(&lut_ids);
 
     Image3F out = AdaptiveReconstruction(
-        ar_input, in, quantizer, quantizer.RawQuantField(), lut_ids,
-        ac_strategy, epf_params, /*pool=*/nullptr);
+        ar_input, in, quantizer, quantizer.RawQuantField(), dequant_cf,
+        dequant_map, lut_ids, ac_strategy, epf_params, /*pool=*/nullptr);
 
     for (int c = 0; c < Image3F::kNumPlanes; ++c) {
       for (size_t y = 0; y < ysize; ++y) {

@@ -32,7 +32,7 @@ class FileWrapper {
   FileWrapper(const FileWrapper& other) = delete;
   FileWrapper& operator=(const FileWrapper& other) = delete;
 
-  FileWrapper(const std::string& pathname, const char* mode)
+  explicit FileWrapper(const std::string& pathname, const char* mode)
       : file_(fopen(pathname.c_str(), mode)) {}
 
   ~FileWrapper() {

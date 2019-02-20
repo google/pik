@@ -11,6 +11,7 @@
 
 #include "pik/data_parallel.h"
 #include "pik/image.h"
+#include "pik/image_ops.h"
 #include "pik/pik_params.h"
 
 namespace pik {

@@ -51,8 +51,9 @@ int DecompressMain(int argc, const char* argv[]) {
   });
 
   CodecInOut io(&codec_context);
+  size_t downsampling = 1;
   for (size_t i = 0; i < args.num_reps; ++i) {
-    if (!Decompress(&codec_context, compressed, args.params, &pool, &io,
+    if (!Decompress(compressed, args.params, &pool, &io, &downsampling,
                     &stats)) {
       return 1;
     }
@@ -60,7 +61,7 @@ int DecompressMain(int argc, const char* argv[]) {
 
   if (!WriteOutput(args, io)) return 1;
 
-  (void)stats.Print(io, &pool);
+  (void)stats.Print(io, downsampling, &pool);
 
   if (args.print_profile == Override::kOn) {
     PROFILER_PRINT_RESULTS();

@@ -173,16 +173,6 @@ static Image3F OpsinTestImage() {
   return opsin;
 }
 
-static Image3F RGBTestImage(int xsize, int ysize) {
-  const std::string pathname =
-      GetTestDataPath("wesaturate/500px/u76c0g_bliznaca_srgb8.png");
-  CodecContext codec_context;
-  CodecInOut io(&codec_context);
-  PIK_CHECK(io.SetFromFile(pathname, /*pool=*/nullptr));
-  io.ShrinkTo(xsize, ysize);
-  return CopyImage(io.color());
-}
-
 static SIMD_ATTR Image3F TransposedScaledIDCT(const Image3F& coeffs) {
   constexpr int N = kBlockDim;
   constexpr int block_size = N * N;
@@ -245,51 +235,6 @@ TEST(DctUtilTest, Roundtrip2x2Corners) {
   ZeroOut2x2(&coeffs_out);
   Add2x2CornersFromPixelSpaceImage(tmp, &coeffs_out);
   VerifyRelativeError(coeffs, coeffs_out, 1e-6, 1e-6);
-}
-
-std::vector<float> DcKernel(float sigma) {
-  std::vector<float> kernel = GaussianKernel(8, sigma);
-  float sum = 0.0f;
-  for (int i = 0; i < kernel.size(); ++i) {
-    sum += kernel[i];
-  }
-  std::vector<float> w(3);
-  w[0] = (8 * kernel[0] + 7 * kernel[1] + 6 * kernel[2] + 5 * kernel[3] +
-          4 * kernel[4] + 3 * kernel[5] + 2 * kernel[6] + 1 * kernel[7]) /
-         (8 * sum);
-  w[1] = 1.0 - 2 * w[0];
-  w[2] = w[0];
-  return w;
-}
-
-std::vector<float> AcKernel01(float sigma) {
-  float w[3][8] = {{0.0f}};
-  std::vector<float> kernel = GaussianKernel(8, sigma);
-  for (int k = 0; k < 8; ++k) {
-    const int split0 = 8 - k;
-    const int split1 = 16 - k;
-    for (int j = 0; j < split0; ++j) {
-      w[0][k] += kernel[j];
-    }
-    for (int j = split0; j < split1; ++j) {
-      w[1][k] += kernel[j];
-    }
-    for (int j = split1; j < kernel.size(); ++j) {
-      w[2][k] += kernel[j];
-    }
-  }
-  std::vector<float> out(3);
-  for (int i = 0; i < 3; ++i) {
-    SIMD_ALIGN float block[64];
-    for (int iy = 0; iy < 8; ++iy) {
-      for (int ix = 0; ix < 8; ++ix) {
-        block[8 * iy + ix] = w[0][iy] * w[i][ix];
-      }
-    }
-    ComputeTransposedScaledDCT<8>()(FromBlock<8>(block), ToBlock<8>(block));
-    out[i] = block[1] / 64.0f;
-  }
-  return out;
 }
 
 using testing::FloatNear;

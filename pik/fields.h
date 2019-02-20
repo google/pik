@@ -346,6 +346,24 @@ class U64Coder {
   }
 };
 
+// 3-bit code for exif orientation, encoding values 1-8.
+class OrientationCoder {
+ public:
+  static uint32_t Read(BitReader* PIK_RESTRICT reader) {
+    return 1u + reader->ReadFixedBits<3>();
+  }
+
+  static Status Write(uint32_t value, size_t* pos, uint8_t* storage) {
+    WriteBits(3, value - 1, pos, storage);
+    return true;
+  }
+
+  static Status CanEncode(uint32_t value, size_t* PIK_RESTRICT encoded_bits) {
+    *encoded_bits = 3;
+    return value >= 1 && value <= 8;
+  }
+};
+
 // Coder for byte arrays: stores encoding and #bytes via U32Coder, then raw or
 // Brotli-compressed bytes.
 class BytesCoder {
@@ -494,7 +512,7 @@ class BytesCoder {
 };
 
 // A "bundle" is a forward- and backward compatible collection of fields.
-// They are used for FileHeader/PassHeader/GroupHeader. Bundles can be extended
+// They are used for FileHeader/FrameHeader/GroupHeader. Bundles can be extended
 // by appending(!) fields. Optional fields may be omitted from the bitstream by
 // conditionally visiting them. When reading new bitstreams with old code, we
 // skip unknown fields at the end of the bundle. This requires storing the
@@ -755,6 +773,12 @@ class Bundle {
       *value = default_value;
     }
 
+    template <typename T>
+    void Orientation(
+        const T default_value, T* PIK_RESTRICT value) {
+      *value = default_value;
+    }
+
     void Bool(bool default_value, bool* PIK_RESTRICT value) {
       *value = default_value;
     }
@@ -799,6 +823,12 @@ class Bundle {
       all_default_ &= *value == default_value;
     }
 
+    template <typename T>
+    void Orientation(
+        const T default_value, T* PIK_RESTRICT value) {
+      all_default_ &= *value == default_value;
+    }
+
     void Bool(bool default_value, const bool* PIK_RESTRICT value) {
       all_default_ &= *value == default_value;
     }
@@ -839,6 +869,12 @@ class Bundle {
       uint32_t bits;
       U32(distribution, static_cast<uint32_t>(default_value), &bits);
       *value = static_cast<T>(bits);
+    }
+
+    template <typename T>
+    void Orientation(
+        const T default_value, T* PIK_RESTRICT value) {
+      *value = static_cast<T>(OrientationCoder::Read(reader_));
     }
 
     void Bool(bool default_value, bool* PIK_RESTRICT value) {
@@ -922,6 +958,15 @@ class Bundle {
       U32(distribution, static_cast<uint32_t>(default_value), &bits);
     }
 
+    template <typename T>
+    void Orientation(
+        const T default_value, T* PIK_RESTRICT value) {
+      size_t encoded_bits = 0;
+      ok_ &= OrientationCoder::CanEncode(static_cast<uint32_t>(*value),
+          &encoded_bits);
+      encoded_bits_ += encoded_bits;
+    }
+
     void Bool(const bool default_value, bool* PIK_RESTRICT value) {
       uint32_t bits = static_cast<uint32_t>(*value);
       U32(kU32RawBits + 1, default_value, &bits);
@@ -995,6 +1040,13 @@ class Bundle {
               T* PIK_RESTRICT value) {
       const uint32_t bits = static_cast<uint32_t>(*value);
       U32(distribution, static_cast<uint32_t>(default_value), &bits);
+    }
+
+    template <typename T>
+    void Orientation(
+        const T default_value, T* PIK_RESTRICT value) {
+      ok_ &= OrientationCoder::Write(static_cast<uint32_t>(*value),
+          pos_, storage_);
     }
 
     void Bool(const bool default_value, bool* PIK_RESTRICT value) {

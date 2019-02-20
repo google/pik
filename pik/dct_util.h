@@ -54,14 +54,52 @@ void GatherBlock(const T* PIK_RESTRICT row, size_t stride,
   }
 }
 
-// Returns a (N*N)*W x H image where each (N*N)x1 block is produced with
+// Fills a preallocated (N*N)*W x H `dct` with (N*N)x1 blocks produced by
 // ComputeTransposedScaledDCT() from the corresponding NxN block of
-// the image. Note that the whole coefficient image is scaled by 1 / (N*N)
-// afterwards, so that ComputeTransposedScaledIDCT() applied to each block will
-// return exactly the input image block.
-// REQUIRES: img.xsize() == N*W, img.ysize() == N*H
-SIMD_ATTR void TransposedScaledDCT(const Image3F& img,
+// `image`. Note that `dct` coefficients are scaled by 1 / (N*N), so that
+// ComputeTransposedScaledIDCT applied to each block or TransposedScaledIDCT
+// will return the original input.
+// REQUIRES: image.xsize() == N*W, image.ysize() == N*H
+SIMD_ATTR void TransposedScaledDCT(const Image3F& image,
                                    Image3F* PIK_RESTRICT dct);
+
+// Fills a preallocated N*W x N*H `idct` with NxN blocks produced by
+// ComputeTransposedScaledIDCT() from the (N*N)x1 blocks of `dct`.
+// REQUIRES: dct.xsize() == N*N*W, dct.ysize() == H
+SIMD_ATTR void TransposedScaledIDCT(const Image3F& dct,
+                                    Image3F* PIK_RESTRICT idct);
+
+// Returns an N x M image by taking the DC coefficient from each 64x1 block.
+// REQUIRES: coeffs.xsize() == 64*N, coeffs.ysize() == M
+template <typename T>
+Image3<T> DCImage(const Image3<T>& coeffs) {
+  PIK_ASSERT(coeffs.xsize() % kDCTBlockSize == 0);
+  Image3<T> out(coeffs.xsize() / kDCTBlockSize, coeffs.ysize());
+  for (size_t c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < out.ysize(); ++y) {
+      const T* PIK_RESTRICT row_in = coeffs.ConstPlaneRow(c, y);
+      T* PIK_RESTRICT row_out = out.PlaneRow(c, y);
+      for (size_t x = 0; x < out.xsize(); ++x) {
+        row_out[x] = row_in[x * kDCTBlockSize];
+      }
+    }
+  }
+  return out;
+}
+
+// Scatters dc into "coeffs" at offset 0 within 1x64 blocks.
+template <typename T>
+void FillDC(const Image3<T>& dc, Image3<T>* PIK_RESTRICT coeffs) {
+  for (size_t c = 0; c < 3; ++c) {
+    for (size_t y = 0; y < dc.ysize(); y++) {
+      const T* PIK_RESTRICT row_dc = dc.ConstPlaneRow(c, y);
+      T* PIK_RESTRICT row_out = coeffs->PlaneRow(c, y);
+      for (size_t x = 0; x < dc.xsize(); ++x) {
+        row_out[kDCTBlockSize * x] = row_dc[x];
+      }
+    }
+  }
+}
 
 }  // namespace pik
 

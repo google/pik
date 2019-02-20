@@ -9,6 +9,7 @@
 
 #include "pik/butteraugli/butteraugli.h"
 #include "pik/image.h"
+#include "pik/image_ops.h"
 
 namespace pik {
 

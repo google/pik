@@ -4,7 +4,7 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT.
 
-#include "image_loading.h"
+#include "comparison_tool/viewer/image_loading.h"
 
 #include <QRgb>
 #include <QThread>

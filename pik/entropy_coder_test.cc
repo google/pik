@@ -27,50 +27,6 @@
 namespace pik {
 namespace {
 
-// Returns an N x M image by taking the DC coefficient from each 64x1 block.
-// REQUIRES: coeffs.xsize() == 64*N, coeffs.ysize() == M
-template <typename T>
-Image3<T> DCImage(const Image3<T>& coeffs) {
-  constexpr int N = kBlockDim;
-  constexpr size_t block_size = N * N;
-  PIK_ASSERT(coeffs.xsize() % block_size == 0);
-  Image3<T> out(coeffs.xsize() / block_size, coeffs.ysize());
-  for (size_t y = 0; y < out.ysize(); ++y) {
-    const T* row_in[3] = {coeffs.ConstPlaneRow(0, y),
-                          coeffs.ConstPlaneRow(1, y),
-                          coeffs.ConstPlaneRow(2, y)};
-    T* row_out[3] = {out.PlaneRow(0, y), out.PlaneRow(1, y),
-                     out.PlaneRow(2, y)};
-    for (size_t c = 0; c < 3; ++c) {
-      for (size_t x = 0; x < out.xsize(); ++x) {
-        row_out[c][x] = row_in[c][x * block_size];
-      }
-    }
-  }
-  return out;
-}
-
-// Scatters dc into "coeffs" at offset 0 within 1x64 blocks.
-template <typename T>
-void FillDC(const Image3<T>& dc, Image3<T>* coeffs) {
-  constexpr int N = kBlockDim;
-  constexpr size_t block_size = N * N;
-  const size_t xsize = dc.xsize();
-  const size_t ysize = dc.ysize();
-
-  for (size_t y = 0; y < ysize; y++) {
-    const T* row_dc[3] = {dc.ConstPlaneRow(0, y), dc.ConstPlaneRow(1, y),
-                          dc.ConstPlaneRow(2, y)};
-    T* row_out[3] = {coeffs->PlaneRow(0, y), coeffs->PlaneRow(1, y),
-                     coeffs->PlaneRow(2, y)};
-    for (size_t c = 0; c < 3; ++c) {
-      for (size_t x = 0; x < xsize; ++x) {
-        row_out[c][block_size * x] = row_dc[c][x];
-      }
-    }
-  }
-}
-
 template <typename Random>
 class UniformWithPeakAtZero {
  public:

@@ -35,17 +35,20 @@ ImageF InitialQuantField(double butteraugli_target, double intensity_multiplier,
                          const CompressParams& cparams, ThreadPool* pool,
                          double rescale);
 
+float InitialQuantDC(float butteraugli_target, float intensity_multiplier);
+
 // Returns a quantizer that uses an adjusted version of the provided
 // quant_field.
 std::shared_ptr<Quantizer> FindBestQuantizer(
     const CompressParams& cparams, size_t xsize_blocks, size_t ysize_blocks,
     const Image3F& opsin_orig, const Image3F& opsin,
-    const PassHeader& pass_header, const GroupHeader& header,
+    const FrameHeader& frame_header, const GroupHeader& header,
     const ColorCorrelationMap& cmap, const BlockDictionary& block_dictionary,
     const AcStrategyImage& ac_strategy, const ImageB& ar_sigma_lut_ids,
-    const DequantMatrices* dequant, ImageF& quant_field, ThreadPool* pool,
-    PikInfo* aux_out, MultipassManager* multipass_manager,
-    double rescale = 1.0);
+    const DequantMatrices* dequant, const ImageB& dequant_control_field,
+    const uint8_t dequant_map[kMaxQuantControlFieldValue][256],
+    ImageF& quant_field, ThreadPool* pool, PikInfo* aux_out,
+    MultipassManager* multipass_manager, double rescale = 1.0);
 
 }  // namespace pik
 

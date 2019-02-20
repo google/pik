@@ -21,7 +21,7 @@ bool Abort(const char* f, int l, const char* format, ...) {
   const std::string call_stack;
 
   fprintf(stderr, "Abort at %s:%d: %s\n%s\n", f, l, buf, call_stack.c_str());
-  abort();
+  exit(1);
   return false;
 }
 

@@ -20,13 +20,14 @@
 
 namespace pik {
 
-constexpr size_t kMaxBlockSize = 16;
+constexpr size_t kMaxBlockSize = 8;
+constexpr float kDotDistThreshold = 0.02f;
 
-struct BlockInfo {
+struct QuantizedBlock {
   size_t xsize;
   size_t ysize;
   int8_t pixels[3][kMaxBlockSize * kMaxBlockSize];
-  bool operator==(const BlockInfo& other) const {
+  bool operator==(const QuantizedBlock& other) const {
     if (xsize != other.xsize) return false;
     if (ysize != other.ysize) return false;
     for (size_t c = 0; c < 3; c++) {
@@ -36,7 +37,7 @@ struct BlockInfo {
     }
     return true;
   }
-  bool operator<(const BlockInfo& other) const {
+  bool operator<(const QuantizedBlock& other) const {
     if (xsize < other.xsize) return true;
     if (xsize > other.xsize) return false;
     if (ysize < other.ysize) return true;
@@ -50,7 +51,6 @@ struct BlockInfo {
     return false;
   }
 };
-
 struct BlockPosition {
   // Position of top-left corner of the block in the image.
   size_t x, y;
@@ -71,22 +71,22 @@ struct BlockPosition {
 class BlockDictionary {
  public:
   BlockDictionary() {}
-  BlockDictionary(const std::vector<BlockInfo>& dictionary,
+  BlockDictionary(const std::vector<QuantizedBlock>& dictionary,
                   const std::vector<BlockPosition>& positions);
 
   std::string Encode(PikImageSizeInfo* info) const;
 
   Status Decode(BitReader* br, size_t xsize, size_t ysize);
 
-  void AddTo(Image3F* opsin, size_t downsample) const;
+  void AddTo(Image3F* opsin, size_t downsampling) const;
 
   void SubtractFrom(Image3F* opsin) const;
 
  private:
-  std::vector<BlockInfo> dictionary_;
+  std::vector<QuantizedBlock> dictionary_;
   std::vector<BlockPosition> positions_;
   template <bool>
-  void Apply(Image3F* opsin, size_t downsample) const;
+  void Apply(Image3F* opsin, size_t downsampling) const;
 };
 
 BlockDictionary FindBestBlockDictionary(double butteraugli_target,

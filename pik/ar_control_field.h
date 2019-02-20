@@ -10,13 +10,17 @@
 #include "pik/ac_strategy.h"
 #include "pik/image.h"
 #include "pik/pik_params.h"
+#include "pik/quant_weights.h"
 
 namespace pik {
 
-void FindBestArControlField(float distance, const Image3F& opsin,
+void FindBestArControlField(float distance, float intensity_target,
+                            const Image3F& opsin,
                             const AcStrategyImage& ac_strategy,
                             const ImageF& quant_field,
-                            GaborishStrength gaborish, ImageB* sigma_lut_ids);
+                            const DequantMatrices* dequant,
+                            GaborishStrength gaborish, ThreadPool* pool,
+                            ImageB* sigma_lut_ids);
 
 }
 

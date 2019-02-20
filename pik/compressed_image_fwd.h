@@ -17,6 +17,7 @@ namespace pik {
 
 struct GradientMap {
   Image3F gradient;  // corners of the gradient map tiles
+  Image3B apply;     // gradient application mask.
 
   // Size of the DC image
   size_t xsize_dc;
@@ -31,7 +32,7 @@ struct GradientMap {
 };
 
 // Contains global information that are computed once per pass.
-struct PassEncCache {
+struct FrameEncCache {
   // DCT coefficients for the full image
   Image3F coeffs;
 
@@ -50,6 +51,19 @@ struct PassEncCache {
   GradientMap gradient;
 
   DequantMatrices matrices{/*need_inv_table=*/true};
+
+  // Control field for dequant matrix selection.
+  ImageB dequant_control_field;
+
+  // Map of dequant control field and adaptive quantization level to
+  // dequantization table.
+  uint8_t dequant_map[kMaxQuantControlFieldValue][256] = {};
+
+  // AC strategy.
+  AcStrategyImage ac_strategy;
+
+  // Per-block indices into LUT for adaptive reconstruction's blur strength.
+  ImageB ar_sigma_lut_ids;
 };
 
 // Working area for ComputeCoefficients
@@ -87,7 +101,7 @@ struct EncCache {
 
 // Information that is used at the pass level. All the images here should be
 // accessed through a group rect (either with block units or pixel units).
-struct PassDecCache {
+struct FrameDecCache {
   // Enable new Lossless codec for DC. This flag exists only temporarily
   // as long as both old and new implementation co-exist, and eventually
   // only the new implementation should remain.
@@ -108,15 +122,22 @@ struct PassDecCache {
 
   DequantMatrices matrices{/*need_inv_table=*/false};
 
+  // Control field for dequant matrix selection.
+  ImageB dequant_control_field;
+
+  // Map of dequant control field and adaptive quantization level to
+  // dequantization table.
+  uint8_t dequant_map[kMaxQuantControlFieldValue][256] = {};
+
   // Per-block indices into LUT for adaptive reconstruction's blur strength.
-  ImageB sigma_lut_ids;
+  ImageB ar_sigma_lut_ids;
 };
 
 // Temp images required for decoding a single group. Reduces memory allocations
 // for large images because we only initialize min(#threads, #groups) instances.
 struct GroupDecCache {
   // Separate from InitOnce because the caller only knows the DC group size.
-  void InitDecodeDC(size_t xsize_blocks, size_t ysize_blocks) {
+  void InitDecodeDCGroup(size_t xsize_blocks, size_t ysize_blocks) {
     if (quantized_dc.xsize() == 0) {
       quantized_dc = Image3S(kDcGroupDimInBlocks, kDcGroupDimInBlocks);
       dc_y = ImageS(kDcGroupDimInBlocks, kDcGroupDimInBlocks);

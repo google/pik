@@ -89,7 +89,7 @@ Image3F OpsinDynamicsImage(const CodecInOut* in, const Rect& in_rect) {
 Image3F OpsinDynamicsImage(const Image3B& srgb8) {
   CodecContext codec_context;
   CodecInOut io(&codec_context);
-  Image3F srgb = StaticCastImage3<uint8_t, float>(srgb8);
+  Image3F srgb = StaticCastImage3<float>(srgb8);
   io.SetFromImage(std::move(srgb), codec_context.c_srgb[0]);
   PIK_CHECK(io.TransformTo(codec_context.c_linear_srgb[io.IsGray()]));
   return OpsinDynamicsImage(&io, Rect(io.color()));

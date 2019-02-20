@@ -26,6 +26,7 @@
 namespace pik {
 
 constexpr size_t kMaxNumPasses = 8;
+constexpr size_t kNoDownsamplingFactor = std::numeric_limits<size_t>::max();
 
 struct PassDefinition {
   // Side of the square of the coefficients that should be kept in each 8x8
@@ -35,11 +36,18 @@ struct PassDefinition {
   // Whether or not we should include only salient blocks.
   // TODO(veluca): ignored for now.
   bool salient_only;
+
+  // If specified, this indicates that if the requested downsampling factor is
+  // sufficiently high, then it is fine to stop decoding after this pass.
+  // By default, passes are not marked as being suitable for any downsampling.
+  size_t suitable_for_downsampling_factor_of_at_least;
 };
 
 struct ProgressiveMode {
   size_t num_passes = 1;
-  PassDefinition passes[kMaxNumPasses] = {{8, false}};
+  PassDefinition passes[kMaxNumPasses] = {
+      PassDefinition{/*num_coefficients=*/8, /*salient_only=*/false,
+                     /*suitable_for_downsampling_factor_of_at_least=*/1}};
 
   ProgressiveMode() {}
 
@@ -47,15 +55,25 @@ struct ProgressiveMode {
   ProgressiveMode(const PassDefinition (&p)[nump]) {
     PIK_ASSERT(nump <= kMaxNumPasses);
     num_passes = nump;
-    size_t last_ncoeff = 1;
-    bool was_salient_only = false;
+    PassDefinition previous_pass{
+        /*num_coefficients=*/1,
+        /*salient_only=*/false,
+        /*suitable_for_downsampling_factor_of_at_least=*/kNoDownsamplingFactor};
+    size_t last_downsampling_factor = std::numeric_limits<size_t>::max();
     for (size_t i = 0; i < nump; i++) {
-      PIK_ASSERT(p[i].num_coefficients > last_ncoeff ||
-                 (p[i].num_coefficients == last_ncoeff && !p[i].salient_only &&
-                  was_salient_only));
-      last_ncoeff = p[i].num_coefficients;
-      was_salient_only = p[i].salient_only;
-      passes[i] = p[i];
+      PIK_ASSERT(p[i].num_coefficients > previous_pass.num_coefficients ||
+                 (p[i].num_coefficients == previous_pass.num_coefficients &&
+                  !p[i].salient_only && previous_pass.salient_only));
+      PIK_ASSERT(p[i].suitable_for_downsampling_factor_of_at_least ==
+                     std::numeric_limits<size_t>::max() ||
+                 p[i].suitable_for_downsampling_factor_of_at_least <=
+                     last_downsampling_factor);
+      if (p[i].suitable_for_downsampling_factor_of_at_least !=
+          std::numeric_limits<size_t>::max()) {
+        last_downsampling_factor =
+            p[i].suitable_for_downsampling_factor_of_at_least;
+      }
+      previous_pass = passes[i] = p[i];
     }
   }
 };
@@ -93,8 +111,8 @@ class SingleImageManager : public MultipassManager {
  public:
   SingleImageManager() { group_handlers_.reserve(16); }
 
-  void StartPass(const PassHeader& pass_header) override {
-    current_header_ = pass_header;
+  void StartPass(const FrameHeader& frame_header) override {
+    current_header_ = frame_header;
   }
 
   void SetDecodedPass(const Image3F& opsin) override {}
@@ -130,20 +148,34 @@ class SingleImageManager : public MultipassManager {
   std::shared_ptr<Quantizer> GetQuantizer(
       const CompressParams& cparams, size_t xsize_blocks, size_t ysize_blocks,
       const Image3F& opsin_orig, const Image3F& opsin,
-      const PassHeader& pass_header, const GroupHeader& header,
+      const FrameHeader& frame_header, const GroupHeader& header,
       const ColorCorrelationMap& cmap, const BlockDictionary& block_dictionary,
       const AcStrategyImage& ac_strategy, const ImageB& ar_sigma_lut_ids,
-      const DequantMatrices* dequant, ImageF& quant_field, ThreadPool* pool,
-      PikInfo* aux_out) override;
+      const DequantMatrices* dequant, const ImageB& dequant_control_field,
+      const uint8_t dequant_map[kMaxQuantControlFieldValue][256],
+      ImageF& quant_field, ThreadPool* pool, PikInfo* aux_out) override;
 
   size_t GetNumPasses() override { return mode_.num_passes; }
+  std::vector<std::pair<uint32_t, uint32_t>> GetDownsamplingToNumPasses()
+      override {
+    std::vector<std::pair<uint32_t, uint32_t>> result;
+    for (int i = 0; i < mode_.num_passes - 1; ++i) {
+      const auto min_downsampling_factor =
+          mode_.passes[i].suitable_for_downsampling_factor_of_at_least;
+      if (1 < min_downsampling_factor &&
+          min_downsampling_factor < std::numeric_limits<size_t>::max()) {
+        result.emplace_back(min_downsampling_factor, i);
+      }
+    }
+    return result;
+  }
 
  private:
   friend class SingleImageHandler;
 
   float BlockSaliency(size_t row, size_t col) const;
 
-  PassHeader current_header_;
+  FrameHeader current_header_;
   ProgressiveMode mode_;
   bool use_adaptive_reconstruction_ = false;
 

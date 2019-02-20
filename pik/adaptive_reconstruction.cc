@@ -18,6 +18,7 @@
 #include "pik/entropy_coder.h"
 #include "pik/epf.h"
 #include "pik/profiler.h"
+#include "pik/quant_weights.h"
 #include "pik/quantizer.h"
 #include "pik/simd/simd.h"
 
@@ -27,33 +28,6 @@
 
 namespace pik {
 namespace {
-
-Image3F DoDenoise(const Image3F& opsin, const Image3F& opsin_sharp,
-                  const Quantizer& quantizer, const ImageI& raw_quant_field,
-                  const ImageB& sigma_lut_ids,
-                  const AcStrategyImage& ac_strategy,
-                  const EpfParams& epf_params, ThreadPool* pool,
-                  AdaptiveReconstructionAux* aux) {
-  if (aux != nullptr) {
-    aux->quant_scale = quantizer.Scale();
-  }
-
-  Image3F smoothed(opsin.xsize(), opsin.ysize());
-
-  const float quant_scale = quantizer.Scale();
-  if (epf_params.enable_adaptive) {
-    Dispatch(TargetBitfield().Best(), EdgePreservingFilter(), opsin,
-             opsin_sharp, &raw_quant_field, quant_scale, sigma_lut_ids,
-             ac_strategy, epf_params, pool, &smoothed,
-             aux ? &aux->epf_stats : nullptr);
-  } else {
-    float stretch;
-    Dispatch(TargetBitfield().Best(), EdgePreservingFilter(), opsin,
-             opsin_sharp, epf_params, aux ? &aux->stretch : &stretch,
-             &smoothed);
-  }
-  return smoothed;
-}
 
 using DF = SIMD_FULL(float);
 using DI = SIMD_FULL(int32_t);
@@ -296,12 +270,77 @@ struct ARBlocks {
 
 }  // namespace
 
+Image3F DoDenoise(const Image3F& opsin, const Image3F& opsin_sharp,
+                  const Quantizer& quantizer, const ImageI& raw_quant_field,
+                  const ImageB& sigma_lut_ids,
+                  const AcStrategyImage& ac_strategy,
+                  const EpfParams& epf_params, ThreadPool* pool,
+                  AdaptiveReconstructionAux* aux) {
+  if (aux != nullptr) {
+    aux->quant_scale = quantizer.Scale();
+  }
+
+  Image3F smoothed(opsin.xsize(), opsin.ysize());
+
+  const float quant_scale = quantizer.Scale();
+  if (epf_params.enable_adaptive) {
+    Dispatch(TargetBitfield().Best(), EdgePreservingFilter(), opsin,
+             opsin_sharp, &raw_quant_field, quant_scale, sigma_lut_ids,
+             ac_strategy, epf_params, pool, &smoothed,
+             aux ? &aux->epf_stats : nullptr);
+  } else {
+    float stretch;
+    Dispatch(TargetBitfield().Best(), EdgePreservingFilter(), opsin,
+             opsin_sharp, epf_params, aux ? &aux->stretch : &stretch,
+             &smoothed);
+  }
+  return smoothed;
+}
+
+void AdaptiveDCReconstruction(Image3F& dc, const Quantizer& quantizer,
+                              ThreadPool* pool) {
+  // DoDenoise requires a multiple of kBlockDim size image.
+  Image3F padded_dc = PadImageToMultiple(dc, kBlockDim);
+  ImageI dc_quant_field(padded_dc.xsize() / kBlockDim,
+                        padded_dc.ysize() / kBlockDim);
+  // The quantizer.QuantDC() / 2 has been shown to lead to a useful sigma for
+  // the DoDenoise function.
+  FillImage(quantizer.QuantDC() / 2, &dc_quant_field);
+  // Using the default lookup table IDs.
+  ImageB zero_sigma_lut_ids(padded_dc.xsize() / kBlockDim,
+                            padded_dc.ysize() / kBlockDim);
+  ZeroFillImage(&zero_sigma_lut_ids);
+  // Pretend we used regular DCT8 for the DC image.
+  AcStrategyImage dct8_strat_image(padded_dc.xsize() / kBlockDim,
+                                   padded_dc.ysize() / kBlockDim);
+  Image3F denoised = DoDenoise(padded_dc, padded_dc, quantizer, dc_quant_field,
+                               zero_sigma_lut_ids, dct8_strat_image,
+                               EpfParams(), pool, nullptr);
+  for (size_t c = 0; c < padded_dc.kNumPlanes; c++) {
+    const float half_step = quantizer.inv_quant_dc() *
+                            quantizer.DequantMatrix(0, kQuantKindDCT8, c)[0] *
+                            0.5f;
+    for (size_t y = 0; y < dc.ysize(); y++) {
+      const float* PIK_RESTRICT denoised_row = denoised.ConstPlaneRow(c, y);
+      float* PIK_RESTRICT dc_row = dc.PlaneRow(c, y);
+      for (size_t x = 0; x < dc.xsize(); x++) {
+        dc_row[x] = std::max(dc_row[x] - half_step,
+                             std::min(denoised_row[x], dc_row[x] + half_step));
+      }
+    }
+  }
+}
+
 SIMD_ATTR Image3F AdaptiveReconstruction(
     const Image3F& in, const Image3F& non_smoothed, const Quantizer& quantizer,
-    const ImageI& raw_quant_field, const ImageB& sigma_lut_ids,
-    const AcStrategyImage& ac_strategy, const EpfParams& epf_params,
-    ThreadPool* pool, AdaptiveReconstructionAux* aux) {
+    const ImageI& raw_quant_field, const ImageB& quant_cf,
+    const uint8_t quant_cf_map[kMaxQuantControlFieldValue][256],
+    const ImageB& sigma_lut_ids, const AcStrategyImage& ac_strategy,
+    const EpfParams& epf_params, ThreadPool* pool,
+    AdaptiveReconstructionAux* aux) {
   PROFILER_FUNC;
+  PIK_ASSERT(in.xsize() / 8 == sigma_lut_ids.xsize() &&
+             in.ysize() / 8 == sigma_lut_ids.ysize());
   // Input image should have an integer number of blocks.
   PIK_ASSERT(in.xsize() % kBlockDim == 0 && in.ysize() % kBlockDim == 0);
   const size_t xsize_blocks = in.xsize() / kBlockDim;
@@ -309,12 +348,12 @@ SIMD_ATTR Image3F AdaptiveReconstruction(
 
   // Dequantization matrices.
   const float* PIK_RESTRICT dequant_matrices =
-      quantizer.DequantMatrix(kQuantKindDCT8, 0);
+      quantizer.DequantMatrix(0, kQuantKindDCT8, 0);
   float dc_mul[3];
   for (size_t c = 0; c < 3; c++) {
     dc_mul[c] =
         quantizer.inv_quant_dc() *
-        dequant_matrices[quantizer.DequantMatrixOffset(kQuantKindDCT8, c)];
+        dequant_matrices[quantizer.DequantMatrixOffset(0, kQuantKindDCT8, c)];
   }
 
   // Modified below (clamped).
@@ -346,22 +385,28 @@ SIMD_ATTR Image3F AdaptiveReconstruction(
         float* PIK_RESTRICT row_filt_y = filt.PlaneRow(1, by * kBlockDim);
         float* PIK_RESTRICT row_filt_b = filt.PlaneRow(2, by * kBlockDim);
 
+        const size_t ty = by / kTileDimInBlocks;
+        const uint8_t* row_quant_cf = quant_cf.ConstRow(ty);
+
         for (size_t bx = 0; bx < xsize_blocks; ++bx) {
           const int32_t qac = row_quant[bx];
           const float inv_quant_ac = quantizer.inv_quant_ac(qac);
           const AcStrategy acs = ac_strategy_row[bx];
           if (!acs.IsFirstBlock()) continue;
 
+          const size_t tx = bx / kTileDimInBlocks;
+
           // TODO(janwas): hoist/precompute
+          uint8_t quant_table = quant_cf_map[row_quant_cf[tx]][qac - 1];
           const float* dequant_matrix_x =
-              dequant_matrices +
-              quantizer.DequantMatrixOffset(acs.GetQuantKind(), /*c=*/0);
+              dequant_matrices + quantizer.DequantMatrixOffset(
+                                     quant_table, acs.GetQuantKind(), /*c=*/0);
           const float* dequant_matrix_y =
-              dequant_matrices +
-              quantizer.DequantMatrixOffset(acs.GetQuantKind(), /*c=*/1);
+              dequant_matrices + quantizer.DequantMatrixOffset(
+                                     quant_table, acs.GetQuantKind(), /*c=*/1);
           const float* dequant_matrix_b =
-              dequant_matrices +
-              quantizer.DequantMatrixOffset(acs.GetQuantKind(), /*c=*/2);
+              dequant_matrices + quantizer.DequantMatrixOffset(
+                                     quant_table, acs.GetQuantKind(), /*c=*/2);
 
           const size_t block_ofs = bx * kBlockDim;
           const float* PIK_RESTRICT pos_original_x = row_original_x + block_ofs;

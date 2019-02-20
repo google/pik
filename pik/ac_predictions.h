@@ -43,13 +43,13 @@ SIMD_ATTR void PredictLf(const AcStrategyImage& ac_strategy,
                          ImageF* tmp2x2, Image3F* lf2x2);
 
 // Encoder API.
-SIMD_ATTR void PredictLfForEncoder(bool predict_lf, bool predict_hf,
-                                   const Image3F& dc,
-                                   const AcStrategyImage& ac_strategy,
-                                   const ColorCorrelationMap& cmap,
-                                   const Rect& cmap_rect,
-                                   const Quantizer& quantizer,
-                                   Image3F* PIK_RESTRICT ac64, Image3F* dc2x2);
+SIMD_ATTR void PredictLfForEncoder(
+    bool predict_lf, bool predict_hf, const Image3F& dc,
+    const AcStrategyImage& ac_strategy, const ColorCorrelationMap& cmap,
+    const Rect& cmap_rect, const Quantizer& quantizer, const ImageB& quant_cf,
+    const uint8_t quant_cf_map[kMaxQuantControlFieldValue][256],
+    Image3F* PIK_RESTRICT ac64, Image3F* dc2x2);
+
 void ComputePredictionResiduals(const Image3F& pred2x2,
                                 const AcStrategyImage& ac_strategy,
                                 Image3F* PIK_RESTRICT coeffs);

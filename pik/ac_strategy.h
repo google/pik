@@ -69,6 +69,16 @@ class AcStrategy {
     DCT4X4_NOHF = 8,
   };
 
+  PIK_INLINE AcStrategy(Type strategy, uint32_t block)
+      : strategy_(strategy), block_(block) {
+#ifdef ADDRESS_SANITIZER
+    PIK_ASSERT(strategy == Type::DCT16X16 || strategy == Type::DCT32X32 ||
+               block == 0);
+    PIK_ASSERT(strategy == Type::DCT32X32 || block < 4);
+    PIK_ASSERT(block < 16);
+#endif
+  }
+
   // Returns true if this block is the first 8x8 block (i.e. top-left) of a
   // possibly multi-block strategy.
   PIK_INLINE bool IsFirstBlock() const { return block_ == 0; }
@@ -285,16 +295,6 @@ class AcStrategy {
                                          size_t dc2x2_stride, float* block,
                                          size_t block_stride) const;
 
-  PIK_INLINE AcStrategy(Type strategy, uint32_t block)
-      : strategy_(strategy), block_(block) {
-#ifdef ADDRESS_SANITIZER
-    PIK_ASSERT(strategy == Type::DCT16X16 || strategy == Type::DCT32X32 ||
-               block == 0);
-    PIK_ASSERT(strategy == Type::DCT32X32 || block < 4);
-    PIK_ASSERT(block < 16);
-#endif
-  }
-
  private:
   Type strategy_;
   uint32_t block_;
@@ -303,14 +303,13 @@ class AcStrategy {
 // Class to use a certain row of the AC strategy.
 class AcStrategyRow {
  public:
-  AcStrategyRow(const uint8_t* row, size_t y) : row_(row), y_(y) {}
+  AcStrategyRow(const uint8_t* row, size_t y) : row_(row) {}
   AcStrategy operator[](size_t x) const {
     return AcStrategy((AcStrategy::Type)(row_[x] >> 4), row_[x] & 0xF);
   }
 
  private:
   const uint8_t* PIK_RESTRICT row_;
-  size_t y_;
 };
 
 class AcStrategyImage {

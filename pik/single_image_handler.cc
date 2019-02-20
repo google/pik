@@ -70,20 +70,21 @@ void SingleImageManager::GetAcStrategy(float butteraugli_target,
 std::shared_ptr<Quantizer> SingleImageManager::GetQuantizer(
     const CompressParams& cparams, size_t xsize_blocks, size_t ysize_blocks,
     const Image3F& opsin_orig, const Image3F& opsin,
-    const PassHeader& pass_header, const GroupHeader& header,
+    const FrameHeader& frame_header, const GroupHeader& header,
     const ColorCorrelationMap& cmap, const BlockDictionary& block_dictionary,
     const AcStrategyImage& ac_strategy, const ImageB& ar_sigma_lut_ids,
-    const DequantMatrices* dequant, ImageF& quant_field, ThreadPool* pool,
-    PikInfo* aux_out) {
+    const DequantMatrices* dequant, const ImageB& dequant_control_field,
+    const uint8_t dequant_map[kMaxQuantControlFieldValue][256],
+    ImageF& quant_field, ThreadPool* pool, PikInfo* aux_out) {
   if (!has_quantizer_) {
-    PassHeader hdr = pass_header;
+    FrameHeader hdr = frame_header;
     if (use_adaptive_reconstruction_) {
       hdr.have_adaptive_reconstruction = true;
     }
     quantizer_ = FindBestQuantizer(
         cparams, xsize_blocks, ysize_blocks, opsin_orig, opsin, hdr, header,
         cmap, block_dictionary, ac_strategy, ar_sigma_lut_ids, dequant,
-        quant_field, pool, aux_out, this);
+        dequant_control_field, dequant_map, quant_field, pool, aux_out, this);
     has_quantizer_ = true;
   }
   return quantizer_;
@@ -112,7 +113,7 @@ std::vector<Image3S> SingleImageHandler::SplitACCoefficients(
     Image3S* current = &ac_split.back();
     ZeroFillImage(current);
     size_t stride = current->PixelsPerRow();
-    size_t pass_coeffs = mode_.passes[i].num_coefficients;
+    size_t frame_coeffs = mode_.passes[i].num_coefficients;
     for (size_t c = 0; c < ac.kNumPlanes; c++) {
       for (size_t by = 0; by < ysize_blocks; by++) {
         const int16_t* PIK_RESTRICT row_in = ac.ConstPlaneRow(c, by);
@@ -125,12 +126,12 @@ std::vector<Image3S> SingleImageHandler::SplitACCoefficients(
           size_t ysize = strategy.covered_blocks_y();
           size_t block_shift =
               NumZeroBitsBelowLSBNonzero(kBlockDim * kBlockDim * xsize);
-          for (size_t y = 0; y < ysize * pass_coeffs; y++) {
+          for (size_t y = 0; y < ysize * frame_coeffs; y++) {
             size_t line_start = y * xsize * kBlockDim;
             size_t block_off = line_start >> block_shift;
             size_t block_idx = line_start & (xsize * kBlockDim * kBlockDim - 1);
             line_start = block_off * stride + block_idx;
-            for (size_t x = 0; x < xsize * pass_coeffs; x++) {
+            for (size_t x = 0; x < xsize * frame_coeffs; x++) {
               if (x < xsize * last_ncoeff && y < ysize * last_ncoeff) continue;
               row_out[bx * kBlockDim * kBlockDim + line_start + x] =
                   row_in[bx * kBlockDim * kBlockDim + line_start + x];
@@ -139,7 +140,7 @@ std::vector<Image3S> SingleImageHandler::SplitACCoefficients(
         }
       }
     }
-    last_ncoeff = pass_coeffs;
+    last_ncoeff = frame_coeffs;
     last_salient_only = mode_.passes[i].salient_only;
   }
   PIK_ASSERT(last_ncoeff == 8);

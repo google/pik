@@ -1115,6 +1115,9 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
                                   const Image3F& src, ThreadPool* pool,
                                   AcStrategyImage* ac_strategy,
                                   PikInfo* aux_out) {
+  // TODO(veluca): this function does *NOT* know the actual quantization field
+  // values, and thus is not able to make choices taking into account the actual
+  // quantization matrix.
   PROFILER_FUNC;
   size_t xsize_blocks = src.xsize() / kBlockDim;
   size_t ysize_blocks = src.ysize() / kBlockDim;
@@ -1420,7 +1423,7 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
               bx_actual++;
               continue;
             }
-            float mul = 1.0f / dequant.Matrix(kQuantKindDCT8, c)[ix & 63];
+            float mul = 1.0f / dequant.Matrix(0, kQuantKindDCT8, c)[ix & 63];
             float val = mul * row[bx * kBlockDim * kBlockDim + ix];
             val *= quant_field->ConstRow(by + iy)[bx_actual];
             float v = fabsf(val) * discretization_factor;
@@ -1457,7 +1460,7 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
             // Leave out the lowest frequencies.
             continue;
           }
-          float mul = 1.0f / dequant.Matrix(kQuantKindDCT32, c)[k];
+          float mul = 1.0f / dequant.Matrix(0, kQuantKindDCT32, c)[k];
           float val = mul * dct32x32[k];
           val *= max_quant;
           float v = fabsf(val) * discretization_factor;
@@ -1504,7 +1507,7 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
               bx_actual++;
               continue;
             }
-            float mul = 1.0f / dequant.Matrix(kQuantKindDCT8, c)[ix & 63];
+            float mul = 1.0f / dequant.Matrix(0, kQuantKindDCT8, c)[ix & 63];
             float val = mul * row[bx * kBlockDim * kBlockDim + ix];
             val *= quant_field->ConstRow(by + iy)[bx_actual];
             float v = fabsf(val) * discretization_factor;
@@ -1539,7 +1542,7 @@ SIMD_ATTR void FindBestAcStrategy(float butteraugli_target,
             // Leave out the lowest frequencies.
             continue;
           }
-          float mul = 1.0f / dequant.Matrix(kQuantKindDCT16, c)[k];
+          float mul = 1.0f / dequant.Matrix(0, kQuantKindDCT16, c)[k];
           float val = mul * dct16x16[k];
           val *= max_quant;
           float v = fabsf(val) * discretization_factor;

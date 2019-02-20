@@ -10,6 +10,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <cmath>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -58,6 +59,14 @@ static constexpr float kBiasNumerator = 0.145f;
 // closer to the expected value of the original (see comment above).
 template <int c>
 PIK_INLINE float AdjustQuantBias(int16_t quant) {
+  if (quant == 0) return 0;
+  if (quant == 1) return 1 - kOneBias[c];
+  if (quant == -1) return kOneBias[c] - 1;
+  return quant - kBiasNumerator / quant;
+}
+
+// Same as above, but runtime variable c.
+static PIK_INLINE float AdjustQuantBiasVar(const size_t c, int16_t quant) {
   if (quant == 0) return 0;
   if (quant == 1) return 1 - kOneBias[c];
   if (quant == -1) return kOneBias[c] - 1;
@@ -208,12 +217,13 @@ class Quantizer {
   // Dequantize by multiplying with this times dequant_matrix.
   float inv_quant_ac(int32_t quant) const { return inv_global_scale_ / quant; }
 
-  void QuantizeBlockAC(int32_t quant, size_t quant_kind, int c, size_t xsize,
-                       size_t ysize, const float* PIK_RESTRICT block_in,
-                       size_t in_stride, int16_t* PIK_RESTRICT block_out,
+  void QuantizeBlockAC(uint8_t quant_table, int32_t quant, size_t quant_kind,
+                       int c, size_t xsize, size_t ysize,
+                       const float* PIK_RESTRICT block_in, size_t in_stride,
+                       int16_t* PIK_RESTRICT block_out,
                        size_t out_stride) const {
     constexpr size_t kBlockSize = kBlockDim * kBlockDim;
-    const float* qm = dequant_->InvMatrix(quant_kind, c);
+    const float* qm = dequant_->InvMatrix(quant_table, quant_kind, c);
     const float qac = Scale() * quant;
     // Not SIMD-fied for now.
     const float thres = zero_bias_[c];
@@ -247,9 +257,6 @@ class Quantizer {
             }
             err = 0;
           }
-          if (err > 0.6) {
-            err = 0.6;
-          }
           if (fabs(val) > 1) {
             err = 0;
           }
@@ -277,21 +284,22 @@ class Quantizer {
     }
   }
 
-  template <int c>
   SIMD_ATTR PIK_INLINE void QuantizeRoundtripBlockAC(
-      int32_t quant, size_t quant_kind, size_t xsize, size_t ysize,
-      const float* in, size_t in_stride, float* out, size_t out_stride) const {
+      const size_t c, uint8_t quant_table, int32_t quant, size_t quant_kind,
+      size_t xsize, size_t ysize, const float* in, size_t in_stride, float* out,
+      size_t out_stride) const {
     constexpr size_t N = kBlockDim;
     constexpr size_t kBlockSize = N * N;
     int16_t quantized[AcStrategy::kMaxCoeffArea];
     float inv_qac = inv_quant_ac(quant);
-    QuantizeBlockAC(quant, quant_kind, c, xsize, ysize, in, in_stride,
-                    quantized, xsize * kBlockSize);
-    const float* PIK_RESTRICT dequant_matrix = DequantMatrix(quant_kind, c);
+    QuantizeBlockAC(quant_table, quant, quant_kind, c, xsize, ysize, in,
+                    in_stride, quantized, xsize * kBlockSize);
+    const float* PIK_RESTRICT dequant_matrix =
+        DequantMatrix(quant_table, quant_kind, c);
     for (size_t y = 0; y < ysize; y++) {
       for (size_t k = 0; k < kBlockSize * xsize; k++) {
         float quantized_coeff = quantized[y * kBlockSize * xsize + k];
-        out[y * out_stride + k] = AdjustQuantBias<c>(quantized_coeff) *
+        out[y * out_stride + k] = AdjustQuantBiasVar(c, quantized_coeff) *
                                   dequant_matrix[y * kBlockSize * xsize + k] *
                                   inv_qac;
       }
@@ -306,18 +314,19 @@ class Quantizer {
   // be contiguous, but it can be composed of `ysize` slices of size
   // `xsize`*kBlockDim*kBlockDim that are `block_stride` apart.
   template <int c>
-  void QuantizeRoundtripBlockCoefficients(int32_t quant, size_t quant_kind,
-                                          size_t xsize, size_t ysize,
-                                          const float* block_in,
+  void QuantizeRoundtripBlockCoefficients(uint8_t quant_table, int32_t quant,
+                                          size_t quant_kind, size_t xsize,
+                                          size_t ysize, const float* block_in,
                                           size_t in_stride, float* block_out,
                                           size_t out_stride,
                                           uint64_t coefficients) const {
     constexpr size_t N = kBlockDim;
     int16_t quantized[AcStrategy::kMaxCoeffArea];
     float inv_qac = inv_quant_ac(quant);
-    QuantizeBlockAC(quant, quant_kind, c, xsize, ysize, block_in, in_stride,
-                    quantized, xsize * N * N);
-    const float* PIK_RESTRICT dequant_matrix = DequantMatrix(quant_kind, c);
+    QuantizeBlockAC(quant_table, quant, quant_kind, c, xsize, ysize, block_in,
+                    in_stride, quantized, xsize * N * N);
+    const float* PIK_RESTRICT dequant_matrix =
+        DequantMatrix(quant_table, quant_kind, c);
     size_t block_shift =
         NumZeroBitsBelowLSBNonzero(kBlockDim * kBlockDim * xsize);
     for (uint64_t bits = coefficients; bits != 0; bits &= bits - 1) {
@@ -338,8 +347,8 @@ class Quantizer {
     }
   }
 
-  PIK_INLINE int16_t QuantizeDC(int c, float dc) const {
-    return std::round(dc * (dequant_->InvMatrix(kQuantKindDCT8, c)[0] *
+  PIK_INLINE int QuantizeDC(int c, float dc) const {
+    return std::round(dc * (dequant_->InvMatrix(0, kQuantKindDCT8, c)[0] *
                             (global_scale_float_ * quant_dc_)));
   }
 
@@ -349,13 +358,17 @@ class Quantizer {
 
   void DumpQuantizationMap() const;
 
-  PIK_INLINE const float* DequantMatrix(size_t quant_kind, int c) const {
-    return dequant_->Matrix(quant_kind, c);
+  PIK_INLINE const float* DequantMatrix(uint8_t quant_table, size_t quant_kind,
+                                        int c) const {
+    return dequant_->Matrix(quant_table, quant_kind, c);
   }
 
-  PIK_INLINE const size_t DequantMatrixOffset(size_t quant_kind, int c) const {
-    return dequant_->MatrixOffset(quant_kind, c);
+  PIK_INLINE const size_t DequantMatrixOffset(uint8_t quant_table,
+                                              size_t quant_kind, int c) const {
+    return dequant_->MatrixOffset(quant_table, quant_kind, c);
   }
+
+  int QuantDC() const { return quant_dc_; }
 
  private:
   size_t quant_xsize_;

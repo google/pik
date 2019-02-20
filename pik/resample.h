@@ -17,6 +17,7 @@
 #define PROFILER_ENABLED 1
 #include "pik/data_parallel.h"
 #include "pik/image.h"
+#include "pik/image_ops.h"
 #include "pik/profiler.h"
 #include "pik/simd/simd.h"
 #include "pik/status.h"

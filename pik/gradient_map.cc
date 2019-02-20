@@ -287,18 +287,24 @@ Image3S Quantize(const GradientMap& gradient, const Rect& map_rect,
       continue;
     };
     const float step = quantizer.inv_quant_dc() *
-                       quantizer.DequantMatrix(kQuantKindDCT8, c)[0];
+                       quantizer.DequantMatrix(0, kQuantKindDCT8, c)[0];
     float range = kXybRadius[c] * 2;
     // Use around 3x more bits than DC's quantization, capped
-    int steps = std::min(std::max(16, (int)(3 * range / step)), 256);
+    int steps = std::min(std::max(16, (int)(3 * range / step)), 255);
     float mul = steps / range;
 
     for (size_t y = 0; y < map_rect.ysize(); y++) {
       const float* PIK_RESTRICT row = map_rect.ConstPlaneRow(image, c, y);
       int16_t* PIK_RESTRICT row_out = out.PlaneRow(c, y);
+      const uint8_t* PIK_RESTRICT apply_row =
+          gradient.apply.ConstPlaneRow(c, y);
       for (size_t x = 0; x < map_rect.xsize(); x++) {
         int value = std::round((row[x] - kXybMin[c]) * mul);
-        value = std::min(std::max(0, value), steps - 1);
+        if (apply_row[x]) {
+          value = std::min(std::max(0, value), steps - 1) + 1;
+        } else {
+          value = 0;
+        }
         row_out[x] = value;
       }
     }
@@ -312,17 +318,25 @@ void Dequantize(const Quantizer& quantizer, const Image3S& quant,
   for (int c = 0; c < 3; c++) {
     if (gradient->grayscale && c != 1) continue;
     const float step = quantizer.inv_quant_dc() *
-                       quantizer.DequantMatrix(kQuantKindDCT8, c)[0];
+                       quantizer.DequantMatrix(0, kQuantKindDCT8, c)[0];
     float range = kXybRadius[c] * 2;
     // Use around 3x more bits than DC's quantization, capped
-    int steps = std::min(std::max(16, (int)(3 * range / step)), 256);
+    int steps = std::min(std::max(16, (int)(3 * range / step)), 255);
     float mul = range / steps;
 
     for (size_t y = 0; y < gradient->ysize; y++) {
       float* PIK_RESTRICT row_out = gradient->gradient.PlaneRow(c, y);
       const int16_t* PIK_RESTRICT row = quant.PlaneRow(c, y);
+      uint8_t* PIK_RESTRICT row_apply = gradient->apply.PlaneRow(c, y);
       for (size_t x = 0; x < gradient->xsize; x++) {
-        float v = row[x] * mul + kXybMin[c];
+        float v;
+        if (row[x] != 0) {
+          v = (row[x] - 1) * mul + kXybMin[c];
+          row_apply[x] = true;
+        } else {
+          v = 0;
+          row_apply[x] = false;
+        }
         row_out[x] = v;
       }
     }
@@ -352,6 +366,7 @@ void InitGradientMap(size_t xsize_dc, size_t ysize_dc, bool grayscale,
   // Note that the gradient is much smaller than the DC image, and the DC image
   // in turn already is much smaller than the full original image.
   gradient->gradient = Image3F(gradient->xsize, gradient->ysize);
+  gradient->apply = Image3B(gradient->xsize, gradient->ysize);
 }
 
 // Serializes and deserializes the gradient image so it has the values the
@@ -363,9 +378,7 @@ void AccountForQuantization(const Quantizer& quantizer, GradientMap* gradient) {
 }
 }  // namespace
 
-// Computes the gradient map for the given image of DC
-// values.
-// The opsin image must be in opsin color space
+// Computes the gradient map for the given image of DC values.
 void ComputeGradientMap(const Image3F& opsin, bool grayscale,
                         const Quantizer& quantizer, ThreadPool* pool,
                         GradientMap* gradient) {
@@ -412,13 +425,26 @@ void ComputeGradientMap(const Image3F& opsin, bool grayscale,
       }
     }
 
+    const float mul =
+        1.0f / (quantizer.inv_quant_dc() *
+                quantizer.DequantMatrix(0, kQuantKindDCT8, task)[0]);
     std::vector<float> coeffs(xsize * ysize);
     PlanePieceFit(points.data(), xsize_dc, ysize_dc, kNumBlocks, kExclude, true,
                   coeffs.data());
     for (size_t y = 0; y < ysize; ++y) {
       float* PIK_RESTRICT row = gradient->gradient.PlaneRow(c, y);
       const float* PIK_RESTRICT packed_row = &coeffs[y * xsize];
+      uint8_t* PIK_RESTRICT apply_row = gradient->apply.PlaneRow(c, y);
       memcpy(row, packed_row, xsize * sizeof(float));
+      for (size_t x = 0; x < xsize; ++x) {
+        // TODO(lode): figure out when the gradient map is not needed in a
+        // proper way.
+        if (std::abs(3.0f * row[x] * mul) > 0.5f) {
+          apply_row[x] = 1;
+        } else {
+          apply_row[x] = 0;
+        }
+      }
     }
   };
 
@@ -437,7 +463,7 @@ void ApplyGradientMap(const GradientMap& gradient, const Quantizer& quantizer,
   for (int c = 0; c < 3; ++c) {
     if (gradient.grayscale && c != 1) return;
     const float step = quantizer.inv_quant_dc() *
-                       quantizer.DequantMatrix(kQuantKindDCT8, c)[0] *
+                       quantizer.DequantMatrix(0, kQuantKindDCT8, c)[0] *
                        kScale[c];
 
     std::vector<int> apply(gradient.ysize_dc * gradient.xsize_dc, 0);
@@ -445,9 +471,11 @@ void ApplyGradientMap(const GradientMap& gradient, const Quantizer& quantizer,
     for (size_t y = 0; y < ysize_dc; y++) {
       float* PIK_RESTRICT row_out = opsin->PlaneRow(c, y);
       const float* PIK_RESTRICT row_in = upscaled.ConstPlaneRow(c, y);
+      const uint8_t* PIK_RESTRICT row_apply =
+          gradient.apply.ConstPlaneRow(c, y / kNumBlocks);
       for (size_t x = 0; x < xsize_dc; x++) {
         float diff = fabs(row_out[x] - row_in[x]);
-        if (diff < step) {
+        if (diff < step && row_apply[x / kNumBlocks]) {
           apply[y * xsize_dc + x] = 1;
         }
       }

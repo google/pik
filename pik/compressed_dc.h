@@ -22,23 +22,24 @@
 
 namespace pik {
 
-// Encodes the DC-related information from pass_enc_cache: quantized dc itself
+// Encodes the DC-related information from frame_enc_cache: quantized dc itself
 // and gradient map.
-PaddedBytes EncodeDC(const Quantizer& quantizer,
-                     const PassEncCache& pass_enc_cache,
-                     const AcStrategyImage& ac_strategy, ThreadPool* pool,
-                     MultipassManager* manager, PikImageSizeInfo* dc_info,
-                     PikImageSizeInfo* cfield_info);
+PaddedBytes EncodeDCGroups(const Quantizer& quantizer,
+                           const FrameEncCache& frame_enc_cache,
+                           const AcStrategyImage& ac_strategy, ThreadPool* pool,
+                           MultipassManager* manager, PikImageSizeInfo* dc_info,
+                           PikImageSizeInfo* cfield_info);
 
 // Decodes and dequantizes DC, and optionally decodes and applies the
 // gradient map if requested.
-Status DecodeDC(BitReader* reader, const PaddedBytes& compressed,
-                const PassHeader& pass_header, size_t xsize_blocks,
-                size_t ysize_blocks, const Quantizer& quantizer,
-                const ColorCorrelationMap& cmap, ThreadPool* pool,
-                MultipassManager* manager,
-                PassDecCache* PIK_RESTRICT pass_dec_cache,
-                std::vector<GroupDecCache>* group_dec_caches);
+Status DecodeDCGroups(BitReader* reader, const PaddedBytes& compressed,
+                      const FrameHeader& frame_header, size_t xsize_blocks,
+                      size_t ysize_blocks, const Quantizer& quantizer,
+                      const ColorCorrelationMap& cmap, ThreadPool* pool,
+                      MultipassManager* manager,
+                      FrameDecCache* PIK_RESTRICT frame_dec_cache,
+                      std::vector<GroupDecCache>* group_dec_caches,
+                      PikInfo* aux_out);
 
 // Clamps the input coordinate `candidate` to the [0, size) interval, using 1 px
 // of border (extended by cloning, not mirroring).
@@ -49,7 +50,7 @@ PIK_INLINE size_t SourceCoord(size_t candidate, size_t size) {
 
 // Initializes the dec_cache for decoding the `rect` part of the image (in pixel
 // units) from the pass decoder cache.
-void InitializeDecCache(const PassDecCache& pass_dec_cache, const Rect& rect,
+void InitializeDecCache(const FrameDecCache& frame_dec_cache, const Rect& rect,
                         GroupDecCache* PIK_RESTRICT group_dec_cache);
 
 }  // namespace pik

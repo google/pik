@@ -136,7 +136,7 @@ struct GroupHeader {
 };
 
 //------------------------------------------------------------------------------
-// Pass
+// Frame
 
 enum class ImageEncoding : uint32_t {
   kPasses = 0,   // PIK
@@ -179,7 +179,7 @@ struct FrameInfo {
 
 // Image/frame := one of more of these, where the last has is_last = true.
 // Starts at a byte-aligned address "a"; the next pass starts at "a + size".
-struct PassHeader {
+struct FrameHeader {
   // Optional postprocessing steps. These flags are the source of truth;
   // Override must set/clear them rather than change their meaning.
   enum Flags {
@@ -195,8 +195,8 @@ struct PassHeader {
     kNoise = 4,
   };
 
-  PassHeader();
-  static const char* Name() { return "PassHeader"; }
+  FrameHeader();
+  static const char* Name() { return "FrameHeader"; }
 
   template <class Visitor>
   Status VisitFields(Visitor* PIK_RESTRICT visitor) {
@@ -220,6 +220,15 @@ struct PassHeader {
       }
       // TODO(veluca); choose a good constant.
       visitor->U32(0x20181008, 1, &num_passes);
+
+      uint32_t num_downsampling_factors = downsampling_factor_to_passes.size();
+      visitor->U32(kU32Direct0To3, 0, &num_downsampling_factors);
+      visitor->SetSizeWhenReading(num_downsampling_factors,
+                                  &downsampling_factor_to_passes);
+      for (auto& downsampling_and_num_passes : downsampling_factor_to_passes) {
+        visitor->U32(kU32Direct1248, 1, &downsampling_and_num_passes.first);
+        visitor->U32(kU32Direct3Plus8, 1, &downsampling_and_num_passes.second);
+      }
     }
 
     // No resampling or group TOC for kProgressive.
@@ -241,7 +250,8 @@ struct PassHeader {
     return visitor->EndExtensions();
   }
 
-  // Relative to START of (byte-aligned) PassHeader. Used to seek to next pass.
+  // Relative to START of (byte-aligned) FrameHeader. Used to seek to next
+  // frame.
   // TODO(veluca): how do we compute this?
   uint64_t size;  // [bytes]
   bool has_alpha;
@@ -272,6 +282,11 @@ struct PassHeader {
   size_t nonserialized_num_groups = 0;
 
   std::vector<uint32_t> group_sizes;  // TOC, [bytes]
+
+  // Pairs of {max downsampling factor, number of passes to decode}.
+  // It is not necessary to include {1, num_passes} or {8, 0} explicitly. Code
+  // that uses this vector always behaves as though they are there.
+  std::vector<std::pair<uint32_t, uint32_t>> downsampling_factor_to_passes;
 
   // TODO(janwas): quantization setup (reuse from previous passes)
 
@@ -327,7 +342,21 @@ struct Animation {
   uint32_t ticks_denominator;  // Must be at least 1
 };
 
-// Followed by an unbounded stream of interleaved PassHeader+payloads.
+// EXIF orientation of the image. This field overrides any field present in
+// actual EXIF metadata. The value tells which transformation the decoder must
+// apply after decoding to display the image with the correct orientation.
+enum class Orientation : uint32_t {
+  kIdentity = 1,
+  kFlipHorizontal = 2,
+  kRotate180 = 3,
+  kFlipVertical = 4,
+  kTranspose = 5,
+  kRotate90 = 6,
+  kAntiTranspose = 7,
+  kRotate270 = 8,
+};
+
+// Followed by an unbounded stream of interleaved FrameHeader+payloads.
 struct FileHeader {
   FileHeader();
   static const char* Name() { return "FileHeader"; }
@@ -341,6 +370,7 @@ struct FileHeader {
     // full 32-bit range for completeness.
     visitor->U32(0x200D0B09, 0, &xsize_minus_1);
     visitor->U32(0x200D0B09, 0, &ysize_minus_1);
+    visitor->Orientation(Orientation::kIdentity, &orientation);
 
     PIK_RETURN_IF_ERROR(visitor->VisitNested(&metadata));
     PIK_RETURN_IF_ERROR(visitor->VisitNested(&preview));
@@ -363,6 +393,8 @@ struct FileHeader {
   uint32_t xsize_minus_1;
   uint32_t ysize_minus_1;
 
+  Orientation orientation;
+
   Metadata metadata;
   Preview preview;
   Animation animation;
@@ -379,7 +411,7 @@ Status CanEncode(const TileHeader& tile, size_t* PIK_RESTRICT extension_bits,
                  size_t* PIK_RESTRICT total_bits);
 Status CanEncode(const GroupHeader& group, size_t* PIK_RESTRICT extension_bits,
                  size_t* PIK_RESTRICT total_bits);
-Status CanEncode(const PassHeader& pass, size_t* PIK_RESTRICT extension_bits,
+Status CanEncode(const FrameHeader& pass, size_t* PIK_RESTRICT extension_bits,
                  size_t* PIK_RESTRICT total_bits);
 Status CanEncode(const FileHeader& file, size_t* PIK_RESTRICT extension_bits,
                  size_t* PIK_RESTRICT total_bits);
@@ -389,7 +421,7 @@ Status ReadTileHeader(BitReader* PIK_RESTRICT reader,
 Status ReadGroupHeader(BitReader* PIK_RESTRICT reader,
                        GroupHeader* PIK_RESTRICT group);
 Status ReadPassHeader(BitReader* PIK_RESTRICT reader,
-                      PassHeader* PIK_RESTRICT pass);
+                      FrameHeader* PIK_RESTRICT pass);
 Status ReadFileHeader(BitReader* PIK_RESTRICT reader,
                       FileHeader* PIK_RESTRICT file);
 
@@ -398,7 +430,7 @@ Status WriteTileHeader(const TileHeader& tile, size_t extension_bits,
                        size_t* PIK_RESTRICT pos, uint8_t* storage);
 Status WriteGroupHeader(const GroupHeader& group, size_t extension_bits,
                         size_t* PIK_RESTRICT pos, uint8_t* storage);
-Status WritePassHeader(const PassHeader& pass, size_t extension_bits,
+Status WritePassHeader(const FrameHeader& pass, size_t extension_bits,
                        size_t* PIK_RESTRICT pos, uint8_t* storage);
 Status WriteFileHeader(const FileHeader& file, size_t extension_bits,
                        size_t* PIK_RESTRICT pos, uint8_t* storage);

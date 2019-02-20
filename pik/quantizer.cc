@@ -107,8 +107,8 @@ ImageF QuantizeRoundtripDC(const Quantizer& quantizer, int c,
   ImageF out(xsize_blocks, ysize_blocks);
 
   // Always use DCT8 quantization kind for DC
-  const float mul =
-      quantizer.DequantMatrix(kQuantKindDCT8, c)[0] * quantizer.inv_quant_dc();
+  const float mul = quantizer.DequantMatrix(0, kQuantKindDCT8, c)[0] *
+                    quantizer.inv_quant_dc();
   for (size_t by = 0; by < ysize_blocks; ++by) {
     const float* PIK_RESTRICT row_in = dc.ConstRow(by);
     float* PIK_RESTRICT row_out = out.Row(by);

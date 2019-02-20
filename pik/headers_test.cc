@@ -16,30 +16,34 @@ namespace {
 
 // Ensures Read(Write()) returns the same fields.
 TEST(HeadersTest, TestContainer) {
-  FileHeader c;
-  c.xsize_minus_1 = 123;
-  c.metadata.transcoded.original_bit_depth = 15;
+  for (int i = 0; i < 8; i++) {
+    FileHeader c;
+    c.xsize_minus_1 = 123 + 77 * i;
+    c.orientation = static_cast<Orientation>(1 + i);
+    c.metadata.transcoded.original_bit_depth = 7 + i;
 
-  size_t extension_bits, total_bits;
-  ASSERT_TRUE(CanEncode(c, &extension_bits, &total_bits));
-  EXPECT_EQ(0, extension_bits);
-  PaddedBytes storage(DivCeil(total_bits, kBitsPerByte));
-  size_t pos = 0;
+    size_t extension_bits, total_bits;
+    ASSERT_TRUE(CanEncode(c, &extension_bits, &total_bits));
+    EXPECT_EQ(0, extension_bits);
+    PaddedBytes storage(DivCeil(total_bits, kBitsPerByte));
+    size_t pos = 0;
 
-  ASSERT_TRUE(WriteFileHeader(c, extension_bits, &pos, storage.data()));
-  EXPECT_EQ(total_bits, pos);
+    ASSERT_TRUE(WriteFileHeader(c, extension_bits, &pos, storage.data()));
+    EXPECT_EQ(total_bits, pos);
 
-  FileHeader c2;
-  BitReader reader(storage.data(), storage.size());
-  ASSERT_TRUE(ReadFileHeader(&reader, &c2));
-  EXPECT_EQ(total_bits, reader.BitsRead());
+    FileHeader c2;
+    BitReader reader(storage.data(), storage.size());
+    ASSERT_TRUE(ReadFileHeader(&reader, &c2));
+    EXPECT_EQ(total_bits, reader.BitsRead());
 
-  EXPECT_EQ(c.xsize_minus_1, c2.xsize_minus_1);
-  EXPECT_EQ(c.metadata.transcoded.original_bit_depth,
-            c2.metadata.transcoded.original_bit_depth);
-  // Also equal if default-initialized.
-  EXPECT_EQ(c.ysize_minus_1, c2.ysize_minus_1);
-  EXPECT_EQ(c.extensions, c2.extensions);
+    EXPECT_EQ(c.xsize_minus_1, c2.xsize_minus_1);
+    EXPECT_EQ(c.metadata.transcoded.original_bit_depth,
+              c2.metadata.transcoded.original_bit_depth);
+    EXPECT_EQ(c.orientation, c2.orientation);
+    // Also equal if default-initialized.
+    EXPECT_EQ(c.ysize_minus_1, c2.ysize_minus_1);
+    EXPECT_EQ(c.extensions, c2.extensions);
+  }
 }
 
 // Changing serialized signature causes ReadFileHeader to fail.
@@ -67,7 +71,7 @@ TEST(HeadersTest, TestSignature) {
 
 // Ensure maximal values can be stored.
 TEST(HeadersTest, TestMaxValue) {
-  PassHeader h;
+  FrameHeader h;
   h.size = ~0ull;
   h.flags = ~0u;
   size_t extension_bits, total_bits;
@@ -81,7 +85,7 @@ TEST(HeadersTest, TestMaxValue) {
 
 // Ensures Read(Write()) returns the same fields.
 TEST(HeadersTest, TestRoundTrip) {
-  PassHeader h;
+  FrameHeader h;
   h.has_alpha = true;
   h.extensions = 0x800;
 
@@ -93,7 +97,7 @@ TEST(HeadersTest, TestRoundTrip) {
   ASSERT_TRUE(WritePassHeader(h, extension_bits, &pos, storage.data()));
   EXPECT_EQ(total_bits, pos);
 
-  PassHeader h2;
+  FrameHeader h2;
   BitReader reader(storage.data(), storage.size());
   ASSERT_TRUE(ReadPassHeader(&reader, &h2));
   EXPECT_EQ(total_bits, reader.BitsRead());
@@ -105,19 +109,12 @@ TEST(HeadersTest, TestRoundTrip) {
 #ifndef PIK_CRASH_ON_ERROR
 // Ensure out-of-bounds values cause an error.
 TEST(HeadersTest, TestOutOfRange) {
-  PassHeader h;
+  FrameHeader h;
   h.encoding = static_cast<pik::ImageEncoding>(999);
   size_t extension_bits, total_bits;
   ASSERT_FALSE(CanEncode(h, &extension_bits, &total_bits));
 }
 #endif
-
-void VerifyBytesEqual(const PaddedBytes& b1, const PaddedBytes& b2) {
-  EXPECT_EQ(b1.size(), b2.size());
-  for (size_t i = 0; i < b1.size(); ++i) {
-    EXPECT_EQ(b1[i], b2[i]);
-  }
-}
 
 struct OldBundle {
   OldBundle() { Bundle::Init(this); }

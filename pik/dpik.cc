@@ -73,6 +73,10 @@ void DecompressArgs::AddCommandLineOptions(
                           "chooses deblocking strength (4=normal).",
                           &params.gaborish, &ParseGaborishStrength);
 
+  cmdline->AddOptionValue('s', "downsampling", "1,2,4,8",
+                          "maximum permissible downsampling factor",
+                          &params.max_downsampling, &ParseUnsigned);
+
   cmdline->AddOptionValue('\0', "print_profile", "0|1",
                           "print timing information before exiting",
                           &print_profile, &ParseOverride);
@@ -100,7 +104,8 @@ void DecompressStats::NotifyElapsed(double elapsed_seconds) {
   elapsed_.push_back(elapsed_seconds);
 }
 
-Status DecompressStats::Print(const CodecInOut& io, ThreadPool* pool) {
+Status DecompressStats::Print(const CodecInOut& io, size_t downsampling,
+                              ThreadPool* pool) {
   ElapsedStats s;
   PIK_RETURN_IF_ERROR(SummarizeElapsed(&s));
   char variability[20] = {'\0'};
@@ -111,7 +116,7 @@ Status DecompressStats::Print(const CodecInOut& io, ThreadPool* pool) {
   const size_t xsize = io.xsize();
   const size_t ysize = io.ysize();
   const size_t channels = io.c_current().Channels() + io.HasAlpha();
-  const size_t bytes = xsize * ysize * channels *
+  const size_t bytes = downsampling * downsampling * xsize * ysize * channels *
                        DivCeil(io.original_bits_per_sample(), kBitsPerByte);
   const auto mb_per_sec = [bytes](const double elapsed) {
     return bytes * 1E-6 / elapsed;
@@ -173,16 +178,16 @@ Status DecompressStats::SummarizeElapsed(ElapsedStats* s) {
 }
 
 // Called num_reps times.
-Status Decompress(const CodecContext* codec_context,
-                  const PaddedBytes& compressed, const DecompressParams& params,
+Status Decompress(const PaddedBytes& compressed, const DecompressParams& params,
                   ThreadPool* pool, CodecInOut* PIK_RESTRICT io,
-                  DecompressStats* PIK_RESTRICT stats) {
+                  size_t* downsampling, DecompressStats* PIK_RESTRICT stats) {
   PikInfo info;
   const double t0 = Now();
   if (!PikToPixels(params, compressed, io, &info, pool)) {
     fprintf(stderr, "Failed to decompress.\n");
     return false;
   }
+  *downsampling = info.downsampling;
   const double t1 = Now();
   stats->NotifyElapsed(t1 - t0);
   return true;

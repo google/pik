@@ -19,6 +19,7 @@
 #include "pik/compiler_specific.h"
 #include "pik/data_parallel.h"
 #include "pik/image.h"
+#include "pik/image_ops.h"
 #include "pik/profiler.h"
 #include "pik/simd/simd.h"
 #include "pik/status.h"

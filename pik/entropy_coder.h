@@ -88,9 +88,12 @@ constexpr uint32_t kQuantFieldContexts = 1;
 // AC strategy contexts.
 constexpr uint32_t kAcStrategyContexts = 1;
 
+// AR parameter contexts
+constexpr uint32_t kARParamsContexts = 1;
+
 // Total number of order-free contextes.
 constexpr uint32_t kNumControlFieldContexts =
-    kQuantFieldContexts + kAcStrategyContexts;
+    kQuantFieldContexts + kAcStrategyContexts + kARParamsContexts;
 
 // For DCT 8x8 there could be up to 63 non-zero AC coefficients (and one DC
 // coefficient). To reduce the total number of contexts,
@@ -155,7 +158,11 @@ constexpr uint32_t kNumContexts = (kOrderContexts * kNonZeroBuckets) +
 
 constexpr uint32_t AcStrategyContext() { return 0; }
 
-constexpr uint32_t QuantContext() { return kAcStrategyContexts; }
+constexpr uint32_t ARParamsContext() { return kAcStrategyContexts; }
+
+constexpr uint32_t QuantContext() {
+  return kAcStrategyContexts + kARParamsContexts;
+}
 
 // Non-zero context is based on number of non-zeros and block context.
 // For better clustering, contexts with same number of non-zeros are grouped.
@@ -259,6 +266,14 @@ bool DecodeAcStrategy(BitReader* PIK_RESTRICT br,
                       ImageB* PIK_RESTRICT ac_strategy_raw, const Rect& rect,
                       AcStrategyImage* PIK_RESTRICT ac_strategy,
                       const AcStrategyImage* PIK_RESTRICT hint);
+
+void TokenizeARParameters(const Rect& rect, const ImageB& ar_sigma_lut_ids,
+                          const AcStrategyImage& ac_strategy,
+                          std::vector<Token>* PIK_RESTRICT output);
+bool DecodeARParameters(BitReader* br, ANSSymbolReader* decoder,
+                        const std::vector<uint8_t>& context_map,
+                        const Rect& rect, const AcStrategyImage& ac_strategy,
+                        ImageB* ar_sigma_lut_ids);
 
 // Apply context clustering, compute histograms and encode them.
 std::string BuildAndEncodeHistograms(

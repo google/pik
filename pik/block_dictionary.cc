@@ -5,18 +5,28 @@
 // https://opensource.org/licenses/MIT.
 
 #include "pik/block_dictionary.h"
+#include <sys/types.h>
+#include <cstdint>
 #include <limits>
+#include <vector>
 #include "pik/codec.h"
+#include "pik/detect_dots.h"
 #include "pik/entropy_coder.h"
+#include "pik/image.h"
 #include "pik/opsin_inverse.h"
 #include "pik/robust_statistics.h"
 #include "pik/status.h"
 
 namespace pik {
-
-constexpr int kBlockScale = 6;
+constexpr float kBlockScale = 3.5;
 constexpr float kBlockInvScale = 1.0f / kBlockScale;
 constexpr int kMaxBlocks = 1 << 24;
+
+// TODO(veluca): choose some reasonable set of blocks as a static dictionary.
+constexpr int kNumStaticBlocks = 1;
+QuantizedBlock kStaticBlocks[kNumStaticBlocks] = {
+    {1, 3, {{0, 0, 0}, {-11, -8, -11}, {-10, -7, -10}}},
+};
 
 enum Contexts {
   kNumBlockContext = 0,
@@ -27,6 +37,7 @@ enum Contexts {
   kBlockOffsetContext = 5,
   kBlockWidthContext = 6,
   kBlockIdCountContext = 7,
+  kBlockIdSkipContext = 8,
   kNumBlockDictionaryContexts,
 };
 
@@ -34,14 +45,65 @@ enum Contexts {
 // numbers have an image-size range, 2**32 should be more than enough here.
 constexpr int kMaxBlockDictionarySymbol = 32;
 
-BlockDictionary::BlockDictionary(const std::vector<BlockInfo>& dictionary,
+float ScaleForQuantization(float val, size_t c) {
+  return kBlockScale * val / kXybRadius[c];
+}
+int Quantize(float val, size_t c) {
+  return std::round(ScaleForQuantization(val, c));
+}
+
+// BlockInfo contains the data describing a block before quantization
+// and also contains its position.
+struct BlockInfo {
+  Rect rect;
+  const Image3F* image;
+  BlockInfo(const Image3F* image, Rect rect) : rect(rect), image(image) {}
+
+  explicit operator QuantizedBlock() {
+    QuantizedBlock info;
+    info.xsize = rect.xsize();
+    info.ysize = rect.ysize();
+
+    for (size_t c = 0; c < 3; c++) {
+      for (size_t iy = 0; iy < rect.ysize(); iy++) {
+        const float* PIK_RESTRICT row = image->ConstPlaneRow(c, rect.y0() + iy);
+        for (size_t ix = 0; ix < rect.xsize(); ix++) {
+          info.pixels[c][iy * rect.xsize() + ix] =
+              Quantize(row[rect.x0() + ix], c);
+        }
+      }
+    }
+    return info;
+  }
+  bool IsSimilar(const BlockInfo& other) const {
+    if (other.rect.xsize() != rect.xsize()) return false;
+    if (other.rect.ysize() != rect.ysize()) return false;
+    float sum = 0;
+    for (size_t c = 0; c < 3; c++) {
+      for (size_t iy = 0; iy < rect.ysize(); iy++) {
+        const float* PIK_RESTRICT row = image->ConstPlaneRow(c, rect.y0() + iy);
+        const float* PIK_RESTRICT other_row =
+            other.image->ConstPlaneRow(c, other.rect.y0() + iy);
+        for (size_t ix = 0; ix < rect.xsize(); ix++) {
+          float diff = row[rect.x0() + ix] - other_row[other.rect.x0() + ix];
+          sum += diff * diff;
+        }
+      }
+    }
+    if (sum > kDotDistThreshold) return false;
+
+    return true;
+  }
+};
+
+BlockDictionary::BlockDictionary(const std::vector<QuantizedBlock>& dictionary,
                                  const std::vector<BlockPosition>& positions)
     : dictionary_(dictionary), positions_(positions) {
   std::sort(positions_.begin(), positions_.end(),
             [](const BlockPosition& a, const BlockPosition& b) {
-              return std::make_tuple(a.id, a.transform, a.x, a.y, a.dx, a.dy,
+              return std::make_tuple(a.transform, a.id, a.x, a.y, a.dx, a.dy,
                                      a.width) <
-                     std::make_tuple(b.id, b.transform, b.x, b.y, b.dx, b.dy,
+                     std::make_tuple(b.transform, b.id, b.x, b.y, b.dx, b.dy,
                                      b.width);
             });
 }
@@ -57,7 +119,7 @@ std::string BlockDictionary::Encode(PikImageSizeInfo* info) const {
 
   add_num(kNumBlockContext, dictionary_.size());
   for (size_t i = 0; i < dictionary_.size(); i++) {
-    const BlockInfo& info = dictionary_[i];
+    const QuantizedBlock& info = dictionary_[i];
     add_num(kBlockSizeContext,
             i == 0 ? info.xsize
                    : PackSigned(info.xsize - dictionary_[i - 1].xsize));
@@ -82,16 +144,23 @@ std::string BlockDictionary::Encode(PikImageSizeInfo* info) const {
       }
     }
   }
-  size_t last_idx = 0;
-  for (size_t id = 0; id < dictionary_.size(); id++) {
-    for (size_t transform = 0; transform < 2; transform++) {
+  for (size_t transform = 0; transform < 2; transform++) {
+    int last_block = -1;
+    size_t last_idx = 0;
+    for (size_t id = 0; id < dictionary_.size() + kNumStaticBlocks; id++) {
       size_t idx = last_idx;
-      while (idx < positions_.size() &&
-             positions_[idx].id == positions_[last_idx].id &&
+      while (idx < positions_.size() && positions_[idx].id == id &&
              positions_[idx].transform == transform) {
         idx++;
       }
-      add_num(kBlockIdCountContext, idx - last_idx);
+      size_t num = idx - last_idx;
+      if (num == 0) continue;
+      if (last_block + 1 < id) {
+        add_num(kBlockIdCountContext, 0);
+        add_num(kBlockIdSkipContext, id - last_block - 2);
+      }
+      last_block = id;
+      add_num(kBlockIdCountContext, num);
       for (size_t i = last_idx; i < idx; i++) {
         const BlockPosition& pos = positions_[i];
         add_num(
@@ -108,6 +177,11 @@ std::string BlockDictionary::Encode(PikImageSizeInfo* info) const {
         }
       }
       last_idx = idx;
+    }
+    if (last_block + 1 < dictionary_.size() + kNumStaticBlocks) {
+      add_num(kBlockIdCountContext, 0);
+      add_num(kBlockIdSkipContext,
+              dictionary_.size() + kNumStaticBlocks - 2 - last_block);
     }
   }
 
@@ -144,7 +218,7 @@ Status BlockDictionary::Decode(BitReader* br, size_t xsize, size_t ysize) {
 
   dictionary_.resize(dict_size);
   for (size_t i = 0; i < dictionary_.size(); i++) {
-    BlockInfo& info = dictionary_[i];
+    QuantizedBlock& info = dictionary_[i];
     info.xsize = read_num(kBlockSizeContext);
     info.ysize = read_num(kBlockSizeContext);
     if (i != 0) {
@@ -152,9 +226,9 @@ Status BlockDictionary::Decode(BitReader* br, size_t xsize, size_t ysize) {
       info.ysize = UnpackSigned(info.ysize) + dictionary_[i - 1].ysize;
     }
     if (info.xsize > kMaxBlockSize)
-      return PIK_FAILURE("Block xsize is too big");
+      return PIK_FAILURE("Block xsize is too big: %lu", info.xsize);
     if (info.ysize > kMaxBlockSize)
-      return PIK_FAILURE("Block ysize is too big");
+      return PIK_FAILURE("Block ysize is too big: %lu", info.ysize);
     for (size_t c = 0; c < 3; c++) {
       int ctx = kPixelsContextStart + c;
       for (size_t iy = 0; iy < info.ysize; iy++) {
@@ -174,11 +248,20 @@ Status BlockDictionary::Decode(BitReader* br, size_t xsize, size_t ysize) {
     }
   }
 
-  for (size_t id = 0; id < dictionary_.size(); id++) {
-    for (size_t transform = 0; transform < 2; transform++) {
+  for (size_t transform = 0; transform < 2; transform++) {
+    size_t to_skip = 0;
+    for (size_t id = 0; id < dictionary_.size() + kNumStaticBlocks; id++) {
+      if (to_skip > 0) {
+        to_skip--;
+        continue;
+      }
       size_t id_count = read_num(kBlockIdCountContext);
       if (id_count > kMaxBlocks) {
         return PIK_FAILURE("Too many blocks in dictionary");
+      }
+      if (id_count == 0) {
+        to_skip = read_num(kBlockIdSkipContext);
+        continue;
       }
       positions_.resize(positions_.size() + id_count);
       size_t id_start = positions_.size() - id_count;
@@ -187,15 +270,21 @@ Status BlockDictionary::Decode(BitReader* br, size_t xsize, size_t ysize) {
         pos.x = read_num(kBlockOffsetContext);
         pos.y = read_num(kBlockOffsetContext);
         pos.id = id;
+        const QuantizedBlock& info =
+            pos.id < dictionary_.size()
+                ? dictionary_[pos.id]
+                : kStaticBlocks[pos.id - dictionary_.size()];
         if (i != id_start) {
           pos.x = UnpackSigned(pos.x) + positions_[i - 1].x;
           pos.y = UnpackSigned(pos.y) + positions_[i - 1].y;
         }
-        if (pos.x + dictionary_[pos.id].xsize > xsize) {
-          return PIK_FAILURE("Invalid block x");
+        if (pos.x + info.xsize > xsize) {
+          return PIK_FAILURE("Invalid block x (id %lu): at %lu + %lu > %lu",
+                             pos.id, pos.x, info.xsize, xsize);
         }
-        if (pos.y + dictionary_[pos.id].ysize > ysize) {
-          return PIK_FAILURE("Invalid block y");
+        if (pos.y + info.ysize > ysize) {
+          return PIK_FAILURE("Invalid block y: at %lu + %lu > %lu", pos.y,
+                             info.ysize, ysize);
         }
         pos.transform = transform;
         if (transform) {
@@ -204,6 +293,9 @@ Status BlockDictionary::Decode(BitReader* br, size_t xsize, size_t ysize) {
           pos.width = UnpackSigned(read_num(kBlockWidthContext));
         }
       }
+    }
+    if (to_skip > 0) {
+      return PIK_FAILURE("Invalid number of skipped block ids!");
     }
   }
 
@@ -251,11 +343,11 @@ void DumpImage(const ImageF& img) {
 #endif
 
 template <bool add>
-void BlockDictionary::Apply(Image3F* opsin, size_t downsample) const {
+void BlockDictionary::Apply(Image3F* opsin, size_t downsampling) const {
 #ifdef PIK_BD_DUMP_IMAGES
   DumpImage(*opsin);
 #endif
-  if (downsample != 1) {
+  if (downsampling != 1) {
     // TODO(veluca): downsampling not implemented yet.
     PIK_CHECK(positions_.empty());
   }
@@ -264,7 +356,10 @@ void BlockDictionary::Apply(Image3F* opsin, size_t downsample) const {
     if (pos.transform) continue;
     size_t by = pos.y;
     size_t bx = pos.x;
-    const BlockInfo& info = dictionary_[pos.id];
+    const QuantizedBlock& info =
+        pos.id < dictionary_.size()
+            ? dictionary_[pos.id]
+            : kStaticBlocks[pos.id - dictionary_.size()];
     for (size_t c = 0; c < 3; c++) {
       for (size_t iy = 0; iy < info.ysize; iy++) {
         float* row = opsin->PlaneRow(c, by + iy) + bx;
@@ -287,7 +382,10 @@ void BlockDictionary::Apply(Image3F* opsin, size_t downsample) const {
   for (const BlockPosition& pos : positions_) {
     if (!pos.transform) continue;
     float block[3][(2 * kMaxBlockSize + 5) * (2 * kMaxBlockSize + 5)] = {};
-    const BlockInfo& info = dictionary_[pos.id];
+    const QuantizedBlock& info =
+        pos.id < dictionary_.size()
+            ? dictionary_[pos.id]
+            : kStaticBlocks[pos.id - dictionary_.size()];
     size_t xs = info.xsize;
     size_t ys = info.ysize;
     for (size_t c = 0; c < 3; c++) {
@@ -379,27 +477,18 @@ void BlockDictionary::Apply(Image3F* opsin, size_t downsample) const {
 #endif
 }
 
-void BlockDictionary::AddTo(Image3F* opsin, size_t downsample) const {
-  Apply</*add=*/true>(opsin, downsample);
+void BlockDictionary::AddTo(Image3F* opsin, size_t downsampling) const {
+  Apply</*add=*/true>(opsin, downsampling);
 }
 
 void BlockDictionary::SubtractFrom(Image3F* opsin) const {
-  Apply</*add=*/false>(opsin, /*downsample=*/1);
+  Apply</*add=*/false>(opsin, /*downsampling=*/1);
 }
 
 namespace {
 
-constexpr size_t kSmallBlockThreshold = 13;
-constexpr float kDistThreshold = 0.6f;
-
-float ScaleForQuantization(float val, size_t c) {
-  return kBlockScale * val / kXybRadius[c];
-}
-int Quantize(float val, size_t c) {
-  return std::round(ScaleForQuantization(val, c));
-}
-
-float Distance(const BlockInfo& a, const Image3F& img, size_t bx, size_t by) {
+float Distance(const QuantizedBlock& a, const Image3F& img, size_t bx,
+               size_t by) {
   float dist = 0.0f;
   const size_t stride = img.PixelsPerRow();
   for (size_t c = 0; c < 3; c++) {
@@ -414,17 +503,143 @@ float Distance(const BlockInfo& a, const Image3F& img, size_t bx, size_t by) {
   }
   return dist;
 }
+
+constexpr size_t kNumExploreSteps = 1;
+constexpr size_t kSmallBlockThreshold = 13;
+constexpr float kDistThreshold = 0.6f;
+// Returns north, south, east and west neighbors, if present.
+size_t Neighbors(size_t x, size_t y, size_t x_max, size_t y_max,
+                 std::array<size_t, 2>* neighbors) {
+  size_t i = 0;
+  if (x != 0) neighbors[i++] = {x - 1, y};
+  if (y != 0) neighbors[i++] = {x, y - 1};
+  if (x != x_max - 1) neighbors[i++] = {x + 1, y};
+  if (y != y_max - 1) neighbors[i++] = {x, y + 1};
+  return i;
+}
+
+struct Site {
+  size_t x;
+  size_t y;
+  size_t steps;
+  constexpr Site(size_t x, size_t y, size_t steps) : x(x), y(y), steps(steps) {}
+};
+
+// Finds a bounding box for a loosly connected component. If steps==1, only
+// active neighboring pixels are added to the component. If `steps` is larger,
+// it is allowed to take a few `steps` through non-active neighboring pixels.
+Rect ConnectedCompenentBounds(ImageI* PIK_RESTRICT active, size_t x, size_t y) {
+  Rect box = Rect(x, y, 0, 0);
+  std::vector<Site> places_to_visit;
+  size_t steps = kNumExploreSteps;
+  Site site(x, y, steps);
+  places_to_visit.emplace_back(site);
+
+  while (!places_to_visit.empty()) {
+    Site site = places_to_visit.back();
+    x = site.x;
+    y = site.y;
+    steps = site.steps;
+    places_to_visit.pop_back();
+
+    if (steps == 0) continue;
+    uint8_t cell_type = active->ConstRow(y)[x];
+    if (cell_type == 2) continue;
+
+    if (cell_type == 1) {
+      size_t xmin = std::min(x, box.x0());
+      size_t ymin = std::min(y, box.y0());
+      size_t xmax = std::max(x + 1, box.x0() + box.xsize());
+      size_t ymax = std::max(y + 1, box.y0() + box.ysize());
+      if (((xmax - xmin) < kMaxBlockSize) && ((ymax - ymin) < kMaxBlockSize)) {
+        box = Rect(xmin, ymin, xmax - xmin, ymax - ymin);
+      } else {
+        continue;
+      }
+    }
+    std::array<size_t, 2> neighbors[4];
+    for (int i = 0;
+         i < Neighbors(x, y, active->xsize(), active->ysize(), neighbors);
+         i++) {
+      size_t new_x = neighbors[i][0];
+      size_t new_y = neighbors[i][1];
+      active->Row(y)[x] = 2;
+      site = {new_x, new_y, cell_type ? kNumExploreSteps : steps - 1};
+      places_to_visit.emplace_back(site);
+    }
+  }
+  return box;
+}
 };  // namespace
 
 static const bool kUseBlockDictionary = false;
 static const bool kUseHardcodedStretchedBlocks = false;
+static const bool KUseDotDetection = true;
 
 BlockDictionary FindBestBlockDictionary(double butteraugli_target,
                                         const Image3F& opsin) {
-  if (kUseHardcodedStretchedBlocks) {
+  if (KUseDotDetection) {
+    Image3F without_dots = Image3F(opsin.xsize(), opsin.ysize());
+    Image3F dots(opsin.xsize(), opsin.ysize());
+    ImageI active(opsin.xsize(), opsin.ysize());
+    SplitDots(opsin, &without_dots, &dots);
+    std::vector<QuantizedBlock> quantized_blocks;
     std::vector<BlockInfo> blocks;
+    std::vector<BlockPosition> positions;
+#ifdef PIK_BD_DUMP_IMAGES
+    DumpImage(dots);
+#endif
+    for (size_t y = 0; y < opsin.ysize(); y++) {
+      const float* PIK_RESTRICT dot_rows[3];
+      const float* PIK_RESTRICT rows[3];
+      for (size_t c = 0; c < 3; c++) {
+        dot_rows[c] = dots.Plane(c).ConstRow(y);
+        rows[c] = without_dots.Plane(c).ConstRow(y);
+      }
+      int32_t* PIK_RESTRICT active_row = active.Row(y);
+      for (size_t x = 0; x < opsin.xsize(); x++) {
+        bool is_block = false;
+        for (size_t c = 0; c < 3; c++) {
+          if (dot_rows[c][x] != 0.0f) {
+            is_block = true;
+          }
+        }
+        active_row[x] = is_block;
+      }
+    }
+
+    for (size_t y = 0; y < opsin.ysize(); y++) {
+      const float* PIK_RESTRICT rows[3];
+      const float* PIK_RESTRICT dot_rows[3];
+      for (size_t c = 0; c < 3; c++) {
+        dot_rows[c] = dots.Plane(c).ConstRow(y);
+        rows[c] = without_dots.Plane(c).ConstRow(y);
+      }
+      for (size_t x = 0; x < opsin.xsize(); x++) {
+        Rect box = ConnectedCompenentBounds(&active, x, y);
+        if (box.xsize() && box.ysize()) {
+          BlockInfo fullinfo(&dots, box);
+          auto it = std::find_if(blocks.begin(), blocks.end(),
+                                 [&](const BlockInfo& other) {
+                                   return other.IsSimilar(fullinfo);
+                                 });
+          if (it == blocks.end()) {
+            positions.emplace_back(box.x0(), box.y0(), quantized_blocks.size());
+            quantized_blocks.push_back(QuantizedBlock(fullinfo));
+            blocks.push_back(fullinfo);
+          } else {
+            positions.emplace_back(box.x0(), box.y0(), it - blocks.begin());
+          }
+          ZeroFillImage(&active, box);
+        }
+      }
+    }
+    return BlockDictionary{quantized_blocks, positions};
+  }
+  if (kUseHardcodedStretchedBlocks) {
+    std::vector<QuantizedBlock> blocks;
     blocks.push_back(
-        BlockInfo{1, 3, {{0, 0, 0}, {-11, -8, -11}, {-10, -7, -10}}});
+        QuantizedBlock{1, 3, {{0, 0, 0}, {-11, -8, -11}, {-10, -7, -10}}});
     std::vector<BlockPosition> positions;
     positions.emplace_back(612, 698, 0, 204, 506, -10);
     return BlockDictionary{blocks, positions};
@@ -559,7 +774,7 @@ BlockDictionary FindBestBlockDictionary(double butteraugli_target,
   DumpImage(shapes);
 #endif
   auto extract_block = [&](size_t xsize, size_t ysize, size_t bx, size_t by) {
-    BlockInfo info;
+    QuantizedBlock info;
     info.xsize = xsize;
     info.ysize = ysize;
     for (size_t c = 0; c < 3; c++) {
@@ -572,7 +787,7 @@ BlockDictionary FindBestBlockDictionary(double butteraugli_target,
     }
     return info;
   };
-  auto should_encode = [](const BlockInfo& info) {
+  auto should_encode = [](const QuantizedBlock& info) {
     size_t num_zeros = 0;
     for (size_t c = 0; c < 3; c++) {
       for (size_t iy = 0; iy < 8; iy++) {
@@ -588,8 +803,8 @@ BlockDictionary FindBestBlockDictionary(double butteraugli_target,
   // TODO(veluca): take into account off-by-one errors in bounding boxes.
   constexpr size_t kMinNumOccurrences = 4;
   for (size_t i = 0; i < candidates.size(); i++) {
-    BlockInfo cand = extract_block(candidates[i][0], candidates[i][1],
-                                   candidates[i][2], candidates[i][3]);
+    QuantizedBlock cand = extract_block(candidates[i][0], candidates[i][1],
+                                        candidates[i][2], candidates[i][3]);
     if (!should_encode(cand)) continue;
     size_t count = 0;
     for (size_t j = 0; j < candidates.size(); j++) {
@@ -614,11 +829,11 @@ BlockDictionary FindBestBlockDictionary(double butteraugli_target,
   //}
   // fprintf(stderr, "\n");
 
-  std::vector<BlockInfo> blocks;
+  std::vector<QuantizedBlock> blocks;
   std::vector<char> taken(occurrences.size());
   for (size_t i = 0; i < occurrences.size(); i++) {
     if (taken[i]) continue;
-    BlockInfo cand =
+    QuantizedBlock cand =
         extract_block(occurrences[i].second[0], occurrences[i].second[1],
                       occurrences[i].second[2], occurrences[i].second[3]);
     blocks.push_back(cand);
@@ -694,7 +909,7 @@ BlockDictionary FindBestBlockDictionary(double butteraugli_target,
     if (xs * ys < kSmallBlockThreshold)
       max_background_diff *= kSmallBlockDistThresholdPenalty;
     if (background_max_y - background_min_y > max_background_diff) return;
-    BlockInfo info = extract_block(xs, ys, bx, by);
+    QuantizedBlock info = extract_block(xs, ys, bx, by);
     if (!should_encode(info)) return;
     size_t id = 0;
     float dist = std::numeric_limits<float>::max();

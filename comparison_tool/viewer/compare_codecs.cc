@@ -11,7 +11,7 @@
 #include <QString>
 #include <QStringList>
 
-#include "codec_comparison_window.h"
+#include "comparison_tool/viewer/codec_comparison_window.h"
 
 namespace {
 

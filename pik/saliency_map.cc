@@ -13,9 +13,9 @@
 
 #include "pik/bit_reader.h"
 #include "pik/headers.h"
-#include "pik/pik_info.h"
-#include "pik/pik_pass.h"
 #include "pik/os_specific.h"
+#include "pik/pik_frame.h"
+#include "pik/pik_info.h"
 #include "pik/single_image_handler.h"
 
 namespace pik {

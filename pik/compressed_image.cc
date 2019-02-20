@@ -18,11 +18,16 @@
 
 #undef PROFILER_ENABLED
 #define PROFILER_ENABLED 1
+#include "pik/epf.h"
+#include "pik/image_ops.h"
 #include "pik/ac_predictions.h"
 #include "pik/ac_strategy.h"
+#include "pik/adaptive_reconstruction.h"
 #include "pik/ans_decode.h"
+#include "pik/bilinear_transform.h"
 #include "pik/block.h"
 #include "pik/butteraugli_distance.h"
+#include "pik/color_correlation.h"
 #include "pik/common.h"
 #include "pik/compiler_specific.h"
 #include "pik/compressed_dc.h"
@@ -203,23 +208,27 @@ static const GrayXyb* GetGrayXyb() {
   return kGrayXyb;
 }
 
-SIMD_ATTR void InitializePassEncCache(
-    const PassHeader& pass_header, const Image3F& opsin_full,
+SIMD_ATTR void InitializeFrameEncCache(
+    const FrameHeader& frame_header, const Image3F& opsin_full,
     const AcStrategyImage& ac_strategy, const Quantizer& quantizer,
     const ColorCorrelationMap& cmap, const BlockDictionary& dictionary,
-    ThreadPool* pool, PassEncCache* pass_enc_cache, PikInfo* aux_out) {
+    ThreadPool* pool, FrameEncCache* frame_enc_cache, PikInfo* aux_out) {
   PROFILER_FUNC;
   constexpr size_t N = kBlockDim;
-  constexpr int block_size = N * N;
-  pass_enc_cache->use_gradient = pass_header.flags & PassHeader::kGradientMap;
-  pass_enc_cache->grayscale_opt = pass_header.flags & PassHeader::kGrayscaleOpt;
+  frame_enc_cache->ac_strategy = ac_strategy.Copy();
+  frame_enc_cache->use_gradient =
+      frame_header.flags & FrameHeader::kGradientMap;
+  frame_enc_cache->grayscale_opt =
+      frame_header.flags & FrameHeader::kGrayscaleOpt;
   const size_t xsize_blocks = opsin_full.xsize() / N;
   const size_t ysize_blocks = opsin_full.ysize() / N;
 
   Image3F opsin = CopyImage(opsin_full);
   dictionary.SubtractFrom(&opsin);
 
-  pass_enc_cache->coeffs = Image3F(xsize_blocks * block_size, ysize_blocks);
+  ApplyReverseBilinear(&opsin);
+
+  frame_enc_cache->coeffs = Image3F(xsize_blocks * kDCTBlockSize, ysize_blocks);
   Image3F dc = Image3F(xsize_blocks, ysize_blocks);
 
   auto compute_dc = [&](int by, int _) {
@@ -228,11 +237,11 @@ SIMD_ATTR void InitializePassEncCache(
         AcStrategy acs = ac_strategy.ConstRow(by)[bx];
         acs.TransformFromPixels(
             opsin.ConstPlaneRow(c, by * N) + bx * N, opsin.PixelsPerRow(),
-            pass_enc_cache->coeffs.PlaneRow(c, by) + bx * block_size,
-            pass_enc_cache->coeffs.PixelsPerRow());
+            frame_enc_cache->coeffs.PlaneRow(c, by) + bx * kDCTBlockSize,
+            frame_enc_cache->coeffs.PixelsPerRow());
         acs.DCFromLowestFrequencies(
-            pass_enc_cache->coeffs.ConstPlaneRow(c, by) + bx * block_size,
-            pass_enc_cache->coeffs.PixelsPerRow(), dc.PlaneRow(c, by) + bx,
+            frame_enc_cache->coeffs.ConstPlaneRow(c, by) + bx * kDCTBlockSize,
+            frame_enc_cache->coeffs.PixelsPerRow(), dc.PlaneRow(c, by) + bx,
             dc.PixelsPerRow());
       }
     }
@@ -240,12 +249,12 @@ SIMD_ATTR void InitializePassEncCache(
 
   RunOnPool(pool, 0, ysize_blocks, compute_dc);
   if (aux_out != nullptr) {
-    aux_out->InspectImage3F("compressed_image:InitializePassEncCache:dc", dc);
+    aux_out->InspectImage3F("compressed_image:InitializeFrameEncCache:dc", dc);
   }
 
-  if (pass_enc_cache->use_gradient) {
-    ComputeGradientMap(dc, pass_enc_cache->grayscale_opt, quantizer, pool,
-                       &pass_enc_cache->gradient);
+  if (frame_enc_cache->use_gradient) {
+    ComputeGradientMap(dc, frame_enc_cache->grayscale_opt, quantizer, pool,
+                       &frame_enc_cache->gradient);
   }
 
   constexpr int cY = 1;  // Y color channel.
@@ -253,71 +262,72 @@ SIMD_ATTR void InitializePassEncCache(
   {
     ImageF dec_dc_Y = QuantizeRoundtripDC(quantizer, cY, dc.Plane(cY));
 
-    if (pass_enc_cache->grayscale_opt) {
+    if (frame_enc_cache->grayscale_opt) {
       GetGrayXyb()->RemoveXB(&dc);
     } else {
       ApplyColorCorrelationDC</*decode=*/false>(cmap, dec_dc_Y, &dc);
     }
 
-    pass_enc_cache->dc = QuantizeCoeffsDC(dc, quantizer);
-    pass_enc_cache->dc_dec =
-        Image3F(pass_enc_cache->dc.xsize(), pass_enc_cache->dc.ysize());
+    frame_enc_cache->dc = QuantizeCoeffsDC(dc, quantizer);
+    frame_enc_cache->dc_dec =
+        Image3F(frame_enc_cache->dc.xsize(), frame_enc_cache->dc.ysize());
     for (size_t c = 0; c < 3; c++) {
-      const float mul = quantizer.DequantMatrix(kQuantKindDCT8, c)[0] *
+      const float mul = quantizer.DequantMatrix(0, kQuantKindDCT8, c)[0] *
                         quantizer.inv_quant_dc();
-      for (size_t y = 0; y < pass_enc_cache->dc.ysize(); y++) {
+      for (size_t y = 0; y < frame_enc_cache->dc.ysize(); y++) {
         const int16_t* PIK_RESTRICT row_in =
-            pass_enc_cache->dc.ConstPlaneRow(c, y);
-        float* PIK_RESTRICT row_out = pass_enc_cache->dc_dec.PlaneRow(c, y);
-        for (size_t x = 0; x < pass_enc_cache->dc.xsize(); x++) {
+            frame_enc_cache->dc.ConstPlaneRow(c, y);
+        float* PIK_RESTRICT row_out = frame_enc_cache->dc_dec.PlaneRow(c, y);
+        for (size_t x = 0; x < frame_enc_cache->dc.xsize(); x++) {
           row_out[x] = row_in[x] * mul;
         }
       }
     }
-    if (!pass_enc_cache->grayscale_opt) {
-      ApplyColorCorrelationDC</*decode=*/true>(cmap, dec_dc_Y,
-                                               &pass_enc_cache->dc_dec);
+    if (frame_enc_cache->grayscale_opt) {
+      GetGrayXyb()->RestoreXB(&frame_enc_cache->dc_dec);
     } else {
-      GetGrayXyb()->RestoreXB(&pass_enc_cache->dc_dec);
+      ApplyColorCorrelationDC</*decode=*/true>(cmap, dec_dc_Y,
+                                               &frame_enc_cache->dc_dec);
     }
 
-    if (pass_enc_cache->use_gradient) {
-      ApplyGradientMap(pass_enc_cache->gradient, quantizer,
-                       &pass_enc_cache->dc_dec);
+    if (frame_enc_cache->use_gradient) {
+      ApplyGradientMap(frame_enc_cache->gradient, quantizer,
+                       &frame_enc_cache->dc_dec);
+    } else {
+      AdaptiveDCReconstruction(frame_enc_cache->dc_dec, quantizer, pool);
     }
   }
   if (aux_out != nullptr) {
-    aux_out->InspectImage3F("compressed_image:InitializePassEncCache:dc_dec",
-                            pass_enc_cache->dc_dec);
+    aux_out->InspectImage3F("compressed_image:InitializeFrameEncCache:dc_dec",
+                            frame_enc_cache->dc_dec);
   }
 }
 
-SIMD_ATTR void InitializeEncCache(const PassHeader& pass_header,
+SIMD_ATTR void InitializeEncCache(const FrameHeader& frame_header,
                                   const GroupHeader& group_header,
-                                  const PassEncCache& pass_enc_cache,
+                                  const FrameEncCache& frame_enc_cache,
                                   const Rect& group_rect, EncCache* enc_cache) {
   PROFILER_FUNC;
   constexpr size_t N = kBlockDim;
-  constexpr int block_size = N * N;
   PIK_ASSERT(!enc_cache->initialized);
 
-  const size_t full_xsize_blocks = pass_enc_cache.dc_dec.xsize();
-  const size_t full_ysize_blocks = pass_enc_cache.dc_dec.ysize();
+  const size_t full_xsize_blocks = frame_enc_cache.dc_dec.xsize();
+  const size_t full_ysize_blocks = frame_enc_cache.dc_dec.ysize();
   const size_t x0_blocks = group_rect.x0() / N;
   const size_t y0_blocks = group_rect.y0() / N;
 
   enc_cache->xsize_blocks = group_rect.xsize() / N;
   enc_cache->ysize_blocks = group_rect.ysize() / N;
-  enc_cache->predict_lf = pass_header.predict_lf;
-  enc_cache->predict_hf = pass_header.predict_hf;
-  enc_cache->grayscale_opt = pass_enc_cache.grayscale_opt;
+  enc_cache->predict_lf = frame_header.predict_lf;
+  enc_cache->predict_hf = frame_header.predict_hf;
+  enc_cache->grayscale_opt = frame_enc_cache.grayscale_opt;
 
   enc_cache->dc_dec =
       Image3F(enc_cache->xsize_blocks + 2, enc_cache->ysize_blocks + 2);
   for (size_t c = 0; c < 3; c++) {
     for (size_t y = 0; y < enc_cache->ysize_blocks + 2; y++) {
       const size_t y_src = SourceCoord(y + y0_blocks, full_ysize_blocks);
-      const float* row_src = pass_enc_cache.dc_dec.ConstPlaneRow(c, y_src);
+      const float* row_src = frame_enc_cache.dc_dec.ConstPlaneRow(c, y_src);
       float* row_dc = enc_cache->dc_dec.PlaneRow(c, y);
       for (size_t x = 0; x < enc_cache->xsize_blocks + 2; x++) {
         const size_t x_src = SourceCoord(x + x0_blocks, full_xsize_blocks);
@@ -326,23 +336,24 @@ SIMD_ATTR void InitializeEncCache(const PassHeader& pass_header,
     }
   }
 
-  const Rect coeff_rect(x0_blocks * block_size, y0_blocks,
-                        enc_cache->xsize_blocks * block_size,
+  const Rect coeff_rect(x0_blocks * kDCTBlockSize, y0_blocks,
+                        enc_cache->xsize_blocks * kDCTBlockSize,
                         enc_cache->ysize_blocks);
 
-  enc_cache->coeffs = CopyImage(coeff_rect, pass_enc_cache.coeffs);
+  enc_cache->coeffs = CopyImage(coeff_rect, frame_enc_cache.coeffs);
 
   enc_cache->initialized = true;
+
+  enc_cache->ac_strategy = frame_enc_cache.ac_strategy.Copy(Rect(
+      x0_blocks, y0_blocks, enc_cache->xsize_blocks, enc_cache->ysize_blocks));
 }
 
 SIMD_ATTR void ComputeCoefficients(const Quantizer& quantizer,
                                    const ColorCorrelationMap& cmap,
                                    const Rect& cmap_rect, ThreadPool* pool,
-                                   EncCache* enc_cache,
-                                   const PikInfo* aux_out) {
+                                   const FrameEncCache& frame_enc_cache,
+                                   EncCache* enc_cache, PikInfo* aux_out) {
   PROFILER_FUNC;
-  constexpr size_t N = kBlockDim;
-  constexpr size_t block_size = N * N;
   const size_t xsize_blocks = enc_cache->xsize_blocks;
   const size_t ysize_blocks = enc_cache->ysize_blocks;
   PIK_ASSERT(enc_cache->initialized);
@@ -365,9 +376,11 @@ SIMD_ATTR void ComputeCoefficients(const Quantizer& quantizer,
 
     Image3F pred2x2(enc_cache->dc_dec.xsize() * 2,
                     enc_cache->dc_dec.ysize() * 2);
-    PredictLfForEncoder(enc_cache->predict_lf, enc_cache->predict_hf,
-                        enc_cache->dc_dec, enc_cache->ac_strategy, cmap,
-                        cmap_rect, quantizer, &enc_cache->coeffs, &pred2x2);
+    PredictLfForEncoder(
+        enc_cache->predict_lf, enc_cache->predict_hf, enc_cache->dc_dec,
+        enc_cache->ac_strategy, cmap, cmap_rect, quantizer,
+        frame_enc_cache.dequant_control_field, frame_enc_cache.dequant_map,
+        &enc_cache->coeffs, &pred2x2);
     if (enc_cache->predict_hf) {
       ComputePredictionResiduals(pred2x2, enc_cache->ac_strategy,
                                  &enc_cache->coeffs);
@@ -383,28 +396,35 @@ SIMD_ATTR void ComputeCoefficients(const Quantizer& quantizer,
   {
     Image3F coeffs_ac = CopyImage(enc_cache->coeffs);
 
-    ImageF dec_ac_Y(xsize_blocks * block_size, ysize_blocks);
-
-    size_t coeffs_stride = coeffs_ac.PixelsPerRow();
-    size_t dec_ac_stride = dec_ac_Y.PixelsPerRow();
+    // Pre-quantized, matches what decoder will see.
+    ImageF dec_ac_Y(xsize_blocks * kDCTBlockSize, ysize_blocks);
+    const size_t coeffs_stride = coeffs_ac.PixelsPerRow();
+    const size_t dec_ac_stride = dec_ac_Y.PixelsPerRow();
 
     for (size_t by = 0; by < ysize_blocks; ++by) {
       const float* PIK_RESTRICT row_in = coeffs_ac.ConstPlaneRow(cY, by);
       float* PIK_RESTRICT row_out = dec_ac_Y.Row(by);
       AcStrategyRow ac_strategy_row = enc_cache->ac_strategy.ConstRow(by);
+      size_t ty = by / kColorTileDimInBlocks;
+      const uint8_t* row_quant_cf =
+          cmap_rect.ConstRow(frame_enc_cache.dequant_control_field, ty);
       for (size_t bx = 0; bx < xsize_blocks; ++bx) {
         AcStrategy acs = ac_strategy_row[bx];
         if (!acs.IsFirstBlock()) continue;
         const int32_t quant_ac = quant_field.Row(by)[bx];
-        quantizer.QuantizeRoundtripBlockAC<cY>(
-            quant_ac, acs.GetQuantKind(), acs.covered_blocks_x(),
-            acs.covered_blocks_y(), row_in + bx * block_size, coeffs_stride,
-            row_out + bx * block_size, dec_ac_stride);
+        size_t tx = bx / kColorTileDimInBlocks;
+        uint8_t quant_table =
+            frame_enc_cache.dequant_map[row_quant_cf[tx]][quant_ac];
+        quantizer.QuantizeRoundtripBlockAC(
+            cY, quant_table, quant_ac, acs.GetQuantKind(),
+            acs.covered_blocks_x(), acs.covered_blocks_y(),
+            row_in + bx * kDCTBlockSize, coeffs_stride,
+            row_out + bx * kDCTBlockSize, dec_ac_stride);
       }
     }
     UnapplyColorCorrelationAC(cmap, cmap_rect, dec_ac_Y, &coeffs_ac);
 
-    enc_cache->ac = Image3S(xsize_blocks * block_size, ysize_blocks);
+    enc_cache->ac = Image3S(xsize_blocks * kDCTBlockSize, ysize_blocks);
     size_t ac_stride = enc_cache->ac.PixelsPerRow();
 
     for (int c = 0; c < 3; ++c) {
@@ -413,14 +433,21 @@ SIMD_ATTR void ComputeCoefficients(const Quantizer& quantizer,
         int16_t* PIK_RESTRICT row_out = enc_cache->ac.PlaneRow(c, by);
         const int32_t* row_quant = quant_field.ConstRow(by);
         AcStrategyRow ac_strategy_row = enc_cache->ac_strategy.ConstRow(by);
+        size_t ty = by / kColorTileDimInBlocks;
+        const uint8_t* row_quant_cf =
+            cmap_rect.ConstRow(frame_enc_cache.dequant_control_field, ty);
         for (size_t bx = 0; bx < xsize_blocks; ++bx) {
           AcStrategy acs = ac_strategy_row[bx];
           if (!acs.IsFirstBlock()) continue;
+          int quant_ac = row_quant[bx];
+          size_t tx = bx / kColorTileDimInBlocks;
+          uint8_t quant_table =
+              frame_enc_cache.dequant_map[row_quant_cf[tx]][quant_ac];
           quantizer.QuantizeBlockAC(
-              row_quant[bx], ac_strategy_row[bx].GetQuantKind(), c,
+              quant_table, quant_ac, ac_strategy_row[bx].GetQuantKind(), c,
               acs.covered_blocks_x(), acs.covered_blocks_y(),
-              row_in + bx * block_size, coeffs_stride,
-              row_out + bx * block_size, ac_stride);
+              row_in + bx * kDCTBlockSize, coeffs_stride,
+              row_out + bx * kDCTBlockSize, ac_stride);
         }
       }
     }
@@ -433,7 +460,6 @@ PaddedBytes EncodeToBitstream(const EncCache& enc_cache, const Rect& rect,
                               MultipassHandler* handler, PikInfo* info) {
   PROFILER_FUNC;
   constexpr size_t N = kBlockDim;
-  constexpr size_t block_size = N * N;
   PIK_ASSERT(rect.x0() % kTileDim == 0);
   PIK_ASSERT(rect.xsize() % N == 0);
   PIK_ASSERT(rect.y0() % kTileDim == 0);
@@ -469,12 +495,12 @@ PaddedBytes EncodeToBitstream(const EncCache& enc_cache, const Rect& rect,
       int16_t* row_out = ac_rect.PlaneRow(&ac, c, by);
       for (size_t bx = 0; bx < xsize_blocks; bx++) {
         AcStrategy acs = acs_row[bx];
-        acs.ScatterCoefficients(row_in + block_size * bx, enc_stride,
-                                row_out + block_size * bx, ac_stride);
+        acs.ScatterCoefficients(row_in + kDCTBlockSize * bx, enc_stride,
+                                row_out + kDCTBlockSize * bx, ac_stride);
       }
     }
   }
-  int32_t order[kOrderContexts * block_size];
+  int32_t order[kOrderContexts * kDCTBlockSize];
   ComputeCoeffOrder(ac, ac_rect, order);
 
   std::string order_code = EncodeCoeffOrders(order, info);
@@ -549,7 +575,7 @@ template <bool first>
 class Dequant {
  public:
   Dequant(const Quantizer& quantizer) : quantizer_(quantizer) {
-    dequant_matrices_ = quantizer.DequantMatrix(kQuantKindDCT8, 0);
+    dequant_matrices_ = quantizer.DequantMatrix(0, kQuantKindDCT8, 0);
     inv_global_scale_ = quantizer.InvGlobalScale();
   }
 
@@ -561,16 +587,15 @@ class Dequant {
                       const Rect& rect, const Rect& block_group_rect,
                       const ImageI& img_ytox, const ImageI& img_ytob,
                       const Rect& cmap_rect,
-                      PassDecCache* PIK_RESTRICT pass_dec_cache,
-                      GroupDecCache* PIK_RESTRICT group_dec_cache) const {
+                      FrameDecCache* PIK_RESTRICT frame_dec_cache,
+                      GroupDecCache* PIK_RESTRICT group_dec_cache,
+                      PikInfo* aux_out) const {
     PROFILER_FUNC;
     PIK_ASSERT(SameSize(rect, rect16));
-    constexpr size_t N = kBlockDim;
-    constexpr size_t block_size = N * N;
     const size_t xsize = rect.xsize();  // [blocks]
     const size_t ysize = rect.ysize();
-    PIK_ASSERT(img_ac16.xsize() % block_size == 0);
-    PIK_ASSERT(xsize <= img_ac16.xsize() / block_size);
+    PIK_ASSERT(img_ac16.xsize() % kDCTBlockSize == 0);
+    PIK_ASSERT(xsize <= img_ac16.xsize() / kDCTBlockSize);
     PIK_ASSERT(ysize <= img_ac16.ysize());
     PIK_ASSERT(SameSize(img_ytox, img_ytob));
 
@@ -587,8 +612,8 @@ class Dequant {
 
     const size_t x0_cmap = rect.x0() / kColorTileDimInBlocks;
     const size_t y0_cmap = rect.y0() / kColorTileDimInBlocks;
-    const size_t x0_dct = rect.x0() * block_size;
-    const size_t x0_dct16 = rect16.x0() * block_size;
+    const size_t x0_dct = rect.x0() * kDCTBlockSize;
+    const size_t x0_dct16 = rect16.x0() * kDCTBlockSize;
 
     // TODO(veluca): get rid of acs.Block() and only use acs.IsFirst()
     for (size_t by = 0; by < ysize; ++by) {
@@ -598,7 +623,14 @@ class Dequant {
           img_ac16.PlaneRow(1, by + rect16.y0()) + x0_dct16,
           img_ac16.PlaneRow(2, by + rect16.y0()) + x0_dct16};
       const int* PIK_RESTRICT row_quant_field =
-          block_tile_group_rect.ConstRow(pass_dec_cache->raw_quant_field, by);
+          block_tile_group_rect.ConstRow(frame_dec_cache->raw_quant_field, by);
+      static_assert(kColorTileDimInBlocks == kTileDimInBlocks,
+                    "Quantization table selection assumes that color tile and "
+                    "tiles have the same size!");
+      const uint8_t* PIK_RESTRICT row_quant_cf =
+          cmap_rect.ConstRow(frame_dec_cache->dequant_control_field,
+                             ty + y0_cmap) +
+          x0_cmap;
       const int* PIK_RESTRICT row_cmap[3] = {
           cmap_rect.ConstRow(img_ytox, ty + y0_cmap) + x0_cmap,
           nullptr,
@@ -611,27 +643,33 @@ class Dequant {
       };
 
       AcStrategyRow ac_strategy_row =
-          pass_dec_cache->ac_strategy.ConstRow(block_tile_group_rect, by);
+          frame_dec_cache->ac_strategy.ConstRow(block_tile_group_rect, by);
       for (size_t bx = 0; bx < xsize; ++bx) {
         const auto scaled_dequant =
             set1(d, SafeDiv(inv_global_scale_, row_quant_field[bx]));
+        const size_t tx = bx / kColorTileDimInBlocks;
+        uint8_t quant_table =
+            frame_dec_cache
+                ->dequant_map[row_quant_cf[tx]][row_quant_field[bx] - 1];
 
         size_t kind = ac_strategy_row[bx].GetQuantKind();
         const float* PIK_RESTRICT dequant_matrix[3] = {
-            &dequant_matrices_[quantizer_.DequantMatrixOffset(kind, 0) +
-                               ac_strategy_row[bx].Block() * block_size],
-            &dequant_matrices_[quantizer_.DequantMatrixOffset(kind, 1) +
-                               ac_strategy_row[bx].Block() * block_size],
-            &dequant_matrices_[quantizer_.DequantMatrixOffset(kind, 2) +
-                               ac_strategy_row[bx].Block() * block_size],
+            &dequant_matrices_[quantizer_.DequantMatrixOffset(quant_table, kind,
+                                                              0) +
+                               ac_strategy_row[bx].Block() * kDCTBlockSize],
+            &dequant_matrices_[quantizer_.DequantMatrixOffset(quant_table, kind,
+                                                              1) +
+                               ac_strategy_row[bx].Block() * kDCTBlockSize],
+            &dequant_matrices_[quantizer_.DequantMatrixOffset(quant_table, kind,
+                                                              2) +
+                               ac_strategy_row[bx].Block() * kDCTBlockSize],
         };
-        const size_t tx = bx / kColorTileDimInBlocks;
         const auto x_cc_mul =
             set1(d, ColorCorrelationMap::YtoX(1.0f, row_cmap[0][tx]));
         const auto b_cc_mul =
             set1(d, ColorCorrelationMap::YtoB(1.0f, row_cmap[2][tx]));
-        for (size_t k = 0; k < block_size; k += d.N) {
-          const size_t x = bx * block_size + k;
+        for (size_t k = 0; k < kDCTBlockSize; k += d.N) {
+          const size_t x = bx * kDCTBlockSize + k;
 
           const auto x_mul = load(d, dequant_matrix[0] + k) * scaled_dequant;
           const auto y_mul = load(d, dequant_matrix[1] + k) * scaled_dequant;
@@ -680,21 +718,19 @@ class Dequant {
 };
 
 template <bool first>
-bool DecodeFromBitstream(const PassHeader& pass_header,
+bool DecodeFromBitstream(const FrameHeader& frame_header,
                          const GroupHeader& header,
                          const PaddedBytes& compressed, BitReader* reader,
                          const Rect& group_rect, MultipassHandler* handler,
                          const size_t xsize_blocks, const size_t ysize_blocks,
                          const ColorCorrelationMap& cmap, const Rect& cmap_rect,
                          NoiseParams* noise_params, const Quantizer& quantizer,
-                         PassDecCache* PIK_RESTRICT pass_dec_cache,
-                         GroupDecCache* PIK_RESTRICT group_dec_cache) {
+                         FrameDecCache* PIK_RESTRICT frame_dec_cache,
+                         GroupDecCache* PIK_RESTRICT group_dec_cache,
+                         PikInfo* aux_out) {
   PROFILER_FUNC;
 
   PIK_RETURN_IF_ERROR(DecodeNoise(reader, noise_params));
-
-  constexpr size_t N = kBlockDim;
-  constexpr size_t block_size = N * N;
 
   PIK_ASSERT(group_rect.x0() % kBlockDim == 0);
   PIK_ASSERT(group_rect.y0() % kBlockDim == 0);
@@ -709,9 +745,9 @@ bool DecodeFromBitstream(const PassHeader& pass_header,
 
   group_dec_cache->InitOnce(xsize_blocks, ysize_blocks);
 
-  int coeff_order[kOrderContexts * block_size];
+  int coeff_order[kOrderContexts * kDCTBlockSize];
   for (size_t c = 0; c < kOrderContexts; ++c) {
-    DecodeCoeffOrder(&coeff_order[c * block_size], reader);
+    DecodeCoeffOrder(&coeff_order[c * kDCTBlockSize], reader);
   }
   PIK_RETURN_IF_ERROR(reader->JumpToByteBoundary());
 
@@ -745,20 +781,20 @@ bool DecodeFromBitstream(const PassHeader& pass_header,
     // encoded all at once.
     for (size_t c = 0; c < 3; c++) {
       for (size_t by = 0; by < rect.ysize(); by++) {
-        AcStrategyRow acs_row = pass_dec_cache->ac_strategy.ConstRow(
+        AcStrategyRow acs_row = frame_dec_cache->ac_strategy.ConstRow(
             group_acs_qf_rect, by + rect.y0());
         int16_t* PIK_RESTRICT row =
             group_dec_cache->quantized_ac.PlaneRow(c, by);
         for (size_t bx = 0; bx < rect.xsize(); bx++) {
           AcStrategy acs = acs_row[bx + rect.x0()];
           if (!acs.IsFirstBlock()) continue;
-          int16_t* block = row + bx * block_size;
+          int16_t* block = row + bx * kDCTBlockSize;
           acs.GatherCoefficients(block, stride, unscattered,
-                                 acs.covered_blocks_x() * block_size);
+                                 acs.covered_blocks_x() * kDCTBlockSize);
           for (size_t i = 0; i < acs.covered_blocks_y(); i++) {
             memcpy(block + stride * i,
-                   unscattered + acs.covered_blocks_x() * block_size * i,
-                   sizeof(int16_t) * acs.covered_blocks_x() * block_size);
+                   unscattered + acs.covered_blocks_x() * kDCTBlockSize * i,
+                   sizeof(int16_t) * acs.covered_blocks_x() * kDCTBlockSize);
           }
         }
       }
@@ -766,7 +802,7 @@ bool DecodeFromBitstream(const PassHeader& pass_header,
 
     dequant.DoAC(quantized_rect, group_dec_cache->quantized_ac, rect,
                  group_acs_qf_rect, cmap.ytox_map, cmap.ytob_map, cmap_rect,
-                 pass_dec_cache, group_dec_cache);
+                 frame_dec_cache, group_dec_cache, aux_out);
   }
   if (!ac_decoder.CheckANSFinalState()) {
     return PIK_FAILURE("ANS checksum failure.");
@@ -777,28 +813,27 @@ bool DecodeFromBitstream(const PassHeader& pass_header,
 }
 
 template bool DecodeFromBitstream<true>(
-    const PassHeader&, const GroupHeader&, const PaddedBytes&, BitReader*,
+    const FrameHeader&, const GroupHeader&, const PaddedBytes&, BitReader*,
     const Rect&, MultipassHandler*, const size_t, const size_t,
     const ColorCorrelationMap&, const Rect&, NoiseParams*, const Quantizer&,
-    PassDecCache* PIK_RESTRICT, GroupDecCache* PIK_RESTRICT);
+    FrameDecCache* PIK_RESTRICT, GroupDecCache* PIK_RESTRICT, PikInfo*);
 
 template bool DecodeFromBitstream<false>(
-    const PassHeader&, const GroupHeader&, const PaddedBytes&, BitReader*,
+    const FrameHeader&, const GroupHeader&, const PaddedBytes&, BitReader*,
     const Rect&, MultipassHandler*, const size_t, const size_t,
     const ColorCorrelationMap&, const Rect&, NoiseParams*, const Quantizer&,
-    PassDecCache* PIK_RESTRICT, GroupDecCache* PIK_RESTRICT);
+    FrameDecCache* PIK_RESTRICT, GroupDecCache* PIK_RESTRICT, PikInfo*);
 
 void DequantImageAC(const Quantizer& quantizer, const ColorCorrelationMap& cmap,
                     const Rect& cmap_rect, const Image3S& quantized_ac,
-                    PassDecCache* pass_dec_cache,
-                    GroupDecCache* group_dec_cache, const Rect& group_rect) {
+                    FrameDecCache* frame_dec_cache,
+                    GroupDecCache* group_dec_cache, const Rect& group_rect,
+                    PikInfo* aux_out) {
   PROFILER_ZONE("dequant");
-  constexpr size_t N = kBlockDim;
-  constexpr size_t block_size = N * N;
 
   // Caller must have allocated/filled quantized_dc/ac.
   PIK_CHECK(quantized_ac.xsize() ==
-                quantizer.RawQuantField().xsize() * block_size &&
+                quantizer.RawQuantField().xsize() * kDCTBlockSize &&
             quantized_ac.ysize() == quantizer.RawQuantField().ysize());
 
   const size_t xsize_blocks = quantizer.RawQuantField().xsize();
@@ -826,7 +861,8 @@ void DequantImageAC(const Quantizer& quantizer, const ColorCorrelationMap& cmap,
                     ysize_blocks);
 
     dequant.DoAC(rect, quantized_ac, rect, block_group_rect, cmap.ytox_map,
-                 cmap.ytob_map, cmap_rect, pass_dec_cache, group_dec_cache);
+                 cmap.ytob_map, cmap_rect, frame_dec_cache, group_dec_cache,
+                 aux_out);
   }
 }
 
@@ -838,7 +874,6 @@ static SIMD_ATTR void InverseIntegralTransform(
   PROFILER_ZONE("IDCT");
 
   constexpr size_t N = kBlockDim;
-  constexpr size_t block_size = N * N;
   const size_t idct_stride = idct->PixelsPerRow();
   const size_t ac_per_row = ac_image.PixelsPerRow();
 
@@ -850,7 +885,7 @@ static SIMD_ATTR void InverseIntegralTransform(
         float* PIK_RESTRICT idct_row = idct_rect.PlaneRow(idct, c, by * N);
 
         for (size_t bx = 0; bx < xsize_blocks; ++bx) {
-          const float* PIK_RESTRICT ac_pos = ac_row + bx * block_size;
+          const float* PIK_RESTRICT ac_pos = ac_row + bx * kDCTBlockSize;
           const AcStrategy& acs = acs_row[bx];
           float* PIK_RESTRICT idct_pos = idct_row + bx * N;
 
@@ -872,7 +907,7 @@ static SIMD_ATTR void InverseIntegralTransform(
             idct_rect.PlaneRow(idct, c, by * N_downsample);
 
         for (size_t bx = 0; bx < xsize_blocks; ++bx) {
-          const float* PIK_RESTRICT ac_pos = ac_row + bx * block_size;
+          const float* PIK_RESTRICT ac_pos = ac_row + bx * kDCTBlockSize;
           const AcStrategy& acs = acs_row[bx];
           float* PIK_RESTRICT idct_pos = idct_row + bx * N_downsample;
           if (!acs.IsFirstBlock()) continue;
@@ -898,31 +933,31 @@ static SIMD_ATTR void InverseIntegralTransform(
   }
 }
 
-void ReconOpsinImage(const PassHeader& pass_header, const GroupHeader& header,
+void ReconOpsinImage(const FrameHeader& frame_header, const GroupHeader& header,
                      const Quantizer& quantizer, const Rect& block_group_rect,
-                     PassDecCache* PIK_RESTRICT pass_dec_cache,
+                     FrameDecCache* PIK_RESTRICT frame_dec_cache,
                      GroupDecCache* PIK_RESTRICT group_dec_cache,
                      Image3F* PIK_RESTRICT idct, const Rect& idct_rect,
-                     PikInfo* pik_info, size_t downsample) {
+                     PikInfo* aux_out, size_t downsample) {
   PROFILER_ZONE("ReconOpsinImage");
   constexpr size_t N = kBlockDim;
   const size_t xsize_blocks = block_group_rect.xsize();
   const size_t ysize_blocks = block_group_rect.ysize();
   const size_t xsize_tiles = DivCeil(xsize_blocks, kTileDimInBlocks);
   const size_t ysize_tiles = DivCeil(ysize_blocks, kTileDimInBlocks);
-  const bool predict_lf = pass_header.predict_lf;
-  const bool predict_hf = pass_header.predict_hf;
+  const bool predict_lf = frame_header.predict_lf;
+  const bool predict_hf = frame_header.predict_hf;
 
   // TODO(veluca): this should probably happen upon dequantization of DC. Also,
   // we should consider doing something similar for AC.
-  if (pass_header.flags & PassHeader::kGrayscaleOpt) {
+  if (frame_header.flags & FrameHeader::kGrayscaleOpt) {
     PROFILER_ZONE("GrayscaleRestoreXB");
     GetGrayXyb()->RestoreXB(&group_dec_cache->dc);
   }
 
-  if (pik_info && pik_info->testing_aux.ac_prediction != nullptr) {
+  if (aux_out && aux_out->testing_aux.ac_prediction != nullptr) {
     PROFILER_ZONE("Copy ac_prediction");
-    *pik_info->testing_aux.ac_prediction = CopyImage(group_dec_cache->ac);
+    *aux_out->testing_aux.ac_prediction = CopyImage(group_dec_cache->ac);
   }
 
   // Sets dcoeffs.0 from DC (for DCT blocks) and updates HVD.
@@ -930,12 +965,12 @@ void ReconOpsinImage(const PassHeader& pass_header, const GroupHeader& header,
 
   // Currently llf is temporary storage, but it will be more persistent
   // in tile-wise processing.
-  ComputeLlf(group_dec_cache->dc, pass_dec_cache->ac_strategy, block_group_rect,
-             &group_dec_cache->llf);
+  ComputeLlf(group_dec_cache->dc, frame_dec_cache->ac_strategy,
+             block_group_rect, &group_dec_cache->llf);
 
   if (predict_lf) {
     // dc2x2 plane is borrowed for temporary storage.
-    PredictLf(pass_dec_cache->ac_strategy, block_group_rect,
+    PredictLf(frame_dec_cache->ac_strategy, block_group_rect,
               group_dec_cache->llf,
               const_cast<ImageF*>(&group_dec_cache->pred2x2.Plane(0)),
               &group_dec_cache->lf2x2);
@@ -1035,7 +1070,7 @@ void ReconOpsinImage(const PassHeader& pass_header, const GroupHeader& header,
                             kTileDimInBlocks, kTileDimInBlocks, xsize_blocks,
                             ysize_blocks);
             UpdateLfForDecoder(tile, predict_lf, predict_hf,
-                               pass_dec_cache->ac_strategy, block_group_rect,
+                               frame_dec_cache->ac_strategy, block_group_rect,
                                group_dec_cache->llf, ac64, pred2x2_or_null,
                                lf2x2_or_null, c);
             tile_stage_row[lftx] |= 1;
@@ -1050,7 +1085,7 @@ void ReconOpsinImage(const PassHeader& pass_header, const GroupHeader& header,
 
   if (predict_hf) {
     // TODO(user): make UpSample4x4BlurDCT tile-wise-able.
-    AddPredictions(group_dec_cache->pred2x2, pass_dec_cache->ac_strategy,
+    AddPredictions(group_dec_cache->pred2x2, frame_dec_cache->ac_strategy,
                    block_group_rect, &group_dec_cache->blur_x,
                    &group_dec_cache->ac);
   }
@@ -1058,79 +1093,82 @@ void ReconOpsinImage(const PassHeader& pass_header, const GroupHeader& header,
   PIK_ASSERT(idct_rect.xsize() == DivCeil(xsize_blocks * N, downsample));
   PIK_ASSERT(idct_rect.ysize() == DivCeil(ysize_blocks * N, downsample));
   InverseIntegralTransform(xsize_blocks, ysize_blocks, group_dec_cache->ac,
-                           pass_dec_cache->ac_strategy, block_group_rect, idct,
+                           frame_dec_cache->ac_strategy, block_group_rect, idct,
                            idct_rect, downsample);
 
-  if (pik_info && pik_info->testing_aux.ac_prediction != nullptr) {
+  if (aux_out && aux_out->testing_aux.ac_prediction != nullptr) {
     PROFILER_ZONE("Subtract ac_prediction");
-    Subtract(group_dec_cache->ac, *pik_info->testing_aux.ac_prediction,
-             pik_info->testing_aux.ac_prediction);
-    ZeroDcValues(pik_info->testing_aux.ac_prediction,
-                 pass_dec_cache->ac_strategy);
+    Subtract(group_dec_cache->ac, *aux_out->testing_aux.ac_prediction,
+             aux_out->testing_aux.ac_prediction);
+    ZeroDcValues(aux_out->testing_aux.ac_prediction,
+                 frame_dec_cache->ac_strategy);
   }
 }
 
 namespace {
 
 Status DoAdaptiveReconstruction(const Image3F& idct,
-                                const PassHeader& pass_header,
+                                const FrameHeader& frame_header,
                                 const Quantizer& quantizer, ThreadPool* pool,
-                                PassDecCache* pass_dec_cache, PikInfo* pik_info,
-                                Image3F* PIK_RESTRICT out) {
+                                FrameDecCache* frame_dec_cache,
+                                PikInfo* aux_out, Image3F* PIK_RESTRICT out) {
   // Since no adaptive reconstruction would want us to return the `idct`
   // parameter as `out`, which would lead to either a copy or a new memory
   // handling strategy, we disallow it and require callers to avoid it.
-  PIK_CHECK(pass_header.have_adaptive_reconstruction);
+  PIK_CHECK(frame_header.have_adaptive_reconstruction);
 
   AdaptiveReconstructionAux* ar_aux =
-      pik_info ? &pik_info->adaptive_reconstruction_aux : nullptr;
+      aux_out ? &aux_out->adaptive_reconstruction_aux : nullptr;
 
   const Image3F* smoothed_ptr;
   Image3F smoothed;
   // If no gaborish, the smoothed and non-smoothed inputs are the same.
-  if (pass_header.gaborish == GaborishStrength::kOff) {
+  if (frame_header.gaborish == GaborishStrength::kOff) {
     smoothed_ptr = &idct;
   } else {
     PIK_RETURN_IF_ERROR(
-        ConvolveGaborish(idct, pass_header.gaborish, pool, &smoothed));
+        ConvolveGaborish(idct, frame_header.gaborish, pool, &smoothed));
     smoothed_ptr = &smoothed;
   }
 
   *out = AdaptiveReconstruction(
-      *smoothed_ptr, idct, quantizer, pass_dec_cache->raw_quant_field,
-      pass_dec_cache->sigma_lut_ids, pass_dec_cache->ac_strategy,
-      pass_header.epf_params, pool, ar_aux);
+      *smoothed_ptr, idct, quantizer, frame_dec_cache->raw_quant_field,
+      frame_dec_cache->dequant_control_field, frame_dec_cache->dequant_map,
+      frame_dec_cache->ar_sigma_lut_ids, frame_dec_cache->ac_strategy,
+      frame_header.epf_params, pool, ar_aux);
   return true;
 }
 
 }  // namespace
 
-Status FinalizePassDecoding(Image3F* PIK_RESTRICT idct, size_t xsize,
-                            size_t ysize, const PassHeader& pass_header,
-                            const NoiseParams& noise_params,
-                            const Quantizer& quantizer,
-                            const BlockDictionary& dictionary, ThreadPool* pool,
-                            PassDecCache* pass_dec_cache, PikInfo* pik_info,
-                            size_t downsample) {
-  if (downsample == 1 && pass_header.have_adaptive_reconstruction) {
+Status FinalizeFrameDecoding(Image3F* PIK_RESTRICT idct, size_t xsize,
+                             size_t ysize, const FrameHeader& frame_header,
+                             const NoiseParams& noise_params,
+                             const Quantizer& quantizer,
+                             const BlockDictionary& dictionary,
+                             ThreadPool* pool, FrameDecCache* frame_dec_cache,
+                             PikInfo* aux_out, size_t downsample) {
+  if (downsample == 1 && frame_header.have_adaptive_reconstruction) {
     Image3F reconstructed;
-    PIK_RETURN_IF_ERROR(DoAdaptiveReconstruction(*idct, pass_header, quantizer,
-                                                 pool, pass_dec_cache, pik_info,
+    PIK_RETURN_IF_ERROR(DoAdaptiveReconstruction(*idct, frame_header, quantizer,
+                                                 pool, frame_dec_cache, aux_out,
                                                  &reconstructed));
     *idct = std::move(reconstructed);
   }
 
+  ApplyForwardBilinear(idct, downsample);
+
   dictionary.AddTo(idct, downsample);
 
   if (downsample == 1) {
-    Image3F gaborished;
-    if (pass_header.gaborish != GaborishStrength::kOff) {
+    if (frame_header.gaborish != GaborishStrength::kOff) {
+      Image3F gaborished;
       PIK_RETURN_IF_ERROR(
-          ConvolveGaborish(*idct, pass_header.gaborish, pool, &gaborished));
+          ConvolveGaborish(*idct, frame_header.gaborish, pool, &gaborished));
       *idct = std::move(gaborished);
     }
 
-    if (pass_header.flags & PassHeader::kNoise) {
+    if (frame_header.flags & FrameHeader::kNoise) {
       PROFILER_ZONE("AddNoise");
       AddNoise(noise_params, idct);
     }

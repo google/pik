@@ -8,12 +8,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <vector>
-#include "pik/ac_strategy.h"
-#include "pik/gradient_map.h"
+#include "pik/quant_weights.h"
 
 #undef PROFILER_ENABLED
 #define PROFILER_ENABLED 1
+#include "pik/ac_strategy.h"
 #include "pik/approx_cube_root.h"
 #include "pik/butteraugli_comparator.h"
 #include "pik/common.h"
@@ -23,6 +24,8 @@
 #include "pik/dct.h"
 #include "pik/entropy_coder.h"
 #include "pik/gauss_blur.h"
+#include "pik/gradient_map.h"
+#include "pik/image.h"
 #include "pik/opsin_inverse.h"
 #include "pik/profiler.h"
 #include "pik/status.h"
@@ -395,7 +398,7 @@ ImageF Expand(const ImageF& img, size_t out_xsize, size_t out_ysize) {
 }
 
 ImageF ComputeMask(const ImageF& diffs) {
-  static const float kBase = 1.039262607500535;
+  static const float kBase = 1.329262607500535;
   static const float kMul1 = 0.010994306366172898;
   static const float kOffset1 = 0.00683227084849159;
   static const float kMul2 = -0.1949226495025296;
@@ -574,32 +577,42 @@ void AdjustQuantField(const AcStrategyImage& ac_strategy, ImageF* quant_field) {
   }
 }
 
-Image3F RoundtripImage(const CompressParams& cparams,
-                       const PassHeader& pass_header, const GroupHeader& header,
-                       const Image3F& opsin_orig, const Image3F& opsin,
-                       const ColorCorrelationMap& full_cmap,
-                       const BlockDictionary& block_dictionary,
-                       const AcStrategyImage& ac_strategy,
-                       const ImageB& sigma_lut_ids, const Quantizer& quantizer,
-                       ThreadPool* pool, MultipassManager* multipass_manager) {
+Image3F RoundtripImage(
+    const CompressParams& cparams, const FrameHeader& frame_header,
+    const GroupHeader& header, const Image3F& opsin_orig, const Image3F& opsin,
+    const ColorCorrelationMap& full_cmap,
+    const BlockDictionary& block_dictionary, const AcStrategyImage& ac_strategy,
+    const ImageB& sigma_lut_ids, const Quantizer& quantizer,
+    const ImageB& dequant_control_field,
+    const uint8_t dequant_map[kMaxQuantControlFieldValue][256],
+
+    ThreadPool* pool, MultipassManager* multipass_manager) {
   PROFILER_ZONE("enc roundtrip");
-  PassDecCache pass_dec_cache;
-  pass_dec_cache.ac_strategy = ac_strategy.Copy();
+  FrameDecCache frame_dec_cache;
+  frame_dec_cache.ac_strategy = ac_strategy.Copy();
   PIK_ASSERT(opsin.ysize() % kBlockDim == 0);
-  pass_dec_cache.raw_quant_field = CopyImage(quantizer.RawQuantField());
-  pass_dec_cache.sigma_lut_ids = CopyImage(sigma_lut_ids);
+  frame_dec_cache.raw_quant_field = CopyImage(quantizer.RawQuantField());
+  frame_dec_cache.ar_sigma_lut_ids = CopyImage(sigma_lut_ids);
 
   const size_t xsize_groups = DivCeil(opsin.xsize(), kGroupDim);
   const size_t ysize_groups = DivCeil(opsin.ysize(), kGroupDim);
   const size_t num_groups = xsize_groups * ysize_groups;
 
-  PassEncCache pass_enc_cache;
-  InitializePassEncCache(pass_header, opsin, ac_strategy, quantizer, full_cmap,
-                         block_dictionary, pool, &pass_enc_cache,
-                         /*aux_out=*/nullptr);
+  PikInfo aux_out;
 
-  pass_dec_cache.dc = CopyImage(pass_enc_cache.dc_dec);
-  pass_dec_cache.gradient = std::move(pass_enc_cache.gradient);
+  FrameEncCache frame_enc_cache;
+  frame_enc_cache.dequant_control_field = CopyImage(dequant_control_field);
+  memcpy(frame_enc_cache.dequant_map, dequant_map,
+         sizeof(uint8_t) * 256 * kMaxQuantControlFieldValue);
+  frame_dec_cache.dequant_control_field = CopyImage(dequant_control_field);
+  memcpy(frame_dec_cache.dequant_map, dequant_map,
+         sizeof(uint8_t) * 256 * kMaxQuantControlFieldValue);
+  InitializeFrameEncCache(frame_header, opsin, ac_strategy, quantizer,
+                          full_cmap, block_dictionary, pool, &frame_enc_cache,
+                          &aux_out);
+
+  frame_dec_cache.dc = CopyImage(frame_enc_cache.dc_dec);
+  frame_dec_cache.gradient = std::move(frame_enc_cache.gradient);
 
   std::vector<MultipassHandler*> handlers(num_groups);
   for (size_t group_index = 0; group_index < num_groups; ++group_index) {
@@ -615,14 +628,16 @@ Image3F RoundtripImage(const CompressParams& cparams,
 
   std::vector<GroupDecCache> group_dec_caches(NumThreads(pool));
 
+  std::vector<PikInfo> aux_outs(NumThreads(pool));
   const auto process_group = [&](const int group_index, const int thread) {
     GroupDecCache* PIK_RESTRICT group_dec_cache = &group_dec_caches[thread];
+    PikInfo* my_aux_out = &aux_outs[thread];
     MultipassHandler* handler = handlers[group_index];
     const Rect& group_rect = handler->PaddedGroupRect();
     Rect block_group_rect = handler->BlockGroupRect();
     EncCache cache;
-    InitializeEncCache(pass_header, header, pass_enc_cache, group_rect, &cache);
-    cache.ac_strategy = ac_strategy.Copy(block_group_rect);
+    InitializeEncCache(frame_header, header, frame_enc_cache, group_rect,
+                       &cache);
     Quantizer quant = quantizer.Copy(block_group_rect);
 
     Rect group_in_color_tiles(
@@ -631,22 +646,27 @@ Image3F RoundtripImage(const CompressParams& cparams,
         DivCeil(block_group_rect.xsize(), kColorTileDimInBlocks),
         DivCeil(block_group_rect.ysize(), kColorTileDimInBlocks));
 
-    ComputeCoefficients(quant, full_cmap, group_in_color_tiles, pool, &cache);
+    ComputeCoefficients(quant, full_cmap, group_in_color_tiles, pool,
+                        frame_enc_cache, &cache, my_aux_out);
 
-    InitializeDecCache(pass_dec_cache, group_rect, group_dec_cache);
+    InitializeDecCache(frame_dec_cache, group_rect, group_dec_cache);
     DequantImageAC(quant, full_cmap, group_in_color_tiles, cache.ac,
-                   &pass_dec_cache, group_dec_cache, group_rect);
-    ReconOpsinImage(pass_header, header, quant, block_group_rect,
-                    &pass_dec_cache, group_dec_cache, &idct, group_rect);
+                   &frame_dec_cache, group_dec_cache, group_rect, my_aux_out);
+    ReconOpsinImage(frame_header, header, quant, block_group_rect,
+                    &frame_dec_cache, group_dec_cache, &idct, group_rect,
+                    my_aux_out);
   };
-  RunOnPool(pool, 0, num_groups, process_group, "PixelsToPikPass");
+  RunOnPool(pool, 0, num_groups, process_group, "AQ loop");
+  for (size_t thread = 0; thread < NumThreads(pool); ++thread) {
+    aux_out.Assimilate(aux_outs[thread]);
+  }
 
   multipass_manager->RestoreOpsin(&idct);
   // Fine to do a PIK_ASSERT instead of error handling, since this only happens
   // on the encoder side where we can't be fed with invalid data.
-  PIK_CHECK(FinalizePassDecoding(&idct, opsin_orig.xsize(), opsin_orig.ysize(),
-                                  pass_header, NoiseParams(), quantizer,
-                                  block_dictionary, pool, &pass_dec_cache));
+  PIK_CHECK(FinalizeFrameDecoding(&idct, opsin_orig.xsize(), opsin_orig.ysize(),
+                                  frame_header, NoiseParams(), quantizer,
+                                  block_dictionary, pool, &frame_dec_cache));
   return idct;
 }
 
@@ -656,20 +676,19 @@ static const float kAcQuant = 0.97136686727219523;
 
 void FindBestQuantization(
     const Image3F& opsin_orig, const Image3F& opsin_arg,
-    const CompressParams& cparams, const PassHeader& pass_header,
+    const CompressParams& cparams, const FrameHeader& frame_header,
     const GroupHeader& header, float butteraugli_target,
     const ColorCorrelationMap& cmap, const BlockDictionary& block_dictionary,
     const AcStrategyImage& ac_strategy, const ImageB& ar_sigma_lut_ids,
     ImageF& quant_field, ThreadPool* pool, Quantizer* quantizer,
+    const ImageB& dequant_control_field,
+    const uint8_t dequant_map[kMaxQuantControlFieldValue][256],
     PikInfo* aux_out, MultipassManager* multipass_manager, double rescale) {
   const float intensity_multiplier = cparams.GetIntensityMultiplier();
-  const float intensity_multiplier3 = std::cbrt(intensity_multiplier);
   ButteraugliComparator comparator(opsin_orig, cparams.hf_asymmetry,
                                    intensity_multiplier);
-  const float butteraugli_target_dc =
-      std::min<float>(butteraugli_target, pow(butteraugli_target, kDcQuantPow));
   const float initial_quant_dc =
-      intensity_multiplier3 * kDcQuant / butteraugli_target_dc;
+      InitialQuantDC(butteraugli_target, intensity_multiplier);
   AdjustQuantField(ac_strategy, &quant_field);
   ImageF tile_distmap;
   ImageF tile_distmap_localopt;
@@ -703,10 +722,10 @@ void FindBestQuantization(
     }
 
     if (quantizer->SetQuantField(initial_quant_dc, QuantField(quant_field))) {
-      Image3F linear =
-          RoundtripImage(cparams, pass_header, header, opsin_orig, opsin_arg,
-                         cmap, block_dictionary, ac_strategy, ar_sigma_lut_ids,
-                         *quantizer, pool, multipass_manager);
+      Image3F linear = RoundtripImage(
+          cparams, frame_header, header, opsin_orig, opsin_arg, cmap,
+          block_dictionary, ac_strategy, ar_sigma_lut_ids, *quantizer,
+          dequant_control_field, dequant_map, pool, multipass_manager);
       PROFILER_ZONE("enc Butteraugli");
       comparator.Compare(linear);
       static const int kMargins[100] = {0, 0, 0, 1, 2, 1, 1, 1, 0};
@@ -835,11 +854,13 @@ void FindBestQuantization(
 
 void FindBestQuantizationHQ(
     const Image3F& opsin_orig, const Image3F& opsin,
-    const CompressParams& cparams, const PassHeader& pass_header,
+    const CompressParams& cparams, const FrameHeader& frame_header,
     const GroupHeader& header, float butteraugli_target,
     const ColorCorrelationMap& cmap, const BlockDictionary& block_dictionary,
     const AcStrategyImage& ac_strategy, const ImageB& sigma_lut_ids,
     ImageF& quant_field, ThreadPool* pool, Quantizer* quantizer,
+    const ImageB& dequant_control_field,
+    const uint8_t dequant_map[kMaxQuantControlFieldValue][256],
     PikInfo* aux_out, MultipassManager* multipass_manager, double rescale) {
   const float intensity_multiplier = cparams.GetIntensityMultiplier();
   const float intensity_multiplier3 = std::cbrt(intensity_multiplier);
@@ -873,10 +894,10 @@ void FindBestQuantizationHQ(
     ImageMinMax(quant_field, &qmin, &qmax);
     ++butteraugli_iter;
     if (quantizer->SetQuantField(quant_dc, QuantField(quant_field))) {
-      Image3F linear =
-          RoundtripImage(cparams, pass_header, header, opsin_orig, opsin, cmap,
-                         block_dictionary, ac_strategy, sigma_lut_ids,
-                         *quantizer, pool, multipass_manager);
+      Image3F linear = RoundtripImage(
+          cparams, frame_header, header, opsin_orig, opsin, cmap,
+          block_dictionary, ac_strategy, sigma_lut_ids, *quantizer,
+          dequant_control_field, dequant_map, pool, multipass_manager);
       comparator.Compare(linear);
       bool best_quant_updated = false;
       if (comparator.distance() <= best_butteraugli) {
@@ -1016,6 +1037,13 @@ ImageF IntensityAcEstimate(const ImageF& image, float multiplier,
 
 }  // namespace
 
+float InitialQuantDC(float butteraugli_target, float intensity_multiplier) {
+  const float intensity_multiplier3 = std::cbrt(intensity_multiplier);
+  const float butteraugli_target_dc =
+      std::min<float>(butteraugli_target, pow(butteraugli_target, kDcQuantPow));
+  return intensity_multiplier3 * kDcQuant / butteraugli_target_dc;
+}
+
 ImageF InitialQuantField(double butteraugli_target, double intensity_multiplier,
                          const Image3F& opsin_orig,
                          const CompressParams& cparams, ThreadPool* pool,
@@ -1033,23 +1061,23 @@ ImageF InitialQuantField(double butteraugli_target, double intensity_multiplier,
 std::shared_ptr<Quantizer> FindBestQuantizer(
     const CompressParams& cparams, size_t xsize_blocks, size_t ysize_blocks,
     const Image3F& opsin_orig, const Image3F& opsin,
-    const PassHeader& pass_header, const GroupHeader& header,
+    const FrameHeader& frame_header, const GroupHeader& header,
     const ColorCorrelationMap& cmap, const BlockDictionary& block_dictionary,
     const AcStrategyImage& ac_strategy, const ImageB& ar_sigma_lut_ids,
-    const DequantMatrices* dequant, ImageF& quant_field, ThreadPool* pool,
-    PikInfo* aux_out, MultipassManager* multipass_manager, double rescale) {
+    const DequantMatrices* dequant, const ImageB& dequant_control_field,
+    const uint8_t dequant_map[kMaxQuantControlFieldValue][256],
+    ImageF& quant_field, ThreadPool* pool, PikInfo* aux_out,
+    MultipassManager* multipass_manager, double rescale) {
   std::shared_ptr<Quantizer> quantizer =
       std::make_shared<Quantizer>(dequant, xsize_blocks, ysize_blocks);
   const float intensity_multiplier = cparams.GetIntensityMultiplier();
-  const float intensity_multiplier3 = std::cbrt(intensity_multiplier);
   if (cparams.fast_mode) {
     PROFILER_ZONE("enc fast quant");
     const float butteraugli_target = cparams.butteraugli_distance;
-    const float butteraugli_target_dc = std::min<float>(
-        butteraugli_target, pow(butteraugli_target, kDcQuantPow));
     const float quant_dc =
-        intensity_multiplier3 * kDcQuant / butteraugli_target_dc;
+        InitialQuantDC(butteraugli_target, intensity_multiplier);
     Rect full(opsin_orig);
+    // TODO(veluca): warn if uniform_quant is set - or honor it
     AdjustQuantField(ac_strategy, &quant_field);
     quantizer->SetQuantField(quant_dc, QuantField(quant_field));
   } else if (cparams.uniform_quant > 0.0) {
@@ -1059,17 +1087,18 @@ std::shared_ptr<Quantizer> FindBestQuantizer(
     // Normal PIK encoding to a butteraugli score.
     PROFILER_ZONE("enc find best2");
     if (cparams.guetzli_mode) {
-      FindBestQuantizationHQ(opsin_orig, opsin, cparams, pass_header, header,
+      FindBestQuantizationHQ(opsin_orig, opsin, cparams, frame_header, header,
                              cparams.butteraugli_distance, cmap,
                              block_dictionary, ac_strategy, ar_sigma_lut_ids,
-                             quant_field, pool, quantizer.get(), aux_out,
+                             quant_field, pool, quantizer.get(),
+                             dequant_control_field, dequant_map, aux_out,
                              multipass_manager, rescale);
     } else {
-      FindBestQuantization(opsin_orig, opsin, cparams, pass_header, header,
+      FindBestQuantization(opsin_orig, opsin, cparams, frame_header, header,
                            cparams.butteraugli_distance, cmap, block_dictionary,
                            ac_strategy, ar_sigma_lut_ids, quant_field, pool,
-                           quantizer.get(), aux_out, multipass_manager,
-                           rescale);
+                           quantizer.get(), dequant_control_field, dequant_map,
+                           aux_out, multipass_manager, rescale);
     }
   }
   return quantizer;

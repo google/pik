@@ -50,13 +50,13 @@ PIK_OBJS := $(addprefix obj/pik/, \
 	ac_strategy.o \
 	adaptive_quantization.o \
 	adaptive_reconstruction.o \
-	ar_control_field.o \
-	epf.o \
 	alpha.o \
 	ans_common.o \
 	ans_decode.o \
 	ans_encode.o \
+	ar_control_field.o \
 	arch_specific.o \
+	bilinear_transform.o \
 	block_dictionary.o \
 	brotli.o \
 	butteraugli/butteraugli.o \
@@ -71,46 +71,47 @@ PIK_OBJS := $(addprefix obj/pik/, \
 	color_management.o \
 	compressed_dc.o \
 	compressed_image.o \
-	context_map_encode.o \
 	context_map_decode.o \
+	context_map_encode.o \
 	data_parallel.o \
+	dc_predictor.o \
 	dct.o \
 	dct_util.o \
-	dc_predictor.o \
 	deconvolve.o \
 	descriptive_statistics.o \
+	detect_dots.o \
+	entropy_coder.o \
+	epf.o \
 	external_image.o \
-	gauss_blur.o \
 	gaborish.o \
+	gauss_blur.o \
 	gradient_map.o \
 	headers.o \
+	huffman_decode.o \
+	huffman_encode.o \
 	image.o \
+	lehmer_code.o \
 	linalg.o \
 	lossless16.o \
 	lossless8.o \
 	lossless_entropy.o \
-	pik.o \
-	pik_info.o \
-	pik_pass.o \
-	pik_multipass.o \
-	huffman_decode.o \
-	huffman_encode.o \
-	lehmer_code.o \
 	metadata.o \
 	noise.o \
-	entropy_coder.o \
-	opsin_inverse.o \
 	opsin_image.o \
+	opsin_inverse.o \
 	opsin_params.o \
 	os_specific.o \
 	padded_bytes.o \
-	quantizer.o \
+	pik.o \
+	pik_frame.o \
+	pik_info.o \
 	quant_weights.o \
+	quantizer.o \
+	saliency_map.o \
 	single_image_handler.o \
 	status.o \
 	upscaler.o \
 	yuv_convert.o \
-	saliency_map.o \
 )
 
 all: deps.mk $(addprefix bin/, cpik dpik butteraugli_main decode_and_encode)

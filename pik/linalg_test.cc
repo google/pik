@@ -43,16 +43,6 @@ void VerifyMatrixEqual(const ImageD& A, const ImageD& B, const double eps) {
   }
 }
 
-void VerifyMatrixEqual(const ImageI& A, const ImageI& B) {
-  ASSERT_EQ(A.xsize(), B.xsize());
-  ASSERT_EQ(A.ysize(), B.ysize());
-  for (size_t y = 0; y < A.ysize(); ++y) {
-    for (size_t x = 0; x < A.xsize(); ++x) {
-      ASSERT_EQ(A.Row(y)[x], B.Row(y)[x]);
-    }
-  }
-}
-
 void VerifyOrthogonal(const ImageD& A, const double eps) {
   VerifyMatrixEqual(Identity<double>(A.xsize()), MatMul(Transpose(A), A), eps);
 }

@@ -5,11 +5,14 @@
 // https://opensource.org/licenses/MIT.
 
 #include "pik/ac_predictions.h"
+#include <cstdint>
 #include "pik/ac_strategy.h"
 #include "pik/codec.h"
+#include "pik/color_correlation.h"
 #include "pik/compressed_image_fwd.h"
 #include "pik/data_parallel.h"
 #include "pik/opsin_inverse.h"
+#include "pik/quant_weights.h"
 
 #undef PROFILER_ENABLED
 #define PROFILER_ENABLED 1
@@ -67,20 +70,23 @@ SIMD_ATTR void AddBlockExceptLFAndLLFTo(const float* PIK_RESTRICT block,
 }
 
 // Un-color-correlates, quantizes, dequantizes and color-correlates the
-// specified coefficients inside the given block, using or storing the y-channel
-// values in y_block. Used by predictors to compute the decoder-side values to
-// compute predictions on. Coefficients are specified as a bit array. Assumes
-// that `block` and `y_block` have the same stride.
+// specified coefficients inside the given block, using (c==0,2) or storing
+// (c==1) the y-channel values in y_block. Used by predictors to compute the
+// decoder-side values to compute predictions on. Coefficients are specified as
+// a bit array. Assumes that `block` and `y_block` have the same stride.
 template <size_t c>
 SIMD_ATTR PIK_INLINE void ComputeDecoderCoefficients(
-    const float cmap_factor, const Quantizer& quantizer, const int32_t quant_ac,
-    const float inv_quant_ac, const uint8_t quant_kind, size_t xsize,
-    size_t ysize, const float* block_src, size_t block_stride,
+    const float cmap_factor, const Quantizer& quantizer, uint8_t quant_table,
+    const int32_t quant_ac, const float inv_quant_ac, const uint8_t quant_kind,
+    size_t xsize, size_t ysize, const float* block_src, size_t block_stride,
     uint64_t coefficients, float* block, size_t out_stride, float* y_block) {
+  // TODO(janwas): restrict ptrs
+#ifdef ADDRESS_SANITIZER
   PIK_ASSERT(coefficients < 0x1000);
   PIK_ASSERT(ysize <= 4);
-  for (size_t i = 0; i < ysize; i++) {
-    memcpy(block + out_stride * i, block_src + block_stride * i,
+#endif
+  for (size_t y = 0; y < ysize; y++) {
+    memcpy(block + out_stride * y, block_src + block_stride * y,
            sizeof(float) * xsize * kBlockDim * kBlockDim);
   }
   if (c != 1) {
@@ -92,8 +98,8 @@ SIMD_ATTR PIK_INLINE void ComputeDecoderCoefficients(
     }
   }
   quantizer.QuantizeRoundtripBlockCoefficients<c>(
-      quant_ac, quant_kind, xsize, ysize, block, out_stride, block, out_stride,
-      coefficients);
+      quant_table, quant_ac, quant_kind, xsize, ysize, block, out_stride, block,
+      out_stride, coefficients);
   if (c != 1) {
     for (size_t y = 0; y < ysize; y++) {
       for (size_t i = 0; i < xsize * kBlockDim * kBlockDim; i++) {
@@ -133,10 +139,10 @@ SIMD_ATTR void ComputeDecoderBlockAnd2x2DC(
     bool is_border, bool predict_lf, bool predict_hf, AcStrategy acs,
     const size_t residuals_stride, const size_t pred_stride,
     const size_t lf2x2_stride, const size_t bx, const Quantizer& quantizer,
-    int32_t quant_ac, const float* PIK_RESTRICT cmap_factor,
-    const float* PIK_RESTRICT pred[3], float* PIK_RESTRICT residuals[3],
-    float* PIK_RESTRICT lf2x2_row[3], const float* PIK_RESTRICT dc[3],
-    float* PIK_RESTRICT y_residuals_dec) {
+    uint8_t quant_table, int32_t quant_ac,
+    const float* PIK_RESTRICT cmap_factor, const float* PIK_RESTRICT pred[3],
+    float* PIK_RESTRICT residuals[3], float* PIK_RESTRICT lf2x2_row[3],
+    const float* PIK_RESTRICT dc[3], float* PIK_RESTRICT y_residuals_dec) {
   PROFILER_FUNC;
   constexpr size_t N = kBlockDim;
   float* block_start = residuals[c] + N * N * (bx - 1);
@@ -159,7 +165,7 @@ SIMD_ATTR void ComputeDecoderBlockAnd2x2DC(
     const float inv_quant_ac = quantizer.inv_quant_ac(quant_ac);
     // 0x302 has bits 1, 8, 9 set.
     ComputeDecoderCoefficients<c>(
-        cmap_factor[c], quantizer, quant_ac, inv_quant_ac, kind,
+        cmap_factor[c], quantizer, quant_table, quant_ac, inv_quant_ac, kind,
         acs.covered_blocks_x(), acs.covered_blocks_y(), block_start,
         residuals_stride, 0x302, decoder_coeffs,
         acs.covered_blocks_x() * kBlockDim * kBlockDim, y_residuals_dec);
@@ -467,13 +473,13 @@ SIMD_ATTR void PredictLf(const AcStrategyImage& ac_strategy,
 // - Use the LF block (but not the lowest frequency block) as a predictor
 // - Update those values with the actual residuals, and re-compute a 2x
 //   upsampled image out of that as an input for HF predictions.
-SIMD_ATTR void PredictLfForEncoder(bool predict_lf, bool predict_hf,
-                                   const Image3F& dc,
-                                   const AcStrategyImage& ac_strategy,
-                                   const ColorCorrelationMap& cmap,
-                                   const Rect& cmap_rect,
-                                   const Quantizer& quantizer,
-                                   Image3F* PIK_RESTRICT ac64, Image3F* dc2x2) {
+// Note: assumes that cmap and quant_cf have the same tile size.
+SIMD_ATTR void PredictLfForEncoder(
+    bool predict_lf, bool predict_hf, const Image3F& dc,
+    const AcStrategyImage& ac_strategy, const ColorCorrelationMap& cmap,
+    const Rect& cmap_rect, const Quantizer& quantizer, const ImageB& quant_cf,
+    const uint8_t quant_cf_map[kMaxQuantControlFieldValue][256],
+    Image3F* PIK_RESTRICT ac64, Image3F* dc2x2) {
   PROFILER_FUNC;
   const size_t xsize = dc.xsize();
   const size_t ysize = dc.ysize();
@@ -500,20 +506,24 @@ SIMD_ATTR void PredictLfForEncoder(bool predict_lf, bool predict_hf,
     const bool is_border_y = by == 0 || by == ysize - 1;
     // The following variables will not be used if we are on a border.
     AcStrategyRow acr = ac_strategy.ConstRow(is_border_y ? 0 : by - 1);
-    float* ac_row[3] = {ac64->PlaneRow(0, is_border_y ? 0 : by - 1),
-                        ac64->PlaneRow(1, is_border_y ? 0 : by - 1),
-                        ac64->PlaneRow(2, is_border_y ? 0 : by - 1)};
+    float* PIK_RESTRICT ac_row[3] = {
+        ac64->PlaneRow(0, is_border_y ? 0 : by - 1),
+        ac64->PlaneRow(1, is_border_y ? 0 : by - 1),
+        ac64->PlaneRow(2, is_border_y ? 0 : by - 1)};
 
-    const float* dc_row[3] = {dc.ConstPlaneRow(0, by), dc.ConstPlaneRow(1, by),
-                              dc.ConstPlaneRow(2, by)};
-    const float* lf2x2_row[3] = {lf2x2.ConstPlaneRow(0, 2 * by),
-                                 lf2x2.ConstPlaneRow(1, 2 * by),
-                                 lf2x2.ConstPlaneRow(2, 2 * by)};
-    float* dc2x2_row[3] = {dc2x2->PlaneRow(0, 2 * by),
-                           dc2x2->PlaneRow(1, 2 * by),
-                           dc2x2->PlaneRow(2, 2 * by)};
-    const int32_t* row_quant =
+    const float* PIK_RESTRICT dc_row[3] = {dc.ConstPlaneRow(0, by),
+                                           dc.ConstPlaneRow(1, by),
+                                           dc.ConstPlaneRow(2, by)};
+    const float* PIK_RESTRICT lf2x2_row[3] = {lf2x2.ConstPlaneRow(0, 2 * by),
+                                              lf2x2.ConstPlaneRow(1, 2 * by),
+                                              lf2x2.ConstPlaneRow(2, 2 * by)};
+    float* PIK_RESTRICT dc2x2_row[3] = {dc2x2->PlaneRow(0, 2 * by),
+                                        dc2x2->PlaneRow(1, 2 * by),
+                                        dc2x2->PlaneRow(2, 2 * by)};
+    const int32_t* PIK_RESTRICT row_quant =
         quantizer.RawQuantField().ConstRow(is_border_y ? 0 : by - 1);
+    const uint8_t* PIK_RESTRICT row_quant_cf = cmap_rect.ConstRow(
+        quant_cf, is_border_y ? 0 : (by - 1) / kColorTileDimInBlocks);
     for (size_t bx = 0; bx < xsize; bx++) {
       const bool is_border = is_border_y || (bx == 0 || bx == xsize - 1);
       AcStrategy acs =
@@ -528,18 +538,20 @@ SIMD_ATTR void PredictLfForEncoder(bool predict_lf, bool predict_hf,
           ColorCorrelationMap::YtoB(1.0f,
                                     cmap_rect.ConstRow(cmap.ytob_map, ty)[tx])};
       const int32_t quant = bx == 0 ? row_quant[0] : row_quant[bx - 1];
+      uint8_t quant_table =
+          is_border ? 0 : quant_cf_map[row_quant_cf[tx]][quant];
       ComputeDecoderBlockAnd2x2DC<1>(
           is_border, predict_lf, predict_hf, acs, ac_stride, lf2x2_stride,
-          dc2x2_stride, bx, quantizer, quant, cmap_factor, lf2x2_row, ac_row,
-          dc2x2_row, dc_row, y_residuals_dec);
+          dc2x2_stride, bx, quantizer, quant_table, quant, cmap_factor,
+          lf2x2_row, ac_row, dc2x2_row, dc_row, y_residuals_dec);
       ComputeDecoderBlockAnd2x2DC<0>(
           is_border, predict_lf, predict_hf, acs, ac_stride, lf2x2_stride,
-          dc2x2_stride, bx, quantizer, quant, cmap_factor, lf2x2_row, ac_row,
-          dc2x2_row, dc_row, y_residuals_dec);
+          dc2x2_stride, bx, quantizer, quant_table, quant, cmap_factor,
+          lf2x2_row, ac_row, dc2x2_row, dc_row, y_residuals_dec);
       ComputeDecoderBlockAnd2x2DC<2>(
           is_border, predict_lf, predict_hf, acs, ac_stride, lf2x2_stride,
-          dc2x2_stride, bx, quantizer, quant, cmap_factor, lf2x2_row, ac_row,
-          dc2x2_row, dc_row, y_residuals_dec);
+          dc2x2_stride, bx, quantizer, quant_table, quant, cmap_factor,
+          lf2x2_row, ac_row, dc2x2_row, dc_row, y_residuals_dec);
     }
   }
 }

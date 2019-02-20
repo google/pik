@@ -19,8 +19,8 @@
 #include "pik/multipass_handler.h"
 #include "pik/noise.h"
 #include "pik/os_specific.h"
+#include "pik/pik_frame.h"
 #include "pik/pik_params.h"
-#include "pik/pik_pass.h"
 #include "pik/profiler.h"
 #include "pik/quantizer.h"
 #include "pik/saliency_map.h"
@@ -72,14 +72,19 @@ Status PixelsToPik(const CompressParams& cparams, const CodecInOut* io,
   size_t pos = 0;
   PIK_RETURN_IF_ERROR(
       WriteFileHeader(container, extension_bits, &pos, compressed->data()));
-  PassParams pass_params;
+  FrameParams frame_params;
   SingleImageManager transform;
   if (cparams.progressive_mode) {
     // TODO(veluca): re-enable saliency.
-    PassDefinition pass_definition[] = {{2, false}, {3, false}, {8, false}};
+    PassDefinition pass_definition[] = {
+        {/*num_coefficients=*/2, /*salient_only=*/false,
+         /*suitable_for_downsampling_factor_of_at_least=*/4},
+        {/*num_coefficients=*/3, /*salient_only=*/false,
+         /*suitable_for_downsampling_factor_of_at_least=*/2},
+        {/*num_coefficients=*/8, /*salient_only=*/false}};
     transform.SetProgressiveMode(ProgressiveMode{pass_definition});
   }
-  PIK_RETURN_IF_ERROR(PixelsToPikPass(cparams, pass_params, io, pool,
+  PIK_RETURN_IF_ERROR(PixelsToPikPass(cparams, frame_params, io, pool,
                                       compressed, pos, aux_out, &transform));
   return true;
 }
@@ -108,7 +113,7 @@ Status PikToPixels(const DecompressParams& dparams,
 
   SingleImageManager transform;
   PIK_RETURN_IF_ERROR(PikPassToPixels(dparams, compressed, container, pool,
-                                      &reader, io, aux_out, &transform, 1));
+                                      &reader, io, aux_out, &transform));
 
   if (dparams.check_decompressed_size &&
       reader.Position() != compressed.size()) {

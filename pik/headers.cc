@@ -16,7 +16,7 @@ ProjectiveTransformParams::ProjectiveTransformParams() { Bundle::Init(this); }
 TileHeader::TileHeader() { Bundle::Init(this); }
 GroupHeader::GroupHeader() { Bundle::Init(this); }
 FrameInfo::FrameInfo() { Bundle::Init(this); }
-PassHeader::PassHeader() { Bundle::Init(this); }
+FrameHeader::FrameHeader() { Bundle::Init(this); }
 Preview::Preview() { Bundle::Init(this); }
 Animation::Animation() { Bundle::Init(this); }
 FileHeader::FileHeader() { Bundle::Init(this); }
@@ -29,7 +29,7 @@ Status CanEncode(const GroupHeader& group, size_t* PIK_RESTRICT extension_bits,
                  size_t* PIK_RESTRICT total_bits) {
   return Bundle::CanEncode(group, extension_bits, total_bits);
 }
-Status CanEncode(const PassHeader& pass, size_t* PIK_RESTRICT extension_bits,
+Status CanEncode(const FrameHeader& pass, size_t* PIK_RESTRICT extension_bits,
                  size_t* PIK_RESTRICT total_bits) {
   return Bundle::CanEncode(pass, extension_bits, total_bits);
 }
@@ -49,7 +49,7 @@ Status ReadGroupHeader(BitReader* PIK_RESTRICT reader,
   return Bundle::Read(reader, group);
 }
 Status ReadPassHeader(BitReader* PIK_RESTRICT reader,
-                      PassHeader* PIK_RESTRICT pass) {
+                      FrameHeader* PIK_RESTRICT pass) {
   PROFILER_FUNC;
   return Bundle::Read(reader, pass);
 }
@@ -67,7 +67,7 @@ Status WriteGroupHeader(const GroupHeader& group, size_t extension_bits,
                         size_t* PIK_RESTRICT pos, uint8_t* storage) {
   return Bundle::Write(group, extension_bits, pos, storage);
 }
-Status WritePassHeader(const PassHeader& pass, size_t extension_bits,
+Status WritePassHeader(const FrameHeader& pass, size_t extension_bits,
                        size_t* PIK_RESTRICT pos, uint8_t* storage) {
   return Bundle::Write(pass, extension_bits, pos, storage);
 }

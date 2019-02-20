@@ -25,6 +25,7 @@
 
 #include "pik/compiler_specific.h"
 #include "pik/image.h"
+#include "pik/image_ops.h"
 
 namespace pik {
 

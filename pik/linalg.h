@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "pik/image.h"
+#include "pik/image_ops.h"
 #include "pik/status.h"
 
 namespace pik {

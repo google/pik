@@ -7,15 +7,19 @@
 #ifndef PIK_QUANT_WEIGHTS_H_
 #define PIK_QUANT_WEIGHTS_H_
 
+#include <cstdint>
 #include <vector>
 #include "pik/bit_reader.h"
+#include "pik/cache_aligned.h"
 #include "pik/common.h"
 #include "pik/image.h"
 #include "pik/pik_info.h"
 #include "pik/status.h"
+
 namespace pik {
 
 static constexpr size_t kMaxQuantTableSize = kBlockDim * kBlockDim * 16;
+static constexpr size_t kNumPredefinedTables = 1;
 
 // ac_strategy.h GetQuantKind static_asserts these values remain unchanged.
 enum QuantKind {
@@ -54,8 +58,11 @@ struct DctQuantWeightParams {
 };
 
 struct QuantEncoding {
-  static QuantEncoding Default() {
-    return QuantEncoding{/*mode=*/kQuantModeDefault};
+  static QuantEncoding Library(uint8_t predefined) {
+    QuantEncoding enc{/*mode=*/kQuantModeLibrary};
+    PIK_ASSERT(predefined < kNumPredefinedTables);
+    enc.predefined = predefined;
+    return enc;
   }
 
   static QuantEncoding Identity(const float* xweights, const float* yweights,
@@ -146,14 +153,21 @@ struct QuantEncoding {
     return encoding;
   }
 
+  static QuantEncoding Copy(uint8_t source) {
+    QuantEncoding enc{/*mode=*/kQuantModeCopy};
+    enc.source = source;
+    return enc;
+  }
+
   enum Mode {
-    kQuantModeDefault,
+    kQuantModeLibrary,
     kQuantModeID,
     kQuantModeDCT2,
     kQuantModeDCT4,
     kQuantModeDCT,
     kQuantModeRaw,
     kQuantModeRawScaled,
+    kQuantModeCopy,
   };
   Mode mode;
 
@@ -176,30 +190,41 @@ struct QuantEncoding {
 
   // Weights for DCT4+ tables.
   DctQuantWeightParams dct_params;
+
+  // Which predefined table to use. Only used if mode is kQuantModeLibrary.
+  uint8_t predefined;
+
+  // Which other quant table to copy; must copy from a table that comes before
+  // the current one. Only used if mode is kQuantModeCopy.
+  uint8_t source;
 };
 
 class DequantMatrices {
  public:
   DequantMatrices(bool need_inv_matrices)
       : need_inv_matrices_(need_inv_matrices),
-        encodings_({kNumQuantKinds, QuantEncoding::Default()}) {
+        encodings_({kNumQuantKinds, QuantEncoding::Library(0)}) {
     // Default quantization tables need to be valid.
     PIK_CHECK(Compute());
   }
 
-  PIK_INLINE size_t MatrixOffset(size_t quant_kind, int c) const {
-    return table_offsets_[quant_kind * 3 + c];
+  PIK_INLINE size_t MatrixOffset(uint8_t quant_table, size_t quant_kind,
+                                 int c) const {
+    PIK_ASSERT(quant_table * kNumQuantKinds * 3 < table_offsets_.size());
+    return table_offsets_[(quant_table * kNumQuantKinds + quant_kind) * 3 + c];
   }
 
   // Returns aligned memory.
-  PIK_INLINE const float* Matrix(size_t quant_kind, int c) const {
+  PIK_INLINE const float* Matrix(uint8_t quant_table, size_t quant_kind,
+                                 int c) const {
     PIK_ASSERT(quant_kind < kNumQuantKinds);
-    return &table_[MatrixOffset(quant_kind, c)];
+    return &table_[MatrixOffset(quant_table, quant_kind, c)];
   }
 
-  PIK_INLINE const float* InvMatrix(size_t quant_kind, int c) const {
+  PIK_INLINE const float* InvMatrix(uint8_t quant_table, size_t quant_kind,
+                                    int c) const {
     PIK_ASSERT(quant_kind < kNumQuantKinds);
-    return &inv_table_[MatrixOffset(quant_kind, c)];
+    return &inv_table_[MatrixOffset(quant_table, quant_kind, c)];
   }
 
   size_t Size() const { return size_; }
@@ -218,17 +243,50 @@ class DequantMatrices {
 
  private:
   Status Compute();
-  static constexpr size_t kTableSize = kNumQuantKinds * 3 * kMaxQuantTableSize;
-  alignas(64) float table_[kTableSize];
-  alignas(64) float inv_table_[kTableSize];
-  size_t table_offsets_[3 * kNumQuantKinds];
+  static size_t TotalTableSize() {
+    size_t res = 0;
+    for (size_t i = 0; i < kNumQuantKinds; i++) {
+      res += required_size_[i] * required_size_[i];
+    }
+    return res * kDCTBlockSize * 3;
+  }
+  CacheAlignedUniquePtr table_memory_;
+  float* table_;
+  CacheAlignedUniquePtr inv_table_memory_;
+  float* inv_table_;
+  std::vector<size_t> table_offsets_;
   bool need_inv_matrices_;
   size_t size_;
   std::vector<QuantEncoding> encodings_;
+
+  static_assert(kNumQuantKinds == 7,
+                "Update this array when adding new quantization kinds.");
+  static constexpr size_t required_size_[kNumQuantKinds] = {1, 1, 1, 1,
+                                                            2, 4, 1};
 };
 
-DequantMatrices FindBestDequantMatrices(float butteraugli_target,
-                                        const Image3F& opsin);
+static constexpr size_t kMaxQuantControlFieldValue = 16;
+
+void FindBestDequantMatrices(
+    float butteraugli_target, float intensity_multiplier, const Image3F& opsin,
+    const ImageF& initial_quant_field, DequantMatrices* dequant_matrices,
+    ImageB* control_field, uint8_t table_map[kMaxQuantControlFieldValue][256]);
+
+std::string EncodeDequantControlField(const ImageB& dequant_cf,
+                                      PikImageSizeInfo* info);
+
+bool DecodeDequantControlField(BitReader* PIK_RESTRICT br,
+                               ImageB* PIK_RESTRICT dequant_cf);
+
+std::string EncodeDequantControlFieldMap(
+    const ImageI& quant_field, const ImageB& dequant_cf,
+    const uint8_t table_map[kMaxQuantControlFieldValue][256],
+    PikImageSizeInfo* info);
+
+bool DecodeDequantControlFieldMap(
+    BitReader* PIK_RESTRICT br, const ImageI& quant_field,
+    const ImageB& dequant_cf,
+    uint8_t table_map[kMaxQuantControlFieldValue][256]);
 
 }  // namespace pik
 

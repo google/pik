@@ -47,7 +47,7 @@ void FindBestCorrelation(const Image3F& dct, ImageI* PIK_RESTRICT map,
   constexpr float kZeroThresh = kScale * kZeroBiasDefault[SIDE_CHANNEL];
   // Always use DCT8 quantization values for DC.
   const float* const PIK_RESTRICT kDequantMatrix =
-      dequant.Matrix(kQuantKindDCT8, SIDE_CHANNEL);
+      dequant.Matrix(0, kQuantKindDCT8, SIDE_CHANNEL);
   float qm[block_size];
   for (int k = 0; k < block_size; ++k) {
     qm[k] = 1.0f / kDequantMatrix[k];

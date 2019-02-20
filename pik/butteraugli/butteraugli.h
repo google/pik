@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "pik/image.h"
+#include "pik/image_ops.h"
 
 #define BUTTERAUGLI_ENABLE_CHECKS 0
 

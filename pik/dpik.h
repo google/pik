@@ -46,7 +46,7 @@ class DecompressStats {
  public:
   void NotifyElapsed(double elapsed_seconds);
 
-  Status Print(const CodecInOut& io, ThreadPool* pool);
+  Status Print(const CodecInOut& io, size_t downsampling, ThreadPool* pool);
 
  private:
   struct ElapsedStats {
@@ -62,10 +62,9 @@ class DecompressStats {
   std::vector<double> elapsed_;
 };
 
-Status Decompress(const CodecContext* codec_context,
-                  const PaddedBytes& compressed, const DecompressParams& params,
+Status Decompress(const PaddedBytes& compressed, const DecompressParams& params,
                   ThreadPool* pool, CodecInOut* PIK_RESTRICT io,
-                  DecompressStats* PIK_RESTRICT stats);
+                  size_t* downsampling, DecompressStats* PIK_RESTRICT stats);
 
 Status WriteOutput(const DecompressArgs& args, const CodecInOut& io);
 

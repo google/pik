@@ -18,6 +18,7 @@
 #include "pik/headers.h"
 #include "pik/image.h"
 #include "pik/pik_params.h"
+#include "pik/quant_weights.h"
 #include "pik/quantizer.h"
 #include "pik/status.h"
 
@@ -74,7 +75,7 @@ class MultipassManager {
   virtual void RestoreOpsin(Image3F* img) = 0;
 
   // Called at the start of each pass.
-  virtual void StartPass(const PassHeader& header) = 0;
+  virtual void StartPass(const FrameHeader& header) = 0;
 
   // Called by the decoder when a pass is done.
   virtual void SetDecodedPass(const Image3F& opsin) = 0;
@@ -94,9 +95,14 @@ class MultipassManager {
 
   // Methods to retrieve color correlation, ac strategy, quantizer, block
   // dictionary and dequant matrices.
-  virtual DequantMatrices GetDequantMatrices(double butteraugli_target,
-                                             const Image3F& opsin) {
-    return FindBestDequantMatrices(butteraugli_target, opsin);
+  virtual void GetDequantMatrices(
+      float butteraugli_target, float intensity_multiplier,
+      const Image3F& opsin, const ImageF& initial_quant_field,
+      DequantMatrices* dequant_matrices, ImageB* control_field,
+      uint8_t table_map[kMaxQuantControlFieldValue][256]) {
+    return FindBestDequantMatrices(butteraugli_target, intensity_multiplier,
+                                   opsin, initial_quant_field, dequant_matrices,
+                                   control_field, table_map);
   }
 
   virtual BlockDictionary GetBlockDictionary(double butteraugli_target,
@@ -115,13 +121,18 @@ class MultipassManager {
   virtual std::shared_ptr<Quantizer> GetQuantizer(
       const CompressParams& cparams, size_t xsize_blocks, size_t ysize_blocks,
       const Image3F& opsin_orig, const Image3F& opsin,
-      const PassHeader& pass_header, const GroupHeader& header,
+      const FrameHeader& frame_header, const GroupHeader& header,
       const ColorCorrelationMap& cmap, const BlockDictionary& block_dictionary,
       const AcStrategyImage& ac_strategy, const ImageB& ar_sigma_lut_ids,
-      const DequantMatrices* dequant, ImageF& quant_field, ThreadPool* pool,
-      PikInfo* aux_out) = 0;
+      const DequantMatrices* dequant, const ImageB& dequant_control_field,
+      const uint8_t dequant_map[kMaxQuantControlFieldValue][256],
+      ImageF& quant_field, ThreadPool* pool, PikInfo* aux_out) = 0;
 
   virtual size_t GetNumPasses() { return 1; }
+  virtual std::vector<std::pair<uint32_t, uint32_t>>
+  GetDownsamplingToNumPasses() {
+    return {};
+  }
 
   // Save the ac strategy / quant field of this pass.
   virtual void SaveAcStrategy(const AcStrategyImage& af) {}

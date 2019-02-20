@@ -11,10 +11,15 @@
 #include <cstdlib>
 #include <limits>
 #include "pik/bit_reader.h"
+#include "pik/cache_aligned.h"
 #include "pik/common.h"
 #include "pik/dct.h"
+#include "pik/huffman_decode.h"
+#include "pik/huffman_encode.h"
+#include "pik/image.h"
 #include "pik/pik_info.h"
 #include "pik/status.h"
+#include "pik/write_bits.h"
 
 namespace pik {
 
@@ -233,8 +238,10 @@ Status DecodeDctParams(BitReader* br, DctQuantWeightParams* params) {
 std::string Encode(const QuantEncoding& encoding) {
   std::string out(1, encoding.mode);
   switch (encoding.mode) {
-    case QuantEncoding::kQuantModeDefault:
+    case QuantEncoding::kQuantModeLibrary: {
+      out += encoding.predefined;
       break;
+    }
     case QuantEncoding::kQuantModeID: {
       for (size_t c = 0; c < 3; c++) {
         for (size_t i = 0; i < 3; i++) {
@@ -293,16 +300,27 @@ std::string Encode(const QuantEncoding& encoding) {
       }
       break;
     }
+    case QuantEncoding::kQuantModeCopy: {
+      out += encoding.source;
+      break;
+    }
   }
   return out;
 }
 
-Status Decode(BitReader* br, QuantEncoding* encoding, size_t required_size) {
+Status Decode(BitReader* br, QuantEncoding* encoding, size_t required_size,
+              size_t idx) {
   br->FillBitBuffer();
   int mode = br->ReadBits(8);
   switch (mode) {
-    case QuantEncoding::kQuantModeDefault:
+    case QuantEncoding::kQuantModeLibrary: {
+      br->FillBitBuffer();
+      encoding->predefined = br->ReadBits(8);
+      if (encoding->predefined >= kNumPredefinedTables) {
+        return PIK_FAILURE("Invalid predefined table");
+      }
       break;
+    }
     case QuantEncoding::kQuantModeID: {
       if (required_size != 1) return PIK_FAILURE("Invalid mode");
       for (size_t c = 0; c < 3; c++) {
@@ -376,6 +394,14 @@ Status Decode(BitReader* br, QuantEncoding* encoding, size_t required_size) {
       }
       for (size_t c = 0; c < 3; c++) {
         encoding->scales[c] = DecodeFloat(br);
+      }
+      break;
+    }
+    case QuantEncoding::kQuantModeCopy: {
+      br->FillBitBuffer();
+      encoding->source = br->ReadBits(8);
+      if (encoding->source >= idx) {
+        return PIK_FAILURE("Invalid source table");
       }
       break;
     }
@@ -461,8 +487,9 @@ Status ComputeQuantTable(const QuantEncoding& encoding, float* table,
   PIK_ASSERT(get_dct_weights != nullptr);
 
   switch (encoding.mode) {
-    case QuantEncoding::kQuantModeDefault: {
-      // Default quant encoding should get replaced by the actual default
+    case QuantEncoding::kQuantModeLibrary:
+    case QuantEncoding::kQuantModeCopy: {
+      // Library and copy quant encoding should get replaced by the actual
       // parameters by the caller.
       PIK_ASSERT(false);
       break;
@@ -539,11 +566,15 @@ Status ComputeQuantTable(const QuantEncoding& encoding, float* table,
 }
 }  // namespace
 
+// This definition is needed before C++17.
+constexpr size_t DequantMatrices::required_size_[kNumQuantKinds];
+
 std::string DequantMatrices::Encode(PikImageSizeInfo* info) const {
   PIK_ASSERT(encodings_.size() < std::numeric_limits<uint8_t>::max());
   uint8_t num_tables = encodings_.size();
   while (num_tables > 0 &&
-         encodings_[num_tables - 1].mode == QuantEncoding::kQuantModeDefault) {
+         encodings_[num_tables - 1].mode == QuantEncoding::kQuantModeLibrary &&
+         encodings_[num_tables - 1].predefined == 0) {
     num_tables--;
   }
   std::string out(1, num_tables);
@@ -560,146 +591,291 @@ Status DequantMatrices::Decode(BitReader* br) {
   br->FillBitBuffer();
   size_t num_tables = br->ReadBits(8);
   encodings_.clear();
-  if (num_tables > kNumQuantKinds) {
-    Warning("Too many quantization tables: %zu > %d", num_tables,
-            kNumQuantKinds);
-  }
-  encodings_.resize(std::max<size_t>(num_tables, kNumQuantKinds),
-                    QuantEncoding::Default());
-  size_t required_size[kNumQuantKinds] = {1, 1, 1, 1, 2, 4, 1};
+  size_t num_full_tables = DivCeil(num_tables, size_t(kNumQuantKinds));
+  if (num_full_tables == 0) num_full_tables = 1;
+  encodings_.resize(num_full_tables * kNumQuantKinds,
+                    QuantEncoding::Library(0));
   for (size_t i = 0; i < num_tables; i++) {
     PIK_RETURN_IF_ERROR(
-        pik::Decode(br, &encodings_[i], required_size[i % kNumQuantKinds]));
+        pik::Decode(br, &encodings_[i], required_size_[i % kNumQuantKinds], i));
   }
-  static_assert(kNumQuantKinds == 7,
-                "Update this function when adding new quantization kinds.");
   return DequantMatrices::Compute();
 }
+
+float V(double v) { return static_cast<float>(v); }
 
 Status DequantMatrices::Compute() {
   size_t pos = 0;
 
   static_assert(kNumQuantKinds == 7,
                 "Update this function when adding new quantization kinds.");
+  static_assert(kNumPredefinedTables == 1,
+                "Update this function when adding new quantization matrices to "
+                "the library.");
 
-  QuantEncoding defaults[kNumQuantKinds];
+  QuantEncoding library[kNumPredefinedTables][kNumQuantKinds];
 
   // DCT8
   {
-    const float distance_bands[3][6] = {
-        {7.113886368038461, -0.43371246868528784, -0.2685470152906001,
-         -1.933878521411768, 0.53033146440815437, 1.4584704571124019},
-        {1.6176127520379999, -0.030590539811721797, -0.81511728276358797,
-         -0.67440871243431311, -0.15712359755885325, -0.73924568370505372},
-        {0.54011754794716416, -6.3034056979231083, 2.3273572414645964,
-         -1.6409250040790331, 4.1853947041587629, -3.7457300653769448},
-    };
+    static const float distance_bands[3][6] = {{
+                                                   V(6.7128322747011593),
+                                                   V(-0.75596993600717899),
+                                                   V(-0.47741990264036249),
+                                                   V(-0.81596269409665323),
+                                                   V(0.068767170571484654),
+                                                   V(-20.887837229035178),
+                                               },
+                                               {
+                                                   V(1.0308008496910044),
+                                                   V(0.12563824546332958),
+                                                   V(-0.98580000474151119),
+                                                   V(-0.74783541528315123),
+                                                   V(-0.18837957703830949),
+                                                   V(-0.50540560621792985),
+                                               },
+                                               {
+                                                   V(0.52922318082990072),
+                                                   V(-6.2099138554436495),
+                                                   V(2.4559360555622511),
+                                                   V(-1.8645272975104017),
+                                                   V(2.1626488944731781),
+                                                   V(-20.514468231628619),
+                                               }};
 
-    const float eccentricity_bands[3][3] = {
-        {-0.061872233421693838, 0.18304708783697204, -0.17934912597523417},
-        {-0.046291470545973795, -0.043761762986084363, 0.13108010180056726},
-        {-0.59012724924929572, 0.05090335816668784, 2.4708138138989524},
+    static const float eccentricity_bands[3][3] = {
+        {
+            V(0.020372599856493687),
+            V(0.0060672219272973112),
+            V(-0.037634794641950318),
+        },
+        {
+            V(0.19964780548254896),
+            V(-0.20598244512425934),
+            V(0.22606880802424917),
+        },
+        {
+            V(-0.53357069165890425),
+            V(0.067877070499761022),
+            V(2.3529080139232321),
+        },
     };
-    defaults[kQuantKindDCT8] = QuantEncoding::DCT(
+    library[0][kQuantKindDCT8] = QuantEncoding::DCT(
         DctQuantWeightParams(distance_bands, eccentricity_bands));
   }
 
   // Identity
   {
-    float weights[3][3] = {
-        {289.54327306246569, 7099.418899943772, 4458.0161440926058},
-        {49.176734165646614, 1499.6019634108013, 1344.3667073511192},
-        {10.632431555654138, 24.895364788262089, 10.436948048081218},
+    static const float weights[3][3] = {
+        {
+            V(174.50360988711236),
+            V(7098.4292418698387),
+            V(4459.2881530953237),
+        },
+        {
+            V(29.181414754407044),
+            V(1462.9387613234978),
+            V(1364.8889051351412),
+        },
+        {
+            V(10.427519104606029),
+            V(23.975682913740158),
+            V(11.132318126587421),
+        },
     };
-    defaults[kQuantKindID] =
+    library[0][kQuantKindID] =
         QuantEncoding::Identity(weights[0], weights[1], weights[2]);
   }
 
   // DCT2
   {
-    float weights[3][6] = {
-        {4577.1135330420657, 2818.0013383004025, 1244.7777050336688,
-         978.20732875993258, 239.94519506075841, 153.36260218063393},
-        {1083.4619643789881, 1090.5935756979763, 346.41523329464525,
-         246.86085015595222, 67.994473729240639, 40.321929427434902},
-        {187.56861329076196, 157.50261436421229, 97.901734624122881,
-         86.611876754006317, 28.907126780373208, 19.026190235913297},
+    static const float weights[3][6] = {
+        {
+            V(3838.4633860359086),
+            V(2711.45620096628),
+            V(740.86588368521473),
+            V(673.9663156327548),
+            V(146.0409913884842),
+            V(71.829450601171018),
+        },
+        {
+            V(855.89982430974862),
+            V(835.22486787836522),
+            V(268.7887798267422),
+            V(161.58150295707284),
+            V(46.818625352324425),
+            V(28.025832307111365),
+        },
+        {
+            V(135.95933746046285),
+            V(100.36113442694905),
+            V(52.759147600958094),
+            V(54.55000110144173),
+            V(10.61194822539392),
+            V(6.7321557070577027),
+        },
     };
-    defaults[kQuantKindDCT2] =
+    library[0][kQuantKindDCT2] =
         QuantEncoding::DCT2(weights[0], weights[1], weights[2]);
   }
 
   // DCT4 (quant_kind 3)
   {
-    const float distance_bands[3][4] = {
-        {20.174926523945018, -0.48241228169173933, -0.54668900221566374,
-         -10.005340867323582},
-        //
-        {4.509726380079238, -0.14876246280941477, -2.2910015747473857,
-         -0.11960982261055376},
-        //
-        {4.5461864045963649, -16.849409758229385, 1.509270337320165,
-         -19.689392418307307},
+    static const float distance_bands[3][4] = {
+        {
+            V(20.464243458003235),
+            V(-1.3216361675651374),
+            V(-0.90068227414064506),
+            V(-0.51692149442719293),
+        },
+        {
+            V(3.4892753025959551),
+            V(-0.3851659055605578),
+            V(-1.6024424566582844),
+            V(-0.090185175016963492),
+        },
+        {
+            V(2.0543507462254667),
+            V(-17.083007167897751),
+            V(1.1553317008558754),
+            V(-17.06851301189084),
+        },
     };
 
-    const float eccentricity_bands[3][2] = {
-        {-0.56774040486237598, 0.70960965891803784},
-        //
-        {-0.047016047231028639, 0.33992358943056145},
-        //
-        {-0.7776904972216967, 3.272614976356607},
+    static const float eccentricity_bands[3][2] = {
+        {
+            V(-1.6540674814777321),
+            V(1.4353603203078817),
+        },
+        {
+            V(0.23246389755392743),
+            V(0.11670410074064763),
+        },
+        {
+            V(0.039676509798850998),
+            V(1.7114284305197651),
+        },
     };
-    const float muls[3][2] = {{0.34535223353306133, 0.51268795537431522},
-                              {0.26188250178636685, 0.30589811145204077},
-                              {1.7635199264413359, 1.7656127341515142}};
-    defaults[kQuantKindDCT4] = QuantEncoding::DCT4(
+    static const float muls[3][2] = {
+        {
+            V(0.47188805913083881),
+            V(0.74665256923039514),
+        },
+        {
+            V(0.27688273718512119),
+            V(0.32787026106006584),
+        },
+        {
+            V(0.94572969005995233),
+            V(1.649348791638829),
+        },
+    };
+    library[0][kQuantKindDCT4] = QuantEncoding::DCT4(
         DctQuantWeightParams(distance_bands, eccentricity_bands), muls[0],
         muls[1], muls[2]);
   }
 
   // DCT16
   {
-    const float distance_bands[3][6] = {
-        {3.1447162136920208, -1.8170074633128082, 0.43625813680676828,
-         -1.2362921454625424, -29.525222754928986, -41.379845930084585},
-        {0.67135863356761205, -0.59012957157786006, -1.261084780844391,
-         -0.79474653777229298, -0.58780396467734441, -1.2828836011550928},
-        {0.41900092114532278, -5.5848895041895714, 1.7869039980993484,
-         -6.1387179834064911, -86.733306198885529, -4.4246565408227818},
-    };
+    static const float distance_bands[3][6] = {{
+                                                   V(2.8081053178832627),
+                                                   V(-2.4300085829870786),
+                                                   V(0.11683860865233302),
+                                                   V(-0.48546810937737683),
+                                                   V(-772.68999845881376),
+                                                   V(-30.167218264433497),
+                                               },
+                                               {
+                                                   V(0.61651518963555374),
+                                                   V(-0.89670752611689697),
+                                                   V(-1.4823203833923126),
+                                                   V(-0.4392530120704895),
+                                                   V(-0.96459916681512592),
+                                                   V(-4.5043195385133448),
+                                               },
+                                               {
+                                                   V(0.35315014395417571),
+                                                   V(-6.1622959506013206),
+                                                   V(1.3987478239168303),
+                                                   V(-5.221619505420998),
+                                                   V(-87.102308097158911),
+                                                   V(-29.330248661246706),
+                                               }};
 
-    const float eccentricity_bands[3][3] = {
-        {-0.043244373886759703, -0.087931295489024522, -0.29407572699703954},
-        {0.080594256215966636, -0.080634363588261843, -0.091356217117333605},
-        {-0.32255838560797701, -0.44093039699319492, 0.097658819835651986},
+    static const float eccentricity_bands[3][3] = {
+        {
+            V(-0.1082223243760141),
+            V(0.16581730095161393),
+            V(-0.22834397719738264),
+        },
+        {
+            V(0.064907061033690178),
+            V(-0.07809582529363121),
+            V(-0.044761862879806769),
+        },
+        {
+            V(-0.23977989838080313),
+            V(-0.14631104822608662),
+            V(0.026626451443453436),
+        },
     };
-    defaults[kQuantKindDCT16] = QuantEncoding::DCT(
+    library[0][kQuantKindDCT16] = QuantEncoding::DCT(
         DctQuantWeightParams(distance_bands, eccentricity_bands));
   }
 
   // DCT32
   {
-    const float distance_bands[3][8] = {
-        {0.66392076319574023, -1.4219558051980794, 0.2981334864386988,
-         0.78333090349311385, -6.707494198176172, -13.240342969589957,
-         0.63851543527327559, 21.590467010691533},
-        {0.20445654189211382, -0.84065253126142414, -0.59300255176397787,
-         -1.0307939617135555, -0.13455419160958743, -0.26046641140749527,
-         -0.48027219333962601, -1.0283737298867768},
-        {0.34652699325328962, -10.648637307629331, -6.0276367959858375,
-         -5.3248326849728134, -10.913916765644046, 3.3626960818075111,
-         1.1749292720527955, -1.4730486958583846},
-    };
+    static const float distance_bands[3][8] = {{
+                                                   V(0.84716094396432662),
+                                                   V(-2.4766455452218108),
+                                                   V(0.2471181572547147),
+                                                   V(0.57650543843415769),
+                                                   V(-4.0833701828342583),
+                                                   V(-28.279479541125081),
+                                                   V(1.8036899065163079),
+                                                   V(39.052449003220673),
+                                               },
+                                               {
+                                                   V(0.17234631384979648),
+                                                   V(-1.1404450629580913),
+                                                   V(-0.69128963252295739),
+                                                   V(-0.53270455087075774),
+                                                   V(-0.46759485378919513),
+                                                   V(-0.89356535322414299),
+                                                   V(0.65008570941628885),
+                                                   V(-0.66302446211939114),
+                                               },
+                                               {
+                                                   V(0.22743363189568044),
+                                                   V(-11.670472775652776),
+                                                   V(-4.9179016084759626),
+                                                   V(-5.4264719484417459),
+                                                   V(-10.370646227045418),
+                                                   V(1.9002093523030437),
+                                                   V(-2.6705664701413623),
+                                                   V(-20.889766266401665),
+                                               }};
 
-    const float eccentricity_bands[3][4] = {
-        {-0.51383478850903075, 0.58960854659221762, -0.48573912817312798,
-         -0.18919493410017951},
-        {0.089915894990142076, 0.10306681449710839, -0.25257181144076263,
-         -0.070238058918648399},
-        {0.73743479499112385, -1.9888390355965009, -7.830102234616005,
-         0.2748609199322164},
+    static const float eccentricity_bands[3][4] = {
+        {
+            V(-0.77613778421797797),
+            V(0.8972017714545496),
+            V(-0.93436764214829893),
+            V(0.18670848590931757),
+        },
+        {
+            V(0.089533427641859925),
+            V(0.08358828409098),
+            V(-0.094110728686133543),
+            V(-0.1286652050040859),
+        },
+        {
+            V(1.0095255806548),
+            V(-1.5336522088790263),
+            V(-6.9680701189357501),
+            V(1.3664229471277314),
+        },
     };
-    defaults[kQuantKindDCT32] = QuantEncoding::DCT(
+    library[0][kQuantKindDCT32] = QuantEncoding::DCT(
         DctQuantWeightParams(distance_bands, eccentricity_bands));
   }
 
@@ -712,21 +888,36 @@ Status DequantMatrices::Compute() {
         100, 5,   5,   5,   5,   5,   5,   5, 5,   5,   5,  5,  5,  5,  5, 5,
     };
     static const float kChannelWeights[3] = {7.0, 17.5, 0.35};
-    defaults[kQuantKindLines] =
+    library[0][kQuantKindLines] =
         QuantEncoding::RawScaled(1, kPositionWeights, kChannelWeights);
   }
-  for (size_t kind = 0; kind < kNumQuantKinds; kind++) {
-    if (encodings_[kind].mode == QuantEncoding::kQuantModeDefault) {
-      PIK_RETURN_IF_ERROR(ComputeQuantTable(
-          defaults[kind], table_, table_offsets_, (QuantKind)kind, &pos));
-    } else {
-      PIK_RETURN_IF_ERROR(ComputeQuantTable(
-          encodings_[kind], table_, table_offsets_, (QuantKind)kind, &pos));
+
+  table_memory_ = AllocateArray(encodings_.size() / kNumQuantKinds *
+                                TotalTableSize() * sizeof(float));
+  table_ = reinterpret_cast<float*>(table_memory_.get());
+  table_offsets_.resize(encodings_.size() * 3);
+
+  auto encodings = encodings_;
+
+  for (size_t table = 0; table < encodings.size(); table++) {
+    while (encodings[table].mode == QuantEncoding::kQuantModeCopy) {
+      encodings[table] = encodings[encodings[table].source];
     }
+    if (encodings[table].mode == QuantEncoding::kQuantModeLibrary) {
+      encodings[table] =
+          library[encodings[table].predefined][table % kNumQuantKinds];
+    }
+    PIK_RETURN_IF_ERROR(
+        ComputeQuantTable(encodings[table], table_, table_offsets_.data(),
+                          (QuantKind)(table % kNumQuantKinds), &pos));
   }
+
+  PIK_ASSERT(pos == encodings.size() / kNumQuantKinds * TotalTableSize());
 
   size_ = pos;
   if (need_inv_matrices_) {
+    inv_table_memory_ = AllocateArray(pos * sizeof(float));
+    inv_table_ = reinterpret_cast<float*>(inv_table_memory_.get());
     for (size_t i = 0; i < pos; i++) {
       inv_table_[i] = 1.0f / table_[i];
     }
@@ -734,10 +925,153 @@ Status DequantMatrices::Compute() {
   return true;
 }
 
-DequantMatrices FindBestDequantMatrices(float butteraugli_target,
-                                        const Image3F& opsin) {
-  // TODO(veluca): heuristics for in-bitstream quant tables.
-  return DequantMatrices(/*need_inv_matrices=*/true);
+void FindBestDequantMatrices(
+    float butteraugli_target, float intensity_multiplier, const Image3F& opsin,
+    const ImageF& initial_quant_field, DequantMatrices* dequant_matrices,
+    ImageB* control_field, uint8_t table_map[kMaxQuantControlFieldValue][256]) {
+  // TODO(veluca): heuristics for in-bitstream quant tables. Notice that this
+  // function does *not* know the exact values of the quant field
+  // post-FindBestQuantization.
+  *dequant_matrices = DequantMatrices(/*need_inv_matrices=*/true);
+  *control_field = ImageB(DivCeil(opsin.xsize(), kTileDim),
+                          DivCeil(opsin.ysize(), kTileDim));
+  ZeroFillImage(control_field);
+  memset(table_map, 0, kMaxQuantControlFieldValue * 256);
+}
+
+bool DecodeDequantControlField(BitReader* PIK_RESTRICT br,
+                               ImageB* PIK_RESTRICT dequant_cf) {
+  HuffmanDecodingData entropy;
+  if (!entropy.ReadFromBitStream(br)) {
+    return PIK_FAILURE("Invalid histogram data.");
+  }
+  HuffmanDecoder decoder;
+  for (size_t y = 0; y < dequant_cf->ysize(); ++y) {
+    uint8_t* PIK_RESTRICT row = dequant_cf->Row(y);
+    for (size_t x = 0; x < dequant_cf->xsize(); ++x) {
+      br->FillBitBuffer();
+      row[x] = decoder.ReadSymbol(entropy, br);
+    }
+  }
+  PIK_RETURN_IF_ERROR(br->JumpToByteBoundary());
+  return true;
+}
+
+std::string EncodeDequantControlField(const ImageB& dequant_cf,
+                                      PikImageSizeInfo* info) {
+  const size_t max_out_size = dequant_cf.xsize() * dequant_cf.ysize() + 1024;
+  std::string output(max_out_size, 0);
+  size_t storage_ix = 0;
+  uint8_t* storage = reinterpret_cast<uint8_t*>(&output[0]);
+  storage[0] = 0;
+  std::vector<uint32_t> histogram(256);
+  for (int y = 0; y < dequant_cf.ysize(); ++y) {
+    for (int x = 0; x < dequant_cf.xsize(); ++x) {
+      ++histogram[dequant_cf.ConstRow(y)[x]];
+    }
+  }
+  std::vector<uint8_t> bit_depths(256);
+  std::vector<uint16_t> bit_codes(256);
+  BuildAndStoreHuffmanTree(histogram.data(), histogram.size(),
+                           bit_depths.data(), bit_codes.data(), &storage_ix,
+                           storage);
+  const size_t histo_bits = storage_ix;
+  for (int y = 0; y < dequant_cf.ysize(); ++y) {
+    const uint8_t* PIK_RESTRICT row = dequant_cf.ConstRow(y);
+    for (int x = 0; x < dequant_cf.xsize(); ++x) {
+      WriteBits(bit_depths[row[x]], bit_codes[row[x]], &storage_ix, storage);
+    }
+  }
+  WriteZeroesToByteBoundary(&storage_ix, storage);
+  PIK_ASSERT((storage_ix >> 3) <= output.size());
+  output.resize(storage_ix >> 3);
+  if (info) {
+    info->histogram_size += histo_bits >> 3;
+    info->entropy_coded_bits += storage_ix - histo_bits;
+    info->total_size += output.size();
+  }
+  return output;
+}
+
+namespace {
+void ComputeDequantControlFieldMapMask(
+    const ImageI& quant_field, const ImageB& dequant_cf,
+    bool table_mask[kMaxQuantControlFieldValue][256]) {
+  for (size_t y = 0; y < quant_field.ysize(); y++) {
+    const int* PIK_RESTRICT row_qf = quant_field.ConstRow(y);
+    const uint8_t* PIK_RESTRICT row_cf =
+        dequant_cf.ConstRow(y / kTileDimInBlocks);
+    for (size_t x = 0; x < quant_field.xsize(); x++) {
+      table_mask[row_cf[x / kTileDimInBlocks]][row_qf[x] - 1] = true;
+    }
+  }
+}
+
+}  // namespace
+
+std::string EncodeDequantControlFieldMap(
+    const ImageI& quant_field, const ImageB& dequant_cf,
+    const uint8_t table_map[kMaxQuantControlFieldValue][256],
+    PikImageSizeInfo* info) {
+  bool table_mask[kMaxQuantControlFieldValue][256] = {};
+  ComputeDequantControlFieldMapMask(quant_field, dequant_cf, table_mask);
+  const size_t max_out_size = kMaxQuantControlFieldValue * 256 + 1024;
+  std::string output(max_out_size, 0);
+  size_t storage_ix = 0;
+  uint8_t* storage = reinterpret_cast<uint8_t*>(&output[0]);
+  storage[0] = 0;
+  std::vector<uint32_t> histogram(256);
+  for (int y = 0; y < kMaxQuantControlFieldValue; ++y) {
+    for (int x = 0; x < 256; ++x) {
+      if (!table_mask[y][x]) continue;
+      ++histogram[table_map[y][x]];
+    }
+  }
+  std::vector<uint8_t> bit_depths(256);
+  std::vector<uint16_t> bit_codes(256);
+  BuildAndStoreHuffmanTree(histogram.data(), histogram.size(),
+                           bit_depths.data(), bit_codes.data(), &storage_ix,
+                           storage);
+  const size_t histo_bits = storage_ix;
+  for (int y = 0; y < kMaxQuantControlFieldValue; ++y) {
+    for (int x = 0; x < 256; ++x) {
+      if (!table_mask[y][x]) continue;
+      WriteBits(bit_depths[table_map[y][x]], bit_codes[table_map[y][x]],
+                &storage_ix, storage);
+    }
+  }
+  WriteZeroesToByteBoundary(&storage_ix, storage);
+  PIK_ASSERT((storage_ix >> 3) <= output.size());
+  output.resize(storage_ix >> 3);
+  if (info) {
+    info->histogram_size += histo_bits >> 3;
+    info->entropy_coded_bits += storage_ix - histo_bits;
+    info->total_size += output.size();
+  }
+  return output;
+}
+
+bool DecodeDequantControlFieldMap(
+    BitReader* PIK_RESTRICT br, const ImageI& quant_field,
+    const ImageB& dequant_cf,
+    uint8_t table_map[kMaxQuantControlFieldValue][256]) {
+  bool table_mask[kMaxQuantControlFieldValue][256] = {};
+  memset(table_map, 0, kMaxQuantControlFieldValue * 256 * sizeof(uint8_t));
+  ComputeDequantControlFieldMapMask(quant_field, dequant_cf, table_mask);
+  HuffmanDecodingData entropy;
+  if (!entropy.ReadFromBitStream(br)) {
+    return PIK_FAILURE("Invalid histogram data.");
+  }
+  HuffmanDecoder decoder;
+  for (size_t y = 0; y < kMaxQuantControlFieldValue; ++y) {
+    for (size_t x = 0; x < 256; ++x) {
+      if (!table_mask[y][x]) continue;
+      br->FillBitBuffer();
+      table_map[y][x] = decoder.ReadSymbol(entropy, br);
+    }
+  }
+  PIK_RETURN_IF_ERROR(br->JumpToByteBoundary());
+  return true;
 }
 
 }  // namespace pik

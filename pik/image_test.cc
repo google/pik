@@ -5,6 +5,7 @@
 // https://opensource.org/licenses/MIT.
 
 #include "pik/image.h"
+#include "pik/image_ops.h"
 
 #include <cstdint>
 #include <random>

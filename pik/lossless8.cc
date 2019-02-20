@@ -59,7 +59,7 @@ static const int kWithSign = 7, kNumContexts = 8 + kWithSign + 2, kNumRuns = 1,
             kMaxError = 101, kMaxSumErrors = kMaxError * 7 + 1;
 
 // Left shift a signed integer by the shift amount.
-static int LshInt(int value, unsigned shift) {
+PIK_INLINE int LshInt(int value, unsigned shift) {
   // Cast to unsigned and back to avoid undefined behavior of signed left shift.
   return static_cast<int>(static_cast<unsigned>(value) << shift);
 }
@@ -71,18 +71,16 @@ struct State {
       toRound = ((1 << PBits) >> 1), toRound_m1 = (toRound ? toRound - 1 : 0);
   typedef enum { PM_Regular, PM_West, PM_North } PredictMode;
 
-  // uint64_t gqe[kNumContexts];  //global quantized errors (all groups)
-  // frequencies
+  // uint64_t gqe[kNumContexts];  // global quantized errors (all groups) counts
 
   uint8_t edata[kNumContexts][kGroupSize * kGroupSize],  // size should be [2][]
                         // instead of [kNumContexts][] in the Production edition
       compressedDataTmpBuf[kGroupSize2plus], *compressedData;
-  uint8_t
-      errors0[kGroupSize * 2 + 4];  // Errors of predictor 0. Range 0..kMaxError
-  uint8_t errors1[kGroupSize * 2 + 4];     // Errors of predictor 1
-  uint8_t errors2[kGroupSize * 2 + 4];     // Errors of predictor 2
-  uint8_t errors3[kGroupSize * 2 + 4];     // Errors of predictor 3
-  int16_t trueErr[kGroupSize * 2];         // Their range is -255...255
+  uint8_t errors0[kGroupSize*2+4];  // Errors of predictor 0. Range 0..kMaxError
+  uint8_t errors1[kGroupSize*2+4];  // Errors of predictor 1
+  uint8_t errors2[kGroupSize*2+4];  // Errors of predictor 2
+  uint8_t errors3[kGroupSize*2+4];  // Errors of predictor 3
+  int16_t trueErr[kGroupSize*2];  // True errors. Their range is -255...255
   uint8_t quantizedError[kGroupSize * 2];  // The range is 0...14, all are
                                            // even due to quantizedInit()
 
@@ -140,8 +138,7 @@ struct State {
     // for (int i=0; i < 512; i += 16, printf("\n"))
     //   for (int j=i; j < i + 16; ++j)  printf("%2d, ", quantizedTable[j]);
     signToLSB_FORWARD_INIT       // const init!
-        signToLSB_BACKWARD_INIT  // const init!
-
+    signToLSB_BACKWARD_INIT      // const init!
     // Prevent uninitialized values in case of invalid compressed data
     memset(edata, 0, sizeof(edata));
   }
@@ -165,7 +162,7 @@ struct State {
       prediction1,  // Their range is -255...510 rather than 0...255!
       prediction2,
       prediction3;  // And -510..510 after subtracting truePixelValue
-  int maxerrShift, pb255, width;  //  width-1  actually
+  int numColors[3], planeMethod, maxerrShift, maxTpv, width; // width-1 actually
 
   uint8_t* PIK_RESTRICT rowImg;
   uint8_t const *PIK_RESTRICT rowPrev, *PIK_RESTRICT rowPP;
@@ -181,7 +178,7 @@ struct State {
         (x <= 1 ? prediction1
                 : prediction1 +
                       LshInt(rowImg[x - 1] - rowImg[x - 2], PBits) * 5 / 16);
-    return (prediction0 < 0 ? 0 : prediction0 > pb255 ? pb255 : prediction0);
+    return (prediction0 < 0 ? 0 : prediction0 > maxTpv ? maxTpv : prediction0);
   }
 
   PIK_INLINE int predictX0(size_t x, size_t yc, size_t yp, int* maxErr) {
@@ -189,15 +186,14 @@ struct State {
         std::max(quantizedError[yp], quantizedError[yp + (x < width ? 1 : 0)]);
     prediction1 = prediction2 = prediction3 = rowPrev[x] << PBits;
     prediction0 =
-        (((rowPrev[x] * 7 + rowPrev[x + (x < width ? 1 : 0)]) << PBits) + 4) >>
-        3;
+      (((rowPrev[x] * 7 + rowPrev[x + (x < width ? 1 : 0)]) << PBits) + 4) >> 3;
     return prediction0;
   }
 
   PIK_INLINE int predict_R_(size_t x, size_t yc, size_t yp, int* maxErr) {
     if (!rowPrev)
       return predictY0(x, yc, yp, maxErr);  // OK for Prototype edition
-    if (x == 0LL)
+    if (x == 0)
       return predictX0(x, yc, yp, maxErr);  // tobe fixed in Production
 
     int N = rowPrev[x] << PBits, W = rowImg[x - 1] << PBits,
@@ -255,7 +251,7 @@ struct State {
                      sumWeights;
 
     if (((teN ^ teW) | (teN ^ teNW)) > 0)  // if all three have the same sign
-      return (prediction < 0 ? 0 : prediction > pb255 ? pb255 : prediction);
+      return (prediction < 0 ? 0 : prediction > maxTpv ? maxTpv : prediction);
 
     int max = (W > N ? W : N);
     int min = W + N - max;
@@ -267,7 +263,7 @@ struct State {
   PIK_INLINE int predict_W_(size_t x, size_t yc, size_t yp, int* maxErr) {
     if (!rowPrev)
       return predictY0(x, yc, yp, maxErr);  // OK for Prototype edition
-    if (x == 0LL)
+    if (x == 0)
       return predictX0(x, yc, yp, maxErr);  // tobe fixed in Production
 
     int N = rowPrev[x] << PBits, W = rowImg[x - 1] << PBits,
@@ -326,7 +322,7 @@ struct State {
         sumWeights;
 
     if (((teN ^ teW) | (teN ^ teNE)) > 0)  // if all three have the same sign
-      return (prediction < 0 ? 0 : prediction > pb255 ? pb255 : prediction);
+      return (prediction < 0 ? 0 : prediction > maxTpv ? maxTpv : prediction);
 
     int max = (W > N ? W : N);
     int min = W + N - max;
@@ -338,7 +334,7 @@ struct State {
   PIK_INLINE int predict_N_(size_t x, size_t yc, size_t yp, int* maxErr) {
     if (!rowPrev)
       return predictY0(x, yc, yp, maxErr);  // OK for Prototype edition
-    if (x == 0LL)
+    if (x == 0)
       return predictX0(x, yc, yp, maxErr);  // tobe fixed in Production
 
     int N = rowPrev[x] << PBits, W = rowImg[x - 1] << PBits;  //, NW is not used
@@ -395,7 +391,7 @@ struct State {
         sumWeights;
 
     if (((teN ^ teW) | (teN ^ teNE)) > 0)  // if all three have the same sign
-      return (prediction < 0 ? 0 : prediction > pb255 ? pb255 : prediction);
+      return (prediction < 0 ? 0 : prediction > maxTpv ? maxTpv : prediction);
 
     int max = (W > N ? W : N);
     int min = W + N - max;
@@ -421,7 +417,7 @@ struct State {
 
 #define AfterPredictWhenCompressing                 \
   maxErr >>= maxerrShift;                           \
-  assert(0 <= maxErr && maxErr <= kNumContexts - 1); \
+  assert(0 <= maxErr && maxErr <= kNumContexts - 1);\
   int q, truePixelValue = rowImg[x];                \
   int err = prediction - (truePixelValue << PBits); \
   size_t s = esize[maxErr];                         \
@@ -432,7 +428,7 @@ struct State {
 
 #define AfterPredictWhenCompressing3                \
   maxErr >>= maxerrShift;                           \
-  assert(0 <= maxErr && maxErr <= kNumContexts - 1); \
+  assert(0 <= maxErr && maxErr <= kNumContexts - 1);\
   int q, truePixelValue = rowImg[x];                \
   if (planeToCompress != planeToUse) {              \
     truePixelValue -= (int)rowUse[x] - 0x80;        \
@@ -448,7 +444,7 @@ struct State {
 
 #define AfterPredictWhenDecompressing                          \
   maxErr >>= maxerrShift;                                      \
-  assert(0 <= maxErr && maxErr <= kNumContexts - 1);            \
+  assert(0 <= maxErr && maxErr <= kNumContexts - 1);           \
   assert(0 <= prediction && prediction <= 255 << PBits);       \
   size_t s = esize[maxErr];                                    \
   int err, q = edata[maxErr][s], truePixelValue = ToLSB_BKWRD; \
@@ -502,7 +498,7 @@ struct State {
       for (int i = 0; i < 256; ++i)
         palette[i] = count, count += (freqs[i] ? 1 : 0);
       int havePalette = (count < 255 ? 1 : 0);  // 255? or 256?
-      pb255 = (havePalette ? std::min(255, count + 1) : 255) << PBits;
+      maxTpv = (havePalette ? std::min(255, count + 1) : 255) << PBits;
 
       if (havePalette)
         for (size_t y = 0; y < ysize; ++y) {
@@ -515,16 +511,15 @@ struct State {
         for (size_t groupX = 0; groupX < xsize; groupX += kGroupSize) {
           memset(esize, 0, sizeof(esize));
           size_t yEnd = std::min((size_t)kGroupSize, ysize - groupY);
-          width = std::min((size_t)kGroupSize, xsize - groupX) - 1;
+          width       = std::min((size_t)kGroupSize, xsize - groupX) - 1;
           size_t area = yEnd * (width + 1);
           maxerrShift =
-              (area > 25600
-                   ? 0
-                   : area > 12800 ? 1 : area > 4000 ? 2 : area > 400 ? 3 : 4);
+              (area > 25600 ? 0 :
+               area > 12800 ? 1 : area > 4000 ? 2 : area > 400 ? 3 : 4);
 
           uint64_t fromN = 0, fromW = 0;
           for (size_t y = 1; y < yEnd; ++y) {
-            rowImg = img.Row(groupY + y) + groupX;
+            rowImg  = img.Row(groupY + y)     + groupX;
             rowPrev = img.Row(groupY + y - 1) + groupX;
             for (size_t x = 1; x <= width; ++x) {
               int c = rowImg[x];
@@ -545,7 +540,8 @@ struct State {
 
           if (pMode == PM_Regular)  // Regular mode
             for (size_t y = 0, yc = 0, yp; y < yEnd; ++y) {
-              setRowImgPointers(img.Row) for (size_t x = 0; x <= width; ++x) {
+              setRowImgPointers(img.Row)
+              for (size_t x = 0; x <= width; ++x) {
                 int maxErr,
                     prediction = predict_R_(x, yc + x - 1, yp + x, &maxErr);
                 AfterPredictWhenCompressing
@@ -553,7 +549,8 @@ struct State {
             }
           else if (pMode == PM_West)  // 'West predicts better' mode
             for (size_t y = 0, yc = 0, yp; y < yEnd; ++y) {
-              setRowImgPointers(img.Row) for (size_t x = 0; x <= width; ++x) {
+              setRowImgPointers(img.Row)
+              for (size_t x = 0; x <= width; ++x) {
                 int maxErr,
                     prediction = predict_W_(x, yc + x - 1, yp + x, &maxErr);
                 AfterPredictWhenCompressing
@@ -561,7 +558,8 @@ struct State {
             }
           else if (pMode == PM_North)  // 'North predicts better' mode
             for (size_t y = 0, yc = 0, yp; y < yEnd; ++y) {
-              setRowImgPointers(img.Row) for (size_t x = 0; x <= width; ++x) {
+              setRowImgPointers(img.Row)
+              for (size_t x = 0; x <= width; ++x) {
                 int maxErr,
                     prediction = predict_N_(x, yc + x - 1, yp + x, &maxErr);
                 AfterPredictWhenCompressing
@@ -602,10 +600,10 @@ struct State {
                 compressedData[pos++] = edata[i][0];
               else if (cs == 0)
                 memcpy(&compressedData[pos], &edata[i][0], esize[i]),
-                    pos += esize[i];
+                pos += esize[i];
               else
                 memcpy(&compressedData[pos], &compressedDataTmpBuf[0], cs),
-                    pos += cs;
+                pos += cs;
             } else
               pos += encodeVarInt(i > 0 ? 0 : pMode, &compressedData[pos]);
           }  // i
@@ -647,7 +645,7 @@ struct State {
       for (int i = 0; i < 256; ++i)
         if (p[i >> 3] & (1 << (i & 7))) palette[count++] = i;
     }
-    pb255 = std::min(255, count + 1) << PBits;
+    maxTpv = std::min(255, count + 1) << PBits;
     xsize >>= 1;
     if (!xsize || !ysize) return PIK_FAILURE("lossless8");
     // Too large, would run out of memory. Chosen as reasonable limit for pik
@@ -664,12 +662,11 @@ struct State {
       for (size_t groupY = 0; groupY < ysize; groupY += kGroupSize) {
         for (size_t groupX = 0; groupX < xsize; groupX += kGroupSize) {
           size_t yEnd = std::min((size_t)kGroupSize, ysize - groupY);
-          width = std::min((size_t)kGroupSize, xsize - groupX) - 1;
+          width =       std::min((size_t)kGroupSize, xsize - groupX) - 1;
           size_t area = yEnd * (width + 1);
           maxerrShift =
-              (area > 25600
-                   ? 0
-                   : area > 12800 ? 1 : area > 4000 ? 2 : area > 400 ? 3 : 4);
+              (area > 25600 ? 0 :
+               area > 12800 ? 1 : area > 4000 ? 2 : area > 400 ? 3 : 4);
           size_t decompressedSize = 0;  // is used only for the assert()
 
           if (kNumRuns > 1 && groupY == 0 && groupX == 0) {
@@ -689,13 +686,13 @@ struct State {
             if (mode == 2) {
               if (pos >= compressedSize) return PIK_FAILURE("lossless8");
               if (cs > maxDecodedSize) return PIK_FAILURE("lossless8");
-              memset(&edata[i][0], compressedData[pos++], ++cs),
-                  decompressedSize += cs;
+              memset(&edata[i][0], compressedData[pos++], ++cs);
+              decompressedSize += cs;
             } else if (mode == 1) {
               if (pos + cs > compressedSize) return PIK_FAILURE("lossless8");
               if (cs > maxDecodedSize) return PIK_FAILURE("lossless8");
-              memcpy(&edata[i][0], &compressedData[pos], ++cs),
-                  decompressedSize += cs, pos += cs;
+              memcpy(&edata[i][0], &compressedData[pos], ++cs);
+              decompressedSize += cs, pos += cs;
             } else {
               if (pos + cs > compressedSize) return PIK_FAILURE("lossless8");
               size_t ds;
@@ -712,12 +709,12 @@ struct State {
             /* if the last group */
             // if (inpSize != pos) return PIK_FAILURE("lossless8");
           }
-
           memset(esize, 0, sizeof(esize));
 
           if (pMode == PM_Regular)
             for (size_t y = 0, yc = 0, yp; y < yEnd; ++y) {
-              setRowImgPointers(img.Row) for (size_t x = 0; x <= width; ++x) {
+              setRowImgPointers(img.Row)
+              for (size_t x = 0; x <= width; ++x) {
                 int maxErr,
                     prediction = predict_R_(x, yc + x - 1, yp + x, &maxErr);
                 AfterPredictWhenDecompressing
@@ -725,7 +722,8 @@ struct State {
             }
           else if (pMode == PM_West)
             for (size_t y = 0, yc = 0, yp; y < yEnd; ++y) {
-              setRowImgPointers(img.Row) for (size_t x = 0; x <= width; ++x) {
+              setRowImgPointers(img.Row)
+              for (size_t x = 0; x <= width; ++x) {
                 int maxErr,
                     prediction = predict_W_(x, yc + x - 1, yp + x, &maxErr);
                 AfterPredictWhenDecompressing
@@ -733,7 +731,8 @@ struct State {
             }
           else if (pMode == PM_North)
             for (size_t y = 0, yc = 0, yp; y < yEnd; ++y) {
-              setRowImgPointers(img.Row) for (size_t x = 0; x <= width; ++x) {
+              setRowImgPointers(img.Row)
+              for (size_t x = 0; x <= width; ++x) {
                 int maxErr,
                     prediction = predict_N_(x, yc + x - 1, yp + x, &maxErr);
                 AfterPredictWhenDecompressing
@@ -764,7 +763,7 @@ struct State {
     RR_G_BmR = 2,         //   p2  p3-p1
     RR_GmR_BmR = 3,       // p2-p1 p3-p1
 
-    RR_GmB_B = 4,  // == 21   p2-p3 @ p2
+    RR_GmB_B = 4,  // == 22   p2-p3 @ p2
     RR_G_GmB = 5,  // ~= 12   p2-p3 @ p3
 
     RR_GmR_Bm2 = 6,  //  p2-p1  p3-(p1+p2)/2
@@ -777,7 +776,7 @@ struct State {
     R_GG_BmG = 12,
     RmG_GG_BmG = 13,
 
-    RmB_GG_B = 14,  // == 22
+    RmB_GG_B = 14,  // == 21
     R_GG_RmB = 15,  // ~=  2
 
     RmG_GG_Bm2 = 16,
@@ -786,8 +785,8 @@ struct State {
     Rm2_GG_B = 19,
 
     R_G_BB = 20,  // p1=B  p2=R  p3=G
-    R_GmB_BB = 21,
-    RmB_G_BB = 22,
+    RmB_G_BB = 21,
+    R_GmB_BB = 22,
     RmB_GmB_BB = 23,
 
     RmG_G_BB = 24,  // == 11
@@ -798,6 +797,40 @@ struct State {
     R_Gm2_BB = 28,
     Rm2_G_BB = 29,
   };
+  const uint8_t ncMap[30] = {
+    1+2+4,
+    1+0+4,
+    1+2+0,
+    1,
+    1+0+4,
+    1+2+0,
+    1,
+    1,
+    1+2+0,
+    1+0+4,
+
+    1+2+4,
+    0+2+4,
+    1+2+0,
+    0+2+0,
+    0+2+4,
+    1+2+0,
+    0+2+0,
+    0+2+0,
+    1+2+0,
+    0+2+4,
+
+    1+2+4,
+    0+2+4,
+    1+0+4,
+    0+0+4,
+    0+2+4,
+    1+0+4,
+    0+0+4,
+    0+0+4,
+    1+0+4,
+    0+2+4,
+  };
 
   bool dcmprs512x512(pik::Image3B* img, int planeToDecompress, size_t& pos,
                      size_t groupY, size_t groupX,
@@ -805,12 +838,13 @@ struct State {
                      size_t maxDecodedSize) {
     size_t esize[kNumContexts], xsize = img->xsize(), ysize = img->ysize();
     size_t yEnd = std::min((size_t)kGroupSize, ysize - groupY);
-    width = std::min((size_t)kGroupSize, xsize - groupX) - 1;
+    width =       std::min((size_t)kGroupSize, xsize - groupX) - 1;
     size_t area = yEnd * (width + 1);
     maxerrShift =
-        (area > 25600
-             ? 0
-             : area > 12800 ? 1 : area > 4000 ? 2 : area > 400 ? 3 : 4);
+        (area > 25600 ? 0 :
+         area > 12800 ? 1 : area > 4000 ? 2 : area > 400 ? 3 : 4);
+    maxTpv = ((ncMap[planeMethod] & (1 << planeToDecompress)) ?
+            numColors[planeToDecompress] - 1 : 255) << PBits;
     size_t decompressedSize = 0;  // is used only for the assert()
 
     PredictMode pMode;
@@ -824,13 +858,13 @@ struct State {
       if (mode == 2) {
         if (pos >= compressedSize) return PIK_FAILURE("lossless8");
         if (cs > maxDecodedSize) return PIK_FAILURE("lossless8");
-        memset(&edata[i][0], compressedData[pos++], ++cs),
-            decompressedSize += cs;
+        memset(&edata[i][0], compressedData[pos++], ++cs);
+        decompressedSize += cs;
       } else if (mode == 1) {
         if (pos + cs > compressedSize) return PIK_FAILURE("lossless8");
         if (cs > maxDecodedSize) return PIK_FAILURE("lossless8");
-        memcpy(&edata[i][0], &compressedData[pos], ++cs),
-            decompressedSize += cs, pos += cs;
+        memcpy(&edata[i][0], &compressedData[pos], ++cs);
+        decompressedSize += cs, pos += cs;
       } else {
         if (pos + cs > compressedSize) return PIK_FAILURE("lossless8");
         size_t ds;
@@ -850,24 +884,24 @@ struct State {
 
     if (pMode == PM_Regular)
       for (size_t y = 0, yc = 0, yp; y < yEnd; ++y) {
-        setRowImgPointers3dec(img->PlaneRow) for (size_t x = 0; x <= width;
-                                                  ++x) {
+        setRowImgPointers3dec(img->PlaneRow)
+        for (size_t x = 0; x <= width; ++x) {
           int maxErr, prediction = predict_R_(x, yc + x - 1, yp + x, &maxErr);
           AfterPredictWhenDecompressing
         }
       }
     else if (pMode == PM_West)
       for (size_t y = 0, yc = 0, yp; y < yEnd; ++y) {
-        setRowImgPointers3dec(img->PlaneRow) for (size_t x = 0; x <= width;
-                                                  ++x) {
+        setRowImgPointers3dec(img->PlaneRow)
+        for (size_t x = 0; x <= width; ++x) {
           int maxErr, prediction = predict_W_(x, yc + x - 1, yp + x, &maxErr);
           AfterPredictWhenDecompressing
         }
       }
     else if (pMode == PM_North)
       for (size_t y = 0, yc = 0, yp; y < yEnd; ++y) {
-        setRowImgPointers3dec(img->PlaneRow) for (size_t x = 0; x <= width;
-                                                  ++x) {
+        setRowImgPointers3dec(img->PlaneRow)
+        for (size_t x = 0; x <= width; ++x) {
           int maxErr, prediction = predict_N_(x, yc + x - 1, yp + x, &maxErr);
           AfterPredictWhenDecompressing
         }
@@ -898,8 +932,8 @@ struct State {
     std::vector<int> palette(0x100 * 3);
 
     clock_t start = clock();
-    pb255 = 255 << PBits;
     for (int run = 0; run < kNumRuns; ++run) {
+      numColors[0] = numColors[1] = numColors[2] = 0x100;
       size_t pos = pos0;
       if (xsize * ysize > 4 * 0x100) {  // TODO: smarter decision making here
         if (pos >= compressedSize)
@@ -907,14 +941,12 @@ struct State {
         const uint8_t* p = &compressedData[pos];
         imageMethod = *p++;
         if (imageMethod) {
-          int numColors[3];
           ++pos;
-          numColors[0] = decodeVarInt(compressedData, compressedSize, &pos);
-          numColors[1] = decodeVarInt(compressedData, compressedSize, &pos);
-          numColors[2] = decodeVarInt(compressedData, compressedSize, &pos);
-          if (numColors[0] > 256) return PIK_FAILURE("lossless8");
-          if (numColors[1] > 256) return PIK_FAILURE("lossless8");
-          if (numColors[2] > 256) return PIK_FAILURE("lossless8");
+          if (pos+3 >= compressedSize)
+            return PIK_FAILURE("lossless8: out of bounds");
+          numColors[0] = compressedData[pos++] + 1;
+          numColors[1] = compressedData[pos++] + 1;
+          numColors[2] = compressedData[pos++] + 1;
           p = &compressedData[pos];
           const uint8_t* p_end = compressedData + compressedSize;
           for (int channel = 0; channel < 3; ++channel)
@@ -936,9 +968,8 @@ struct State {
       }
       for (size_t groupY = 0; groupY < ysize; groupY += kGroupSize) {
         for (size_t groupX = 0; groupX < xsize; groupX += kGroupSize) {
-          uint8_t *PIK_RESTRICT row1, *PIK_RESTRICT row2, *PIK_RESTRICT row3;
-          size_t yEnd = std::min((size_t)kGroupSize, ysize - groupY);
-          size_t xEnd = std::min((size_t)kGroupSize, xsize - groupX);
+          if (pos >= compressedSize) return PIK_FAILURE("lossless8");
+          planeMethod = compressedData[pos++];
           if (!dcmprs512x512(&img, PL1, pos, groupY, groupX, compressedData,
                              compressedSize, maxDecodedSize))
             return PIK_FAILURE("lossless8");
@@ -948,8 +979,10 @@ struct State {
           if (!dcmprs512x512(&img, PL3, pos, groupY, groupX, compressedData,
                              compressedSize, maxDecodedSize))
             return PIK_FAILURE("lossless8");
-          if (pos >= compressedSize) return PIK_FAILURE("lossless8");
-          int planeMethod = compressedData[pos++];
+
+          uint8_t *PIK_RESTRICT row1, *PIK_RESTRICT row2, *PIK_RESTRICT row3;
+          size_t yEnd = std::min((size_t)kGroupSize, ysize - groupY);
+          size_t xEnd = std::min((size_t)kGroupSize, xsize - groupX);
 
 #define T3bgn                                      \
   for (size_t y = 0; y < yEnd; ++y) {              \
@@ -1103,16 +1136,17 @@ struct State {
     size_t esize[kNumContexts], xsize = img.xsize(), ysize = img.ysize();
     memset(esize, 0, sizeof(esize));
     size_t yEnd = std::min((size_t)kGroupSize, ysize - groupY);
-    width = std::min((size_t)kGroupSize, xsize - groupX) - 1;
+    width =       std::min((size_t)kGroupSize, xsize - groupX) - 1;
     size_t area = yEnd * (width + 1);
     maxerrShift =
-        (area > 25600
-             ? 0
-             : area > 12800 ? 1 : area > 4000 ? 2 : area > 400 ? 3 : 4);
+        (area > 25600 ? 0 :
+         area > 12800 ? 1 : area > 4000 ? 2 : area > 400 ? 3 : 4);
+    maxTpv =
+     (planeToCompress==planeToUse? numColors[planeToCompress]-1 : 255) << PBits;
 
     uint64_t fromN = 0, fromW = 0;
     for (size_t y = 1; y < yEnd; ++y) {
-      rowImg = img.PlaneRow(planeToCompress, groupY + y) + groupX;
+      rowImg  = img.PlaneRow(planeToCompress, groupY + y) + groupX;
       rowPrev = img.PlaneRow(planeToCompress, groupY + y - 1) + groupX;
       for (size_t x = 1; x <= width; ++x) {
         int c = rowImg[x];
@@ -1126,27 +1160,29 @@ struct State {
     }
     PredictMode pMode = PM_Regular;
     if (fromW * 5 < fromN * 4) pMode = PM_West;  // no 'else' to reduce codesize
-    if (fromN * 5 < fromW * 4)
-      pMode = PM_North;  // if (fromN < fromW*0.8)
-                         // printf("%c ", pMode);
+    if (fromN * 5 < fromW * 4) pMode = PM_North;  // if (fromN < fromW*0.8)
+    // printf("%c ", pMode);
 
     if (pMode == PM_Regular)  // Regular mode
       for (size_t y = 0, yc = 0, yp; y < yEnd; ++y) {
-        setRowImgPointers3(img.PlaneRow) for (size_t x = 0; x <= width; ++x) {
+        setRowImgPointers3(img.PlaneRow)
+        for (size_t x = 0; x <= width; ++x) {
           int maxErr, prediction = predict_R_(x, yc + x - 1, yp + x, &maxErr);
           AfterPredictWhenCompressing3
         }
       }
     else if (pMode == PM_West)  // 'West predicts better' mode
       for (size_t y = 0, yc = 0, yp; y < yEnd; ++y) {
-        setRowImgPointers3(img.PlaneRow) for (size_t x = 0; x <= width; ++x) {
+        setRowImgPointers3(img.PlaneRow)
+        for (size_t x = 0; x <= width; ++x) {
           int maxErr, prediction = predict_W_(x, yc + x - 1, yp + x, &maxErr);
           AfterPredictWhenCompressing3
         }
       }
     else if (pMode == PM_North)  // 'North predicts better' mode
       for (size_t y = 0, yc = 0, yp; y < yEnd; ++y) {
-        setRowImgPointers3(img.PlaneRow) for (size_t x = 0; x <= width; ++x) {
+        setRowImgPointers3(img.PlaneRow)
+        for (size_t x = 0; x <= width; ++x) {
           int maxErr, prediction = predict_N_(x, yc + x - 1, yp + x, &maxErr);
           AfterPredictWhenCompressing3
         }
@@ -1184,6 +1220,13 @@ struct State {
     return pos;
   }
 
+#define Fsc(buf, bufsize) \
+  {                       \
+    datas[sp] = buf;      \
+    sizes[sp] = bufsize;  \
+    ++sp;                 \
+  }
+
 #define FWr(buf, bufsize)                            \
   {                                                  \
     if (kNumRuns == 1) {                             \
@@ -1208,12 +1251,12 @@ struct State {
     std::vector<uint8_t> temp_buffer(kGroupSize2plus * 6);
     compressedData = temp_buffer.data();
 
-    pb255 = 255 << PBits;
     for (int run = 0; run < kNumRuns; ++run) {
       size_t xsize = img.xsize(), ysize = img.ysize(), pos;
-      pos = encodeVarInt(xsize, &compressedData[0]);
+      pos  = encodeVarInt(xsize, &compressedData[0]);
       pos += encodeVarInt(ysize, &compressedData[pos]);
-      FWr(&compressedData[0], pos) int numColors[3] = {0xff, 0xff, 0xff};
+      FWr(&compressedData[0], pos)
+      numColors[0] = numColors[1] = numColors[2] = 0x100;
 
       if (xsize * ysize > 4 * 0x100) {  // TODO: smarter decision making here
         // Let's check whether the image should be 'palettized',
@@ -1221,7 +1264,7 @@ struct State {
         uint8_t flags = 0, bits[3 * 0x100 / 8], *pb = &bits[0];
         uint32_t palette123[3 * 0x100];
 
-#if 1
+#if 1  // Enable/disable the CompactChannel transform(per-channel palettization)
         memset(bits, 0, sizeof(bits));
         memset(palette123, 0, sizeof(palette123));
         for (int channel = 0; channel < 3; ++channel) {
@@ -1237,13 +1280,9 @@ struct State {
           for (first = i, count = 0; i < 0x100; ++i)
             if (palette[i])  palette[i] = count++;
           // printf("count=%5d, %f%%\n", count, count * 100. / 256);
-          if (count >= 240) {  // TODO: better decision making
-            flags = 0;
-            break;
-          }
-
-          flags += 1 << channel;
           numColors[channel] = count;
+          if (count >= 255) continue;  // TODO: better decision making
+          flags += 1 << channel;
           palette[first] = 1;
           for (int sb = 0, x = 0; x < 0x100; x += 8) {
             uint32_t b = 0, v;
@@ -1255,9 +1294,11 @@ struct State {
           palette[first] = 0;
         }  // for channel
 #endif
-        FWrByte(flags);  // As of now (Dec.2018) ImageMethod==flags
+
+        FWrByte(flags);  // As of now (Feb.2019) ImageMethod==flags
         if (flags) {
-          for (int channel = 0; channel < 3; ++channel) {
+          for (int channel = 0; channel < 3; ++channel)
+          if (flags & (1 << channel)) {
             uint32_t* palette = &palette123[0x100 * channel];
             for (size_t y = 0; y < ysize; ++y) {
               uint8_t* const PIK_RESTRICT rowImg = img.PlaneRow(channel, y);
@@ -1265,12 +1306,13 @@ struct State {
                 rowImg[x] = palette[rowImg[x]];
             }
           }
-          pos = encodeVarInt(numColors[0], &compressedData[0]);
-          pos += encodeVarInt(numColors[1], &compressedData[pos]);
-          pos += encodeVarInt(numColors[2], &compressedData[pos]);
-          FWr(&compressedData[0], pos);
+          compressedData[0] = numColors[0] - 1;
+          compressedData[1] = numColors[1] - 1;
+          compressedData[2] = numColors[2] - 1;
+          FWr(&compressedData[0], 3);
           FWr(&bits[0], sizeof(uint8_t) * (pb - &bits[0]));
         }  // if (flags)
+        else numColors[0] = numColors[1] = numColors[2] = 0x100;
       }    // if (xsize*ysize > 4*0x100)
       uint8_t* compressedData2 = &compressedData[kGroupSize2plus];
       uint8_t* compressedData3 = &compressedData[kGroupSize2plus * 2];
@@ -1279,10 +1321,10 @@ struct State {
       uint8_t* cd6 = &compressedData[kGroupSize2plus * 5];
       for (size_t groupY = 0; groupY < ysize; groupY += kGroupSize) {
         for (size_t groupX = 0; groupX < xsize; groupX += kGroupSize) {
-          size_t S1, S2, S3, S4, S5, S6, s1, s2, s3, p1, p2, p3;
-          uint8_t *cd1, *cd2, *cd3;
-          int planeMethod;  // Here we try guessing which of the 30 PlaneMethods
-                            // is best, after trying just six color planes.
+          size_t S1, S2, S3, S4, S5, S6, s1, s2, s3, p1, p2, p3, sizes[3];
+          uint8_t *cd1, *cd2, *cd3, *datas[3];
+          int sp = 0, planeMethod;  // Here we try guessing which one of the 30
+                    // PlaneMethods is best, after trying just six color planes.
 
           s1 = cmprs512x512(img, PL1, PL1, groupY, groupX, compressedData);
           s2 = cmprs512x512(img, PL2, PL2, groupY, groupX, compressedData2);
@@ -1303,23 +1345,26 @@ struct State {
           S4 = cmprs512x512(img, p2, p1, groupY, groupX, cd4); /* R-G+0x80 */
           S5 = cmprs512x512(img, p3, p1, groupY, groupX, cd5); /* B-G+0x80 */
           if (p1 == PL1)
-            FWr(cd1, S1)
+            Fsc(cd1, S1)
 
           if (S4 >= S2 && S5 >= S3) {
               S6 = cmprs512x512(img, p2, p3, groupY, groupX, cd6); // R-B+0x80
               if (S6 >= S2 && S6 >= S3)
-                FWr(cd2, S2)
+                Fsc(cd2, S2)
               else if (S3 > S2 && S3 > S6)
-                FWr(cd2, S2)
-              else FWr(cd6, S6)
+                Fsc(cd2, S2)
+              else
+                Fsc(cd6, S6)
               if (p1 == PL2)
-                FWr(cd1, S1)
+                Fsc(cd1, S1)
               if (S6 >= S2 && S6 >= S3)
-                FWr(cd3, S3)
+                Fsc(cd3, S3)
               else if (S3 > S2 && S3 > S6) {
-                FWr(cd6, S6) planeMethod += 5;
+                Fsc(cd6, S6)
+                planeMethod += 5;
               } else {
-                FWr(cd3, S3) planeMethod += 4;
+                Fsc(cd3, S3)
+                planeMethod += 4;
               }
           }
           else {
@@ -1337,39 +1382,42 @@ struct State {
             if (S5 < S4) {
               S6 = cmprs512x512(img, p3, p2, groupY, groupX, cd6);  // B-(R+G)/2
               if (S4 < S2)
-                FWr(cd4, S4)
+                Fsc(cd4, S4)
               else
-                FWr(cd2, S2)
+                Fsc(cd2, S2)
               if (p1 == PL2)
-                FWr(cd1, S1)
+                Fsc(cd1, S1)
               if (S3 <= S5 && S3 <= S6) {
-                FWr(cd3, S3) planeMethod += 1;
+                Fsc(cd3, S3) planeMethod += 1;
               }
               else if (S5 <= S6) {
-                FWr(cd5, S5) planeMethod += (S4 < S2 ? 3 : 2);
+                Fsc(cd5, S5) planeMethod += (S4 < S2 ? 3 : 2);
               } else {
-                FWr(cd6, S6) planeMethod += (S4 < S2 ? 6 : 8);
+                Fsc(cd6, S6) planeMethod += (S4 < S2 ? 6 : 8);
               }
             } else {
               S6 = cmprs512x512(img, p2, p3, groupY, groupX, cd6);  // R-(B+G)/2
               if (S2 <= S4 && S2 <= S6) {
-                FWr(cd2, S2) planeMethod += 2;
+                Fsc(cd2, S2) planeMethod += 2;
               } else if (S4 <= S6) {
-                FWr(cd4, S4) planeMethod += (S5 < S3 ? 3 : 1);
+                Fsc(cd4, S4) planeMethod += (S5 < S3 ? 3 : 1);
               } else {
-                FWr(cd6, S6) planeMethod += (S5 < S3 ? 7 : 9);
+                Fsc(cd6, S6) planeMethod += (S5 < S3 ? 7 : 9);
               }
               if (p1 == PL2)
-                FWr(cd1, S1)
+                Fsc(cd1, S1)
               if (S5 < S3)
-                FWr(cd5, S5)
+                Fsc(cd5, S5)
               else
-                FWr(cd3, S3)
+                Fsc(cd3, S3)
             }
           }
           if (p1 == PL3)
-            FWr(cd1, S1)
+            Fsc(cd1, S1)
           FWrByte(planeMethod);  // printf("%2d ", planeMethod);
+          FWr(datas[0], sizes[0])
+          FWr(datas[1], sizes[1])
+          FWr(datas[2], sizes[2])
         }  // groupX
       }    // groupY
     }     // run

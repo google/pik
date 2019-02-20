@@ -14,8 +14,8 @@ add_library(pikcommon STATIC
   ${CMAKE_CURRENT_LIST_DIR}/adaptive_quantization.cc
   ${CMAKE_CURRENT_LIST_DIR}/adaptive_quantization.h
   ${CMAKE_CURRENT_LIST_DIR}/adaptive_reconstruction.cc
-  ${CMAKE_CURRENT_LIST_DIR}/adaptive_reconstruction_fwd.h
   ${CMAKE_CURRENT_LIST_DIR}/adaptive_reconstruction.h
+  ${CMAKE_CURRENT_LIST_DIR}/adaptive_reconstruction_fwd.h
   ${CMAKE_CURRENT_LIST_DIR}/alpha.cc
   ${CMAKE_CURRENT_LIST_DIR}/alpha.h
   ${CMAKE_CURRENT_LIST_DIR}/ans_common.cc
@@ -34,8 +34,8 @@ add_library(pikcommon STATIC
   ${CMAKE_CURRENT_LIST_DIR}/bit_reader.h
   ${CMAKE_CURRENT_LIST_DIR}/bits.h
   ${CMAKE_CURRENT_LIST_DIR}/block.h
-  ${CMAKE_CURRENT_LIST_DIR}/block_dictionary.h
   ${CMAKE_CURRENT_LIST_DIR}/block_dictionary.cc
+  ${CMAKE_CURRENT_LIST_DIR}/block_dictionary.h
   ${CMAKE_CURRENT_LIST_DIR}/brotli.cc
   ${CMAKE_CURRENT_LIST_DIR}/brotli.h
   ${CMAKE_CURRENT_LIST_DIR}/butteraugli/butteraugli.cc
@@ -48,6 +48,9 @@ add_library(pikcommon STATIC
   ${CMAKE_CURRENT_LIST_DIR}/cache_aligned.cc
   ${CMAKE_CURRENT_LIST_DIR}/cache_aligned.h
   ${CMAKE_CURRENT_LIST_DIR}/cluster.h
+  ${CMAKE_CURRENT_LIST_DIR}/chroma_from_luma.cc
+  ${CMAKE_CURRENT_LIST_DIR}/chroma_from_luma.h
+  ${CMAKE_CURRENT_LIST_DIR}/chroma_from_luma_fwd.h
   ${CMAKE_CURRENT_LIST_DIR}/codec.h
   ${CMAKE_CURRENT_LIST_DIR}/codec_impl.cc
   ${CMAKE_CURRENT_LIST_DIR}/codec_png.cc
@@ -65,8 +68,8 @@ add_library(pikcommon STATIC
   ${CMAKE_CURRENT_LIST_DIR}/compressed_dc.cc
   ${CMAKE_CURRENT_LIST_DIR}/compressed_dc.h
   ${CMAKE_CURRENT_LIST_DIR}/compressed_image.cc
-  ${CMAKE_CURRENT_LIST_DIR}/compressed_image_fwd.h
   ${CMAKE_CURRENT_LIST_DIR}/compressed_image.h
+  ${CMAKE_CURRENT_LIST_DIR}/compressed_image_fwd.h
   ${CMAKE_CURRENT_LIST_DIR}/context_map_decode.cc
   ${CMAKE_CURRENT_LIST_DIR}/context_map_decode.h
   ${CMAKE_CURRENT_LIST_DIR}/context_map_encode.cc
@@ -87,11 +90,14 @@ add_library(pikcommon STATIC
   ${CMAKE_CURRENT_LIST_DIR}/deconvolve.h
   ${CMAKE_CURRENT_LIST_DIR}/descriptive_statistics.cc
   ${CMAKE_CURRENT_LIST_DIR}/descriptive_statistics.h
+  ${CMAKE_CURRENT_LIST_DIR}/detect_dots.cc
+  ${CMAKE_CURRENT_LIST_DIR}/detect_dots.h
   ${CMAKE_CURRENT_LIST_DIR}/entropy_coder.cc
   ${CMAKE_CURRENT_LIST_DIR}/entropy_coder.h
-  ${CMAKE_CURRENT_LIST_DIR}/entropy_source.h
   ${CMAKE_CURRENT_LIST_DIR}/epf.cc
   ${CMAKE_CURRENT_LIST_DIR}/epf.h
+  ${CMAKE_CURRENT_LIST_DIR}/bilinear_transform.cc
+  ${CMAKE_CURRENT_LIST_DIR}/bilinear_transform.h
   ${CMAKE_CURRENT_LIST_DIR}/epf_stats.h
   ${CMAKE_CURRENT_LIST_DIR}/epf_target.cc
   ${CMAKE_CURRENT_LIST_DIR}/external_image.cc
@@ -115,6 +121,7 @@ add_library(pikcommon STATIC
   ${CMAKE_CURRENT_LIST_DIR}/huffman_encode.h
   ${CMAKE_CURRENT_LIST_DIR}/image.cc
   ${CMAKE_CURRENT_LIST_DIR}/image.h
+  ${CMAKE_CURRENT_LIST_DIR}/image_ops.h
   ${CMAKE_CURRENT_LIST_DIR}/lehmer_code.cc
   ${CMAKE_CURRENT_LIST_DIR}/lehmer_code.h
   ${CMAKE_CURRENT_LIST_DIR}/linalg.cc
@@ -145,11 +152,9 @@ add_library(pikcommon STATIC
   ${CMAKE_CURRENT_LIST_DIR}/pik.h
   ${CMAKE_CURRENT_LIST_DIR}/pik_info.cc
   ${CMAKE_CURRENT_LIST_DIR}/pik_info.h
-  ${CMAKE_CURRENT_LIST_DIR}/pik_multipass.cc
-  ${CMAKE_CURRENT_LIST_DIR}/pik_multipass.h
   ${CMAKE_CURRENT_LIST_DIR}/pik_params.h
-  ${CMAKE_CURRENT_LIST_DIR}/pik_pass.cc
-  ${CMAKE_CURRENT_LIST_DIR}/pik_pass.h
+  ${CMAKE_CURRENT_LIST_DIR}/pik_frame.cc
+  ${CMAKE_CURRENT_LIST_DIR}/pik_frame.h
   ${CMAKE_CURRENT_LIST_DIR}/profiler.h
   ${CMAKE_CURRENT_LIST_DIR}/quantizer.cc
   ${CMAKE_CURRENT_LIST_DIR}/quantizer.h
@@ -175,9 +180,110 @@ add_library(pikcommon STATIC
   ${CMAKE_CURRENT_LIST_DIR}/yuv_opsin_convert.h
 )
 
+target_compile_options(pikcommon PUBLIC
+  # Debug flags
+  -dwarf-column-info
+  -debug-info-kind=line-tables-only
+  -dwarf-version=4
+  -debugger-tuning=gdb
+
+  # F_FLAGS
+  -fmerge-all-constants
+  -fno-builtin-fwrite
+  -fno-builtin-fread
+  -fno-signed-char
+  -fsized-deallocation
+  -fnew-alignment=8
+  -fno-cxx-exceptions
+  -fno-exceptions
+  -fno-slp-vectorize
+  -fno-vectorize
+
+  # WARN_FLAGS
+  -Wformat-security
+  -Wno-char-subscripts
+  -Wno-error=deprecated-declarations
+  -Wno-sign-compare
+  -Wno-strict-overflow
+  -Wno-unused-function
+  -Wthread-safety-analysis
+  -Wno-unknown-warning-option
+  -Wno-unused-command-line-argument
+  -Wno-ignored-optimization-argument
+  -Wno-ambiguous-member-template
+  -Wno-pointer-sign
+  -Wno-address-of-packed-member
+  -Wno-enum-compare-switch
+  -Wno-expansion-to-defined
+  -Wno-extern-c-compat
+  -Wno-gnu-alignof-expression
+  -Wno-gnu-designator
+  -Wno-gnu-variable-sized-type-not-at-end
+  -Wno-ignored-attributes
+  -Wno-ignored-qualifiers
+  -Wno-inconsistent-missing-override
+  -Wno-invalid-source-encoding
+  -Wno-mismatched-tags
+  -Wno-potentially-evaluated-expression
+  -Wno-return-std-move
+  -Wno-self-assign-overloaded
+  -Wno-tautological-constant-compare
+  -Wno-tautological-constant-in-range-compare
+  -Wno-tautological-type-limit-compare
+  -Wno-tautological-undefined-compare
+  -Wno-tautological-unsigned-zero-compare
+  -Wno-tautological-unsigned-enum-zero-compare
+  -Wno-undefined-func-template
+  -Wno-unknown-pragmas
+  -Wno-unused-const-variable
+  -Wno-unused-lambda-capture
+  -Wno-unused-local-typedef
+  -Wno-unused-private-field
+  -Wno-private-header
+  -Wfloat-overflow-conversion
+  -Wfloat-zero-conversion
+  -Wfor-loop-analysis
+  -Wgnu-redeclared-enum
+  -Wimplicit-fallthrough
+  -Winfinite-recursion
+  -Wliteral-conversion
+  -Wself-assign
+  -Wstring-conversion
+  -Wtautological-overlap-compare
+  -Wunused-comparison
+  -Wvla
+  -Wno-reserved-user-defined-literal
+  -Wno-return-type-c-linkage
+  -Wno-deprecated
+  -Wno-invalid-offsetof
+  -Wno-literal-suffix
+  -Woverloaded-virtual
+  -Wnon-virtual-dtor
+  -Wdeprecated-increment-bool
+  -Wc++11-compat
+  -Wno-c++11-compat-binary-literal
+  -Wc++2a-extensions
+  -Wno-register
+  -Wno-dynamic-exception-spec
+  -Wprivate-header
+  -Wno-builtin-macro-redefined
+
+  # Machine flags
+  # We don't add -pthread here since it is added automatically when depending on
+  # Threads::Threads.
+  -mthread-model posix
+
+  # Language flags
+  -disable-free
+  -disable-llvm-verifier
+  -discard-value-names
+  # Note: this works only because this is the only -Xclang passed.
+  -Xclang -relaxed-aliasing
+  -fmath-errno
+)
+
 target_include_directories(pikcommon
     PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_compile_options(pikcommon PUBLIC -mavx2)
 
 target_link_libraries(pikcommon PRIVATE
   brotlicommon-static

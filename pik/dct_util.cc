@@ -18,30 +18,48 @@
 
 namespace pik {
 
-SIMD_ATTR void TransposedScaledDCT(const Image3F& img,
+SIMD_ATTR void TransposedScaledDCT(const Image3F& image,
                                    Image3F* PIK_RESTRICT dct) {
-  const constexpr size_t N = kBlockDim;
-  constexpr int block_size = N * N;
-  PIK_ASSERT(img.xsize() % N == 0);
-  PIK_ASSERT(img.ysize() % N == 0);
-  const size_t xsize_blocks = img.xsize() / N;
-  const size_t ysize_blocks = img.ysize() / N;
-  PIK_ASSERT(dct->xsize() == xsize_blocks * N * N);
+  PROFILER_ZONE("TransposedScaledDCT facade");
+  PIK_ASSERT(image.xsize() % kBlockDim == 0);
+  PIK_ASSERT(image.ysize() % kBlockDim == 0);
+  const size_t xsize_blocks = image.xsize() / kBlockDim;
+  const size_t ysize_blocks = image.ysize() / kBlockDim;
+  PIK_ASSERT(dct->xsize() == xsize_blocks * kDCTBlockSize);
   PIK_ASSERT(dct->ysize() == ysize_blocks);
 
-  {
-    PROFILER_ZONE("dct TransposedScaled2");
+  for (size_t c = 0; c < 3; ++c) {
     for (size_t by = 0; by < ysize_blocks; ++by) {
-      const size_t stride = img.PixelsPerRow();
-      for (int c = 0; c < 3; ++c) {
-        const float* PIK_RESTRICT row_in = img.PlaneRow(c, by * N);
-        float* PIK_RESTRICT row_out = dct->PlaneRow(c, by);
+      const float* PIK_RESTRICT row_in = image.ConstPlaneRow(c, by * kBlockDim);
+      float* PIK_RESTRICT row_dct = dct->PlaneRow(c, by);
 
-        for (size_t bx = 0; bx < xsize_blocks; ++bx) {
-          ComputeTransposedScaledDCT<N>()(
-              FromLines<N>(row_in + bx * N, stride),
-              ScaleToBlock<N>(row_out + bx * block_size));
-        }
+      for (size_t bx = 0; bx < xsize_blocks; ++bx) {
+        ComputeTransposedScaledDCT<kBlockDim>()(
+            FromLines<kBlockDim>(row_in + bx * kBlockDim, image.PixelsPerRow()),
+            ScaleToBlock<kBlockDim>(row_dct + bx * kDCTBlockSize));
+      }
+    }
+  }
+}
+
+SIMD_ATTR void TransposedScaledIDCT(const Image3F& dct,
+                                    Image3F* PIK_RESTRICT idct) {
+  PROFILER_ZONE("IDCT facade");
+  PIK_ASSERT(dct.xsize() % kDCTBlockSize == 0);
+  const size_t xsize_blocks = dct.xsize() / kDCTBlockSize;
+  const size_t ysize_blocks = dct.ysize();
+  PIK_ASSERT(idct->xsize() == xsize_blocks * kBlockDim);
+  PIK_ASSERT(idct->ysize() == ysize_blocks * kBlockDim);
+
+  for (size_t c = 0; c < 3; ++c) {
+    for (size_t by = 0; by < ysize_blocks; ++by) {
+      const float* PIK_RESTRICT row_dct = dct.ConstPlaneRow(c, by);
+      float* PIK_RESTRICT row_idct = idct->PlaneRow(c, by * kBlockDim);
+      for (size_t bx = 0; bx < xsize_blocks; ++bx) {
+        ComputeTransposedScaledIDCT<kBlockDim>()(
+            FromBlock<kBlockDim>(row_dct + bx * kDCTBlockSize),
+            ToLines<kBlockDim>(row_idct + bx * kBlockDim,
+                               idct->PixelsPerRow()));
       }
     }
   }
