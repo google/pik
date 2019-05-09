@@ -583,13 +583,14 @@ struct State {
       if (numLarge) j++;
     }  // for i
     // Compress all the MSB's first ...
-    PIK_RETURN_IF_ERROR(
-        CompressWithEntropyCode(pos, sizes.data(), streams.data(), kNumContexts,
-                                compressedCapacity, compressedOutput));
+    PIK_RETURN_IF_ERROR(CompressWithEntropyCode(
+        kDefaultEntropyCodec, pos, sizes.data(), streams.data(), kNumContexts,
+        compressedCapacity, compressedOutput));
     // ... then all the LSB streams
     PIK_RETURN_IF_ERROR(CompressWithEntropyCode(
-        pos, sizes.data() + kNumContexts, streams.data() + kNumContexts,
-        j - kNumContexts, compressedCapacity, compressedOutput));
+        kDefaultEntropyCodec, pos, sizes.data() + kNumContexts,
+        streams.data() + kNumContexts, j - kNumContexts, compressedCapacity,
+        compressedOutput));
 
     return true;
   }
@@ -602,9 +603,9 @@ struct State {
     size_t decompressedSize = 0;  // is used only for return PIK_FAILURE
     std::vector<std::vector<uint8_t>> streams(kNumContexts * 3);
     // Decompress most significant bytes
-    if (!DecompressWithEntropyCode(compressedSize, compressedData,
-                                   expected_size, kNumContexts, streams.data(),
-                                   pos)) {
+    if (!DecompressWithEntropyCode(kDefaultEntropyCodec, compressedSize,
+                                   compressedData, expected_size, kNumContexts,
+                                   streams.data(), pos)) {
       return PIK_FAILURE("entropy decode failed");
     }
     std::vector<size_t> smallCounts(kNumContexts, 0);
@@ -650,8 +651,8 @@ struct State {
     }
 
     // Decompress least significant bytes
-    if (!DecompressWithEntropyCode(compressedSize, compressedData,
-                                   expected_size, numLSBStreams,
+    if (!DecompressWithEntropyCode(kDefaultEntropyCodec, compressedSize,
+                                   compressedData, expected_size, numLSBStreams,
                                    streams.data() + kNumContexts, pos)) {
       return PIK_FAILURE("entropy decode failed");
     }

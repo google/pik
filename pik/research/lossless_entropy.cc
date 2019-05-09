@@ -11,27 +11,24 @@
 #include "pik/base/padded_bytes.h"
 #include "pik/common.h"
 
-#define PIK_ENTROPY_CODER_FSE 1  // tANS; smallest results for DC
-#define PIK_ENTROPY_CODER_PIK 2  // rANS
-// Potentially helpful for synthetic images but not DC
-#define PIK_ENTROPY_CODER_BROTLI 3
+#define PIK_ENTROPY_SUPPORT_FSE 1
+#define PIK_ENTROPY_SUPPORT_RANS 1
+#define PIK_ENTROPY_SUPPORT_BROTLI 1
 
-#ifndef PIK_ENTROPY_CODER
-#define PIK_ENTROPY_CODER PIK_ENTROPY_CODER_FSE
-#endif
-
-#if PIK_ENTROPY_CODER == PIK_ENTROPY_CODER_FSE
+#if PIK_ENTROPY_SUPPORT_FSE
 // clang-format off
 #include "fse_wrapper.h"  // fse_wrapper.h must be included first.
 #include "FiniteStateEntropy/lib/fse.h"
-/// clang-format on
-#elif PIK_ENTROPY_CODER == PIK_ENTROPY_CODER_PIK
+// clang-format on
+#endif  // SUPPORT_FSE
+
+#if PIK_ENTROPY_SUPPORT_RANS
 #include "pik/entropy_coder.h"
-#elif PIK_ENTROPY_CODER == PIK_ENTROPY_CODER_BROTLI
+#endif  // SUPPORT_RANS
+
+#if PIK_ENTROPY_SUPPORT_BROTLI
 #include "pik/brotli.h"
-#else
-#error "Add include for entropy coder"
-#endif
+#endif  // PIK_ENTROPY_SUPPORT_BROTLI
 
 namespace pik {
 
@@ -77,7 +74,16 @@ uint64_t DecodeVarInt(const uint8_t* input, size_t inputSize, size_t* pos) {
   return ret;
 }
 
-#if PIK_ENTROPY_CODER == PIK_ENTROPY_CODER_FSE
+bool IsRLECompressible(const uint8_t* data, size_t size) {
+  if (size < 4) return false;
+  uint8_t first = data[0];
+  for (size_t i = 1; i < size; i++) {
+    if (data[i] != first) return false;
+  }
+  return true;
+}
+
+#if PIK_ENTROPY_SUPPORT_FSE
 
 // Output size can have special meaning, in each case you must encode the
 // data differently yourself and EntropyDecode will not be able to decode it.
@@ -85,8 +91,9 @@ uint64_t DecodeVarInt(const uint8_t* input, size_t inputSize, size_t* pos) {
 // uncompressed.
 // If 1, then the input data has exactly one byte repeated size times, and
 // you must RLE compress it (encode the amount of times the one value repeats)
-bool MaybeEntropyEncode(const uint8_t* data, size_t size, size_t out_capacity,
-                        uint8_t* out, size_t* out_size) {
+bool MaybeEntropyEncodeFse(const uint8_t* data, size_t size,
+                           size_t out_capacity, uint8_t* out,
+                           size_t* out_size) {
   size_t cs = FSE_compress2(out, out_capacity, data, size, 255,
                             /*FSE_MAX_TABLELOG=*/12);
   if (FSE_isError(cs)) {
@@ -98,8 +105,9 @@ bool MaybeEntropyEncode(const uint8_t* data, size_t size, size_t out_capacity,
 
 // Does not know or return the compressed size, must be known from external
 // source.
-bool MaybeEntropyDecode(const uint8_t* data, size_t size, size_t out_capacity,
-                        uint8_t* out, size_t* out_size) {
+bool MaybeEntropyDecodeFse(const uint8_t* data, size_t size,
+                           size_t out_capacity, uint8_t* out,
+                           size_t* out_size) {
   size_t ds = FSE_decompress(out, out_capacity, data, size);
   if (FSE_isError(ds)) {
     return PIK_FAILURE("FSE dec error: %s", FSE_getErrorName(ds));
@@ -107,8 +115,9 @@ bool MaybeEntropyDecode(const uint8_t* data, size_t size, size_t out_capacity,
   *out_size = ds;
   return true;
 }
+#endif  // PIK_ENTROPY_SUPPORT_FSE
 
-#elif PIK_ENTROPY_CODER == PIK_ENTROPY_CODER_PIK
+#if PIK_ENTROPY_SUPPORT_RANS
 
 // Entropy encode with pik ANS
 bool EntropyEncodePikANS(const uint8_t* data, size_t size,
@@ -130,7 +139,6 @@ bool EntropyEncodePikANS(const uint8_t* data, size_t size,
   size_t pos = 0;
 
   pos += EncodeVarInt(size, storage + pos);
-
   std::vector<ANSEncodingData> encoding_codes(1);
   BitWriter writer;
   BitWriter::Allotment allotment(&writer, cost_bound * kBitsPerByte);
@@ -144,16 +152,17 @@ bool EntropyEncodePikANS(const uint8_t* data, size_t size,
   }
   ans_writer.FlushToBitStream();
   writer.ZeroPadToByte();
-  const size_t bytes_written = allotment.ReclaimUnused(&writer) / kBitsPerByte;
-  result->resize(result->size() + bytes_written);
-  memcpy(result->data() + pos, writer.owned.data(), bytes_written);
-  pos += bytes_written;
+  Span<const uint8_t> span = writer.GetSpan();
+  result->insert(result->end(), span.data(), span.data() + span.size());
+  pos += span.size();  // bytes_written;
+  ReclaimAndCharge(&writer, &allotment, 0, nullptr);
 
   return true;
 }
 
 // Entropy decode with pik ANS
 bool EntropyDecodePikANS(const uint8_t* data, size_t size,
+                         size_t max_output_size,
                          std::vector<uint8_t>* result) {
   static const int kContext = 0;
   size_t pos = 0;
@@ -161,14 +170,13 @@ bool EntropyDecodePikANS(const uint8_t* data, size_t size,
   if (pos >= size) {
     return PIK_FAILURE("lossless pik ANS decode failed");
   }
-  // TODO(lode): instead take expected decoded size as function parameter
-  if (num_symbols > 16777216) {
+  if (num_symbols > max_output_size) {
     // Avoid large allocations, we never expect this many symbols for
     // the limited group sizes.
-    return PIK_FAILURE("lossless pik ANS decode too large");
+    return PIK_FAILURE("lossless pik ANS decode too large %zu", num_symbols);
   }
 
-  BitReader br(Span<uint8_t>(data + pos, size - pos));
+  BitReader br(Span<const uint8_t>(data + pos, size - pos));
   ANSCode codes;
   if (!DecodeANSCodes(1, 256, &br, &codes)) {
     return PIK_FAILURE("lossless pik ANS decode failed");
@@ -188,19 +196,11 @@ bool EntropyDecodePikANS(const uint8_t* data, size_t size,
   return true;
 }
 
-bool IsRLECompressible(const uint8_t* data, size_t size) {
-  if (size < 4) return false;
-  uint8_t first = data[0];
-  for (size_t i = 1; i < size; i++) {
-    if (data[i] != first) return false;
-  }
-  return true;
-}
-
 // TODO(lode): avoid the copying between std::vector and data.
 // Entropy encode with pik ANS
-bool MaybeEntropyEncode(const uint8_t* data, size_t size, size_t out_capacity,
-                        uint8_t* out, size_t* out_size) {
+bool MaybeEntropyEncodePikANS(const uint8_t* data, size_t size,
+                              size_t out_capacity, uint8_t* out,
+                              size_t* out_size) {
   if (IsRLECompressible(data, size)) {
     *out_size = 1;  // Indicate the codec should use RLE instead,
     return true;
@@ -222,10 +222,11 @@ bool MaybeEntropyEncode(const uint8_t* data, size_t size, size_t out_capacity,
 }
 
 // Entropy decode with pik ANS
-bool MaybeEntropyDecode(const uint8_t* data, size_t size, size_t out_capacity,
-                        uint8_t* out, size_t* out_size) {
+bool MaybeEntropyDecodePikANS(const uint8_t* data, size_t size,
+                              size_t out_capacity, uint8_t* out,
+                              size_t* out_size) {
   std::vector<uint8_t> result;
-  if (!EntropyDecodePikANS(data, size, &result)) {
+  if (!EntropyDecodePikANS(data, size, out_capacity, &result)) {
     return PIK_FAILURE("lossless entropy decoding failed");
   }
   if (result.size() > out_capacity) {
@@ -236,10 +237,13 @@ bool MaybeEntropyDecode(const uint8_t* data, size_t size, size_t out_capacity,
   return true;
 }
 
-#elif PIK_ENTROPY_CODER == PIK_ENTROPY_CODER_BROTLI
+#endif  // PIK_ENTROPY_SUPPORT_RANS
 
-bool MaybeEntropyEncode(const uint8_t* data, size_t size, size_t out_capacity,
-                        uint8_t* out, size_t* out_size) {
+#if PIK_ENTROPY_SUPPORT_BROTLI
+
+bool MaybeEntropyEncodeBrotli(const uint8_t* data, size_t size,
+                              size_t out_capacity, uint8_t* out,
+                              size_t* out_size) {
   *out_size = 0;
   PIK_RETURN_IF_ERROR(BrotliCompress(11, data, size, out, out_size));
   if (*out_size > out_capacity) {
@@ -248,11 +252,12 @@ bool MaybeEntropyEncode(const uint8_t* data, size_t size, size_t out_capacity,
   return true;
 }
 
-bool MaybeEntropyDecode(const uint8_t* data, size_t size, size_t out_capacity,
-                        uint8_t* out, size_t* out_size) {
+bool MaybeEntropyDecodeBrotli(const uint8_t* data, size_t size,
+                              size_t out_capacity, uint8_t* out,
+                              size_t* out_size) {
   size_t bytes_read = 0;
   PaddedBytes padded_out;
-  
+
   PIK_RETURN_IF_ERROR(BrotliDecompress(Span<const uint8_t>(data, size),
       out_capacity, &bytes_read, &padded_out));
   *out_size = padded_out.size();
@@ -260,20 +265,62 @@ bool MaybeEntropyDecode(const uint8_t* data, size_t size, size_t out_capacity,
   return true;
 }
 
-#else
-#error "Implement all PIK_ENTROPY_CODER"
-#endif
+#endif  // PIK_ENTROPY_SUPPORT_FSE
 
-static bool IsRLE(const uint8_t* data, size_t size) {
-  if (size < 4) return false;
-  uint8_t first = data[0];
-  for (size_t i = 1; i < size; i++) {
-    if (data[i] != first) return false;
+bool MaybeEntropyEncode(LosslessEntropyCodec codec, const uint8_t* data,
+                        size_t size, size_t out_capacity, uint8_t* out,
+                        size_t* out_size) {
+  if (codec == LosslessEntropyCodec::FSE) {
+#if PIK_ENTROPY_SUPPORT_FSE
+    return MaybeEntropyEncodeFse(data, size, out_capacity, out, out_size);
+#else
+    return PIK_FAILURE("Codec FSE not supported");
+#endif
+  } else if (codec == LosslessEntropyCodec::RANS) {
+#if PIK_ENTROPY_SUPPORT_RANS
+    return MaybeEntropyEncodePikANS(data, size, out_capacity, out, out_size);
+#else
+    return PIK_FAILURE("Codec RANS not supported");
+#endif
+  } else if (codec == LosslessEntropyCodec::BROTLI) {
+#if PIK_ENTROPY_SUPPORT_BROTLI
+    return MaybeEntropyEncodeBrotli(data, size, out_capacity, out, out_size);
+#else
+    return PIK_FAILURE("Codec BROTLI not supported");
+#endif
+  } else {
+    return PIK_FAILURE("unknown entropy codec");
   }
-  return true;
 }
 
-bool CompressWithEntropyCode(size_t* pos, size_t src_size, const uint8_t* src,
+bool MaybeEntropyDecode(LosslessEntropyCodec codec, const uint8_t* data,
+                        size_t size, size_t out_capacity, uint8_t* out,
+                        size_t* out_size) {
+  if (codec == LosslessEntropyCodec::FSE) {
+#if PIK_ENTROPY_SUPPORT_FSE
+    return MaybeEntropyDecodeFse(data, size, out_capacity, out, out_size);
+#else
+    return PIK_FAILURE("Codec FSE not supported");
+#endif
+  } else if (codec == LosslessEntropyCodec::RANS) {
+#if PIK_ENTROPY_SUPPORT_RANS
+    return MaybeEntropyDecodePikANS(data, size, out_capacity, out, out_size);
+#else
+    return PIK_FAILURE("Codec RANS not supported");
+#endif
+  } else if (codec == LosslessEntropyCodec::BROTLI) {
+#if PIK_ENTROPY_SUPPORT_BROTLI
+    return MaybeEntropyDecodeBrotli(data, size, out_capacity, out, out_size);
+#else
+    return PIK_FAILURE("Codec BROTLI not supported");
+#endif
+  } else {
+    return PIK_FAILURE("unknown entropy codec");
+  }
+}
+
+bool CompressWithEntropyCode(LosslessEntropyCodec codec, size_t* pos,
+                             size_t src_size, const uint8_t* src,
                              size_t dst_capacity, uint8_t* dst) {
   if (src_size == 0) {
     *pos += EncodeVarInt(0, dst + *pos);
@@ -282,10 +329,11 @@ bool CompressWithEntropyCode(size_t* pos, size_t src_size, const uint8_t* src,
   // Ensure large enough for brotli and FSE
   std::vector<uint8_t> temp(src_size * 2 + 1024);
   size_t cs;
-  if (IsRLE(src, src_size)) {
+  if (IsRLECompressible(src, src_size)) {
     cs = 1;  // use RLE encoding instead
   } else {
-    if (!MaybeEntropyEncode(src, src_size, temp.size(), temp.data(), &cs)) {
+    if (!MaybeEntropyEncode(codec, src, src_size, temp.size(), temp.data(),
+                            &cs)) {
       return PIK_FAILURE("lossless entropy encode failed");
     }
   }
@@ -319,9 +367,9 @@ bool CompressWithEntropyCode(size_t* pos, size_t src_size, const uint8_t* src,
   return true;
 }
 
-bool DecompressWithEntropyCode(uint8_t* dst, size_t dst_capacity,
-                               const uint8_t* src, size_t src_capacity,
-                               size_t* ds, size_t* pos) {
+bool DecompressWithEntropyCode(LosslessEntropyCodec codec, uint8_t* dst,
+                               size_t dst_capacity, const uint8_t* src,
+                               size_t src_capacity, size_t* ds, size_t* pos) {
   size_t cs = DecodeVarInt(src, src_capacity, pos);
   if (cs == 0) {
     *ds = 0;
@@ -343,7 +391,7 @@ bool DecompressWithEntropyCode(uint8_t* dst, size_t dst_capacity,
     *ds = cs;
   } else {
     if (*pos + cs > src_capacity) return PIK_FAILURE("entropy decode failed");
-    if (!MaybeEntropyDecode(&src[*pos], cs, dst_capacity, dst, ds)) {
+    if (!MaybeEntropyDecode(codec, &src[*pos], cs, dst_capacity, dst, ds)) {
       return PIK_FAILURE("entropy decode failed");
     }
     *pos += cs;
@@ -352,56 +400,101 @@ bool DecompressWithEntropyCode(uint8_t* dst, size_t dst_capacity,
   return true;
 }
 
-// TODO(lode): when using Brotli, implement this such that it concatenates
-// streams to avoid many small Brotli files. When using pik's entropy coder,
-// use its clustering. For FSE the current implementation is fine since that one
-// works best with each stream independent.
-bool CompressWithEntropyCode(size_t* pos, const size_t* src_size,
-    const uint8_t* const * src, size_t num_src, size_t dst_capacity,
-    uint8_t* dst) {
-  for (size_t i = 0; i < num_src; i++) {
-    if (!CompressWithEntropyCode(pos, src_size[i], src[i], dst_capacity, dst)) {
+bool CompressWithEntropyCode(LosslessEntropyCodec codec, size_t* pos,
+                             const size_t* src_size, const uint8_t* const* src,
+                             size_t num_src, size_t dst_capacity,
+                             uint8_t* dst) {
+  // Brotli does its own clustering so concatenate all
+  bool use_concatenation = codec == LosslessEntropyCodec::BROTLI;
+
+  if (use_concatenation) {
+    size_t total_size = 0;
+    for (size_t i = 0; i < num_src; i++) {
+      total_size += src_size[i];
+    }
+    size_t total_capacity = total_size + 9 * num_src;
+    std::vector<uint8_t> all(total_capacity);
+    size_t all_pos = 0;
+    for (size_t i = 0; i < num_src; i++) {
+      if (!EncodeVarInt(src_size[i], total_capacity, &all_pos, all.data())) {
+        return false;
+      }
+      memcpy(all.data() + all_pos, src[i], src_size[i]);
+      all_pos += src_size[i];
+    }
+    all.resize(all_pos);
+    if (!CompressWithEntropyCode(codec, pos, all.size(), all.data(),
+                                 dst_capacity, dst)) {
       return false;
     }
+  } else {
+    for (size_t i = 0; i < num_src; i++) {
+      if (!CompressWithEntropyCode(codec, pos, src_size[i], src[i],
+                                   dst_capacity, dst)) {
+        return false;
+      }
 
-    // If there are two length zero streams in a row, indicate how many more
-    // zero streams follow and skip them.
-    if (i >= 1 && src_size[i] == 0 && src_size[i - 1] == 0) {
-      size_t num = 0;
-      while (num + i + 1 < num_src && src_size[num + i + 1] == 0) {
-        num++;
+      // If there are two length zero streams in a row, indicate how many more
+      // zero streams follow and skip them.
+      if (i >= 1 && src_size[i] == 0 && src_size[i - 1] == 0) {
+        size_t num = 0;
+        while (num + i + 1 < num_src && src_size[num + i + 1] == 0) {
+          num++;
+        }
+        if (!EncodeVarInt(num, dst_capacity, pos, dst)) {
+          return PIK_FAILURE("dst too small");
+        }
+        i += num;
       }
-      if (!EncodeVarInt(num, dst_capacity, pos, dst)) {
-        return PIK_FAILURE("dst too small");
-      }
-      i += num;
     }
   }
   return true;
 }
 
-bool DecompressWithEntropyCode(size_t src_capacity, const uint8_t* src,
-                               size_t max_decompressed_size,
-                               size_t num_dst,
-                               std::vector<uint8_t>* dst,
+bool DecompressWithEntropyCode(LosslessEntropyCodec codec, size_t src_capacity,
+                               const uint8_t* src, size_t max_decompressed_size,
+                               size_t num_dst, std::vector<uint8_t>* dst,
                                size_t* pos) {
-  std::vector<uint8_t> buffer(max_decompressed_size);
-  size_t ds;
-  for (size_t i = 0; i < num_dst; i++) {
-    if (!DecompressWithEntropyCode(buffer.data(), max_decompressed_size, src,
-        src_capacity, &ds, pos)) {
+  // Brotli does its own clustering so concatenate all
+  bool use_concatenation = codec == LosslessEntropyCodec::BROTLI;
+
+  if (use_concatenation) {
+    std::vector<uint8_t> all(max_decompressed_size + 9 * num_dst);
+    size_t ds;
+    if (!DecompressWithEntropyCode(codec, all.data(), all.size(), src,
+                                   src_capacity, &ds, pos)) {
       return false;
     }
+    all.resize(ds);
+    size_t allpos = 0;
+    for (size_t i = 0; i < num_dst; i++) {
+      if (allpos >= all.size()) return PIK_FAILURE("out of bounds");
+      uint64_t size = DecodeVarInt(all.data(), all.size(), &allpos);
+      if (allpos + size > all.size()) return PIK_FAILURE("out of bounds");
+      dst[i].resize(size);
+      memcpy(dst[i].data(), all.data() + allpos, size);
+      allpos += size;
+    }
+  } else {
+    std::vector<uint8_t> buffer(max_decompressed_size);
+    size_t ds;
+    for (size_t i = 0; i < num_dst; i++) {
+      if (!DecompressWithEntropyCode(codec, buffer.data(),
+                                     max_decompressed_size, src, src_capacity,
+                                     &ds, pos)) {
+        return false;
+      }
 
-    // If there are two length zero streams in a row, read amount of zero
-    // streams that follow and skip them.
-    dst[i].assign(buffer.data(), buffer.data() + ds);
-    if (i >= 1 && dst[i].empty() && dst[i - 1].empty()) {
-      if (*pos >= src_capacity) return PIK_FAILURE("src out of bounds");
-      size_t num = DecodeVarInt(src, src_capacity, pos);
-      if (i + num >= num_dst) return PIK_FAILURE("too many streams");
-      for (size_t j = 0; j < num; j++) {
-        dst[++i].clear();
+      // If there are two length zero streams in a row, read amount of zero
+      // streams that follow and skip them.
+      dst[i].assign(buffer.data(), buffer.data() + ds);
+      if (i >= 1 && dst[i].empty() && dst[i - 1].empty()) {
+        if (*pos >= src_capacity) return PIK_FAILURE("src out of bounds");
+        size_t num = DecodeVarInt(src, src_capacity, pos);
+        if (i + num >= num_dst) return PIK_FAILURE("too many streams");
+        for (size_t j = 0; j < num; j++) {
+          dst[++i].clear();
+        }
       }
     }
   }
@@ -409,4 +502,3 @@ bool DecompressWithEntropyCode(size_t src_capacity, const uint8_t* src,
 }
 
 }  // namespace pik
-

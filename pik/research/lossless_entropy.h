@@ -13,6 +13,14 @@
 
 namespace pik {
 
+enum class LosslessEntropyCodec : uint32_t {
+  FSE,
+  RANS,
+  BROTLI,
+};
+
+constexpr LosslessEntropyCodec kDefaultEntropyCodec = LosslessEntropyCodec::FSE;
+
 bool EncodeVarInt(uint64_t value, size_t output_size, size_t* output_pos,
                   uint8_t* output);
 void EncodeVarInt(uint64_t value, PaddedBytes* data);
@@ -30,25 +38,27 @@ uint64_t DecodeVarInt(const uint8_t* input, size_t inputSize, size_t* pos);
 // Returns an error if the dst_capacity was not large enough to hold the
 // compressed data. The dst_capacity must at least be slightly larger than the
 // src_size to account for the case of data that doesn't compress well.
-bool CompressWithEntropyCode(size_t* pos, size_t src_size, const uint8_t* src,
+bool CompressWithEntropyCode(LosslessEntropyCodec codec, size_t* pos,
+                             size_t src_size, const uint8_t* src,
                              size_t dst_capacity, uint8_t* dst);
 
 // Decompresses the data compressed with compressWithEntropyCode
 // ds = decompressed size output
 // pos = position in the compressed src buffer
-bool DecompressWithEntropyCode(uint8_t* dst, size_t dst_capacity,
-                               const uint8_t* src, size_t src_capacity,
-                               size_t* ds, size_t* pos);
+bool DecompressWithEntropyCode(LosslessEntropyCodec codec, uint8_t* dst,
+                               size_t dst_capacity, const uint8_t* src,
+                               size_t src_capacity, size_t* ds, size_t* pos);
 
 // Compresses multiple independent streams with the entropy code.
-bool CompressWithEntropyCode(size_t* pos, const size_t* src_size,
-                             const uint8_t* const* src, size_t num_src,
-                             size_t dst_capacity, uint8_t* dst);
+bool CompressWithEntropyCode(LosslessEntropyCodec codec, size_t* pos,
+                             const size_t* src_size, const uint8_t* const* src,
+                             size_t num_src, size_t dst_capacity, uint8_t* dst);
 
 // Compresses multiple independent streams with the entropy code.
-bool DecompressWithEntropyCode(size_t src_capacity, const uint8_t* src,
-                               size_t max_decompressed_size, size_t num_dst,
-                               std::vector<uint8_t>* dst, size_t* pos);
+bool DecompressWithEntropyCode(LosslessEntropyCodec codec, size_t src_capacity,
+                               const uint8_t* src, size_t max_decompressed_size,
+                               size_t num_dst, std::vector<uint8_t>* dst,
+                               size_t* pos);
 }  // namespace pik
 
 #endif  // PIK_LOSSLESS_ENTROPY_H_

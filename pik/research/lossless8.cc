@@ -686,9 +686,9 @@ struct State {
           sizes[i] = esize[i];
           streams[i] = &edata[i][0];
         }
-        if (!CompressWithEntropyCode(&pos, sizes.data(), streams.data(),
-                                     sizes.size(), compressedCapacity,
-                                     &compressedData[0])) {
+        if (!CompressWithEntropyCode(kDefaultEntropyCodec, &pos, sizes.data(),
+                                     streams.data(), sizes.size(),
+                                     compressedCapacity, &compressedData[0])) {
           return PIK_FAILURE("lossless8 entropy encode failed");
         }
         size_t current = bytes->size();
@@ -742,8 +742,8 @@ struct State {
 
         PredictMode pMode = static_cast<PredictMode>(compressedData[pos++]);
         int nC = ((kNumContexts - 1) >> maxerrShift) + 1;
-        if (!DecompressWithEntropyCode(compressedSize, compressedData, area, nC,
-                                       edata, &pos)) {
+        if (!DecompressWithEntropyCode(kDefaultEntropyCodec, compressedSize,
+                                       compressedData, area, nC, edata, &pos)) {
           return PIK_FAILURE("lossless8 entropy decode failed");
         }
         for (int i = 0; i < nC; ++i) {
@@ -817,8 +817,8 @@ struct State {
 
     PredictMode pMode = static_cast<PredictMode>(compressedData[(*pos)++]);
     int nC = ((kNumContexts - 1) >> maxerrShift) + 1;
-    if (!DecompressWithEntropyCode(compressedSize, compressedData, area, nC,
-                                   edata, pos)) {
+    if (!DecompressWithEntropyCode(kDefaultEntropyCodec, compressedSize,
+                                   compressedData, area, nC, edata, pos)) {
       return PIK_FAILURE("lossless8 entropy decode failed");
     }
     for (int i = 0; i < nC; ++i) {
@@ -1012,9 +1012,9 @@ struct State {
       sizes[i] = esize[i];
       streams[i] = &edata[i][0];
     }
-    if (!CompressWithEntropyCode(&pos, sizes.data(), streams.data(),
-                                 sizes.size(), compressedCapacity,
-                                 &compressedOutput[0])) {
+    if (!CompressWithEntropyCode(kDefaultEntropyCodec, &pos, sizes.data(),
+                                 streams.data(), sizes.size(),
+                                 compressedCapacity, &compressedOutput[0])) {
       return PIK_FAILURE("lossless8 entropy encode failed");
     }
     *csize = pos;
