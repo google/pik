@@ -92,6 +92,12 @@ default value of 1.0 should yield a perceptually lossless result.
 
 Note that the bitstream is still under development and not yet frozen.
 
+### Example Usage
+
+Encoding an image to pik ```cpik in_rgb_8bit.png maxError[0.5 .. 3.0] out.pik```
+
+Decoding a pik to an image ```dpik in.pik out_rgb_8bit.png```
+
 ### Related projects
 
 *   [Butteraugli](http://github.com/google/butteraugli) (HVS-aware image differences)
