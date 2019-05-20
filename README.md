@@ -24,7 +24,7 @@ balance of quality/size/speed across a wide range of bitrates (0.5 - 3 bpp).
 PIK enables automated/unsupervised compression because it guarantees that the
 target quality is maintained over the entire image. It prioritizes
 **authenticity**, a faithful representation of the original, over aesthetics
-achievable by by hallucinating details or 'enhancing' (e.g.
+achievable by hallucinating details or 'enhancing' (e.g.
 sharpening/saturating) the input.
 
 Features enabling fast decoding (> 1 GB/s multithreaded):
