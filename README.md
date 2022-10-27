@@ -1,3 +1,7 @@
+> **Note**
+> There is currently no development going on here. Parts of this project have been used in [JPEG XL](https://github.com/libjxl/libjxl), which is under active development.
+
+
 # PIK
 
 [![Build status][build-status-img]][build-status]
@@ -94,6 +98,7 @@ Note that the bitstream is still under development and not yet frozen.
 
 ### Related projects
 
+*   [JPEG XL](https://github.com/libjxl/libjxl) (reference implementation of image format)
 *   [Butteraugli](http://github.com/google/butteraugli) (HVS-aware image differences)
 *   [Guetzli](http://github.com/google/guetzli) (JPEG encoder with denser packing)
 
